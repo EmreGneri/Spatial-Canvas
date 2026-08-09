@@ -5,7 +5,11 @@ En yeni üstte.
 
 ---
 
-## ÖNCE BUNU OKU — `git pull` çalışmayacak (2026-08-10)
+## ÖNCE BUNU OKU — ilk senkronda `git pull` çalışmaz (2026-08-10)
+
+**Bu tek seferliktir.** Aşağıdaki `reset --hard`'ı bir kez yaptıysan bundan
+sonrası normal: `git pull` sorunsuz çalışır, geçmiş bir daha yeniden
+yazılmayacak.
 
 Uzak geçmiş yeniden yazıldı. Gün 1 render commit'i `e6b44cd` → **`fd3dabb`**
 oldu. **Ağaç birebir aynı, tek bir dosya bile değişmedi**; commit mesajının
@@ -65,11 +69,44 @@ Repoya yeni giren (insan veya asistan) bunları bilmeden değiştirmesin:
 
 ## 2026-08-10 — Gün 3: GPGPU parçacık simülasyonu (Emre)
 
-**Zeynep'e (ve onun Claude'una):** `positionTexture` tür değiştirdi — artık
-`DataTexture` değil, simülasyonun ping-pong **render target texture'ı**
-(TS tipi: `THREE.Texture`). Örnekleme aynı: `texture2D(uPositions, aUv)`.
-Point cloud shader'ında başka hiçbir şey değişmedi; `uPositions` uniform'ını
-her karede engine günceller, sen dokunmuyorsun.
+## Zeynep'e (ve onun Claude'una) — Gün 3 sonrası durum
+
+Gün 3'te veri katmanı tamamen `src/engine/` içinde kaldı; `src/shaders/` ve
+`src/ui/` klasörlerine **hiç dokunulmadı**. Ama altındaki veri değişti, render
+katmanını üç noktada ilgilendiriyor.
+
+**1. Parçacıklar artık hareket ediyor.** Gün 2'de `positionTexture` sabit bir
+depth ızgarasıydı. Gün 3'ten beri her karede GPU'da yeniden hesaplanıyor:
+parçacık bir yay ile dinlenme konumuna bağlı, fare bir kuvvet alanı uyguluyor.
+Point cloud shader'ın için pratik sonucu: **konumlar kare kare değişir**,
+sabit varsayamazsın.
+
+**2. `positionTexture` tür değiştirdi.** Artık `DataTexture` değil, ping-pong
+**render target texture'ı** (TS tipi: `THREE.Texture`). Örnekleme aynı —
+`texture2D(uPositions, aUv)`. Kritik: **texture'ı bir yerde saklama.** Her kare
+farklı bir texture nesnesi okunuyor (ping-pong takası); Engine `uPositions`
+uniform'unu her karede senin material'ına yazıyor. Sen sadece uniform'u
+tanımla, değerine dokunma.
+
+**3. `w` kanalı senin işine yarar.** Her parçacığın `w`'sinde sabit bir rastgele
+tohum var (0..1) ve simülasyon boyunca korunuyor. Nokta boyutu değişkenliği,
+renk sapması, parlaklık titremesi gibi şeyler için bedava: `texture2D(uPositions, aUv).w`.
+
+**Değişmeyenler:** `depthTexture` (R32F, 0 = uzak, 1 = yakın, satır 0 = üst),
+z'nin orijine ortalı olması, `engine.setPointsMaterial(mat)` ile mod takma,
+`update(time)` pass kancası, y-flip'in tek yerde çözülmesi. `uPositions`
+uniform'u hâlâ her point cloud shader'ında zorunlu.
+
+**Senin işin bekliyor:** Render Modu 1 (point cloud shader'ı) — `points.ts`
+içindeki material hâlâ yer tutucu. Onu `setPointsMaterial` ile değiştirdiğinde
+Gün 2 + Gün 3 gerçekten birleşmiş olur. Sim ayarları (`engine.simUniforms`)
+`App.tsx`'teki geçici satırda; senin `ui/ControlPanel` panelin ayrı kalıyor,
+karıştırmadım.
+
+**Yeni kural — sim sahnesine hiçbir şey ekleme.** `simulation.ts`'teki sahne
+yalnızca tam ekran quad'ı taşır. Oraya bir mesh eklemek simülasyon pass'ini
+bozar; boş bırakmak ise render target'ı sıfıra siler (bugün tam olarak bu oldu,
+aşağıda).
 
 ### Veri katmanı
 
@@ -80,9 +117,11 @@ her karede engine günceller, sen dokunmuyorsun.
   sözleşmesi + konum + önceki konum 4 kanala sığmaz). Hız ping-pong çifti
   kullanıldı: konum ×2 + hız ×2 RT, iki ayrı pass (pos, vel). Gerekçe
   `ARCHITECTURE.md` → "GPGPU Simülasyon".
-- **`homeTexture` (yeni):** parçacığın dinlenme konumu. `fillPositionsFromDepth`
-  artık bunu doldurur; depth geldiğinde simülasyona bir kez tohumlanır
-  (`engine.simUniforms` üzerinden ulaşılamaz, iç yapı).
+- **`homeTexture` (yeni):** parçacığın dinlenme konumu — yay buraya çeker.
+  `fillPositionsFromDepth` artık bunu doldurur. Tohumlama (konumları home'a
+  eşitleme + hızları sıfırlama) **yalnızca ilk depth'te**; sonraki depth'ler
+  yalnızca home'u tazeler, böylece canlı kamerada dinlenme konumu görüntüyü
+  takip ederken simülasyon kesintisiz sürer.
 - **Format seçimi:** `EXT_color_buffer_float` yoksa sim RT'leri RGBA16F'ye düşer
   (engin log satırı: "sim RT: RGBA32F/RGBA16F").
 - **Fare kuvvet alanı:** hover'da sürekli (sol tık OrbitControls'ta kaldı),
@@ -149,9 +188,12 @@ canlı "sapma ≈ x birim" göstergesi. Bu Emre'nin ayar kolu;
 ### Doğrulama
 
 `npm run verify` ✓ · `npm run typecheck` ✓ · `npm run build` ✓ — süreler bu
-satırın altındaki Gün 2 girişinde. **Simülasyonun ekrandaki davranışı
-(deformasyon + geri toplanma) tarayıcıda gözle doğrulanmalı** — GPGPU çıktısı
-Node'da test edilemiyor.
+satırın altındaki Gün 2 girişinde.
+
+Tarayıcıda gözle doğrulandı (Emre): nokta bulutu 3B uzayda dönüyor, imleç
+bulutu deforme ediyor, imleç çekilince parçacıklar dinlenme konumuna geri
+toplanıyor, üç kuvvet modu da çalışıyor. GPGPU çıktısı Node'da test
+edilemediği için bu adım her zaman elle yapılır.
 
 ---
 
