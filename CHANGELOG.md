@@ -98,10 +98,36 @@ her karede engine günceller, sen dokunmuyorsun.
 - **Bilinen:** prod build `dist/assets/` içine 23 MB'lık ikinci bir ORT wasm
   kopyası koyuyor (`public/ort` zaten aynı runtime'ı taşıyor). Gün 6'ya not.
 
+### Gün 3 gözden geçirmesi — simülasyon çalışmıyordu
+
+İlk yazımda **simülasyon quad'ı sahneye eklenmemişti** (`scene.add(quad)` yok).
+Sonuç: her pass boş bir sahne çizdi, yani render target'ı sıfıra sildi.
+Konumlar `(0,0,0)` oldu, 147k parçacığın hepsi orijine çöktü — ekranda tek
+nokta. `typecheck` ve `build` bunu yakalayamaz; sadece ekrana bakınca görülür.
+
+Bununla birlikte düzeltilenler:
+
+| Sorun | Sonucu | Düzeltme |
+|---|---|---|
+| Quad sahnede değil | Simülasyon hiç çizmiyor, bulut tek noktaya çöküyor | `scene.add(quad)` |
+| Hız RT'leri hiç başlatılmamış | İlk kare tanımsız içerikten okuyor (çöp hız) | `seedFrom` hız RT'lerini sıfırlıyor |
+| `setDepth` her çağrıda tohumluyordu | Canlı kamerada saniyede 10 kez sıfırlama; parçacıklar hiç hareket edemiyor, fare deformasyonu siliniyor | Tohumlama yalnızca ilk depth'te; sonrası `setHome` |
+| Sim sonrası render target bağlı kalıyordu | Sonraki pass'ler yanlış hedefe çizebilir | `setRenderTarget(null)` ile bırakılıyor |
+| Kuvvet/hız ifadesi iki shader'da kopyaydı | Biri düzenlenince konum ve hız birbirinden kopar | Tek `integrateVelocity()` fonksiyonu, iki pass de onu çağırıyor |
+| Zaman adımı yoktu | 144 Hz'de yay sert, 30 fps'te gevşek; sekme dönüşünde patlama | `uDtScale` (0.5..2 kırpılı), Engine her karede yazıyor |
+| `EXT_color_buffer_float` yoksa sessizce RGBA16F'ye düşülüyordu | Half-float da desteklenmiyorsa sebep görünmüyor | İkinci eklenti de kontrol ediliyor, yoksa konsola hata |
+| Sayfa açılışında imleç canvas üzerindeyse `pointerenter` gelmiyordu | Kuvvet, imleç dışarı çıkıp girene kadar ölü | `pointermove` de aktif ediyor |
+
+**Yeni koruma:** geliştirmede tohumlamadan sonra konum RT'sinden tek piksel
+geri okunuyor; sıfır çıkarsa konsola "sim pass'i hiçbir şey çizmiyor" hatası
+basılıyor. Bu hata sınıfı bir daha sessizce geçmesin diye.
+
 ### Doğrulama
 
 `npm run verify` ✓ · `npm run typecheck` ✓ · `npm run build` ✓ — süreler bu
-satırın altındaki Gün 2 girişinde.
+satırın altındaki Gün 2 girişinde. **Simülasyonun ekrandaki davranışı
+(deformasyon + geri toplanma) tarayıcıda gözle doğrulanmalı** — GPGPU çıktısı
+Node'da test edilemiyor.
 
 ---
 

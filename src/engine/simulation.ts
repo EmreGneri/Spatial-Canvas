@@ -26,6 +26,12 @@ export interface SimulationUniforms extends Record<string, THREE.IUniform> {
   uDamping: { value: number };
   /** Ölü bölge: home'a bu kadar yakınken yay kuvveti yok (titreme önlemi). */
   uRestLength: { value: number };
+  /**
+   * Kare süresi / (1/60). 60 fps'te 1. Bu olmadan simülasyon kare hızına bağlı
+   * olur: 144 Hz ekranda yay sert, 30 fps'te gevşek davranır. Engine her karede
+   * yazar, 0.5..2 aralığına kırpılır (sekme sonrası dev sıçramayı önler).
+   */
+  uDtScale: { value: number };
   /** 0 = itme, 1 = çekim, 2 = vortex. */
   uForceMode: { value: number };
   uForceRadius: { value: number };
@@ -52,6 +58,7 @@ const FORCE_GLSL = /* glsl */ `
   uniform float uForceMode;
   uniform float uForceRadius;
   uniform float uForceStrength;
+  uniform float uDtScale;
   uniform vec2 uMouseWorld;
   uniform float uMouseActive;
   varying vec2 vUv;
@@ -82,6 +89,12 @@ const FORCE_GLSL = /* glsl */ `
     }
     return force;
   }
+
+  // İki pass de AYNI hızı hesaplamak zorunda, yoksa konum ve hız birbirinden
+  // kopar. Tek fonksiyonda tutuluyor ki düzenlemede ayrışamasınlar.
+  vec3 integrateVelocity(vec3 pos, vec3 vel) {
+    return (vel + computeForce(pos) * uDtScale) * pow(uDamping, uDtScale);
+  }
 `;
 
 const POS_FRAGMENT = /* glsl */ `
@@ -90,8 +103,8 @@ const POS_FRAGMENT = /* glsl */ `
   void main() {
     vec4 cur = texture2D(uPos, vUv); // xyz = konum, w = seed (korunur!)
     vec3 vel = texture2D(uVel, vUv).xyz;
-    vec3 newVel = (vel + computeForce(cur.xyz)) * uDamping;
-    gl_FragColor = vec4(cur.xyz + newVel, cur.w);
+    vec3 newVel = integrateVelocity(cur.xyz, vel);
+    gl_FragColor = vec4(cur.xyz + newVel * uDtScale, cur.w);
   }
 `;
 
@@ -101,8 +114,7 @@ const VEL_FRAGMENT = /* glsl */ `
   void main() {
     vec4 cur = texture2D(uPos, vUv);
     vec3 vel = texture2D(uVel, vUv).xyz;
-    vec3 newVel = (vel + computeForce(cur.xyz)) * uDamping;
-    gl_FragColor = vec4(newVel, 0.0);
+    gl_FragColor = vec4(integrateVelocity(cur.xyz, vel), 0.0);
   }
 `;
 
@@ -130,7 +142,17 @@ export interface ParticleSimulation {
   /** Okunan konum RT'sinin texture'ı — engine bunu positionTexture olarak sunar. */
   positionTexture: THREE.Texture;
   uniforms: SimulationUniforms;
-  /** depth geldiğinde home'u her iki konum RT'sine bir kez kopyalar. */
+  /**
+   * Dinlenme konumunu günceller, simülasyonu SIFIRLAMAZ. Canlı kamera yolunda
+   * her karede çağrılır: parçacıklar akan görüntüyü takip eder ama fareyle
+   * yaptığın deformasyon silinmez.
+   */
+  setHome(home: THREE.Texture): void;
+  /**
+   * Konum RT'lerini home'dan doldurur, hızları sıfırlar. Sadece ilk depth'te
+   * (veya bilinçli sıfırlamada) çağrılır — her karede çağrılırsa simülasyon
+   * hiç ilerleyemez.
+   */
   seedFrom(home: THREE.Texture): void;
   /** Bir kare: pos + vel pass, sonra ping-pong takası. */
   step(): void;
@@ -149,6 +171,7 @@ export function createSimulation(
   const scene = new THREE.Scene();
   const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
   const quad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2));
+  scene.add(quad); // sahnede olmazsa her pass RT'yi sıfıra siler, simülasyon ölür
 
   const uniforms: SimulationUniforms = {
     uHome: { value: null },
@@ -157,6 +180,7 @@ export function createSimulation(
     uStiffness: { value: 0.035 },
     uDamping: { value: 0.96 },
     uRestLength: { value: 0.005 },
+    uDtScale: { value: 1 },
     uForceMode: { value: 0 },
     uForceRadius: { value: 1.0 },
     uForceStrength: { value: 0.08 },
@@ -186,6 +210,27 @@ export function createSimulation(
     renderer.render(scene, camera);
   }
 
+  /** Sim işi bitince ekrana geri dön — bağlı RT bırakmak sonraki pass'i bozar. */
+  function releaseTarget() {
+    renderer.setRenderTarget(null);
+  }
+
+  /**
+   * Geliştirmede tek seferlik kendi kendini kontrol: tohumlamadan sonra konum
+   * RT'si home ile aynı olmalı. Tamamen sıfır dönerse simülasyon sahnesi hiç
+   * çizmiyor demektir (klasik sebep: quad sahneye eklenmemiş) — bu hata
+   * ekranda "tek nokta" olarak görünür ve typecheck/build yakalamaz.
+   */
+  function assertSeeded() {
+    const buffer = new Float32Array(4);
+    renderer.readRenderTargetPixels(posRead, POSITION_TEXTURE_SIZE >> 1, POSITION_TEXTURE_SIZE >> 1, 1, 1, buffer);
+    if (buffer.every((v) => v === 0)) {
+      console.error(
+        '[simulation] tohumlama sonrası konum texture\'ı sıfır — sim pass\'i hiçbir şey çizmiyor.',
+      );
+    }
+  }
+
   return {
     get positionTexture() {
       return posRead.texture;
@@ -193,15 +238,28 @@ export function createSimulation(
 
     uniforms,
 
-    seedFrom(home: THREE.Texture) {
+    setHome(home: THREE.Texture) {
       uniforms.uHome.value = home;
       copyMaterial.uniforms.uHome.value = home;
+    },
+
+    seedFrom(home: THREE.Texture) {
+      this.setHome(home);
       // İki taraf da home'dan başlar: ilk kare okuma tarafı hangisi olursa olsun
       // parçacıklar orijinden patlamaz.
       renderTo(posRead, copyMaterial);
       renderTo(posWrite, copyMaterial);
+      // Hız RT'leri hiç çizilmemiş olurdu; içerikleri WebGL'de tanımsız.
+      // Sıfırla (renderer'ın clear rengi zaten 0,0,0,0), yoksa ilk kare çöp
+      // hızla başlar. Renderer durumu değiştirilmiyor.
+      for (const rt of [velRead, velWrite]) {
+        renderer.setRenderTarget(rt);
+        renderer.clear(true, false, false);
+      }
       uniforms.uPos.value = posRead.texture;
       uniforms.uVel.value = velRead.texture;
+      releaseTarget();
+      if (import.meta.env.DEV) assertSeeded();
     },
 
     step() {
@@ -211,6 +269,7 @@ export function createSimulation(
       renderTo(velWrite, velMaterial);
       [posRead, posWrite] = [posWrite, posRead];
       [velRead, velWrite] = [velWrite, velRead];
+      releaseTarget();
     },
 
     dispose() {

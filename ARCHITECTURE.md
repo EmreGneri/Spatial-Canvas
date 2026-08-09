@@ -68,8 +68,18 @@ Sahne: tam ekran quad + ortho kamera, ana sahneden ayrı (`src/engine/simulation
   Verlet'le aynı bellek, tek kuvvet ifadesi, iki ayrı pass (pos, vel).
 - **Format:** `EXT_color_buffer_float` varsa RGBA32F, yoksa RGBA16F (yarım
   hassasiyet bu sahne için yeterli). Tespit Engine'de, log satırında.
-- **Tohumlama:** depth geldiğinde `homeTexture` bir kez her iki konum RT'sine
-  kopyalanır (`seedFrom`) — ilk karede parçacıklar orijinden patlamaz.
+- **Tohumlama:** `seedFrom` yalnızca **ilk** depth'te çalışır — `homeTexture`'ı
+  her iki konum RT'sine kopyalar, hız RT'lerini sıfırlar. Sonraki depth'ler
+  (canlı kamera saniyede ~10 kez) yalnızca `setHome` çağırır: dinlenme konumu
+  akan görüntüyü takip eder, simülasyon sıfırlanmaz. Her karede tohumlanırsa
+  parçacıklar hiç hareket edemez ve fareyle yapılan deformasyon sürekli silinir.
+- **Kare hızı bağımsızlığı:** `uDtScale` = kare süresi / (1/60), 0.5..2 arasına
+  kırpılır. Olmadan 144 Hz ekranda yay sert, 30 fps'te gevşek davranır; kırpma
+  olmadan sekme arka plandan dönünce bulut patlar.
+- **Sim sahnesinin quad'ı sahneye eklenmiş olmalı.** Eklenmezse her pass RT'yi
+  sıfıra siler; sonuç ekranda "tek nokta"dır, typecheck ve build yakalamaz.
+  Geliştirmede tohumlama sonrası tek piksel geri okunur ve sıfırsa konsola
+  hata basılır (`assertSeeded`).
 - **Kuvvet:** `yay(home − konum) + fare`. Ölü bölge: home'a `uRestLength`'ten
   yakınken yay kuvveti sıfır (titreme yok).
 - **Fare:** hover'da sürekli kuvvet; sol tık OrbitControls'ta kalır. Canvas
@@ -87,6 +97,7 @@ Sahne: tam ekran quad + ortho kamera, ana sahneden ayrı (`src/engine/simulation
 | `uForceStrength` | fare kuvvet şiddeti | 0.08 |
 | `uMouseWorld` | fare, dünya koordinatı (z=0 düzlemi) | — |
 | `uMouseActive` | canvas içi/ dışı | 0 |
+| `uDtScale` | kare süresi / (1/60), 0.5..2 kırpılı — Engine her karede yazar | 1 |
 
 Simülasyon uniform'ları `engine.simUniforms` ile okunur (UI Gün 4).
 

@@ -52,7 +52,11 @@ export class Engine {
   private raycaster = new THREE.Raycaster();
   private mousePlane = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
   private mouseWorld = new THREE.Vector3();
+  private ndc = new THREE.Vector2();
 
+  /** İlk depth simülasyonu tohumlar; sonrakiler yalnızca home'u tazeler. */
+  private seeded = false;
+  private lastFrameTime = 0;
   private frameCount = 0;
   private lastFpsSample = 0;
   /** Her saniye güncellenir — FPS geçidi (384 → 256 kararı) buna bakar. */
@@ -66,8 +70,15 @@ export class Engine {
     this.homeTexture = createHomeTexture();
 
     // Ön kontrol: float render target'sız GPGPU açılmaz. Yoksa 16 bit'e düş.
+    // WebGL2'de EXT_color_buffer_float ikisini birden açar; o yoksa half-float
+    // için ayrı bir eklenti gerekir — ikisi de yoksa sessizce bozulmaz, bağırır.
     const gl = this.renderer.getContext();
     const floatRenderable = gl.getExtension(Engine.EXT_COLOR_BUFFER_FLOAT) !== null;
+    const halfRenderable =
+      floatRenderable || gl.getExtension('EXT_color_buffer_half_float') !== null;
+    if (!halfRenderable) {
+      console.error('[engine] float render target desteği yok — GPGPU simülasyonu çalışmaz.');
+    }
     this.simType = floatRenderable ? THREE.FloatType : THREE.HalfFloatType;
     this.simTextureLabel = floatRenderable ? 'RGBA32F' : 'RGBA16F';
 
@@ -98,6 +109,11 @@ export class Engine {
     this.setupMouse();
 
     this.renderer.setAnimationLoop((time) => {
+      // Simülasyon kare hızından bağımsız olsun: 60 fps'te 1. Sekme arka plana
+      // düşüp döndüğünde dev bir dt gelir, kırpılmazsa bulut patlar.
+      const dt = this.lastFrameTime ? (time - this.lastFrameTime) / 1000 : 1 / 60;
+      this.lastFrameTime = time;
+      this.simulation.uniforms.uDtScale.value = THREE.MathUtils.clamp(dt * 60, 0.5, 2);
       this.simulation.step();
       // Okunan konum texture'ı her karede değişir (ping-pong) — render
       // katmanının material'ına push edilir (uPositions sözleşmesi).
@@ -139,10 +155,16 @@ export class Engine {
       current?.dispose();
       this.currentDepthTexture = createDepthTexture(data, width, height);
     }
-    // Home'u depth'ten doldur + simülasyonu tohumla: parçacıklar dinlenme
-    // konumlarından başlar, orijinden patlamaz.
+    // Home'u depth'ten doldur. Tohumlama YALNIZCA ilk seferde: canlı kamera
+    // saniyede ~10 kez setDepth çağırır, her seferinde tohumlanırsa konumlar
+    // sıfırlanır ve fareyle yapılan deformasyon sürekli silinir.
     fillPositionsFromDepth(this.homeTexture, data, width, height);
-    this.simulation.seedFrom(this.homeTexture);
+    if (this.seeded) {
+      this.simulation.setHome(this.homeTexture);
+    } else {
+      this.simulation.seedFrom(this.homeTexture);
+      this.seeded = true;
+    }
   }
 
   /** Renderers read the normalized R32F depth map through this contract. */
@@ -174,12 +196,14 @@ export class Engine {
       sim.uniforms.uMouseActive.value = 0; // canvas dışı → kuvvet yok
     });
     dom.addEventListener('pointermove', (e) => {
+      // İmleç sayfa yüklendiğinde zaten canvas üzerindeyse pointerenter gelmez.
+      sim.uniforms.uMouseActive.value = 1;
       const rect = dom.getBoundingClientRect();
-      const ndc = new THREE.Vector2(
+      this.ndc.set(
         ((e.clientX - rect.left) / rect.width) * 2 - 1,
         -((e.clientY - rect.top) / rect.height) * 2 + 1,
       );
-      this.raycaster.setFromCamera(ndc, this.camera);
+      this.raycaster.setFromCamera(this.ndc, this.camera);
       if (this.raycaster.ray.intersectPlane(this.mousePlane, this.mouseWorld)) {
         sim.uniforms.uMouseWorld.value.set(this.mouseWorld.x, this.mouseWorld.y);
       }
