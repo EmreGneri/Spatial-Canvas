@@ -78,7 +78,9 @@ const FORCE_GLSL = /* glsl */ `
     float distMouse = length(d);
     if (uMouseActive > 0.5 && distMouse > 1e-4 && distMouse < uForceRadius) {
       vec2 dir = d / distMouse;
-      float falloff = 1.0 - distMouse / uForceRadius;
+      // smoothstep: kenarda kuvvet yumuşak biter. Doğrusal sönümde kenar
+      // bıçak gibi kesiliyor ve orada parçacık yığılması oluşuyordu.
+      float falloff = smoothstep(1.0, 0.0, distMouse / uForceRadius);
       if (uForceMode < 0.5) {
         force += vec3(dir, 0.0) * uForceStrength * falloff;          // itme
       } else if (uForceMode < 1.5) {
@@ -177,13 +179,16 @@ export function createSimulation(
     uHome: { value: null },
     uPos: { value: null },
     uVel: { value: null },
-    uStiffness: { value: 0.035 },
-    uDamping: { value: 0.96 },
+    // Denge sapması ≈ uForceStrength / uStiffness. Dünya yüksekliği 2 birim
+    // olduğu için bu oran ~0.25'i geçmemeli, yoksa parçacık bütün buluttan
+    // uzağa itilir (ilk değerlerde 0.08/0.035 ≈ 2.3 idi — delik devasaydı).
+    uStiffness: { value: 0.08 },
+    uDamping: { value: 0.9 },
     uRestLength: { value: 0.005 },
     uDtScale: { value: 1 },
     uForceMode: { value: 0 },
-    uForceRadius: { value: 1.0 },
-    uForceStrength: { value: 0.08 },
+    uForceRadius: { value: 0.35 }, // dünya yüksekliğinin ~1/6'sı
+    uForceStrength: { value: 0.02 },
     uMouseWorld: { value: new THREE.Vector2(0, 0) },
     uMouseActive: { value: 0 },
   };

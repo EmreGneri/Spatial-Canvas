@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { estimateDepth, loadDepthModel, luminanceHeightMap } from './depth';
 import { Engine } from './engine';
 import { ControlPanel } from './ui/ControlPanel';
@@ -207,9 +207,75 @@ export default function App() {
         }}
         style={{ width: 640, height: 420, border: '1px solid #222', background: '#000' }}
       />
+      {engine && <ForceControls engine={engine} />}
       <pre style={{ margin: 0, color: '#8ab', whiteSpace: 'pre-wrap' }}>{log.join('\n')}</pre>
       {engine && <ControlPanel uniforms={engine.grainUniforms} />}
     </div>
+  );
+}
+
+/**
+ * Simülasyon kontrolleri — veri katmanının kendi ayar kolları (Emre).
+ * Zeynep'in `ui/ControlPanel` paneli render katmanına ait, karıştırma.
+ * Slider'lar uniform'a doğrudan yazar; React state yalnızca etiketi tazeler.
+ */
+const FORCE_MODES = ['itme', 'çekim', 'vortex'];
+
+function ForceControls({ engine }: { engine: Engine }) {
+  const u = engine.simUniforms;
+  const [mode, setMode] = useState(u.uForceMode.value);
+  const [radius, setRadius] = useState(u.uForceRadius.value);
+  const [strength, setStrength] = useState(u.uForceStrength.value);
+  const [stiffness, setStiffness] = useState(u.uStiffness.value);
+
+  const row: CSSProperties = { display: 'flex', gap: 8, alignItems: 'center', fontSize: 12 };
+
+  return (
+    <div style={{ ...row, flexWrap: 'wrap', color: '#889' }}>
+      <span>kuvvet:</span>
+      {FORCE_MODES.map((label, value) => (
+        <button
+          key={label}
+          onClick={() => {
+            u.uForceMode.value = value;
+            setMode(value);
+          }}
+          style={{ fontWeight: mode === value ? 700 : 400 }}
+        >
+          {label}
+        </button>
+      ))}
+      <Slider label="yarıçap" min={0.05} max={1} step={0.01} value={radius}
+        onChange={(v) => { u.uForceRadius.value = v; setRadius(v); }} />
+      <Slider label="şiddet" min={0} max={0.1} step={0.002} value={strength}
+        onChange={(v) => { u.uForceStrength.value = v; setStrength(v); }} />
+      <Slider label="yay" min={0.01} max={0.3} step={0.005} value={stiffness}
+        onChange={(v) => { u.uStiffness.value = v; setStiffness(v); }} />
+      <span style={{ color: '#667' }}>sapma ≈ {(strength / stiffness).toFixed(2)} birim</span>
+    </div>
+  );
+}
+
+function Slider({
+  label, min, max, step, value, onChange,
+}: {
+  label: string; min: number; max: number; step: number;
+  value: number; onChange: (v: number) => void;
+}) {
+  return (
+    <label style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+      {label}
+      <input
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={value}
+        onChange={(e) => onChange(e.target.valueAsNumber)}
+        style={{ width: 90 }}
+      />
+      <span style={{ color: '#8ab', fontVariantNumeric: 'tabular-nums' }}>{value.toFixed(3)}</span>
+    </label>
   );
 }
 

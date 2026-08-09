@@ -122,6 +122,30 @@ Bununla birlikte düzeltilenler:
 geri okunuyor; sıfır çıkarsa konsola "sim pass'i hiçbir şey çizmiyor" hatası
 basılıyor. Bu hata sınıfı bir daha sessizce geçmesin diye.
 
+### Kuvvet ayarı ve eksik mod seçici
+
+İlk değerlerle denge sapması `uForceStrength / uStiffness` = `0.08 / 0.035` ≈
+**2.3 birim**, yani parçacık bütün buluttan (yükseklik 2 birim) uzağa
+itilebiliyordu; `uForceRadius = 1.0` da sahnenin yarısını kaplıyordu. Sonuç:
+imlecin altında devasa bir delik ve kenarda sert parçacık yığılması.
+
+| Uniform | Eski | Yeni |
+|---|---|---|
+| `uStiffness` | 0.035 | 0.08 |
+| `uDamping` | 0.96 | 0.9 |
+| `uForceRadius` | 1.0 | 0.35 |
+| `uForceStrength` | 0.08 | 0.02 |
+
+Sapma artık ≈ 0.25 birim. Kenar sönümü doğrusaldan `smoothstep`'e alındı —
+doğrusal sönümde kuvvet sınırında bıçak gibi bir kesim oluşuyordu.
+
+**Eksik olan:** üç kuvvet modu (itme / çekim / vortex) shader'da yazılıydı ama
+`uForceMode`'u değiştiren hiçbir şey yoktu — mod 0'da sabit kalıyordu, yani
+Gün 3'ün üç modundan yalnızca biri erişilebilirdi. `App.tsx`'e veri katmanının
+kendi ayar satırı eklendi: üç mod butonu + yarıçap/şiddet/yay slider'ları ve
+canlı "sapma ≈ x birim" göstergesi. Bu Emre'nin ayar kolu;
+`src/ui/ControlPanel` (render katmanı, Zeynep) ayrı kalıyor.
+
 ### Doğrulama
 
 `npm run verify` ✓ · `npm run typecheck` ✓ · `npm run build` ✓ — süreler bu
