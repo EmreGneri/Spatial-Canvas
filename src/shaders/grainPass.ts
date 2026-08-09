@@ -32,18 +32,25 @@ export interface GrainPassUniforms {
 }
 
 /** ShaderPass, uniform'ları tipli görünsün diye daraltılmış. */
-export type GrainPass = ShaderPass & { uniforms: GrainPassUniforms };
+export type GrainPass = ShaderPass & {
+  uniforms: GrainPassUniforms;
+  /** Pass sözleşmesi: Engine her karede update(time)'ı çağırır; uTime'a doğrudan yazmaz. */
+  update: (time: number) => void;
+};
 
 export function createGrainPass(): GrainPass {
   // Her pass kendi uniform objesini alır; iki pass instance'ı state paylaşmaz.
   const uniforms: GrainPassUniforms = {
     tDiffuse: { value: null },
     uTime: { value: 0 },
-    uGrainAmount: { value: 0.3 },
-    uGrainSpeed: { value: 0 },
-    uVignette: { value: 1.5 },
-    uContrast: { value: 2 },
-    uSaturation: { value: 0 },
+    // Başlangıç = nötre yakın bir bakış. Slider aralıklarının uçları (kontrast 2,
+    // doygunluk 0, vignette 1.5) sahneyi gri ve ezik gösterir; uçlar denemek için,
+    // varsayılan için değil. Görsel dil netleşince buradan sabitlenir.
+    uGrainAmount: { value: 0.06 },
+    uGrainSpeed: { value: 1 },
+    uVignette: { value: 0.45 },
+    uContrast: { value: 1.05 },
+    uSaturation: { value: 1 },
     uResolution: { value: new Vector2(1, 1) },
   };
 
@@ -94,5 +101,9 @@ export function createGrainPass(): GrainPass {
     `,
   });
   // ShaderPass uniform'ları gevşek tipler; burada kurduğumuz obje birebir bu.
-  return pass as GrainPass;
+  const grain = pass as GrainPass;
+  grain.update = (time: number) => {
+    grain.uniforms.uTime.value = time;
+  };
+  return grain;
 }

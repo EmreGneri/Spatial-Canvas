@@ -9,7 +9,8 @@
     "build": "vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
-    "fetch:assets": "node scripts/fetch-assets.mjs"
+    "fetch:assets": "node scripts/fetch-assets.mjs",
+    "verify": "node scripts/verify-positions.mjs && node scripts/verify-depth.mjs"
   },
   "dependencies": {
     "@huggingface/transformers": "^4.2.0",

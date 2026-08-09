@@ -1,42 +1,41 @@
 import * as THREE from 'three';
+import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
-import { createDepthTexture, createPositionTexture, POSITION_TEXTURE_SIZE } from './buffers';
+import {
+  createDepthTexture,
+  createPositionTexture,
+  fillPositionsFromDepth,
+  POSITION_TEXTURE_SIZE,
+} from './buffers';
+import { createPointsCloud } from './points';
 import { createGrainPass, type GrainPass, type GrainPassUniforms } from '../shaders/grainPass';
 
 const MAX_DPR = 2;
 
-const depthVertex = /* glsl */ `
-  varying vec2 vUv;
-  void main() {
-    vUv = uv;
-    gl_Position = vec4(position.xy, 0.0, 1.0);
-  }
-`;
-
-const depthFragment = /* glsl */ `
-  uniform sampler2D uDepth;
-  varying vec2 vUv;
-  void main() {
-    float d = texture2D(uDepth, vUv).r;
-    gl_FragColor = vec4(vec3(d), 1.0);
-  }
-`;
+/**
+ * Pass sözleşmesi (ARCHITECTURE.md): Engine pass içlerine dokunmaz; her pass
+ * opsiyonel `update(time)` kancası sunar, Engine her karede çağırır.
+ */
+export interface TickablePass {
+  update?: (time: number) => void;
+}
 
 /**
- * Veri katmanının çekirdeği (Emre). Sahnede tek şey vardır: depth'i ekrana
- * basan tam ekran quad. Gün 2'de point cloud bunun üstüne kurulur; render
- * modları ve pass'ler Zeynep'in katmanıdır (pipeline.ts).
+ * Veri katmanının çekirdeği (Emre). Gün 2: sahne = positionTexture'dan konum
+ * okuyan point cloud + perspektif kamera + OrbitControls. Render modları ve
+ * pass'ler Zeynep'in katmanıdır; material `setPointsMaterial` ile değişir.
  */
 export class Engine {
   readonly renderer: THREE.WebGLRenderer;
   readonly positionTexture: THREE.DataTexture;
+  readonly points: THREE.Points;
 
   private scene = new THREE.Scene();
-  private camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
-  private quad: THREE.Mesh;
-  private depthMaterial: THREE.ShaderMaterial;
+  private camera: THREE.PerspectiveCamera;
+  private controls: OrbitControls;
+  private pointsMaterial: THREE.Material;
   private currentDepthTexture: THREE.DataTexture | null = null;
   private composer: EffectComposer;
   private grainPass: GrainPass;
@@ -49,13 +48,18 @@ export class Engine {
 
     this.positionTexture = createPositionTexture();
 
-    this.depthMaterial = new THREE.ShaderMaterial({
-      uniforms: { uDepth: { value: null } },
-      vertexShader: depthVertex,
-      fragmentShader: depthFragment,
-    });
-    this.quad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), this.depthMaterial);
-    this.scene.add(this.quad);
+    this.camera = new THREE.PerspectiveCamera(60, 1, 0.1, 100);
+    this.camera.position.set(0, 0, 3.5);
+
+    this.controls = new OrbitControls(this.camera, this.renderer.domElement);
+    this.controls.enableDamping = true;
+    this.controls.dampingFactor = 0.08;
+    this.controls.minDistance = 1;
+    this.controls.maxDistance = 15;
+
+    this.points = createPointsCloud(this.positionTexture);
+    this.pointsMaterial = this.points.material as THREE.Material;
+    this.scene.add(this.points);
 
     this.composer = new EffectComposer(this.renderer);
     this.composer.addPass(new RenderPass(this.scene, this.camera));
@@ -67,16 +71,37 @@ export class Engine {
     this.resize();
 
     this.renderer.setAnimationLoop((time) => {
-      this.grainPass.uniforms.uTime.value = time / 1000;
+      this.controls.update();
+      this.tickPasses(time / 1000);
       this.composer.render();
     });
   }
 
+  private tickPasses(time: number) {
+    const passes = this.composer.passes as TickablePass[];
+    for (const pass of passes) pass.update?.(time);
+  }
+
+  /** Render modları (Zeynep) kendi point cloud shader'ını buraya takar. */
+  setPointsMaterial(material: THREE.Material) {
+    this.pointsMaterial.dispose();
+    this.pointsMaterial = material;
+    this.points.material = material;
+  }
+
   /** Depth sözleşmesi: R32F, 0=uzak/1=yakın, satır 0 = üst. Flip yalnızca burada. */
   setDepth(data: Float32Array, width: number, height: number) {
-    this.currentDepthTexture?.dispose();
-    this.currentDepthTexture = createDepthTexture(data, width, height);
-    this.depthMaterial.uniforms.uDepth.value = this.currentDepthTexture;
+    const current = this.currentDepthTexture;
+    // Canlı kamera saniyede ~10 kez çağırır; boyut aynıysa texture'ı yeniden
+    // ayırmak yerine yerinde güncelle (GPU tahsisi/dispose çöpü olmasın).
+    if (current && current.image.width === width && current.image.height === height) {
+      (current.image.data as Float32Array).set(data);
+      current.needsUpdate = true;
+    } else {
+      current?.dispose();
+      this.currentDepthTexture = createDepthTexture(data, width, height);
+    }
+    fillPositionsFromDepth(this.positionTexture, data, width, height);
   }
 
   /** Renderers read the normalized R32F depth map through this contract. */
@@ -96,7 +121,11 @@ export class Engine {
   private resize() {
     const width = this.renderer.domElement.parentElement?.clientWidth || 1;
     const height = this.renderer.domElement.parentElement?.clientHeight || 1;
-    this.renderer.setSize(width, height, false);
+    this.camera.aspect = width / height;
+    this.camera.updateProjectionMatrix();
+    // updateStyle açık: DPR > 1'de canvas'ın CSS boyutu yazılmazsa çizim tamponu
+    // kadar (ör. 1280×840) yer kaplar ve konteynerden taşar.
+    this.renderer.setSize(width, height);
     this.composer.setSize(width, height);
     // Grain piksel ölçeği drawing buffer'ı izler (DPR dahil).
     this.renderer.getDrawingBufferSize(this.grainPass.uniforms.uResolution.value);
@@ -105,10 +134,12 @@ export class Engine {
   dispose() {
     this.renderer.setAnimationLoop(null);
     this.resizeObserver.disconnect();
+    this.controls.dispose();
+    this.composer.dispose(); // pass'lerin render target'ları — yoksa remount'ta GPU sızıntısı
     this.currentDepthTexture?.dispose();
     this.positionTexture.dispose();
-    this.quad.geometry.dispose();
-    this.depthMaterial.dispose();
+    this.points.geometry.dispose();
+    this.pointsMaterial.dispose();
     this.renderer.dispose();
     this.renderer.domElement.remove();
   }

@@ -1,27 +1,62 @@
 import { useEffect, useRef, useState } from 'react';
-import { estimateDepth, loadDepthModel } from './depth';
+import { estimateDepth, loadDepthModel, luminanceHeightMap } from './depth';
 import { Engine } from './engine';
 import { ControlPanel } from './ui/ControlPanel';
 
 export default function App() {
   const containerRef = useRef<HTMLDivElement>(null);
   const engineRef = useRef<Engine | null>(null);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const timerRef = useRef<number | null>(null);
+  const objectUrlRef = useRef<string | null>(null);
   const [engine, setEngine] = useState<Engine | null>(null);
   const [log, setLog] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
+  const [cameraOn, setCameraOn] = useState(false);
 
   useEffect(() => {
     const engine = new Engine(containerRef.current!);
     engineRef.current = engine;
     setEngine(engine);
-    setLog((prev) => [...prev, `engine hazır · ${engine.positionCount.toLocaleString('tr-TR')} parçacık slotu`]);
+    setLog((prev) => [...prev, `engine hazır · ${engine.positionCount.toLocaleString('tr-TR')} parçacık slotu · sürükle-döndür`]);
     return () => {
+      teardownSource();
       engine.dispose();
       setEngine(null);
     };
   }, []);
 
   const say = (line: string) => setLog((prev) => [...prev, line]);
+
+  function clearTimer() {
+    if (timerRef.current !== null) {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+  }
+
+  /**
+   * Çalışan kaynağı (video/kamera) tamamen bırakır. ÇAĞRI SIRASI ÖNEMLİ: yeni
+   * kaynak oluşturulmadan ÖNCE çağrılır — sonra çağrılırsa yeni açılan video'yu
+   * durdurur.
+   */
+  function teardownSource() {
+    clearTimer();
+    const video = videoRef.current;
+    if (video) {
+      video.pause();
+      video.srcObject = null;
+      video.removeAttribute('src');
+      videoRef.current = null;
+    }
+    if (objectUrlRef.current) {
+      URL.revokeObjectURL(objectUrlRef.current);
+      objectUrlRef.current = null;
+    }
+    streamRef.current?.getTracks().forEach((t) => t.stop());
+    streamRef.current = null;
+  }
 
   async function run(source: HTMLCanvasElement | HTMLImageElement) {
     setBusy(true);
@@ -35,7 +70,7 @@ export default function App() {
       say(`çıkarım                  ${Math.round(performance.now() - t1)} ms  (${depth.width}x${depth.height})`);
 
       engineRef.current!.setDepth(depth.data, depth.width, depth.height);
-      say('depth → engine depthTexture (R32F) + grain pass üzerinde');
+      say('depth → engine · point cloud konumları positionTexture\'dan okunur');
     } catch (err) {
       say(`HATA: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
@@ -43,27 +78,123 @@ export default function App() {
     }
   }
 
+  /** Kamera/video: depth modeli yok, parlaklık = yükseklik. */
+  function startLuminanceLoop(source: HTMLCanvasElement | HTMLVideoElement | HTMLImageElement, label: string) {
+    clearTimer(); // kaynağı bırakmaz — teardownSource'u çağıran taraf yapar
+    let lastLog = 0;
+    const step = () => {
+      // Video ilk kareyi çözmeden drawImage boş/hatalı çizer.
+      if (source instanceof HTMLVideoElement && source.readyState < 2) return;
+      const t0 = performance.now();
+      const hm = luminanceHeightMap(source, 256);
+      engineRef.current!.setDepth(hm.data, hm.width, hm.height);
+      if (performance.now() - lastLog > 2000) {
+        lastLog = performance.now();
+        say(`luminance · ${label} · ${Math.round(performance.now() - t0)} ms`);
+      }
+    };
+    step();
+    timerRef.current = window.setInterval(step, 100);
+  }
+
+  async function toggleCamera() {
+    if (cameraOn) {
+      teardownSource();
+      setCameraOn(false);
+      say('kamera kapatıldı');
+      return;
+    }
+    teardownSource(); // önce açık video/stream varsa bırak
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { width: 640, height: 480 },
+        audio: false,
+      });
+      streamRef.current = stream;
+      const video = document.createElement('video');
+      video.muted = true;
+      video.playsInline = true;
+      video.srcObject = stream;
+      videoRef.current = video;
+      await video.play();
+      setCameraOn(true);
+      startLuminanceLoop(video, 'kamera (model yok)');
+      say('kamera açık · canlı luminance height map');
+    } catch (err) {
+      say(`HATA kamera: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  async function handleFile(file: File) {
+    if (file.type.startsWith('video/')) {
+      teardownSource();
+      setCameraOn(false);
+      const url = URL.createObjectURL(file);
+      objectUrlRef.current = url;
+      const video = document.createElement('video');
+      video.muted = true;
+      video.playsInline = true;
+      video.loop = true;
+      video.src = url;
+      videoRef.current = video;
+      await video.play();
+      say(`video yüklendi · ${file.name} · luminance yolu (model yok)`);
+      startLuminanceLoop(video, 'video');
+    } else if (file.type.startsWith('image/')) {
+      teardownSource(); // canlı döngü varsa dursun, tek kare depth'e geç
+      setCameraOn(false);
+      const url = URL.createObjectURL(file);
+      try {
+        await run(await loadImage(url));
+      } finally {
+        URL.revokeObjectURL(url);
+      }
+    } else {
+      say(`desteklenmiyor: ${file.type || file.name}`);
+    }
+  }
+
   return (
     <div style={{ padding: 24, display: 'grid', gap: 16, justifyItems: 'start' }}>
-      <h1 style={{ font: 'inherit', fontSize: 18, margin: 0 }}>spatial-canvas · Gün 1 — depth + pass zinciri</h1>
+      <h1 style={{ font: 'inherit', fontSize: 18, margin: 0 }}>spatial-canvas · Gün 2 — depth → 3D point cloud</h1>
 
-      <div style={{ display: 'flex', gap: 8 }}>
-        <button disabled={busy} onClick={() => run(syntheticImage())}>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+        <button
+          disabled={busy}
+          onClick={() => {
+            teardownSource();
+            setCameraOn(false);
+            run(syntheticImage());
+          }}
+        >
           sentetik görsel
         </button>
         <input
           type="file"
-          accept="image/*"
+          accept="image/*,video/*"
           disabled={busy}
           onChange={async (e) => {
             const file = e.target.files?.[0];
-            if (file) run(await loadImage(URL.createObjectURL(file)));
+            if (file) {
+              await handleFile(file);
+              e.target.value = '';
+            }
           }}
         />
+        <button disabled={busy} onClick={toggleCamera}>
+          {cameraOn ? 'kamerayı kapat' : 'kamera'}
+        </button>
+        <span style={{ color: '#667', fontSize: 12 }}>görsel/video sürükle-bırak · tıklayıp döndür</span>
       </div>
 
       <div
         ref={containerRef}
+        onDragOver={(e) => e.preventDefault()}
+        onDrop={(e) => {
+          e.preventDefault();
+          const file = e.dataTransfer.files?.[0];
+          if (file) handleFile(file);
+        }}
         style={{ width: 640, height: 420, border: '1px solid #222', background: '#000' }}
       />
       <pre style={{ margin: 0, color: '#8ab', whiteSpace: 'pre-wrap' }}>{log.join('\n')}</pre>

@@ -1,10 +1,12 @@
 # spatial-canvas
 
-Tarayıcıda çalışan mekânsal görsel motor. Fotoğraf → derinlik haritası (Depth-Anything-V2-Small, tamamen yerel) → 3D uzay → parçacık/ASCII/neon render modları. TouchDesigner benzeri node tabanlı akış, MIDI/audio ile canlı performans, tek satır embed hedefleniyor.
+Tarayıcıda çalışan mekânsal görsel motor. Fotoğraf → derinlik haritası (Depth-Anything-V2-Small, tamamen yerel) → 3D uzay → parçacık/ASCII/neon render modları. TouchDesigner benzeri node tabanlı akış ve tek satır embed hedefleniyor. Ses/müzik girdisi **yok** — proje tamamen görsel.
 
 ## Durum
 
 - **Gün 1 (veri katmanı):** tamamlandı — depth pipeline, R32F depth texture, 384×384 position texture, pass zinciri seam'i, mimari sözleşme.
+- **Gün 1 (render katmanı):** tamamlandı — grain/vignette pass'i renk grading ile genişletildi, canlı slider paneli.
+- **Gün 2 (veri katmanı):** depth → 3D point cloud (konumlar shader'da `positionTexture`'dan okunur), perspektif kamera + OrbitControls, sürükle-bırak görsel/video, canlı kamera (luminance yolu). Hata düzeltmeleri ve sözleşme değişikliği: [CHANGELOG.md](CHANGELOG.md).
 - Depth inference doğrulandı (`scripts/verify-depth.mjs`, Node WASM yolu): model yükleme **345 ms**, 512×512 çıkarım **334 ms** (q8, tek thread). Tarayıcıda ilk yükleme WASM derlemesiyle daha yüksek olur — log'da ölçülür.
 
 ## Kurulum
@@ -25,20 +27,21 @@ Model ve runtime CDN'den gelmez; tamamen yereldir. `public/models` ve `public/or
 | `npm run build` / `preview` | Production build / önizleme |
 | `npm run typecheck` | `tsc --noEmit` |
 | `npm run fetch:assets` | Model + ORT dosyalarını vendor eder |
-| `node scripts/verify-depth.mjs` | Depth modelini offline doğrular (tarayıcı testinden önce) |
+| `npm run verify` | Sözleşme kontrolleri: position texture (z ortalı, y-flip, seed) + depth modeli offline |
 
 ## Mimari
 
 - **Veri katmanı** (`src/engine/`) — Emre: depth pipeline, GPGPU parçacık sistemi, node graph, preset serileştirme, export.
 - **Render katmanı** (`src/shaders/`, `src/ui/`) — Zeynep: GLSL shader'lar, pass zinciri, 3 render modu, arayüz.
 - **Sözleşme:** [ARCHITECTURE.md](ARCHITECTURE.md) — texture formatları, y-flip politikası, koordinat uzayı, preset şeması. İki katman birbirine yalnızca bu sözleşme üzerinden bağlanır.
+- **Ne değişti:** [CHANGELOG.md](CHANGELOG.md) — repoyu yeni çektiysen buradan başla. Diğer katmanı etkileyen her düzeltme, gerekçesiyle birlikte orada.
 
 ## Model Dosyaları (public/models)
 
 | Dosya | Boyut | Yol |
 |---|---|---|
 | `model_quantized.onnx` | 26 MB | WASM (varsayılan) |
-| `model_fp16.onnx` | 34 MB | WebGPU (`device: 'webgpu'`) |
+| `model_fp16.onnx` | 47 MB | WebGPU (`device: 'webgpu'`) |
 
 ## Notlar
 
