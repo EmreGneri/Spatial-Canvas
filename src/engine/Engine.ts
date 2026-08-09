@@ -3,7 +3,7 @@ import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
 import { createDepthTexture, createPositionTexture, POSITION_TEXTURE_SIZE } from './buffers';
-import { createGrainPass, grainPassUniforms } from './pipeline';
+import { createGrainPass, type GrainPass, type GrainPassUniforms } from '../shaders/grainPass';
 
 const MAX_DPR = 2;
 
@@ -39,7 +39,7 @@ export class Engine {
   private depthMaterial: THREE.ShaderMaterial;
   private currentDepthTexture: THREE.DataTexture | null = null;
   private composer: EffectComposer;
-  private grainPass: ShaderPass;
+  private grainPass: GrainPass;
   private resizeObserver: ResizeObserver;
 
   constructor(container: HTMLElement) {
@@ -67,7 +67,7 @@ export class Engine {
     this.resize();
 
     this.renderer.setAnimationLoop((time) => {
-      grainPassUniforms.uTime.value = time / 1000;
+      this.grainPass.uniforms.uTime.value = time / 1000;
       this.composer.render();
     });
   }
@@ -84,6 +84,11 @@ export class Engine {
     return this.currentDepthTexture;
   }
 
+  /** UI grain/vignette uniform'larına buradan yazar; render döngüsüne dokunmaz. */
+  get grainUniforms(): GrainPassUniforms {
+    return this.grainPass.uniforms;
+  }
+
   get positionCount() {
     return POSITION_TEXTURE_SIZE * POSITION_TEXTURE_SIZE;
   }
@@ -93,6 +98,8 @@ export class Engine {
     const height = this.renderer.domElement.parentElement?.clientHeight || 1;
     this.renderer.setSize(width, height, false);
     this.composer.setSize(width, height);
+    // Grain piksel ölçeği drawing buffer'ı izler (DPR dahil).
+    this.renderer.getDrawingBufferSize(this.grainPass.uniforms.uResolution.value);
   }
 
   dispose() {

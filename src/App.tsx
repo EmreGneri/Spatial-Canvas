@@ -1,18 +1,24 @@
 import { useEffect, useRef, useState } from 'react';
 import { estimateDepth, loadDepthModel } from './depth';
 import { Engine } from './engine';
+import { ControlPanel } from './ui/ControlPanel';
 
 export default function App() {
   const containerRef = useRef<HTMLDivElement>(null);
   const engineRef = useRef<Engine | null>(null);
+  const [engine, setEngine] = useState<Engine | null>(null);
   const [log, setLog] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     const engine = new Engine(containerRef.current!);
     engineRef.current = engine;
+    setEngine(engine);
     setLog((prev) => [...prev, `engine hazır · ${engine.positionCount.toLocaleString('tr-TR')} parçacık slotu`]);
-    return () => engine.dispose();
+    return () => {
+      engine.dispose();
+      setEngine(null);
+    };
   }, []);
 
   const say = (line: string) => setLog((prev) => [...prev, line]);
@@ -61,6 +67,7 @@ export default function App() {
         style={{ width: 640, height: 420, border: '1px solid #222', background: '#000' }}
       />
       <pre style={{ margin: 0, color: '#8ab', whiteSpace: 'pre-wrap' }}>{log.join('\n')}</pre>
+      {engine && <ControlPanel uniforms={engine.grainUniforms} />}
     </div>
   );
 }
