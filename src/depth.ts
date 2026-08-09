@@ -1,10 +1,15 @@
 import { env, pipeline, RawImage } from '@huggingface/transformers';
 
-// Model weights and the ORT runtime both live in /public — no CDN, no network.
+// Model weights and the ORT runtime both live locally — no CDN, no network.
 env.allowRemoteModels = false;
 env.allowLocalModels = true; // off by default in the browser build
 env.localModelPath = '/models/';
-env.backends.onnx.wasm!.wasmPaths = '/ort/';
+// Dev: Vite refuses module imports from /public (500 on `?import`), so point at
+// the onnxruntime-web dist inside node_modules (served through the transform
+// pipeline). Prod: static /ort/ files from public/ are copied into dist.
+env.backends.onnx.wasm!.wasmPaths = import.meta.env.DEV
+  ? '/node_modules/onnxruntime-web/dist/'
+  : '/ort/';
 env.backends.onnx.wasm!.numThreads = 1; // single-thread => no COOP/COEP headers needed
 
 const MODEL = 'onnx-community/depth-anything-v2-small';

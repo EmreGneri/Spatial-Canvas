@@ -6,3 +6,6 @@ dist
 # Model weights + ORT runtime (~120 MB) — regenerate with `npm run fetch:assets`
 public/models
 public/ort
+
+# Graphify outputs — regenerate with /graphify
+graphify-out

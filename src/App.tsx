@@ -1,14 +1,19 @@
-import { useRef, useState } from 'react';
-import { estimateDepth, loadDepthModel, type DepthResult } from './depth';
+import { useEffect, useRef, useState } from 'react';
+import { estimateDepth, loadDepthModel } from './depth';
+import { Engine } from './engine';
 
-/**
- * Smoke test only: proves the vendored model + WASM runtime load from /public
- * with no network. Day 1 replaces this with the real pipeline.
- */
 export default function App() {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const engineRef = useRef<Engine | null>(null);
   const [log, setLog] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    const engine = new Engine(containerRef.current!);
+    engineRef.current = engine;
+    setLog((prev) => [...prev, `engine hazır · ${engine.positionCount.toLocaleString('tr-TR')} parçacık slotu`]);
+    return () => engine.dispose();
+  }, []);
 
   const say = (line: string) => setLog((prev) => [...prev, line]);
 
@@ -17,13 +22,14 @@ export default function App() {
     try {
       const t0 = performance.now();
       await loadDepthModel();
-      say(`model yüklendi   ${Math.round(performance.now() - t0)} ms`);
+      say(`model yüklendi            ${Math.round(performance.now() - t0)} ms`);
 
       const t1 = performance.now();
       const depth = await estimateDepth(source);
-      say(`çıkarım          ${Math.round(performance.now() - t1)} ms  (${depth.width}x${depth.height})`);
+      say(`çıkarım                  ${Math.round(performance.now() - t1)} ms  (${depth.width}x${depth.height})`);
 
-      draw(canvasRef.current!, depth);
+      engineRef.current!.setDepth(depth.data, depth.width, depth.height);
+      say('depth → engine depthTexture (R32F) + grain pass üzerinde');
     } catch (err) {
       say(`HATA: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
@@ -33,7 +39,7 @@ export default function App() {
 
   return (
     <div style={{ padding: 24, display: 'grid', gap: 16, justifyItems: 'start' }}>
-      <h1 style={{ font: 'inherit', fontSize: 18, margin: 0 }}>spatial-canvas · depth smoke test</h1>
+      <h1 style={{ font: 'inherit', fontSize: 18, margin: 0 }}>spatial-canvas · Gün 1 — depth + pass zinciri</h1>
 
       <div style={{ display: 'flex', gap: 8 }}>
         <button disabled={busy} onClick={() => run(syntheticImage())}>
@@ -50,25 +56,16 @@ export default function App() {
         />
       </div>
 
-      <canvas ref={canvasRef} style={{ maxWidth: 512, imageRendering: 'pixelated' }} />
-      <pre style={{ margin: 0, color: '#8ab' }}>{log.join('\n')}</pre>
+      <div
+        ref={containerRef}
+        style={{ width: 640, height: 420, border: '1px solid #222', background: '#000' }}
+      />
+      <pre style={{ margin: 0, color: '#8ab', whiteSpace: 'pre-wrap' }}>{log.join('\n')}</pre>
     </div>
   );
 }
 
-/** Grayscale preview: white = near, black = far. */
-function draw(canvas: HTMLCanvasElement, { data, width, height }: DepthResult) {
-  canvas.width = width;
-  canvas.height = height;
-  const image = new ImageData(width, height);
-  for (let i = 0; i < data.length; i++) {
-    const v = data[i] * 255;
-    image.data.set([v, v, v, 255], i * 4);
-  }
-  canvas.getContext('2d')!.putImageData(image, 0, 0);
-}
-
-/** Shapes at different scales so the depth output is visibly non-flat. */
+/** Şekiller farklı ölçeklerde — depth çıktısının düz olmadığı görülsün. */
 function syntheticImage(): HTMLCanvasElement {
   const canvas = document.createElement('canvas');
   canvas.width = 512;
