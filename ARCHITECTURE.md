@@ -1,7 +1,8 @@
 # spatial-canvas · Mimari Sözleşmesi
 
-v0.2 — Gün 2. Değişiklikler: point cloud + kamera (perspektif kamera, pass `update(time)`
-kancası, luminance yolu). İki katmanın birbirine güvenli bağlanabilmesi için yazıldı.
+v0.3 — Gün 3. Değişiklikler: GPGPU parçacık simülasyonu — `positionTexture` artık
+ping-pong render target texture'ı, `homeTexture` eklendi (dinlenme konumu).
+İki katmanın birbirine güvenli bağlanabilmesi için yazıldı.
 Değişiklik tartışılır, yazılır, imzalanır. Sessiz sapma yok.
 
 ## Katman Bölüşümü
@@ -17,14 +18,17 @@ Değişiklik tartışılır, yazılır, imzalanır. Sessiz sapma yok.
 | Texture | Format | Boyut | İçerik |
 |---|---|---|---|
 | `depthTexture` | R32F, tek kanal | görsel çözünürlüğü | 0 = uzak, 1 = yakın |
-| `positionTexture` | RGBA32F | 384×384 (147.456 parçacık) | xyz = konum, w = seed (0..1) |
+| `positionTexture` | RGBA32F veya RGBA16F | 384×384 (147.456 parçacık) | xyz = konum (**simülasyon her karede yazar**), w = seed (0..1) |
+| `homeTexture` | RGBA32F | 384×384 | xyz = dinlenme konumu (CPU: depth'ten bir kez), w = seed (0..1) |
 
 - **y-flip tek yerde çözülür:** texture upload'u (`src/engine/buffers.ts`, `flipY = true`).
   Sonuç: `v = 1` → görselin **üstü**. Shader'larda, UV'lerde, CPU'da flip **yoktur**.
 - Normalize etmek veri katmanının işi: Zeynep ham veri beklemez, hep 0..1 alır.
-- Hem `depthTexture` hem `positionTexture` `NearestFilter` (parçacık aramaları birebir örneklenir).
-- Engine exposes both textures to renderers: `engine.positionTexture` and
-  `engine.depthTexture`; the latter is `null` until depth has been computed.
+- `depthTexture` ve `homeTexture` `NearestFilter`. `positionTexture` (RT) de
+  `NearestFilter` — parçacık aramaları birebir örneklenir.
+- Engine exposes textures to renderers: `engine.positionTexture` (Gün 3'ten beri
+  simülasyonun RT texture'ı — **THREE.Texture, DataTexture değil**) ve
+  `engine.depthTexture`; ikincisi depth hesaplanana dek `null`.
 
 ## Koordinat Uzayı (Gün 2)
 
@@ -45,12 +49,46 @@ Değişiklik tartışılır, yazılır, imzalanır. Sessiz sapma yok.
 - **Vertex konumları CPU dizisinden DEĞİL, `uPositions` texture'ından shader'da
   okunur** (`src/engine/points.ts`). Geometri yalnızca `aUv` grid'i taşır
   (u = (i+0.5)/N, v = 1-(j+0.5)/N); position attribute boştur, frustum culling
-  kapalıdır. Gün 3 GPGPU bu texture'ı her karede üzerine yazar.
+  kapalıdır.
 - Engine'deki material yer tutucudur; render modları (Zeynep) kendi point cloud
   shader'ını `engine.setPointsMaterial(material)` ile takar. Material uniform
-  sözleşmesi: `uPositions` (positionTexture) her shader'da zorunlu.
+  sözleşmesi: `uPositions` her shader'da zorunlu — **tip THREE.Texture** (RT
+  texture'ı). Engine, ping-pong nedeniyle okunan texture her karede değiştiği
+  için `uPositions`'ı her karede günceller; material buna dokunmaz.
 - Texture'lara erişim: `engine.positionTexture`, `engine.depthTexture`
   (depth hesaplanana dek `null`).
+
+## GPGPU Simülasyon (Gün 3 — Emre)
+
+Sahne: tam ekran quad + ortho kamera, ana sahneden ayrı (`src/engine/simulation.ts`).
+
+- **Hızın yeri — karar:** Verlet (konum + önceki konum) tek texture'da
+  imkânsız: `w` = seed (sözleşme) + konum (3) + önceki konum (3) = 7 kanal >
+  RGBA'nın 4'ü. **Hız ping-pong çifti** kullanıldı (4 RT: konum ×2 + hız ×2) —
+  Verlet'le aynı bellek, tek kuvvet ifadesi, iki ayrı pass (pos, vel).
+- **Format:** `EXT_color_buffer_float` varsa RGBA32F, yoksa RGBA16F (yarım
+  hassasiyet bu sahne için yeterli). Tespit Engine'de, log satırında.
+- **Tohumlama:** depth geldiğinde `homeTexture` bir kez her iki konum RT'sine
+  kopyalanır (`seedFrom`) — ilk karede parçacıklar orijinden patlamaz.
+- **Kuvvet:** `yay(home − konum) + fare`. Ölü bölge: home'a `uRestLength`'ten
+  yakınken yay kuvveti sıfır (titreme yok).
+- **Fare:** hover'da sürekli kuvvet; sol tık OrbitControls'ta kalır. Canvas
+  dışında kuvvet sıfır. Ekran konumu → z = 0 düzlemine izdüşüm (kamera
+  dönmüşse de doğru — orbit'e dayanıklı).
+- **w (seed) korunur:** sim pos pass'i `cur.w`'yi kopyalar.
+
+| Uniform | Anlam | Varsayılan |
+|---|---|---|
+| `uStiffness` | yay katsayısı | 0.035 |
+| `uDamping` | sönüm (0..1) | 0.96 |
+| `uRestLength` | ölü bölge yarıçapı | 0.005 |
+| `uForceMode` | 0 = itme, 1 = çekim, 2 = vortex | 0 |
+| `uForceRadius` | fare kuvvet alanı yarıçapı | 1.0 |
+| `uForceStrength` | fare kuvvet şiddeti | 0.08 |
+| `uMouseWorld` | fare, dünya koordinatı (z=0 düzlemi) | — |
+| `uMouseActive` | canvas içi/ dışı | 0 |
+
+Simülasyon uniform'ları `engine.simUniforms` ile okunur (UI Gün 4).
 
 ## Pass Zinciri (Render Katmanı)
 

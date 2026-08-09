@@ -5,11 +5,12 @@ import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
 import {
   createDepthTexture,
-  createPositionTexture,
+  createHomeTexture,
   fillPositionsFromDepth,
   POSITION_TEXTURE_SIZE,
 } from './buffers';
 import { createPointsCloud } from './points';
+import { createSimulation, type SimulationUniforms } from './simulation';
 import { createGrainPass, type GrainPass, type GrainPassUniforms } from '../shaders/grainPass';
 
 const MAX_DPR = 2;
@@ -23,14 +24,21 @@ export interface TickablePass {
 }
 
 /**
- * Veri katmanının çekirdeği (Emre). Gün 2: sahne = positionTexture'dan konum
- * okuyan point cloud + perspektif kamera + OrbitControls. Render modları ve
- * pass'ler Zeynep'in katmanıdır; material `setPointsMaterial` ile değişir.
+ * Veri katmanının çekirdeği (Emre). Gün 3: positionTexture artık DataTexture
+ * değil — GPGPU simülasyonunun ping-pong render target texture'ı. Simülasyon
+ * her karede konumları shader'da hesaplar; render katmanı aynı şekilde
+ * örnekler (texture2D(uPositions, aUv)).
  */
 export class Engine {
   readonly renderer: THREE.WebGLRenderer;
-  readonly positionTexture: THREE.DataTexture;
+  readonly homeTexture: THREE.DataTexture;
   readonly points: THREE.Points;
+  readonly simType: THREE.TextureDataType;
+  /** Log için: 'RGBA32F' | 'RGBA16F' */
+  readonly simTextureLabel: string;
+
+  /** EXT_color_buffer_float tespiti — sim RT türü buna göre seçilir. */
+  static readonly EXT_COLOR_BUFFER_FLOAT = 'EXT_color_buffer_float';
 
   private scene = new THREE.Scene();
   private camera: THREE.PerspectiveCamera;
@@ -40,13 +48,30 @@ export class Engine {
   private composer: EffectComposer;
   private grainPass: GrainPass;
   private resizeObserver: ResizeObserver;
+  private simulation: ReturnType<typeof createSimulation>;
+  private raycaster = new THREE.Raycaster();
+  private mousePlane = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
+  private mouseWorld = new THREE.Vector3();
+
+  private frameCount = 0;
+  private lastFpsSample = 0;
+  /** Her saniye güncellenir — FPS geçidi (384 → 256 kararı) buna bakar. */
+  fps = 0;
 
   constructor(container: HTMLElement) {
     this.renderer = new THREE.WebGLRenderer({ antialias: false });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, MAX_DPR));
     container.appendChild(this.renderer.domElement);
 
-    this.positionTexture = createPositionTexture();
+    this.homeTexture = createHomeTexture();
+
+    // Ön kontrol: float render target'sız GPGPU açılmaz. Yoksa 16 bit'e düş.
+    const gl = this.renderer.getContext();
+    const floatRenderable = gl.getExtension(Engine.EXT_COLOR_BUFFER_FLOAT) !== null;
+    this.simType = floatRenderable ? THREE.FloatType : THREE.HalfFloatType;
+    this.simTextureLabel = floatRenderable ? 'RGBA32F' : 'RGBA16F';
+
+    this.simulation = createSimulation(this.renderer, this.simType);
 
     this.camera = new THREE.PerspectiveCamera(60, 1, 0.1, 100);
     this.camera.position.set(0, 0, 3.5);
@@ -57,7 +82,7 @@ export class Engine {
     this.controls.minDistance = 1;
     this.controls.maxDistance = 15;
 
-    this.points = createPointsCloud(this.positionTexture);
+    this.points = createPointsCloud(this.simulation.positionTexture);
     this.pointsMaterial = this.points.material as THREE.Material;
     this.scene.add(this.points);
 
@@ -70,10 +95,18 @@ export class Engine {
     this.resizeObserver.observe(container);
     this.resize();
 
+    this.setupMouse();
+
     this.renderer.setAnimationLoop((time) => {
+      this.simulation.step();
+      // Okunan konum texture'ı her karede değişir (ping-pong) — render
+      // katmanının material'ına push edilir (uPositions sözleşmesi).
+      const uPositions = (this.pointsMaterial as THREE.ShaderMaterial).uniforms?.['uPositions'];
+      if (uPositions) uPositions.value = this.simulation.positionTexture;
       this.controls.update();
       this.tickPasses(time / 1000);
       this.composer.render();
+      this.countFps();
     });
   }
 
@@ -89,6 +122,11 @@ export class Engine {
     this.points.material = material;
   }
 
+  /** Simülasyon uniform'ları — UI/ayar için (yay, sönüm, fare kuvveti). */
+  get simUniforms(): SimulationUniforms {
+    return this.simulation.uniforms;
+  }
+
   /** Depth sözleşmesi: R32F, 0=uzak/1=yakın, satır 0 = üst. Flip yalnızca burada. */
   setDepth(data: Float32Array, width: number, height: number) {
     const current = this.currentDepthTexture;
@@ -101,12 +139,20 @@ export class Engine {
       current?.dispose();
       this.currentDepthTexture = createDepthTexture(data, width, height);
     }
-    fillPositionsFromDepth(this.positionTexture, data, width, height);
+    // Home'u depth'ten doldur + simülasyonu tohumla: parçacıklar dinlenme
+    // konumlarından başlar, orijinden patlamaz.
+    fillPositionsFromDepth(this.homeTexture, data, width, height);
+    this.simulation.seedFrom(this.homeTexture);
   }
 
   /** Renderers read the normalized R32F depth map through this contract. */
   get depthTexture(): THREE.DataTexture | null {
     return this.currentDepthTexture;
+  }
+
+  /** Konum texture'ı — artık simülasyonun ping-pong RT texture'ı. */
+  get positionTexture(): THREE.Texture {
+    return this.simulation.positionTexture;
   }
 
   /** UI grain/vignette uniform'larına buradan yazar; render döngüsüne dokunmaz. */
@@ -116,6 +162,38 @@ export class Engine {
 
   get positionCount() {
     return POSITION_TEXTURE_SIZE * POSITION_TEXTURE_SIZE;
+  }
+
+  private setupMouse() {
+    const dom = this.renderer.domElement;
+    const sim = this.simulation;
+    dom.addEventListener('pointerenter', () => {
+      sim.uniforms.uMouseActive.value = 1;
+    });
+    dom.addEventListener('pointerleave', () => {
+      sim.uniforms.uMouseActive.value = 0; // canvas dışı → kuvvet yok
+    });
+    dom.addEventListener('pointermove', (e) => {
+      const rect = dom.getBoundingClientRect();
+      const ndc = new THREE.Vector2(
+        ((e.clientX - rect.left) / rect.width) * 2 - 1,
+        -((e.clientY - rect.top) / rect.height) * 2 + 1,
+      );
+      this.raycaster.setFromCamera(ndc, this.camera);
+      if (this.raycaster.ray.intersectPlane(this.mousePlane, this.mouseWorld)) {
+        sim.uniforms.uMouseWorld.value.set(this.mouseWorld.x, this.mouseWorld.y);
+      }
+    });
+  }
+
+  private countFps() {
+    this.frameCount++;
+    const now = performance.now();
+    if (now - this.lastFpsSample >= 1000) {
+      this.fps = Math.round((this.frameCount * 1000) / (now - this.lastFpsSample));
+      this.frameCount = 0;
+      this.lastFpsSample = now;
+    }
   }
 
   private resize() {
@@ -137,7 +215,8 @@ export class Engine {
     this.controls.dispose();
     this.composer.dispose(); // pass'lerin render target'ları — yoksa remount'ta GPU sızıntısı
     this.currentDepthTexture?.dispose();
-    this.positionTexture.dispose();
+    this.homeTexture.dispose();
+    this.simulation.dispose();
     this.points.geometry.dispose();
     this.pointsMaterial.dispose();
     this.renderer.dispose();

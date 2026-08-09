@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import {
   POSITION_TEXTURE_SIZE as N,
   POINTS_DEPTH_RANGE,
-  createPositionTexture,
+  createHomeTexture,
   fillPositionsFromDepth,
 } from '../src/engine/buffers.ts';
 
@@ -20,7 +20,7 @@ const xyz = (data, i, j) => {
 
 // --- 1. düz depth: 0 → -half, 1 → +half ---
 for (const [value, expected] of [[0, -half], [1, half]]) {
-  const tex = createPositionTexture();
+  const tex = createHomeTexture();
   fillPositionsFromDepth(tex, new Float32Array(64 * 64).fill(value), 64, 64);
   const data = tex.image.data;
   for (const [i, j] of [[0, 0], [N - 1, N - 1], [N >> 1, N >> 1]]) {
@@ -34,7 +34,7 @@ const H = 64;
 const depth = new Float32Array(W * H);
 for (let row = 0; row < H / 2; row++) depth.fill(1, row * W, (row + 1) * W); // satır 0 = üst
 
-const tex = createPositionTexture();
+const tex = createHomeTexture();
 const seedsBefore = Array.from(tex.image.data).filter((_, k) => k % 4 === 3);
 fillPositionsFromDepth(tex, depth, W, H);
 const data = tex.image.data;
@@ -51,7 +51,7 @@ const seedsAfter = Array.from(data).filter((_, k) => k % 4 === 3);
 assert.deepEqual(seedsAfter, seedsBefore, 'w (seed) doldurma sırasında ezilmemeli');
 
 // --- 4. en-boy oranı x genişliğine yansır ---
-const wide = createPositionTexture();
+const wide = createHomeTexture();
 fillPositionsFromDepth(wide, new Float32Array(160 * 80), 160, 80); // 2:1
 // halfW = aspect · (WORLD_HEIGHT/2) = 2; son sütun u = 1 − 0.5/N → x = 2 − 2/N
 const rightmost = xyz(wide.image.data, N - 1, 0).x;

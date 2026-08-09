@@ -7,8 +7,10 @@ import {
 /**
  * Point cloud (veri katmanı — Emre). KRİTİK kural (ARCHITECTURE.md):
  * vertex konumları CPU dizisinden DEĞİL, uPositions texture'ından shader'da
- * okunur. Geometri yalnızca grid UV'leri taşır (aUv); position attribute
- * boştur, frustum culling kapatılmıştır.
+ * okunur. Gün 3'ten beri bu texture bir render target texture'ıdır
+ * (THREE.Texture) — simülasyon her karede üzerine yazar. Geometri yalnızca
+ * grid UV'leri taşır (aUv); position attribute boştur, frustum culling
+ * kapatılmıştır.
  *
  * Buradaki material YER TUTUCUDUR: Zeynep'in Point Cloud shader'ı
  * `engine.setPointsMaterial(mat)` ile bunun yerine geçer.
@@ -41,12 +43,12 @@ const POINT_FRAGMENT = /* glsl */ `
 `;
 
 export interface PointsCloudUniforms {
-  uPositions: { value: THREE.DataTexture };
+  uPositions: { value: THREE.Texture };
   uPointSize: { value: number };
 }
 
 export function createPointsCloud(
-  positionTexture: THREE.DataTexture,
+  positionTexture: THREE.Texture,
 ): THREE.Points {
   const n = POSITION_TEXTURE_SIZE;
   const count = n * n;

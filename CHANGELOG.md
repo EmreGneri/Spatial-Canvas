@@ -63,6 +63,48 @@ Repoya yeni giren (insan veya asistan) bunları bilmeden değiştirmesin:
 
 ---
 
+## 2026-08-10 — Gün 3: GPGPU parçacık simülasyonu (Emre)
+
+**Zeynep'e (ve onun Claude'una):** `positionTexture` tür değiştirdi — artık
+`DataTexture` değil, simülasyonun ping-pong **render target texture'ı**
+(TS tipi: `THREE.Texture`). Örnekleme aynı: `texture2D(uPositions, aUv)`.
+Point cloud shader'ında başka hiçbir şey değişmedi; `uPositions` uniform'ını
+her karede engine günceller, sen dokunmuyorsun.
+
+### Veri katmanı
+
+- **`src/engine/simulation.ts` (yeni):** GPGPU simülasyonu. Konumlar CPU'da
+  değil, shader'da her karede hesaplanır. Kuvvet = yay(dinlenme konumu − konum)
+  + fare kuvveti. Sönüm, yay katsayısı, ölü bölge uniform'larda.
+- **Hızın yeri — karar:** Verlet tek texture'da mümkün değildi (`w` = seed
+  sözleşmesi + konum + önceki konum 4 kanala sığmaz). Hız ping-pong çifti
+  kullanıldı: konum ×2 + hız ×2 RT, iki ayrı pass (pos, vel). Gerekçe
+  `ARCHITECTURE.md` → "GPGPU Simülasyon".
+- **`homeTexture` (yeni):** parçacığın dinlenme konumu. `fillPositionsFromDepth`
+  artık bunu doldurur; depth geldiğinde simülasyona bir kez tohumlanır
+  (`engine.simUniforms` üzerinden ulaşılamaz, iç yapı).
+- **Format seçimi:** `EXT_color_buffer_float` yoksa sim RT'leri RGBA16F'ye düşer
+  (engin log satırı: "sim RT: RGBA32F/RGBA16F").
+- **Fare kuvvet alanı:** hover'da sürekli (sol tık OrbitControls'ta kaldı),
+  canvas dışında kuvvet sıfır, z = 0 düzlemine izdüşüm (orbit'e dayanıklı).
+  Modlar: itme / çekim / vortex (uniform `uForceMode`).
+- **Seed korunur:** sim pos pass'i `cur.w`'yi kopyalar; GPU tarafı
+  `verify-positions.mjs` ile test edilemiyor (CPU tarafı test ediliyor).
+
+### Deploy (Vercel)
+
+- `vercel.json` eklendi: vite framework, `dist` çıktısı, model/ORT statik
+  dosyalarına uzun önbellek.
+- **Bilinen:** prod build `dist/assets/` içine 23 MB'lık ikinci bir ORT wasm
+  kopyası koyuyor (`public/ort` zaten aynı runtime'ı taşıyor). Gün 6'ya not.
+
+### Doğrulama
+
+`npm run verify` ✓ · `npm run typecheck` ✓ · `npm run build` ✓ — süreler bu
+satırın altındaki Gün 2 girişinde.
+
+---
+
 ## 2026-08-10 — Gün 2 hata düzeltmeleri + sözleşme netleşmesi
 
 Gün 2 veri katmanı üzerinden geçildi; render katmanında da bir düzeltme var.

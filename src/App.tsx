@@ -14,13 +14,20 @@ export default function App() {
   const [log, setLog] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [cameraOn, setCameraOn] = useState(false);
+  const [fps, setFps] = useState(0);
 
   useEffect(() => {
     const engine = new Engine(containerRef.current!);
     engineRef.current = engine;
     setEngine(engine);
-    setLog((prev) => [...prev, `engine hazır · ${engine.positionCount.toLocaleString('tr-TR')} parçacık slotu · sürükle-döndür`]);
+    const textureType = engine.simTextureLabel;
+    setLog((prev) => [
+      ...prev,
+      `engine hazır · ${engine.positionCount.toLocaleString('tr-TR')} parçacık slotu · sim RT: ${textureType} · sürükle-döndür`,
+    ]);
+    const fpsTimer = window.setInterval(() => setFps(engine.fps), 1000);
     return () => {
+      clearInterval(fpsTimer);
       teardownSource();
       engine.dispose();
       setEngine(null);
@@ -156,7 +163,7 @@ export default function App() {
 
   return (
     <div style={{ padding: 24, display: 'grid', gap: 16, justifyItems: 'start' }}>
-      <h1 style={{ font: 'inherit', fontSize: 18, margin: 0 }}>spatial-canvas · Gün 2 — depth → 3D point cloud</h1>
+      <h1 style={{ font: 'inherit', fontSize: 18, margin: 0 }}>spatial-canvas · Gün 3 — GPGPU parçacık simülasyonu</h1>
 
       <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
         <button
@@ -184,7 +191,10 @@ export default function App() {
         <button disabled={busy} onClick={toggleCamera}>
           {cameraOn ? 'kamerayı kapat' : 'kamera'}
         </button>
-        <span style={{ color: '#667', fontSize: 12 }}>görsel/video sürükle-bırak · tıklayıp döndür</span>
+        <span style={{ color: '#667', fontSize: 12 }}>görsel/video sürükle-bırak · tıklayıp döndür · hover = kuvvet</span>
+        <span style={{ color: fps >= 30 ? '#6a6' : '#c66', fontSize: 12, fontVariantNumeric: 'tabular-nums' }}>
+          {fps} fps
+        </span>
       </div>
 
       <div
