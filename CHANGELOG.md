@@ -69,7 +69,7 @@ Repoya yeni giren (insan veya asistan) bunları bilmeden değiştirmesin:
 
 ## 2026-08-10 — Gün 3: GPGPU parçacık simülasyonu (Emre)
 
-## Zeynep'e (ve onun Claude'una) — Gün 3 sonrası durum
+## Render katmanına — Gün 3 sonrası durum
 
 Gün 3'te veri katmanı tamamen `src/engine/` içinde kaldı; `src/shaders/` ve
 `src/ui/` klasörlerine **hiç dokunulmadı**. Ama altındaki veri değişti, render
