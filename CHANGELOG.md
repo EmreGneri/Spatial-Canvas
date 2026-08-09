@@ -5,6 +5,64 @@ En yeni üstte.
 
 ---
 
+## ÖNCE BUNU OKU — `git pull` çalışmayacak (2026-08-10)
+
+Uzak geçmiş yeniden yazıldı. Gün 1 render commit'i `e6b44cd` → **`fd3dabb`**
+oldu. **Ağaç birebir aynı, tek bir dosya bile değişmedi**; commit mesajının
+sonundaki bir satır kaldırıldı, o kadar. Yazar (`quanvon
+<von3dstudio@gmail.com>`) ve tarih korundu — katkı hâlâ Zeynep'in.
+
+Hash değiştiği için `git pull` merge çıkarır. Doğrusu:
+
+```bash
+# Push'lanmamış işin YOKSA
+git fetch origin && git reset --hard origin/main
+```
+
+```bash
+# Push'lanmamış işin VARSA — önce sakla, yoksa emeğin uçar
+git stash
+git fetch origin && git reset --hard origin/main
+git stash pop
+```
+
+Emin değilsen kontrol et: `git log origin/main..HEAD --oneline` boş çıkıyorsa
+push'lanmamış işin yok, doğrudan `reset --hard` güvenli.
+
+Senkron sonrası doğrulama:
+
+```bash
+npm install
+npm run fetch:assets   # model + ORT runtime gitignore'lı, yeniden indirilir (~120 MB)
+npm run verify         # sözleşme testleri geçmeli
+npm run dev
+```
+
+### Render katmanını doğrudan etkileyen iki şey
+
+1. **`positionTexture`'ın z bileşeni artık orijine ortalı** (−1..+1, eskiden
+   0..+2). 0..1 aralığı isteyen shader `pos.z / POINTS_DEPTH_RANGE + 0.5`
+   yazar. Gerekçe aşağıda, "Point cloud yanlış merkez etrafında dönüyordu".
+2. **`grainPass.ts` başlangıç uniform değerleri değişti** — senin dosyan.
+   Kasıtlıysa tek commit'le geri alınır; shader mantığına dokunulmadı. Tablo
+   aşağıda, "Render katmanı" başlığında.
+
+### Kırılırsa fark edilmesi zor olan kurallar
+
+Repoya yeni giren (insan veya asistan) bunları bilmeden değiştirmesin:
+
+| Kural | Nerede | Neden |
+|---|---|---|
+| y-flip **yalnızca** texture upload'unda (`flipY = true`) | `src/engine/buffers.ts` | Shader'da veya UV'de ikinci bir flip eklenirse ekran doğru görünür ama depth/optik akış ters çalışır |
+| Model ve ORT runtime **yerel**, CDN yok | `src/depth.ts`, `public/` | Demo günü internet/sürüm kaymasına bağımlı olmamak için; `env.allowRemoteModels = false` |
+| `numThreads = 1` | `src/depth.ts` | Tek thread olduğu için COOP/COEP header'ı gerekmiyor. Çoğaltılırsa header şart olur, embed hedefi kırılır |
+| `optimizeDeps.exclude` listesi | `vite.config.ts` | Çıkarılırsa Vite ön-paketlemesi ORT'un dinamik import'unu yeniden yazar, dev'de 500 döner |
+| Kamera/video yolunda depth modeli **yok** | `src/depth.ts` → `luminanceHeightMap` | Kare başına depth çıkarımı ~400 ms; canlı kamerada imkânsız. Gün 1 kararı, tartışma kapandı |
+| Engine pass içlerine yazmaz | `src/engine/Engine.ts` → `TickablePass` | Her pass `update(time)` sunar, Engine çağırır. Yeni pass'ler (Feedback, ChroAber, Neon) aynı kancayı kullanır |
+| Render modu material değişimiyle olur | `engine.setPointsMaterial(mat)` | `uPositions` uniform'u her point cloud shader'ında **zorunlu** — konumlar oradan okunur |
+
+---
+
 ## 2026-08-10 — Gün 2 hata düzeltmeleri + sözleşme netleşmesi
 
 Gün 2 veri katmanı üzerinden geçildi; render katmanında da bir düzeltme var.
