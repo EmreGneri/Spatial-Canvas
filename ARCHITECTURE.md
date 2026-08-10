@@ -155,7 +155,7 @@ interface ParamDef {
 
 Sahne boru hattının **tek doğruluk kaynağı** graftır (`src/engine/graph.ts`).
 Preset = graf + parametreler; parametreler düğümlerin üstünde durur
-(`node.params`), ikinci bir durum ağacı YOKTUR. UI yok, React Flow kurulmadı.
+(`node.params`), ikinci bir durum ağacı YOKTUR.
 
 ```
 media → depth → particles → renderer → feedback → output
@@ -173,6 +173,29 @@ media → depth → particles → renderer → feedback → output
   aktifliğe göre yeniden kurar ③ düğüm parametrelerini uniform'lara uygular.
   `registerRenderMode(name, material, params)` modları graf için kaydeder;
   ModeSelector'daki doğrudan `setPointsMaterial` takası da adı izler.
+  **Aynı material'ı tekrar takma yasak** (setPointsMaterial eskisini dispose
+  eder; ascii material'ın atlas'ı dispose kancasıyla bırakılırdı) — setGraph
+  yalnızca farklı material'da takas yapar.
+
+## Node Graph UI (Gün 5)
+
+`src/ui/NodeGraphEditor.tsx` — React Flow (`@xyflow/react`) ile görsel
+düzenleyici. Editör ayrı durum tutmaz: her değişiklik `engine.setGraph`'e
+gider, düğüm parametreleri graf params'ında yaşar.
+
+- 6 düğüm sabit kurulur (düğüm silme v1'de yok, yalnızca kenar koparma:
+  kenar seç + Backspace/Delete veya kaynaktan çekerek başka hedefe taşıma).
+- **Kablo çek → pass kapanır:** feedback düğümünün giriş kenarı kopunca
+  `setGraph` post-pass'i composer'dan çıkarır; geri takılınca döner.
+- Seçili düğümün parametre paneli `ParamDef` listesinden üretilir (isim
+  bilmez): sayı → slider, renk → color input, renderer → mod düğmeleri
+  (points/ascii), media → kaynak türü salt-okunur (medya gömülmez).
+- Düğüm konumları yalnızca UI'dır — graf şemasına YAZILMAZ, preset'te yoktur.
+- Graf motor dışından kurulduğunda (preset yükleme) `graphTick` prop'u ile
+  editör tazelenir; düğüm seçimi sıfırlanır.
+- Bilinen sınırlar: ascii karakter seti (setCharSet API'si) editörde
+  düzenlenmez; ModeSelector'dan yapılan mod takası editörün renderer
+  düğümüne yansımaz (kayıtta toPreset doğru değeri yazar).
 
 ## Preset Şeması v1 (Gün 4)
 

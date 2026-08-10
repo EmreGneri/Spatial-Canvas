@@ -221,8 +221,16 @@ export class Engine {
       if (node.type === 'renderer') {
         const mode = String(node.params.mode ?? this.renderModeName);
         const entry = this.renderModes.get(mode);
-        if (entry) this.setPointsMaterial(entry.material);
-        else warnings.push(`render modu bilinmiyor: '${mode}' (graf modu korunur)`);
+        // Aynı material'ı TEKRAR takma: setPointsMaterial eskisini dispose
+        // eder — ascii material atlas'ını dispose kancasıyla bıraktığı için
+        // kendi material'ının atlas'ı silinir, mod ekranda kaybolurdu.
+        if (entry && entry.material !== this.pointsMaterial) {
+          this.setPointsMaterial(entry.material);
+        } else if (entry) {
+          this.renderModeName = mode;
+        } else {
+          warnings.push(`render modu bilinmiyor: '${mode}' (graf modu korunur)`);
+        }
       }
     }
     const feedbackActive = graph.nodes.some((n) => n.type === 'feedback' && active.has(n.id));

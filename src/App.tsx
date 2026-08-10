@@ -5,6 +5,7 @@ import { ControlPanel } from './ui/ControlPanel';
 import { createPointCloudMaterial, POINTS_PARAMS } from './shaders/pointCloudMaterial';
 import { createAsciiMaterial, ASCII_PARAMS } from './shaders/asciiMaterial';
 import { ModeSelector, type RenderMode } from './ui/ModeSelector';
+import { NodeGraphEditor } from './ui/NodeGraphEditor';
 import {
   applyPreset,
   deleteSlot,
@@ -34,6 +35,8 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [cameraOn, setCameraOn] = useState(false);
   const [fps, setFps] = useState(0);
+  /** Editör dışından graf kurulduğunda (preset yükleme) editörü tazele. */
+  const [graphTick, setGraphTick] = useState(0);
 
   useEffect(() => {
     const engine = new Engine(containerRef.current!);
@@ -242,7 +245,8 @@ export default function App() {
         style={{ width: 640, height: 420, border: '1px solid #222', background: '#000' }}
       />
       {engine && <ModeSelector engine={engine} materials={materials} mode={mode} onChange={setMode} />}
-      {engine && <PresetControls engine={engine} say={say} />}
+      {engine && <NodeGraphEditor engine={engine} graphTick={graphTick} />}
+      {engine && <PresetControls engine={engine} say={say} onGraphChanged={() => setGraphTick((t) => t + 1)} />}
       {engine && <ForceControls engine={engine} />}
       <pre style={{ margin: 0, color: '#8ab', whiteSpace: 'pre-wrap' }}>{log.join('\n')}</pre>
       {engine && (
@@ -267,7 +271,15 @@ export default function App() {
  * kaydet → sayfayı yenile → yükle = sahne birebir geri gelir (kamera dahil).
  * Dosya indirme/yükleme yok; isimli localStorage slotları, sürüm 1.
  */
-function PresetControls({ engine, say }: { engine: Engine; say: (line: string) => void }) {
+function PresetControls({
+  engine,
+  say,
+  onGraphChanged,
+}: {
+  engine: Engine;
+  say: (line: string) => void;
+  onGraphChanged: () => void;
+}) {
   const [name, setName] = useState('');
   const [slots, setSlots] = useState<string[]>(() => listSlots());
 
@@ -291,6 +303,7 @@ function PresetControls({ engine, say }: { engine: Engine; say: (line: string) =
       const { applied, warnings } = applyPreset(engine, preset);
       say(`preset yüklendi: "${n}" · aktif düğümler: ${applied.length} (${[...applied].join(', ')})`);
       for (const w of warnings) say(`  uyarı: ${w}`);
+      onGraphChanged();
     } catch (err) {
       say(`preset HATA: ${err instanceof Error ? err.message : String(err)}`);
     }
