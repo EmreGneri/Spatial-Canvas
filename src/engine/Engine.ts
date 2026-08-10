@@ -77,6 +77,10 @@ export class Engine {
   private renderModeName = 'points';
   /** Feedback düğümü aktifken true — grain pass'in composer'daki varlığı. */
   private postPassEnabled = true;
+  /** Grain pass kapatılırken zincirdeki yeri — geri açılınca aynı yere döner. */
+  private grainPassIndex = 1;
+  /** Aktif material'ı Engine mi üretti? Yalnızca öyleyse dispose eder. */
+  private ownsPointsMaterial = true;
 
   constructor(container: HTMLElement) {
     this.renderer = new THREE.WebGLRenderer({ antialias: false });
@@ -147,9 +151,21 @@ export class Engine {
     for (const pass of passes) pass.update?.(time);
   }
 
-  /** Render modları (Zeynep) kendi point cloud shader'ını buraya takar. */
+  /**
+   * Render modları (Zeynep) kendi point cloud shader'ını buraya takar.
+   *
+   * SAHİPLİK KURALI: Engine yalnızca KENDİ ürettiği yer tutucuyu dispose eder.
+   * Dışarıdan gelen material'lar (App'te bir kez üretilip mod takasında ileri
+   * geri kullanılanlar) çağıranın malıdır. Aksi halde points → ascii → points
+   * dizisinde her takas bir sonraki takasta gereken material'ı yok eder:
+   * ASCII'nin dispose kancası karakter atlasını da bırakır, shader her
+   * seferinde yeniden derlenir.
+   */
   setPointsMaterial(material: THREE.Material) {
-    this.pointsMaterial.dispose();
+    if (this.ownsPointsMaterial && this.pointsMaterial !== material) {
+      this.pointsMaterial.dispose();
+    }
+    this.ownsPointsMaterial = false;
     this.pointsMaterial = material;
     this.points.material = material;
     // Registry'deki adı yakala — ModeSelector doğrudan takas edince de
@@ -257,8 +273,12 @@ export class Engine {
     this.postPassEnabled = enabled;
     const index = this.composer.passes.indexOf(this.grainPass);
     if (enabled && index === -1) {
-      this.composer.addPass(this.grainPass);
+      // addPass zincirin SONUNA ekler. Zeynep'in feedback/chroma/neon pass'leri
+      // geldiğinde grain kapatılıp açılınca sıranın sonuna düşerdi; kapatırken
+      // not edilen yere geri konuyor.
+      this.composer.insertPass(this.grainPass, this.grainPassIndex);
     } else if (!enabled && index !== -1) {
+      this.grainPassIndex = index;
       this.composer.removePass(this.grainPass);
     }
   }
@@ -370,7 +390,10 @@ export class Engine {
     this.homeTexture.dispose();
     this.simulation.dispose();
     this.points.geometry.dispose();
-    this.pointsMaterial.dispose();
+    // Kayıtlı material'lar çağıranın malı (App useMemo ile üretir ve bırakır);
+    // burada dispose edilirse React StrictMode'un çift mount'unda ikinci
+    // engine ölü material'la açılır.
+    if (this.ownsPointsMaterial) this.pointsMaterial.dispose();
     this.renderer.dispose();
     this.renderer.domElement.remove();
   }

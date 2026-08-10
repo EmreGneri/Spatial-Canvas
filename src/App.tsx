@@ -55,8 +55,8 @@ export default function App() {
     return () => {
       clearInterval(fpsTimer);
       teardownSource();
-      // engine.dispose() yalnızca o an takılı material'ı bırakır; takılı
-      // olmayan mod ekranda hiç görünmediyse de GPU kaynağı tutar.
+      // Sahiplik: bu material'lar burada üretildi, burada bırakılır.
+      // Engine yalnızca kendi yer tutucusunu dispose eder (Engine.setPointsMaterial).
       engine.dispose();
       materials.points.dispose();
       materials.ascii.dispose();

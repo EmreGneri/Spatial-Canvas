@@ -69,6 +69,39 @@ Repoya yeni giren (insan veya asistan) bunları bilmeden değiştirmesin:
 
 ## 2026-08-10 — Gün 3: GPGPU parçacık simülasyonu (Emre)
 
+## 2026-08-10 — Gün 4 gözden geçirmesi: material sahipliği
+
+Gün 4'te render modları bir kayıt defterine (`renderModes`) taşındı ve
+material'lar App'te `useMemo` ile **bir kez** üretilip mod takasında ileri geri
+kullanılmaya başlandı. `Engine.setPointsMaterial` ise Gün 2'den beri giden
+material'ı dispose ediyordu — o zaman doğruydu (giden şey Engine'in kendi yer
+tutucusuydu), Gün 4'ten sonra değil.
+
+Sonuç: `points → ascii → points` dizisinde her takas, bir sonraki takasta
+gereken material'ı yok ediyordu. ASCII'nin `dispose` kancası karakter atlasını
+da bıraktığı için atlas her dönüşte yeniden rasterleştiriliyor, shader'lar
+yeniden derleniyordu. `ModeSelector`'daki "aynı moda tıklama" koruması da
+aslında bu davranışın bir sonucuydu (aynı material hem dispose edilip hem
+takılırdı).
+
+**Sahiplik kuralı yazıldı:** Engine yalnızca **kendi ürettiği** yer tutucuyu
+dispose eder. Dışarıdan gelen material çağıranın malıdır — App onları unmount'ta
+bırakır. `Engine.dispose()` de artık kayıtlı material'a dokunmuyor (StrictMode'un
+çift mount'unda ikinci engine ölü material'la açılıyordu).
+
+Yanında üç küçük düzeltme:
+
+| Sorun | Sonucu | Düzeltme |
+|---|---|---|
+| `applyPreset` `mediaType`'ı preset'ten yazıyordu | Medya geri yüklenmediği için motor yalan söylüyordu: ekranda sentetik görsel dururken kaynak türü `camera` görünüyor, sonraki kayıt yanlış türü yazıyordu | Kopyalanmıyor; fark varsa uyarı |
+| `setPostPassEnabled` grain'i `addPass` ile geri koyuyordu | Zeynep'in feedback/chroma/neon pass'leri geldiğinde kapat-aç sonrası grain zincirin sonuna düşecekti | Kapatırken indeks not ediliyor, `insertPass` ile aynı yere dönüyor |
+| `saveSlot` `setItem`'ı korumasız çağırıyordu | Kota dolu veya gizli modda kaydetme uygulamayı düşürürdü | `try/catch`, `false` döner |
+
+`verify-preset.mjs` eski `mediaType` davranışını doğruluyordu; yeni sözleşmeye
+çekildi (tür ezilmiyor, tek medya uyarısı bekleniyor).
+
+---
+
 ## Render katmanına — Gün 3 sonrası durum
 
 Gün 3'te veri katmanı tamamen `src/engine/` içinde kaldı; `src/shaders/` ve
