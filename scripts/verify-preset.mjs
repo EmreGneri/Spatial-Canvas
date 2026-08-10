@@ -101,14 +101,20 @@ assert.equal(renderer.params.uNearColor, '#ff4400', 'renk hex olarak serileştir
 // --- 2. applyPreset sahneyi birebir geri kurar ---
 const b = makeStub('b'); // farklı varsayılanlarla dolu hedef
 const { applied, warnings } = applyPreset(b, preset);
-assert.deepEqual(warnings, [], `uyarısız açılmalı: ${JSON.stringify(warnings)}`);
+// Preset 'upload' ile kaydedilmiş, hedefte 'synthetic' var: medya gömülmediği
+// için tek uyarı beklenir, graf/parametre tarafı sessiz olmalı.
+assert.equal(warnings.length, 1, `yalnızca medya uyarısı beklenir: ${JSON.stringify(warnings)}`);
+assert.match(warnings[0], /medya preset'e gömülmez/);
 assert.equal(applied.length, 6, 'varsayılan grafta 6 düğüm aktif olmalı');
 assert.equal(b.simUniforms.uStiffness.value, 0.21);
 assert.equal(b.simUniforms.uForceMode.value, 2);
 assert.equal(b.pointsUniforms.uPointSize.value, 11);
 assert.equal(b.pointsUniforms.uNearColor.value.getHexString(), 'ff4400');
 assert.deepEqual(b.cameraPose, a.cameraPose, 'kamera geri kurulmalı');
-assert.equal(b.mediaType, 'upload');
+// mediaType KOPYALANMAZ: medya geri yüklenmediği için motorun kaynak türü
+// olduğu gibi kalır, yoksa ekranda sentetik dururken 'upload' yazardı ve bir
+// sonraki kayıt yanlış türü yazardı.
+assert.equal(b.mediaType, 'synthetic', 'preset medya türünü ezmemeli');
 assert.equal(b.currentGraph.nodes.length, 6, 'graf geri kurulmalı');
 
 // --- 3. bilinmeyen alanlar atlasılır, asla patlamaz ---

@@ -114,7 +114,15 @@ export function applyPreset(target: PresetTarget, preset: Preset): ApplyResult {
   const { active, warnings: graphWarnings } = target.setGraph(preset.graph);
   warnings.push(...graphWarnings);
   target.setCameraPose(preset.camera);
-  target.mediaType = preset.mediaType;
+  // mediaType KOPYALANMAZ. Medya geri yüklenmiyor (şema gereği gömülmüyor), o
+  // yüzden alanı preset'ten yazmak motoru yalancı duruma sokardı: ekranda
+  // sentetik görsel dururken mediaType 'camera' olur ve bir sonraki kayıt
+  // yanlış türü yazar. Fark varsa yalnızca uyarılır.
+  if (preset.mediaType !== target.mediaType) {
+    warnings.push(
+      `preset '${preset.mediaType}' medyasıyla kaydedilmiş, şu anki kaynak '${target.mediaType}' — medya preset'e gömülmez, görsel korundu`,
+    );
+  }
   return { applied: [...active], warnings };
 }
 
@@ -135,8 +143,12 @@ function storage(): Storage | null {
 export function saveSlot(name: string, preset: Preset): boolean {
   const store = storage();
   if (!store) return false;
-  store.setItem(STORAGE_PREFIX + name, JSON.stringify(preset));
-  return true;
+  try {
+    store.setItem(STORAGE_PREFIX + name, JSON.stringify(preset));
+    return true;
+  } catch {
+    return false; // kota dolu / gizli mod — kaydetmek uygulamayı düşürmesin
+  }
 }
 
 export function loadSlot(name: string): Preset | null {
