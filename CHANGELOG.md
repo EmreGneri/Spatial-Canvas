@@ -91,6 +91,62 @@ Repoya yeni giren (insan veya asistan) bunları bilmeden değiştirmesin:
 
 ## 2026-08-10 — Gün 3: GPGPU parçacık simülasyonu (Emre)
 
+## 2026-08-10 — Gün 5: node graph editörü (Emre)
+
+Gün 4'teki graf veri modelinin görsel düzenleyicisi eklendi
+(`src/ui/NodeGraphEditor.tsx`, React Flow / `@xyflow/react`). Graf hâlâ
+sahnenin **tek doğruluk kaynağı**: editör ayrı bir durum ağacı tutmaz, her
+değişiklik doğrudan `engine.setGraph`'e gider. Yeni UI yazanlar bu kurala
+uysun — parametreleri iki yerde tutmak preset'i yalan duruma sokar.
+
+### Render katmanını doğrudan etkileyen şeyler
+
+1. **`setGraph` artık aynı render material'ını tekrar TAKMIYOR.** Eskiden her
+   graf kurulumu `setPointsMaterial` çağırıyor, o da eskisini dispose ediyordu.
+   Ascii material'ın atlas'ı `dispose` kancasıyla bırakıldığı için ascii modda
+   her graf kurulumu (ör. bir slider'ın her hareketi) atlası silip ekranı
+   boşaltıyordu. Davranış değişmedi: mod farklıysa takas, aynıysa yalnızca ad
+   güncellenir. (Material sahipliği kuralı: Gün 4 gözden geçirmesi — Engine
+   yalnızca kendi yer tutucusunu dispose eder; dışarıdan gelen material
+   çağıranın malıdır.)
+2. **Graf artık görsel: kablo çek → pass gerçekten kapanır.** Feedback
+   düğümünün giriş kenarı kopunca post-pass composer'dan çıkar (bugün
+   grain/vignette), geri takılınca aynı sıraya döner. `insertPass` +
+   `grainPassIndex` (Gün 4 gözden geçirmesi) sayesinde grain kapatılıp açılsa
+   bile zincirdeki yeri korunur — feedback/chromatic aberration/neon pass'leri
+   geldiğinde aynı koruma onların sırası için de geçerli olacak. Zeynep'in
+   pass'leri feedback düğümüne bağlanır; "efekt kaybolur" kanıtı o pass'lerle
+   de gösterilecek.
+3. **Parametre paneli ParamDef listesinden üretilir** — material'ların kendi
+   tanım listelerine (`POINTS_PARAMS`, `ASCII_PARAMS`, `GRAIN_PARAMS`,
+   `SIM_PARAMS`) eklenen her satır editörde otomatik görünür, isim bilmez.
+   Renk → renk seçici, sayı → slider, renderer → points/ascii mod düğmeleri,
+   media → kaynak türü salt-okunur (medya gömülmez, Gün 4 şeması).
+
+### Veri katmanı
+
+- `src/ui/NodeGraphEditor.tsx` (yeni): 6 düğüm sabit kurulur (media · depth ·
+  particles · feedback · renderer · output), kenar bağlama/koparma canlı,
+  düğüm konumları yalnızca UI'dır — graf şemasına yazılmaz, preset'te yoktur.
+- Kenar silme: kenarı seç + Backspace/Delete. Düğüm silme v1'de yok (şemada
+  düğüm seti sabittir; silme istekleri yutulur).
+- Preset yüklendiğinde editör motordan tazelenir (`graphTick` prop'u, App'te
+  PresetControls yükleme sonrası tetikler) — kaydet → yenile → yükle döngüsü
+  editör durumunu da geri getirir.
+- Bilinen sınırlar: ascii karakter seti (setCharSet API'si) editörde
+  düzenlenmez; ModeSelector'dan yapılan mod takası editörün renderer
+  düğümüne anlık yansımaz (kayıt anında `toPreset` doğru modu yazar).
+- `src/engine/params.ts`, `graph.ts`, `preset.ts` mantığı değişmedi; yalnızca
+  `setGraph`'teki material takası guard'ı eklendi.
+
+### Doğrulama
+
+`npm run verify` ✓ · `npm run typecheck` ✓ · `npm run build` ✓
+Dev server HTTP 200 · chunk >500 kB uyarısı Gün 6'ya not (code-split).
+Tarayıcı kanıtı: kablo çek → grain kaybolur, parametre slider'ları canlı,
+preset kaydet → yenile → yükle (kamera dahil) — Gün 5'in elle doğrulama
+adımı, henüz yapılmadı.
+
 ## 2026-08-10 — Gün 4 gözden geçirmesi: material sahipliği
 
 Gün 4'te render modları bir kayıt defterine (`renderModes`) taşındı ve
