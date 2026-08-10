@@ -2,9 +2,18 @@ import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { estimateDepth, loadDepthModel, luminanceHeightMap } from './depth';
 import { Engine } from './engine';
 import { ControlPanel } from './ui/ControlPanel';
-import { createPointCloudMaterial } from './shaders/pointCloudMaterial';
-import { createAsciiMaterial } from './shaders/asciiMaterial';
+import { createPointCloudMaterial, POINTS_PARAMS } from './shaders/pointCloudMaterial';
+import { createAsciiMaterial, ASCII_PARAMS } from './shaders/asciiMaterial';
 import { ModeSelector, type RenderMode } from './ui/ModeSelector';
+import {
+  applyPreset,
+  deleteSlot,
+  listSlots,
+  loadSlot,
+  PRESET_VERSION,
+  saveSlot,
+  toPreset,
+} from './engine/preset';
 
 export default function App() {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -32,6 +41,9 @@ export default function App() {
     setEngine(engine);
     // Render katmanının shader'ı yer tutucunun yerine geçer (başlangıç modu).
     // Engine yer tutucuyu dispose eder; uPositions'ı her karede o yazar.
+    // Modların parametre tanımları da kaydedilir — preset serileştirmesi bunları okur.
+    engine.registerRenderMode('points', materials.points, POINTS_PARAMS);
+    engine.registerRenderMode('ascii', materials.ascii, ASCII_PARAMS);
     engine.setPointsMaterial(materials.points);
     const textureType = engine.simTextureLabel;
     setLog((prev) => [
@@ -143,6 +155,7 @@ export default function App() {
       videoRef.current = video;
       await video.play();
       setCameraOn(true);
+      engineRef.current!.mediaType = 'camera';
       startLuminanceLoop(video, 'kamera (model yok)');
       say('kamera açık · canlı luminance height map');
     } catch (err) {
@@ -162,6 +175,7 @@ export default function App() {
       video.loop = true;
       video.src = url;
       videoRef.current = video;
+      engineRef.current!.mediaType = 'upload';
       await video.play();
       say(`video yüklendi · ${file.name} · luminance yolu (model yok)`);
       startLuminanceLoop(video, 'video');
@@ -169,6 +183,7 @@ export default function App() {
       teardownSource(); // canlı döngü varsa dursun, tek kare depth'e geç
       setCameraOn(false);
       const url = URL.createObjectURL(file);
+      engineRef.current!.mediaType = 'upload';
       try {
         await run(await loadImage(url));
       } finally {
@@ -189,6 +204,7 @@ export default function App() {
           onClick={() => {
             teardownSource();
             setCameraOn(false);
+            engineRef.current!.mediaType = 'synthetic';
             run(syntheticImage());
           }}
         >
@@ -226,6 +242,7 @@ export default function App() {
         style={{ width: 640, height: 420, border: '1px solid #222', background: '#000' }}
       />
       {engine && <ModeSelector engine={engine} materials={materials} mode={mode} onChange={setMode} />}
+      {engine && <PresetControls engine={engine} say={say} />}
       {engine && <ForceControls engine={engine} />}
       <pre style={{ margin: 0, color: '#8ab', whiteSpace: 'pre-wrap' }}>{log.join('\n')}</pre>
       {engine && (
@@ -245,6 +262,81 @@ export default function App() {
  * Zeynep'in `ui/ControlPanel` paneli render katmanına ait, karıştırma.
  * Slider'lar uniform'a doğrudan yazar; React state yalnızca etiketi tazeler.
  */
+/**
+ * Preset kontrolleri — veri katmanının kendi kolu (Emre). Gün 4:
+ * kaydet → sayfayı yenile → yükle = sahne birebir geri gelir (kamera dahil).
+ * Dosya indirme/yükleme yok; isimli localStorage slotları, sürüm 1.
+ */
+function PresetControls({ engine, say }: { engine: Engine; say: (line: string) => void }) {
+  const [name, setName] = useState('');
+  const [slots, setSlots] = useState<string[]>(() => listSlots());
+
+  const row: CSSProperties = { display: 'flex', gap: 8, alignItems: 'center', fontSize: 12 };
+
+  function save() {
+    const n = name.trim();
+    if (!n) return;
+    const ok = saveSlot(n, toPreset(engine, n));
+    say(ok ? `preset kaydedildi: "${n}" · versiyon ${PRESET_VERSION}` : `preset kaydedilemedi: "${n}" (depolama yok)`);
+    setSlots(listSlots());
+  }
+
+  function load(n: string) {
+    const preset = loadSlot(n);
+    if (!preset) {
+      say(`preset açılamadı: "${n}" (sürüm uyuşmuyor ya da bozuk)`);
+      return;
+    }
+    try {
+      const { applied, warnings } = applyPreset(engine, preset);
+      say(`preset yüklendi: "${n}" · aktif düğümler: ${applied.length} (${[...applied].join(', ')})`);
+      for (const w of warnings) say(`  uyarı: ${w}`);
+    } catch (err) {
+      say(`preset HATA: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  function remove(n: string) {
+    deleteSlot(n);
+    setSlots(listSlots());
+  }
+
+  return (
+    <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap', color: '#889' }}>
+      <span style={{ fontSize: 12 }}>preset:</span>
+      <input
+        value={name}
+        onChange={(e) => setName(e.target.value)}
+        placeholder="slot adı"
+        onKeyDown={(e) => e.key === 'Enter' && save()}
+        style={{ width: 140, fontSize: 12, padding: '3px 6px', background: '#101018', color: '#c8c8d4', border: '1px solid #26262e', borderRadius: 3 }}
+      />
+      <button
+        type="button"
+        onClick={save}
+        style={{ fontSize: 12, padding: '3px 10px', background: '#1a1a22', color: '#c8c8d4', border: '1px solid #26262e', borderRadius: 3, cursor: 'pointer' }}
+      >
+        kaydet
+      </button>
+      {slots.map((n) => (
+        <span key={n} style={{ ...row, gap: 4 }}>
+          <button type="button" onClick={() => load(n)} style={{ fontSize: 12, padding: '3px 10px', background: '#1a1a22', color: '#8ab', border: '1px solid #26262e', borderRadius: 3, cursor: 'pointer' }}>
+            {n}
+          </button>
+          <button
+            type="button"
+            title={`"${n}" slotunu sil`}
+            onClick={() => remove(n)}
+            style={{ fontSize: 10, padding: '2px 6px', background: 'none', color: '#667', border: 'none', cursor: 'pointer' }}
+          >
+            ✕
+          </button>
+        </span>
+      ))}
+    </div>
+  );
+}
+
 const FORCE_MODES = ['itme', 'çekim', 'vortex'];
 
 function ForceControls({ engine }: { engine: Engine }) {

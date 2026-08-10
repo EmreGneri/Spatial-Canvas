@@ -12,6 +12,11 @@ import {
 import { createPointsCloud } from './points';
 import { createSimulation, type SimulationUniforms } from './simulation';
 import { createGrainPass, type GrainPass, type GrainPassUniforms } from '../shaders/grainPass';
+import { SIM_PARAMS } from './simulation';
+import { GRAIN_PARAMS } from '../shaders/grainPass';
+import { applyParams, collectParams, type ParamDef, type ParamValues } from './params';
+import { activeNodes, createDefaultGraph, topologicalOrder, validateGraph, type Graph } from './graph';
+import type { CameraPose, MediaType } from './preset';
 
 const MAX_DPR = 2;
 
@@ -61,6 +66,17 @@ export class Engine {
   private lastFpsSample = 0;
   /** Her saniye güncellenir — FPS geçidi (384 → 256 kararı) buna bakar. */
   fps = 0;
+
+  /** Kaynak türü (preset'e yalnızca bu yazılır; medyanın kendisi asla). */
+  mediaType: MediaType = 'synthetic';
+
+  /** Graf = sahnenin tek doğruluk kaynağı (Gün 4). */
+  private graph: Graph = createDefaultGraph();
+  /** Aktif render modları: ad → { material, parametre tanımları }. */
+  private renderModes = new Map<string, { material: THREE.Material; params: ParamDef[] }>();
+  private renderModeName = 'points';
+  /** Feedback düğümü aktifken true — grain pass'in composer'daki varlığı. */
+  private postPassEnabled = true;
 
   constructor(container: HTMLElement) {
     this.renderer = new THREE.WebGLRenderer({ antialias: false });
@@ -136,11 +152,120 @@ export class Engine {
     this.pointsMaterial.dispose();
     this.pointsMaterial = material;
     this.points.material = material;
+    // Registry'deki adı yakala — ModeSelector doğrudan takas edince de
+    // renderMode güncel kalsın (toPreset bunu yazar).
+    for (const [name, entry] of this.renderModes) {
+      if (entry.material === material) {
+        this.renderModeName = name;
+        break;
+      }
+    }
+  }
+
+  /** Render modunu graf'a kaydeder: ad → material + parametre tanımları. */
+  registerRenderMode(name: string, material: THREE.Material, params: ParamDef[]) {
+    this.renderModes.set(name, { material, params });
+    if (this.pointsMaterial === material) this.renderModeName = name;
+  }
+
+  /** Aktif render modunun adı ('points' | 'ascii'). */
+  get renderMode(): string {
+    return this.renderModeName;
+  }
+
+  /** Aktif modun güncel parametre DEĞERLERİ — preset serileştirmesi için. */
+  activeRenderParams(): ParamValues {
+    const entry = this.renderModes.get(this.renderModeName);
+    if (!entry) return {};
+    const uniforms = (entry.material as THREE.ShaderMaterial).uniforms as Record<
+      string,
+      THREE.IUniform
+    >;
+    return collectParams(entry.params, uniforms);
+  }
+
+  /**
+   * Grafı kurar (Gün 4). Aktiflik media'dan erişilebilirlikle belirlenir:
+   * feedback düğümünün giriş kenarı kesilirse post-pass composer'dan çıkar
+   * (grain/vignette gerçekten kaybolur). Sıra: mod → pass'ler → parametreler.
+   */
+  setGraph(graph: Graph): { active: Set<string>; warnings: string[] } {
+    const warnings: string[] = [];
+    for (const problem of validateGraph(graph)) warnings.push(problem);
+    this.graph = graph;
+    const active = activeNodes(graph);
+    if (active.size === 0) {
+      warnings.push('graf media düğümü içermiyor — hiçbir düğüm aktif değil');
+    }
+    const order = topologicalOrder(graph);
+    for (const id of order) {
+      if (!active.has(id)) continue;
+      const node = graph.nodes.find((n) => n.id === id);
+      if (!node) continue;
+      if (node.type === 'renderer') {
+        const mode = String(node.params.mode ?? this.renderModeName);
+        const entry = this.renderModes.get(mode);
+        if (entry) this.setPointsMaterial(entry.material);
+        else warnings.push(`render modu bilinmiyor: '${mode}' (graf modu korunur)`);
+      }
+    }
+    const feedbackActive = graph.nodes.some((n) => n.type === 'feedback' && active.has(n.id));
+    this.setPostPassEnabled(feedbackActive);
+    for (const id of order) {
+      if (!active.has(id)) continue;
+      const node = graph.nodes.find((n) => n.id === id);
+      if (!node) continue;
+      if (node.type === 'particles') {
+        applyParams(SIM_PARAMS, this.simUniforms, node.params);
+      } else if (node.type === 'feedback') {
+        applyParams(GRAIN_PARAMS, this.grainUniforms, node.params);
+      } else if (node.type === 'renderer') {
+        const entry = this.renderModes.get(this.renderModeName);
+        if (entry) {
+          const uniforms = (entry.material as THREE.ShaderMaterial).uniforms as Record<
+            string,
+            THREE.IUniform
+          >;
+          applyParams(entry.params, uniforms, node.params);
+        }
+      }
+    }
+    return { active, warnings };
+  }
+
+  get currentGraph(): Graph {
+    return this.graph;
+  }
+
+  /** Kamera duruşu — preset'e yazılır / preset'ten geri kurulur. */
+  getCameraPose(): CameraPose {
+    const p = this.camera.position;
+    const t = this.controls.target;
+    return {
+      position: [p.x, p.y, p.z],
+      target: [t.x, t.y, t.z],
+    };
+  }
+
+  setCameraPose(pose: CameraPose) {
+    this.camera.position.set(...pose.position);
+    this.controls.target.set(...pose.target);
+  }
+
+  private setPostPassEnabled(enabled: boolean) {
+    if (enabled === this.postPassEnabled) return;
+    this.postPassEnabled = enabled;
+    const index = this.composer.passes.indexOf(this.grainPass);
+    if (enabled && index === -1) {
+      this.composer.addPass(this.grainPass);
+    } else if (!enabled && index !== -1) {
+      this.composer.removePass(this.grainPass);
+    }
   }
 
   /** Simülasyon uniform'ları — UI/ayar için (yay, sönüm, fare kuvveti). */
-  get simUniforms(): SimulationUniforms {
-    return this.simulation.uniforms;
+  get simUniforms(): SimulationUniforms & Record<string, THREE.IUniform> {
+    return this.simulation.uniforms as SimulationUniforms & Record<string, THREE.IUniform>;
   }
 
   /** Depth sözleşmesi: R32F, 0=uzak/1=yakın, satır 0 = üst. Flip yalnızca burada. */
@@ -178,8 +303,8 @@ export class Engine {
   }
 
   /** UI grain/vignette uniform'larına buradan yazar; render döngüsüne dokunmaz. */
-  get grainUniforms(): GrainPassUniforms {
-    return this.grainPass.uniforms;
+  get grainUniforms(): GrainPassUniforms & Record<string, THREE.IUniform> {
+    return this.grainPass.uniforms as GrainPassUniforms & Record<string, THREE.IUniform>;
   }
 
   get positionCount() {
@@ -237,6 +362,9 @@ export class Engine {
     this.renderer.setAnimationLoop(null);
     this.resizeObserver.disconnect();
     this.controls.dispose();
+    // Post-pass devre dışıyken composer'da değildir; composer.dispose() onu
+    // görmez, GPU kaynağı bırakılmaz. Tek seferlik kurum gereği iki yol da.
+    if (this.composer.passes.indexOf(this.grainPass) === -1) this.grainPass.dispose();
     this.composer.dispose(); // pass'lerin render target'ları — yoksa remount'ta GPU sızıntısı
     this.currentDepthTexture?.dispose();
     this.homeTexture.dispose();

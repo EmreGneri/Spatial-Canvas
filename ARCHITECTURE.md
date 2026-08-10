@@ -104,6 +104,8 @@ Simülasyon uniform'ları `engine.simUniforms` ile okunur (UI Gün 4).
 ## Pass Zinciri (Render Katmanı)
 
 Sahip: **Zeynep**. Sıra ve composer Engine'de (`src/engine/Engine.ts`).
+Gün 4'ten itibaren zincir GRAFTAN kurulur: feedback düğümü aktifse
+grain/vignette composer'a eklenir, değilse çıkar (`Engine.setPostPassEnabled`).
 
 ```
 RenderPass (point cloud sahnesi) → Grain/Vignette → [Zeynep: Feedback → Chromatic Aberration → Neon Wireframe] → Output
@@ -124,25 +126,94 @@ RenderPass (point cloud sahnesi) → Grain/Vignette → [Zeynep: Feedback → Ch
 - Çıktı aynı `DepthResult` sözleşmesi: 0..1, satır 0 = üst. Engine'de mode
   ayrımı yok — tek `setDepth` girişi.
 
-## Preset Şeması (taslak, Gün 4'te dolar)
+## Render Parametre Sözleşmesi (Gün 4)
+
+Her material/pass KENDİ parametre tanımını dışa verir (`src/engine/params.ts`):
+
+```ts
+interface ParamDef {
+  key: string;          // uniform adı (uStiffness gibi)
+  label: string;        // UI etiketi
+  min?: number; max?: number;
+  default: number;
+  kind?: 'number' | 'color';  // varsayılan 'number'; renk '#rrggbb' olarak serileşir
+}
+```
+
+- Tanımlar sahiplerinin dosyasında durur: `SIM_PARAMS` (simulation.ts), `GRAIN_PARAMS`
+  (grainPass.ts), `POINTS_PARAMS` (pointCloudMaterial.ts), `ASCII_PARAMS` (asciiMaterial.ts).
+- Serileştirme (`preset.ts`) uniform adlarını bilmez — liste yürür, o kadar.
+  **Yeni uniform eklemek = listeye satır eklemek.** Listeye satır eklemeyen yeni
+  uniform preset'e girmez (kural, CHANGELOG'a yazılır).
+- Hesaplanan değerler (uTime, uResolution, uPositions, uAtlas/uCharSet) ve API
+  kontrolleri (ascii charSet → renderer düğümü params'ına string olarak) listede
+  YOKTUR.
+- `applyParams` bilinmeyen anahtarı ve tür uyuşmazlığını ATLAR, asla çökmez:
+  Zeynep bir uniform'u silerse eski preset'ler sorunsuz açılır.
+
+## Node Graph (Gün 4)
+
+Sahne boru hattının **tek doğruluk kaynağı** graftır (`src/engine/graph.ts`).
+Preset = graf + parametreler; parametreler düğümlerin üstünde durur
+(`node.params`), ikinci bir durum ağacı YOKTUR. UI yok, React Flow kurulmadı.
+
+```
+media → depth → particles → renderer → feedback → output
+```
+
+- 6 düğüm tipi: `media` (tür: synthetic|upload|camera; medya gömülmez),
+  `depth`, `particles` (SIM_PARAMS), `feedback` (post-pass zinciri — bugün
+  grain/vignette; Zeynep'in feedback/chroaber/neon'u bu düğüme eklenir),
+  `renderer` (mode + aktif material'ın parametreleri), `output`.
+- Kenar = veri akışı. **Aktiflik = media'dan erişilebilirlik**: feedback
+  düğümünün giriş kenarı kesilirse post-pass composer'dan çıkar, grain/vignette
+  gerçekten kaybolur (Engine.setGraph). Çevrimler (feedback) kural dışı değil:
+  topolojik sıra (Kahn) çözülmeyenleri sona ekler.
+- Engine: `setGraph(graph)` sırayla ① renderer modunu kurar ② composer'ı
+  aktifliğe göre yeniden kurar ③ düğüm parametrelerini uniform'lara uygular.
+  `registerRenderMode(name, material, params)` modları graf için kaydeder;
+  ModeSelector'daki doğrudan `setPointsMaterial` takası da adı izler.
+
+## Preset Şeması v1 (Gün 4)
 
 ```json
 {
   "version": 1,
-  "name": "preset adı",
-  "nodes": [
-    { "type": "media",     "params": {} },
-    { "type": "depth",     "params": {} },
-    { "type": "particles", "params": {} },
-    { "type": "feedback",  "params": {} },
-    { "type": "renderer",  "params": {} },
-    { "type": "output",    "params": {} }
-  ]
+  "name": "slot adı",
+  "mediaType": "synthetic | upload | camera",
+  "gridSize": 384,
+  "camera": { "position": [0, 0, 3.5], "target": [0, 0, 0] },
+  "graph": {
+    "nodes": [
+      { "id": "media",     "type": "media",     "params": {} },
+      { "id": "depth",     "type": "depth",     "params": {} },
+      { "id": "particles", "type": "particles", "params": { "uStiffness": 0.08, "uForceMode": 0, "..." : "..." } },
+      { "id": "renderer",  "type": "renderer",  "params": { "mode": "points", "uPointSize": 6, "..." : "..." } },
+      { "id": "feedback",  "type": "feedback",  "params": { "uGrainAmount": 0.06, "uVignette": 0.45, "..." : "..." } },
+      { "id": "output",    "type": "output",    "params": {} }
+    ],
+    "edges": [
+      { "from": "media", "to": "depth" },
+      { "from": "depth", "to": "particles" },
+      { "from": "particles", "to": "renderer" },
+      { "from": "renderer", "to": "feedback" },
+      { "from": "feedback", "to": "output" }
+    ]
+  }
 }
 ```
 
-Serileştirme `src/engine/` altında (Emre), parametre spec'leri render moduyla
-birlikte (Zeynep).
+- `src/engine/preset.ts`: `toPreset(source)` anlık durumu düğüm params'ına
+  tazeler; `applyPreset(target, json)` grafı kurar + kamerayı geri kor.
+- **Sürüm kararı:** yalnızca `version === 1` açılır. Bilinmeyen sürüm hata
+  döner, sahneye dokunulmaz. Bilinmeyen alanlar atlasılır (yukarıdaki kural).
+- Kayıt: isimli localStorage slotları (`spatial-canvas.preset.<ad>`). Dosya
+  indirme/yükleme Gün 6.
+- gridSize kayıt anındaki ızgara; farklıysa uyarı verir, ızgara çalışma
+  zamanında değişmez.
+- Kanıt testi (GPU'suz): `node scripts/verify-preset.mjs` — sahte engine ile
+  round-trip, sürüm koruması, bilinmeyen alan toleransı, graf aktifliği.
+  Node'un uzantısız import sorunu `scripts/ts-extension-loader.mjs` ile çözülür.
 
 ## Model ve Runtime
 

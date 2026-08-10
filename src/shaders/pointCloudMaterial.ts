@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { POINTS_DEPTH_RANGE } from '../engine/buffers';
+import type { ParamDef } from '../engine/params';
 
 /**
  * POINT CLOUD MATERIAL — render katmanı. Sahiplik: Zeynep.
@@ -37,6 +38,20 @@ export interface PointCloudMaterialUniforms {
   /** 0..3 — genel parlaklık çarpanı */
   uBrightness: { value: number };
 }
+
+/**
+ * Parametre sözleşmesi (Gün 4): point cloud modunun preset'e giren kolları.
+ * Renkler hex olarak serileştirilir (kind: 'color'). uPositions hesaplanır,
+ * kullanıcı kolu değil — yok.
+ */
+export const POINTS_PARAMS: ParamDef[] = [
+  { key: 'uPointSize', label: 'nokta boyutu', min: 2, max: 20, default: 6 },
+  { key: 'uSizeJitter', label: 'boyut saçılması', min: 0, max: 1, default: 0.3 },
+  { key: 'uNearColor', label: 'yakın rengi', min: 0, max: 1, default: 0, kind: 'color' },
+  { key: 'uFarColor', label: 'uzak rengi', min: 0, max: 1, default: 0, kind: 'color' },
+  { key: 'uSoftness', label: 'yumuşaklık', min: 0, max: 1, default: 0.5 },
+  { key: 'uBrightness', label: 'parlaklık', min: 0, max: 3, default: 1 },
+];
 
 /** ShaderMaterial, uniform'ları tipli görünsün diye daraltılmış. */
 export type PointCloudMaterial = THREE.ShaderMaterial & {

@@ -1,5 +1,6 @@
 import { Vector2, type Texture } from 'three';
 import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
+import type { ParamDef } from '../engine/params';
 
 /**
  * PASS ZİNCİRİ — render katmanının kalbi. Sahiplik: Zeynep.
@@ -30,6 +31,18 @@ export interface GrainPassUniforms {
   /** drawing buffer boyutu (piksel) — resize'da güncellenir */
   uResolution: { value: Vector2 };
 }
+
+/**
+ * Parametre sözleşmesi (Gün 4): grain/vignette pass'inin preset'e giren
+ * kolları. uTime ve uResolution hesaplanır, kullanıcı kolu değil — yoklar.
+ */
+export const GRAIN_PARAMS: ParamDef[] = [
+  { key: 'uGrainAmount', label: 'grain', min: 0, max: 0.3, default: 0.06 },
+  { key: 'uGrainSpeed', label: 'grain hızı', min: 0, max: 5, default: 1 },
+  { key: 'uVignette', label: 'vignette', min: 0, max: 1.5, default: 0.45 },
+  { key: 'uContrast', label: 'kontrast', min: 0.5, max: 2, default: 1.05 },
+  { key: 'uSaturation', label: 'doygunluk', min: 0, max: 1.5, default: 1 },
+];
 
 /** ShaderPass, uniform'ları tipli görünsün diye daraltılmış. */
 export type GrainPass = ShaderPass & {
