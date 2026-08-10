@@ -9,3 +9,5 @@ public/ort
 
 # Graphify outputs — regenerate with /graphify
 graphify-out
+
+dev-smoke.*
