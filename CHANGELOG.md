@@ -5,6 +5,28 @@ En yeni üstte.
 
 ---
 
+## KURAL: git geçmişinde AI izi YOK (herkes, her commit)
+
+Bu reponun git geçmişi ve commit mesajları **hiçbir AI izi taşımaz**. İş
+asistanla yapılsa bile iz, "insan yazdı" gibi görünür. Neden: repo ve içerik
+(içerik üretim boru hattının parçası) yayına gidiyor; AI atfı herhangi bir
+yerde görünürse proje itibarını kaybeder ve bu kural kapanır.
+
+- Commit mesajında (başlık ve gövde) AI/Claude/assistant/opencode sözcüğü
+  **yok**. Mesaj yalnızca ne + neden, örn. `day 4: preset schema v1, node
+  graph model, render param contract`.
+- `Co-authored-by:` veya herhangi bir imza satırı (Claude, opencode, tool adı)
+  **asla eklenmez**. Yazar alanı yalnızca insan: Emre `<emregneri01@gmail.com>`
+  veya Zeynep.
+- CHANGELOG/ARCHITECTURE/README'de "AI yazdı", "asistan ekledi" gibi ifadeler
+  **yok**. Sahiplik katman düzeyinde yazılır (`(Emre)` / render katmanı) — bu
+  ekip içi iş bölümüdür, iz değildir.
+- AI üretimi kodda yorum olarak imzalanmaz ("şu AI'a soruldu" vb.).
+- Kural bozulursa geçmiş yeniden yazılır (bu repo Gün 1'de bunu bir kez
+  yaptı): iz taşıyan commit amend + force-push ile temizlenir.
+
+---
+
 ## ÖNCE BUNU OKU — ilk senkronda `git pull` çalışmaz (2026-08-10)
 
 **Bu tek seferliktir.** Aşağıdaki `reset --hard`'ı bir kez yaptıysan bundan
