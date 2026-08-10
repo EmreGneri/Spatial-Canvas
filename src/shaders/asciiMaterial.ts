@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { POINTS_DEPTH_RANGE } from '../engine/buffers';
+import type { ParamDef } from '../engine/params';
 
 /**
  * ASCII MATERIAL — render katmanı, ikinci render modu. Sahiplik: Zeynep.
@@ -64,6 +65,22 @@ export interface AsciiMaterialUniforms {
   /** 0..1 — 0 = saf derinlik haritası, 1 = karakterler tohuma göre karışık */
   uCharRandom: { value: number };
 }
+
+/**
+ * Parametre sözleşmesi (Gün 4): ascii modunun preset'e giren kolları.
+ * uAtlas/uCharSet uniform değil API'dir (setCharSet) — burada yoklar;
+ * aktif karakter seti (charSet) preset'e string olarak renderer düğümünün
+ * params'ında gider, setCharSet ile geri yüklenir.
+ */
+export const ASCII_PARAMS: ParamDef[] = [
+  { key: 'uPointSize', label: 'karakter boyutu', min: 8, max: 40, default: 16 },
+  { key: 'uSizeJitter', label: 'boyut saçılması', min: 0, max: 1, default: 0 },
+  { key: 'uColor', label: 'karakter rengi', min: 0, max: 1, default: 0, kind: 'color' },
+  { key: 'uBgColor', label: 'dolgu rengi', min: 0, max: 1, default: 0, kind: 'color' },
+  { key: 'uBgOpacity', label: 'dolgu opaklığı', min: 0, max: 1, default: 0 },
+  { key: 'uDepthBias', label: 'derinlik kayması', min: -0.5, max: 0.5, default: 0 },
+  { key: 'uCharRandom', label: 'karakter rastgeleliği', min: 0, max: 1, default: 0 },
+];
 
 /** ShaderMaterial, uniform'ları tipli görünsün ve atlas takası kapsansın diye. */
 export type AsciiMaterial = THREE.ShaderMaterial & {

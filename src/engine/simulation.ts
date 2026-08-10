@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { POSITION_TEXTURE_SIZE } from './buffers';
+import type { ParamDef } from './params';
 
 /**
  * GPGPU parçacık simülasyonu (Gün 3 — Emre).
@@ -39,6 +40,19 @@ export interface SimulationUniforms extends Record<string, THREE.IUniform> {
   uMouseWorld: { value: THREE.Vector2 };
   uMouseActive: { value: number };
 }
+
+/**
+ * Parametre sözleşmesi (Gün 4): simülasyonun preset'e giren kolları.
+ * Aralıklar ForceControls'daki slider'larla birebir; bu liste tek kaynak.
+ */
+export const SIM_PARAMS: ParamDef[] = [
+  { key: 'uStiffness', label: 'yay', min: 0.01, max: 0.3, default: 0.08 },
+  { key: 'uDamping', label: 'sönüm', min: 0.8, max: 1, default: 0.9 },
+  { key: 'uRestLength', label: 'ölü bölge', min: 0, max: 0.02, default: 0.005 },
+  { key: 'uForceMode', label: 'kuvvet modu', min: 0, max: 2, default: 0 },
+  { key: 'uForceRadius', label: 'kuvvet yarıçapı', min: 0.05, max: 1, default: 0.35 },
+  { key: 'uForceStrength', label: 'kuvvet şiddeti', min: 0, max: 0.1, default: 0.02 },
+];
 
 const SIM_VERTEX = /* glsl */ `
   varying vec2 vUv;
