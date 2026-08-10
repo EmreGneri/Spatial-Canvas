@@ -1,7 +1,10 @@
-import { useEffect, useRef, useState, type CSSProperties } from 'react';
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { estimateDepth, loadDepthModel, luminanceHeightMap } from './depth';
 import { Engine } from './engine';
 import { ControlPanel } from './ui/ControlPanel';
+import { createPointCloudMaterial } from './shaders/pointCloudMaterial';
+import { createAsciiMaterial } from './shaders/asciiMaterial';
+import { ModeSelector, type RenderMode } from './ui/ModeSelector';
 
 export default function App() {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -11,6 +14,13 @@ export default function App() {
   const timerRef = useRef<number | null>(null);
   const objectUrlRef = useRef<string | null>(null);
   const [engine, setEngine] = useState<Engine | null>(null);
+  const [mode, setMode] = useState<RenderMode>('points');
+  // Render modu material'ları BİR KEZ üretilir; mod değişiminde yalnızca takas
+  // edilir. Atlas rasterleştirmesi (ASCII) her tıkta tekrarlanmasın.
+  const materials = useMemo(
+    () => ({ points: createPointCloudMaterial(), ascii: createAsciiMaterial() }),
+    [],
+  );
   const [log, setLog] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [cameraOn, setCameraOn] = useState(false);
@@ -20,19 +30,27 @@ export default function App() {
     const engine = new Engine(containerRef.current!);
     engineRef.current = engine;
     setEngine(engine);
+    // Render katmanının shader'ı yer tutucunun yerine geçer (başlangıç modu).
+    // Engine yer tutucuyu dispose eder; uPositions'ı her karede o yazar.
+    engine.setPointsMaterial(materials.points);
     const textureType = engine.simTextureLabel;
     setLog((prev) => [
       ...prev,
       `engine hazır · ${engine.positionCount.toLocaleString('tr-TR')} parçacık slotu · sim RT: ${textureType} · sürükle-döndür`,
+      'point cloud material → shaders/pointCloudMaterial (soft particle, additive)',
     ]);
     const fpsTimer = window.setInterval(() => setFps(engine.fps), 1000);
     return () => {
       clearInterval(fpsTimer);
       teardownSource();
+      // engine.dispose() yalnızca o an takılı material'ı bırakır; takılı
+      // olmayan mod ekranda hiç görünmediyse de GPU kaynağı tutar.
       engine.dispose();
+      materials.points.dispose();
+      materials.ascii.dispose();
       setEngine(null);
     };
-  }, []);
+  }, [materials]);
 
   const say = (line: string) => setLog((prev) => [...prev, line]);
 
@@ -207,9 +225,17 @@ export default function App() {
         }}
         style={{ width: 640, height: 420, border: '1px solid #222', background: '#000' }}
       />
+      {engine && <ModeSelector engine={engine} materials={materials} mode={mode} onChange={setMode} />}
       {engine && <ForceControls engine={engine} />}
       <pre style={{ margin: 0, color: '#8ab', whiteSpace: 'pre-wrap' }}>{log.join('\n')}</pre>
-      {engine && <ControlPanel uniforms={engine.grainUniforms} />}
+      {engine && (
+        <ControlPanel
+          grain={engine.grainUniforms}
+          points={materials.points}
+          ascii={materials.ascii}
+          mode={mode}
+        />
+      )}
     </div>
   );
 }
