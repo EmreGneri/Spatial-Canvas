@@ -5,6 +5,7 @@ import { Engine } from './engine';
 import { ControlPanel } from './ui/ControlPanel';
 import { createPointCloudMaterial, POINTS_PARAMS } from './shaders/pointCloudMaterial';
 import { createAsciiMaterial, ASCII_PARAMS } from './shaders/asciiMaterial';
+import { createNeonWireMaterial, NEON_PARAMS } from './shaders/neonWireMaterial';
 import { ModeSelector, type RenderMode } from './ui/ModeSelector';
 import { NodeGraphEditor } from './ui/NodeGraphEditor';
 import {
@@ -36,7 +37,11 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
   // Render modu material'ları BİR KEZ üretilir; mod değişiminde yalnızca takas
   // edilir. Atlas rasterleştirmesi (ASCII) her tıkta tekrarlanmasın.
   const materials = useMemo(
-    () => ({ points: createPointCloudMaterial(), ascii: createAsciiMaterial() }),
+    () => ({
+      points: createPointCloudMaterial(),
+      ascii: createAsciiMaterial(),
+      neon: createNeonWireMaterial(),
+    }),
     [],
   );
   const [log, setLog] = useState<string[]>([]);
@@ -63,6 +68,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
     // Modların parametre tanımları da kaydedilir — preset serileştirmesi bunları okur.
     engine.registerRenderMode('points', materials.points, POINTS_PARAMS);
     engine.registerRenderMode('ascii', materials.ascii, ASCII_PARAMS);
+    engine.registerRenderMode('neon', materials.neon, NEON_PARAMS);
     engine.setPointsMaterial(materials.points);
     const textureType = engine.simTextureLabel;
     setLog((prev) => [
@@ -79,11 +85,21 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
       engine.dispose();
       materials.points.dispose();
       materials.ascii.dispose();
+      materials.neon.dispose();
       setEngine(null);
     };
   }, [materials]);
 
   const say = (line: string) => setLog((prev) => [...prev, line]);
+
+  /**
+   * Neon modu depth haritasını kendi vertex shader'ında Sobel'liyor, ama Engine
+   * yalnızca uPositions'ı yazıyor — depth'i biz bağlıyoruz. setDepth() boyut
+   * değişince YENİ bir texture üretiyor, o yüzden her çağrıdan sonra tazelenir.
+   */
+  function pushDepthToNeon() {
+    materials.neon.setDepthTexture(engineRef.current?.depthTexture ?? null);
+  }
 
   function clearTimer() {
     if (timerRef.current !== null) {
@@ -151,6 +167,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
       // çağrıyı yapmaz → shader'lar derinlik rampasına düşer.
       engineRef.current!.setPhoto(source);
       engineRef.current!.setDepth(depth.data, depth.width, depth.height, mask, maskW, maskH);
+      pushDepthToNeon();
       say('depth → engine · point cloud konumları positionTexture\'dan okunur');
     } catch (err) {
       say(`HATA: ${err instanceof Error ? err.message : String(err)}`);
@@ -188,6 +205,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
         prev = new Float32Array(data); // ilk kare / yeni boyut: ham + kopya
       }
       engineRef.current!.setDepth(data, hm.width, hm.height);
+      pushDepthToNeon();
       if (performance.now() - lastLog > 2000) {
         lastLog = performance.now();
         say(`luminance · ${label} · ${Math.round(performance.now() - t0)} ms`);
@@ -236,6 +254,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
       say(`nesne ayırma (RMBG)      ${Math.round(performance.now() - t2)} ms  (${seg.width}x${seg.height})`);
       const d = lastDepthRef.current;
       engineRef.current!.setDepth(d.data, d.width, d.height, seg.mask, seg.width, seg.height);
+      pushDepthToNeon(); // maske silueti değiştirir → neon kenarları tazelenmeli
       maskLoadedRef.current = true;
     } catch (err) {
       say(`HATA nesne ayırma: ${err instanceof Error ? err.message : String(err)}`);
@@ -390,6 +409,11 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
           grain={engine.grainUniforms}
           points={materials.points}
           ascii={materials.ascii}
+          neon={materials.neon}
+          setMode={(next) => {
+            engine.setPointsMaterial(materials[next]);
+            setMode(next);
+          }}
           mode={mode}
         />
       )}
