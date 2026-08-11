@@ -89,6 +89,111 @@ Repoya yeni giren (insan veya asistan) bunları bilmeden değiştirmesin:
 
 ---
 
+## 2026-08-11 — Tek buffer fg+bg, fotoğraf rengi, canlı nesne ayırma (Emre)
+
+Fotoğraf yolundaki üç fazlı iş. Kalıcı sözleşme değişikliği tek ve önemli: **`w`
+kanalı artık tohum değil, opaklık** (aşağıda "Sözleşme değişikliği"). Render
+katmanını doğrudan ilgilendiren özet en altta, "Render katmanına" başlığında.
+
+### Faz 1 — Arka plan katmanı ve maske yumuşatma
+
+Şikayetler: `image_9121d4.jpg`'de özne arkasındaki siyah boşluk point cloud'da
+perde/çanak olarak görünüyordu; `image_917391.jpg`'de RMBG < 0.5 hataları yüz/el
+bölgelerinde delik açıyordu; özne arka kenarında ön plan dökümü vardı.
+
+- `silhouette.ts`: `MASK_DILATE_RADIUS = 4`, `MASK_FEATHER_RADIUS = 2` +
+  `dilateAndFeatherMask` (minMaxPass max ×2, sonra boxBlur). Dilate maske kendi
+  çözünürlüğünde (1024²) uygulanır; uzak arka plan hâlâ 0 kalır (perde koruması
+  sürer), yalnızca özne İÇİNDEKİ RMBG hataları kapanır. Tur 9 kuralları
+  (minCoreSize %10, geometri kuralları) korundu.
+- `sampler.ts`: `THIN_SHELL_Z = 0.05`, `THIN_SHELL_PX = 3` — özne arka kenar
+  bandındaki (dPx ≤ 3) döküntüler `zFront − 0.05`'e itilir (ince kabuk sırt
+  kapağı).
+- Bu fazda arka plan ayrı katman olarak başlamıştı (`sampleBackdropPositions` +
+  push-pull piramit `inpaintBackgroundDepth` + ayrı `backdropTexture`/Points/
+  renderOrder 0-1/`onBeforeRender` uPositions takası) — **Faz 2'de tamamen
+  kaldırıldı**, gerekli değildi. Kalıcı olan yalnızca maske yumuşatma + ince
+  kabuktur.
+
+### Faz 2 — Tek buffer + orijinal fotoğraf rengi (sözleşme değişikliği)
+
+**`w` kanalı sözleşmesi değişti.** Gün 3'teki "w'de rastgele tohum var, simülasyon
+boyunca korunur" notu **geçersiz**. Home texture doldurulurken w artık iki
+seviyeli **opaklık** yazılır: `1` = ön plan, `BACKDROP_OPACITY (0.4)` = arka
+plan. Ara değer yok. Simülasyon w'yi aynen kopyalar (kimliği korunur), ama
+parçacığın "rastgeleliği" artık w'den okunamaz. Shader'larda w'yi seed yerine
+opaklık olarak kullanın.
+
+- **Ölü texel kaldırıldı:** siluet dışındaki her texel gerçek bir arka plan
+  noktası taşır: `z = (d−0.5)·range − BACKDROP_Z_PIN (0.15)` (arka sınıra
+  kırpılır, öznenin derinliğinden her zaman ≥ 0.05 geride), `w = 0.4`. Inpaint
+  gereksizdi — arka plan texelleri zaten fotoğrafın gerçek arka plan
+  pikselleri. Silinen API'ler: `sampleBackdropPositions`, `inpaintBackgroundDepth`,
+  `sampleLevel`, `createBackdropTexture`, `fillBackdropFromDepth`,
+  `BACKDROP_Z_PUSH` (0.04). Arka plan katmanı/material takası/renderOrder
+  pipe'ı da silindi — artık **tek** position texture, tek pass.
+- **Fotoğraf rengi (`uImageTexture`):** önem-tabanlı örnekleme
+  (`buildImportanceRemap`) texel eşlemesini büktüğü için fotoğraf GPU'ya ham
+  bind edilmez. Renkler konumlarla AYNI remap üzerinden CPU'da 384² RGBA8 grid'e
+  yeniden örneklenir (`sampleImageGrid`, bilinear `sampleBilinearRgb`) — texel
+  (i,j) hem konumda hem renkte aynı pikseli gösterir. Engine'de
+  `imageColorTexture` (`createImageColorTexture`: RGBA8, `SRGBColorSpace`,
+  `flipY = true`, NearestFilter), `setPhoto(source)` ve `setDepth` sıra
+  bağımsız (ikisi de hangi sırayla çağrılırsa çağrılsın doldurur).
+- Shader sözleşmesi: `uHasImage > 0.5` → `texture2D(uImageTexture, vUv).rgb`;
+  değilse (kamera/video yolu) → derinlik rampası (ascii'de `uColor/uBgColor`).
+  ASCII modunda glif RENK + hücre dolgu RENGİ ikisi de o fotoğraf grid'inden
+  gelir (şeffaflık aynı grid'deki grid şeffaflığıdır).
+
+### Faz 3 — Video doku temizliği ve canlı kontroller
+
+- `Engine.releasePhoto()`: yeni görsel yüklendiğinde eski renk grid'i dispose
+  edilir (GPU önbellek sızması yok). `setVideoSource(video|null)`: canlı
+  `THREE.VideoTexture` (sRGB, Nearest, mipmap yok); render döngüsünde
+  `videoTexture.needsUpdate = true` her karede yazılır; `teardownSource`
+  her kaynak değişiminde `setVideoSource(null)` çağırır. `dispose` video
+  dokusunu da bırakır.
+- `Engine.pushSharedUniforms(material)` — tek kapı: `uImageTexture`
+  (video ?? fotoğraf grid'i), `uHasImage`, `uObjectSeparation`,
+  `uUseTextureColor`. `setPointsMaterial`/`setPhoto` bunu kullanır; yeni
+  shared uniform'lar yalnızca buraya eklenir.
+- Shader (point cloud + ascii, iki material'da da): `uObjectSeparation > 0.5 &&
+  vOpacity < 0.5` → `discard` (nesne ayırma: yalnızca özne); `uObjectSeparation
+  < 0.5 && vOpacity < 0.5` → `col *= 0.4` (arka plan karartması, parlak duvar
+  büstü yutmasın). Renk: `uHasImage > 0.5 && uUseTextureColor > 0.5` → doku;
+  aksi halde rampa. `uUseTextureColor` varsayılan 1 — uygulamadaki "orijinal
+  renkler" checkbox'ı.
+- `App.tsx`: `toggleSegment` artık canlı `engine.setObjectSeparation` bağlar;
+  maske üretilmemişken açılırsa fotoğraf hâlâ eldeyse RMBG yeniden çalıştırılır
+  (`lastPhotoRef`/`lastDepthRef`/`maskLoadedRef` — `run()` bunları saklar).
+
+### Render katmanına (kodu devralan için özet)
+
+- Material yapıcıları bu uniform'ları tanımlar (başlangıç değerleriyle),
+  DEĞERLERİ Engine yazar: `uImageTexture`, `uHasImage`, `uObjectSeparation`,
+  `uUseTextureColor`, paylaşılan eskiler (`uPositions` zorunlu, `uDepthRange`
+  vb.). Vertex'te `vUv = aUv` olmalı — fotoğraf rengi o UV'den okunur.
+- `uPositions` artık tek texture (takas/renderOrder yok). `w` = opaklık
+  (1 / 0.4), tohum değil.
+- Nokta boyutu/renk/titreme gibi efektler w'den "rastgelelik" alamaz; istiyorsa
+  vertex shader'da aUv tabanlı deterministik varyasyon üretsin.
+- Kamera/video yolu `uHasImage = 0` — rampa; video RENK ler canlı
+  VideoTexture'dan gelir (kare başına CPU grid örneklemesi yok); luminance
+  yolundaki önem remap'inden ince kenar kayması görülebilir, fotoğraf yolu CPU
+  grid'iyle birebir hizalıdır.
+
+### Doğrulama
+
+`npm run verify` ✓ (7 script: positions, depth, preset, volume, sampler, seg,
+curtain — Gün 2'deki "iki script" notu eskidi), `npm run typecheck` ✓,
+`npm run build` ✓.
+
+Gerçek görsel (`thumbnail.jpg`, 720×720): 46526 ön plan / 100930 arka plan
+texel, 28216 texel z ≤ −0.9 (uzak duvar PIN tabanına sabitlenmiş), kütle
+merkezi Δ 0.025, renk grid'i 4 texelde bağımsız bilinear okumayla birebir.
+
+---
+
 ## 2026-08-11 — Fotoğraf→3D kalite paketi (Emre)
 
 Fotoğraf → depth → point cloud zincirindeki dört darboğaz düzeltildi.
