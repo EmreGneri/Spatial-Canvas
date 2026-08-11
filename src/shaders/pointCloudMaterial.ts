@@ -37,6 +37,13 @@ export interface PointCloudMaterialUniforms {
   uPointSize: { value: number };
   /** 0..1 — aUv hash tohumuyla boyut saçılması; 0 = hepsi eşit boyutta */
   uSizeJitter: { value: number };
+  /**
+   * 0..1 — Z hacmi. Ön plan parçacıkları tohumlarına göre kendi ön yüzeyleri
+   * ile sabit arka düzlem (z = −0.5) arasına dağıtılır; 0 = kapalı (yalnızca
+   * ön yüzey, eski 2.5D görünüm), 1 = arka düzleme kadar dolu blok.
+   * Veri katmanı yan duvar üretmiyor (volume.ts) — hacim burada doğuyor.
+   */
+  uExtrusionDepth: { value: number };
   /** derinlik rampasının yakın ucu (z = +1) */
   uNearColor: { value: THREE.Color };
   /** derinlik rampasının uzak ucu (z = −1) */
@@ -78,6 +85,7 @@ export interface PointCloudMaterialUniforms {
 export const POINTS_PARAMS: ParamDef[] = [
   { key: 'uPointSize', label: 'nokta boyutu', min: 2, max: 20, default: 6 },
   { key: 'uSizeJitter', label: 'boyut saçılması', min: 0, max: 1, default: 0.3 },
+  { key: 'uExtrusionDepth', label: 'Extrusion Depth', min: 0, max: 1, default: 0 },
   { key: 'uNearColor', label: 'yakın rengi', min: 0, max: 1, default: 0, kind: 'color' },
   { key: 'uFarColor', label: 'uzak rengi', min: 0, max: 1, default: 0, kind: 'color' },
   { key: 'uSoftness', label: 'yumuşaklık', min: 0, max: 1, default: 0.5 },
@@ -93,12 +101,22 @@ const VERTEX = /* glsl */ `
   uniform sampler2D uPositions;
   uniform float uPointSize;
   uniform float uSizeJitter;
+  uniform float uExtrusionDepth;
 
   attribute vec2 aUv;
 
   varying vec2 vUv;
   varying float vDepth;
   varying float vOpacity;
+  varying float vExtrusion;
+
+  /**
+   * Hacmin arka sınırı (z, orijine ortalı −1..+1 uzayında). Parçacıklar ön
+   * yüzeyleriyle bu düzlem arasına dağıtılır; veri katmanı yalnızca ön yüzey
+   * + ince kabuk üretiyor (volume.ts: "KAPALI MESH / SIDE-WALL ÜRETMEZ"),
+   * yan duvarlar bu yüzden render tarafında doğuyor.
+   */
+  const float BACK_PLANE_Z = -0.5;
 
   void main() {
     vec4 pos = texture2D(uPositions, aUv);
@@ -115,9 +133,29 @@ const VERTEX = /* glsl */ `
     vOpacity = clamp(pos.w, 0.0, 1.0);
 
     // Tohum artık aUv hash'i: parçacık başına sabit, 0..1, boyut saçılması.
+    // DİKKAT: pos.w BURADA KULLANILAMAZ — o opaklık ve yalnızca iki değeri var
+    // (1 / 0.4). Onunla dağıtım yapılsaydı blok değil iki ince levha çıkardı.
     float seed = fract(sin(aUv.x * 12.9898 + aUv.y * 78.233) * 43758.5453);
 
-    vec4 mv = modelViewMatrix * vec4(pos.xyz, 1.0);
+    // -- Z HACMİ: ön yüzeyden arka düzleme kesintisiz dolgu --
+    // Parçacık, tohumuna göre kendi ön yüzeyi ile BACK_PLANE_Z arasında bir
+    // yere oturur. Tohum parçacık başına sabit olduğu için nokta karede
+    // titremez; grid boyunca düzgün dağıldığı için ara mesafeler dolar ve
+    // profilden bakınca yüzey değil KATI bir kesit görünür.
+    //
+    // Yalnızca ön plana uygulanır (w >= 0.5): arka plan noktaları veri
+    // katmanının koyduğu duvardır, onları öne çekmek duvarı bulanıklaştırır.
+    float extrude = seed * uExtrusionDepth * step(0.5, vOpacity);
+
+    // Hedef ASLA parçacığın önüne düşmez: zaten arka düzlemden geride olan bir
+    // parçacık (siluet kenarındaki döküm) öne çekilmesin diye min() ile kırpılır.
+    float backZ = min(pos.z, BACK_PLANE_Z);
+    float z = mix(pos.z, backZ, extrude);
+
+    // Fragment gölgelemesi bu değeri okur: 0 = ön yüzey, büyüdükçe içeri.
+    vExtrusion = extrude;
+
+    vec4 mv = modelViewMatrix * vec4(pos.xy, z, 1.0);
 
     // Tohumla boyut saçılması. 1 etrafında simetrik: ortalama boyut sabit kalır,
     // uSizeJitter = 0 iken çarpan tam 1 olur (saçılma kapanır).
@@ -144,6 +182,10 @@ const FRAGMENT = /* glsl */ `
   varying vec2 vUv;
   varying float vDepth;
   varying float vOpacity;
+  varying float vExtrusion;
+
+  /** Arka düzleme oturan parçacık bu oranda karartılır (0.5 = %50 koyu). */
+  const float EXTRUSION_SHADE = 0.5;
 
   void main() {
     // Tur 12 (şikayet 4): nesne ayırma AÇIK iken arka plan parçacıkları
@@ -173,6 +215,13 @@ const FRAGMENT = /* glsl */ `
     // Tur 12 (şikayet 4): nesne ayırma KAPALI iken arka plan pikselleri
     // derinlikle karartılır (×0.4) — parlak duvar büstü yutmasın.
     if (uObjectSeparation < 0.5 && vOpacity < 0.5) col *= 0.4;
+
+    // SAHTE GÖLGELENDİRME: içeri itilen parçacık kararır. Yan duvarlar boyunca
+    // ön yüzeyden arkaya doğru sürekli bir gradyan oluşur — hacmi okutan şey
+    // konumdan çok bu; düz renkli bir blok profilden yine yassı görünürdü.
+    // vExtrusion = 0 iken çarpan tam 1: efekt kapalıyken renk hiç değişmez.
+    col *= 1.0 - EXTRUSION_SHADE * vExtrusion;
+
     col *= uBrightness;
 
     // AdditiveBlending (src = SrcAlpha, dst = One): ekrana eklenen katkı
@@ -187,6 +236,8 @@ export function createPointCloudMaterial(): PointCloudMaterial {
     uPositions: { value: null },
     uPointSize: { value: 6 },
     uSizeJitter: { value: 0.3 },
+    // 0 = kapalı: mevcut görünüm ve kayıtlı preset'ler aynen korunur.
+    uExtrusionDepth: { value: 0 },
     uNearColor: { value: new THREE.Color(0.85, 0.95, 1.0) },
     uFarColor: { value: new THREE.Color(0.06, 0.1, 0.28) },
     // Tur 11: fotoğraf bağlanana kadar kapalı — Engine.setPhoto açar.

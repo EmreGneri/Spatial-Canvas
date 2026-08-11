@@ -29,6 +29,7 @@ export const RENDER_PRESET_VERSION = 1;
 export interface PointCloudState {
   uPointSize: number;
   uSizeJitter: number;
+  uExtrusionDepth: number;
   uSoftness: number;
   uBrightness: number;
   uNearColor: string;
@@ -139,6 +140,7 @@ export function serializeRenderState(targets: RenderTargets): RenderState {
     points: {
       uPointSize: p.uPointSize.value,
       uSizeJitter: p.uSizeJitter.value,
+      uExtrusionDepth: p.uExtrusionDepth.value,
       uSoftness: p.uSoftness.value,
       uBrightness: p.uBrightness.value,
       uNearColor: `#${p.uNearColor.value.getHexString()}`,
@@ -215,6 +217,7 @@ export function applyRenderState(
     const p = targets.points.uniforms;
     num(state.points.uPointSize, p.uPointSize);
     num(state.points.uSizeJitter, p.uSizeJitter);
+    num(state.points.uExtrusionDepth, p.uExtrusionDepth);
     num(state.points.uSoftness, p.uSoftness);
     num(state.points.uBrightness, p.uBrightness);
     col(state.points.uNearColor, p.uNearColor);
