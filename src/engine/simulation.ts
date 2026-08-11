@@ -10,10 +10,10 @@ import type { ParamDef } from './params';
  * yazar (CPU yok). Dinlenme konumu = homeTexture (depth'ten doldurulur).
  *
  * Hız nerede duruyor — karar (ARCHITECTURE.md): Verlet tek texture'da
- * imkânsız (w=seed + konum + önceki konum = 7 kanal > RGBA'nın 4'ü). Hız
+ * imkânsız (w=opaklık + konum + önceki konum = 7 kanal > RGBA'nın 4'ü). Hız
  * ping-pong çifti kullanıldı: aynı bellek, tek kuvvet ifadesi, iki pass.
  *
- * Pass'ler: pos pass (konum+hız → yeni konum, seed korunur) ve vel pass
+ * Pass'ler: pos pass (konum+hız → yeni konum, w opaklığı korunur) ve vel pass
  * (yeni hız). Her karede RT'ler değiştirilir (ping-pong).
  */
 
@@ -117,7 +117,7 @@ const POS_FRAGMENT = /* glsl */ `
   uniform sampler2D uPos;
   ${FORCE_GLSL}
   void main() {
-    vec4 cur = texture2D(uPos, vUv); // xyz = konum, w = seed (korunur!)
+    vec4 cur = texture2D(uPos, vUv); // xyz = konum, w = opaklık (korunur!)
     vec3 vel = texture2D(uVel, vUv).xyz;
     vec3 newVel = integrateVelocity(cur.xyz, vel);
     gl_FragColor = vec4(cur.xyz + newVel * uDtScale, cur.w);

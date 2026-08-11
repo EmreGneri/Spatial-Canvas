@@ -28,7 +28,7 @@ Model ve runtime CDN'den gelmez; tamamen yereldir. `public/models` ve `public/or
 | `npm run build` / `preview` | Production build / önizleme |
 | `npm run typecheck` | `tsc --noEmit` |
 | `npm run fetch:assets` | Model + ORT dosyalarını vendor eder |
-| `npm run verify` | Sözleşme kontrolleri: position texture (z ortalı, y-flip, seed) + depth modeli offline |
+| `npm run verify` | Sözleşme kontrolleri: position texture (z ortalı, y-flip, opaklık) + depth modeli offline |
 
 ## Mimari
 

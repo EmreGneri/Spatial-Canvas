@@ -4,8 +4,10 @@ import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
 import {
-  createDepthTexture,
   createHomeTexture,
+  createImageColorTexture,
+  createDepthTexture,
+  fillImageColorTexture,
   fillPositionsFromDepth,
   POSITION_TEXTURE_SIZE,
 } from './buffers';
@@ -16,6 +18,7 @@ import { SIM_PARAMS } from './simulation';
 import { GRAIN_PARAMS } from '../shaders/grainPass';
 import { applyParams, collectParams, type ParamDef, type ParamValues } from './params';
 import { activeNodes, createDefaultGraph, topologicalOrder, validateGraph, type Graph } from './graph';
+import { resampleBilinear } from './reconstruction/silhouette.ts';
 import type { CameraPose, MediaType } from './preset';
 
 const MAX_DPR = 2;
@@ -41,6 +44,43 @@ export class Engine {
   readonly simType: THREE.TextureDataType;
   /** Log için: 'RGBA32F' | 'RGBA16F' */
   readonly simTextureLabel: string;
+
+  /**
+   * GÖRSEL RENK TEXTURE'U (Tur 11): fotoğraf RGB'si, konumlarla aynı grid
+   * eşlemesiyle (sampler.ts sampleImageGrid) buraya yazılır; render
+   * shader'ları uImageTexture adıyla aUv'de okur — her parçacık kendi
+   * fotoğraf pikselinin rengini taşır. Fotoğraf yüklenene kadar null'dur;
+   * material'lar uHasImage = 0 ile derinlik rampasına düşer (kamera/video).
+   */
+  private imageColorTexture: THREE.DataTexture | null = null;
+  /** setPhoto ile alınan fotoğraf pikselleri (0..1, interleaved rgb) — CPU
+   *  örneklemesi için saklanır; GPU tarafı imageColorTexture'tır. */
+  private photoData: Float32Array | null = null;
+  private photoWidth = 0;
+  private photoHeight = 0;
+
+  /**
+   * VİDEO RENK DOKUSU (Tur 12): aktif video kaynağı canlı VideoTexture olarak
+   * uImageTexture'a bağlanır (GPU tarafı, kare kare upload). Konum grid'i
+   * luminanceHeightMap ile aynı oranda örneklediği için aUv ile birebir
+   * hizalıdır. Video yokken null — fotoğraf grid'i (imageColorTexture) geçer.
+   */
+  private videoElement: HTMLVideoElement | null = null;
+  private videoTexture: THREE.VideoTexture | null = null;
+
+  /**
+   * Nesne ayırma (Tur 12 — şikayet 4): AÇIK iken shader'lar arka plan
+   * parçacıklarını (w < 0.5) tamamen atar — ekranda beyaz kağıt/perde kalmaz,
+   * yalnızca büst görünür. KAPALI iken tüm sahne çizilir; arka plan
+   * pikselleri parlayıp özneyi yutmasın diye karartılır (×0.4).
+   */
+  private objectSeparation = false;
+  /**
+   * Renk modu (Tur 12 — şikayet 3): AÇIK (varsayılan) → parçacık rengi
+   * doğrudan görselin RGB dokusundan; KAPALI → dokular yok sayılır, renk
+   * sağ paneldeki Near/Far derinlik gradyanından türetilir.
+   */
+  private useTextureColor = true;
 
   /** EXT_color_buffer_float tespiti — sim RT türü buna göre seçilir. */
   static readonly EXT_COLOR_BUFFER_FLOAT = 'EXT_color_buffer_float';
@@ -135,6 +175,11 @@ export class Engine {
       this.lastFrameTime = time;
       this.simulation.uniforms.uDtScale.value = THREE.MathUtils.clamp(dt * 60, 0.5, 2);
       this.simulation.step();
+      // Tur 12 (şikayet 1): video kaynağı aktifken video dokusu her karede
+      // GPU'ya taşınır — yeni kare yüklendikçe parçacık renkleri canlı kalır.
+      if (this.videoTexture && this.videoElement) {
+        this.videoTexture.needsUpdate = true;
+      }
       // Okunan konum texture'ı her karede değişir (ping-pong) — render
       // katmanının material'ına push edilir (uPositions sözleşmesi).
       const uPositions = (this.pointsMaterial as THREE.ShaderMaterial).uniforms?.['uPositions'];
@@ -168,6 +213,11 @@ export class Engine {
     this.ownsPointsMaterial = false;
     this.pointsMaterial = material;
     this.points.material = material;
+    // Tur 11: tek nokta bulutu, tek draw call — fg + bg aynı uPositions
+    // texture'ında (home) yaşar; material takası yoktur.
+    // Tur 12: yeni material'a tüm ortak render uniform'larını işle
+    // (renk dokusu, nesne ayırma, renk modu).
+    this.pushSharedUniforms(material);
     // Registry'deki adı yakala — ModeSelector doğrudan takas edince de
     // renderMode güncel kalsın (toPreset bunu yazar).
     for (const [name, entry] of this.renderModes) {
@@ -176,6 +226,92 @@ export class Engine {
         break;
       }
     }
+  }
+
+  /**
+   * Kaynak-türünden bağımsız ortak render uniform'larını bir material'a
+   * işler: uImageTexture (fotoğraf grid'i ya da video dokusu), uHasImage,
+   * uObjectSeparation (nesne ayırma), uUseTextureColor (renk modu). Hepsi
+   * Engine'in sahipliğinde; UI/source değişimi buradan tek kapıyla yayılır.
+   */
+  private pushSharedUniforms(material: THREE.Material) {
+    const u = (material as THREE.ShaderMaterial).uniforms as Record<
+      string,
+      THREE.IUniform
+    >;
+    if (!u?.['uImageTexture']) return;
+    const image = this.videoTexture ?? this.imageColorTexture;
+    u['uImageTexture'].value = image;
+    u['uHasImage'].value = image ? 1 : 0;
+    if (u['uObjectSeparation']) {
+      u['uObjectSeparation'].value = this.objectSeparation ? 1 : 0;
+    }
+    if (u['uUseTextureColor']) {
+      u['uUseTextureColor'].value = this.useTextureColor ? 1 : 0;
+    }
+  }
+
+  private pushSharedUniformsAll() {
+    for (const entry of this.renderModes.values()) {
+      this.pushSharedUniforms(entry.material);
+    }
+    this.pushSharedUniforms(this.pointsMaterial);
+  }
+
+  /** Nesne ayırma (Tur 12 — şikayet 4): shader'lara canlı işlenir. */
+  setObjectSeparation(on: boolean) {
+    this.objectSeparation = on;
+    this.pushSharedUniformsAll();
+  }
+
+  /**
+   * Renk modu (Tur 12 — şikayet 3): AÇIK → görsel dokusu; KAPALI → sağ
+   * paneldeki Near/Far derinlik gradyanı. Fotoğraf/video yüklü olup olmaması
+   * fark etmeksizin her iki material'a canlı işlenir.
+   */
+  setUseTextureColor(on: boolean) {
+    this.useTextureColor = on;
+    this.pushSharedUniformsAll();
+  }
+
+  /**
+   * VİDEO KAYNAĞI (Tur 12 — şikayet 1): videoyu canlı VideoTexture olarak
+   * uImageTexture'a bağlar; eski fotoğraf grid'ini ve eski video dokusunu
+   * dispose eder (resim hayaleti kalmaz). null → video dokusu bırakılır
+   * (kamera kapatıldı / kaynak değişti); fotoğraf grid'i varsa onunla devam
+   * edilir, yoksa uHasImage = 0 → shader'lar derinlik rampasına düşer.
+   */
+  setVideoSource(video: HTMLVideoElement | null) {
+    if (video === this.videoElement) return;
+    this.videoTexture?.dispose();
+    this.videoTexture = null;
+    this.videoElement = video;
+    if (video) {
+      // Yeni video geliyor — eski fotoğraf pikselleri hayalet olarak kalmasın.
+      this.releasePhoto();
+      const tex = new THREE.VideoTexture(video);
+      tex.colorSpace = THREE.SRGBColorSpace;
+      tex.minFilter = THREE.NearestFilter;
+      tex.magFilter = THREE.NearestFilter;
+      tex.generateMipmaps = false;
+      this.videoTexture = tex;
+    }
+    this.pushSharedUniformsAll();
+  }
+
+  /**
+   * Fotoğraf renk grid'ini GPU'dan TAMAMEN bırakır (Tur 12 — şikayet 1):
+   * yeni kaynak gelmeden eski uImageTexture dispose edilir, böylece
+   * resim→video geçişinde parçacık renklerinde hayalet kalmaz. Video dokusu
+   * varsa uHasImage yeniden 1 olur; yoksa derinlik rampasına düşülür.
+   */
+  releasePhoto() {
+    this.imageColorTexture?.dispose();
+    this.imageColorTexture = null;
+    this.photoData = null;
+    this.photoWidth = 0;
+    this.photoHeight = 0;
+    this.pushSharedUniformsAll();
   }
 
   /** Render modunu graf'a kaydeder: ad → material + parametre tanımları. */
@@ -297,7 +433,24 @@ export class Engine {
   }
 
   /** Depth sözleşmesi: R32F, 0=uzak/1=yakın, satır 0 = üst. Flip yalnızca burada. */
-  setDepth(data: Float32Array, width: number, height: number) {
+  setDepth(
+    data: Float32Array,
+    width: number,
+    height: number,
+    foregroundMask?: Float32Array,
+    maskWidth?: number,
+    maskHeight?: number,
+  ) {
+    // Nesne maskesi (segmentation.ts) depth ile aynı boyutta değilse (letterbox
+    // yuvarlama farkları) depth boyutuna yeniden örneklenir — siluet AND koşulu
+    // piksel-piksel hizalı yürüsün.
+    let mask: Float32Array | undefined;
+    if (foregroundMask && maskWidth && maskHeight) {
+      mask =
+        maskWidth === width && maskHeight === height
+          ? foregroundMask
+          : resampleBilinear(foregroundMask, maskWidth, maskHeight, width, height);
+    }
     const current = this.currentDepthTexture;
     // Canlı kamera saniyede ~10 kez çağırır; boyut aynıysa texture'ı yeniden
     // ayırmak yerine yerinde güncelle (GPU tahsisi/dispose çöpü olmasın).
@@ -311,7 +464,21 @@ export class Engine {
     // Home'u depth'ten doldur. Tohumlama YALNIZCA ilk seferde: canlı kamera
     // saniyede ~10 kez setDepth çağırır, her seferinde tohumlanırsa konumlar
     // sıfırlanır ve fareyle yapılan deformasyon sürekli silinir.
-    fillPositionsFromDepth(this.homeTexture, data, width, height);
+    fillPositionsFromDepth(this.homeTexture, data, width, height, { foregroundMask: mask });
+    // TUR 11: fotoğraf yüklüyse parçacık renklerini de aynı grid/remap ile
+    // doldur (setPhoto'dan önce setDepth gelirse texture boş kalır — renkler
+    // sonraki setDepth'te yazılır).
+    if (this.photoData) {
+      fillImageColorTexture(
+        this.imageColorTexture!,
+        this.photoData,
+        this.photoWidth,
+        this.photoHeight,
+        data,
+        width,
+        height,
+      );
+    }
     if (this.seeded) {
       this.simulation.setHome(this.homeTexture);
     } else {
@@ -323,6 +490,56 @@ export class Engine {
   /** Renderers read the normalized R32F depth map through this contract. */
   get depthTexture(): THREE.DataTexture | null {
     return this.currentDepthTexture;
+  }
+
+  /**
+   * Fotoğrafı (orijinal RGB) parçacık renklerine bağlar (Tur 11 — görev 1).
+   * `setDepth`'ten ÖNCE çağrılır: pikseller CPU'da saklanır (renk grid'i
+   * depth gelince aynı remap ile doldurulur), RGBA8 grid texture'ı
+   * uImageTexture olarak tüm kayıtlı render material'larına işlenir.
+   * Tur 12 (şikayet 1): eski fotoğraf grid'i önce dispose edilir — yeni
+   * görsel yüklendiğinde GPU'da eski renk önbelleği kalmaz.
+   * Kamera/video yolu setPhoto çağırmaz → video dokusu yoksa uHasImage = 0,
+   * shader'lar varsayılan derinlik rampasına düşer.
+   */
+  setPhoto(source: HTMLCanvasElement | HTMLImageElement) {
+    // Tur 12: eski renk önbelleği tamamen temizlenir (hayalet yok).
+    this.releasePhoto();
+    const width = source instanceof HTMLCanvasElement ? source.width : source.naturalWidth;
+    const height = source instanceof HTMLCanvasElement ? source.height : source.naturalHeight;
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true })!;
+    ctx.drawImage(source, 0, 0);
+    const px = ctx.getImageData(0, 0, width, height).data;
+    const rgb = new Float32Array(width * height * 3);
+    for (let i = 0, k = 0; i < px.length; i += 4, k += 3) {
+      rgb[k] = px[i] / 255;
+      rgb[k + 1] = px[i + 1] / 255;
+      rgb[k + 2] = px[i + 2] / 255;
+    }
+    this.photoData = rgb;
+    this.photoWidth = width;
+    this.photoHeight = height;
+    this.imageColorTexture = createImageColorTexture();
+    // Fotoğraf daha önce depth'le geldiyse (setDepth → setPhoto sırası) renk
+    // grid'ini hemen doldur; yoksa bir sonraki setDepth üstlenir.
+    if (this.currentDepthTexture) {
+      const depth = this.currentDepthTexture.image.data as Float32Array;
+      fillImageColorTexture(
+        this.imageColorTexture,
+        rgb,
+        width,
+        height,
+        depth,
+        this.currentDepthTexture.image.width,
+        this.currentDepthTexture.image.height,
+      );
+    }
+    // Ortak uniform'ları tüm render modlarına işle (gelecekte takılacak
+    // material'lar için setPointsMaterial aynı şeyi yapar).
+    this.pushSharedUniformsAll();
   }
 
   /** Konum texture'ı — artık simülasyonun ping-pong RT texture'ı. */
@@ -396,6 +613,8 @@ export class Engine {
     this.composer.dispose(); // pass'lerin render target'ları — yoksa remount'ta GPU sızıntısı
     this.currentDepthTexture?.dispose();
     this.homeTexture.dispose();
+    this.imageColorTexture?.dispose();
+    this.videoTexture?.dispose();
     this.simulation.dispose();
     this.points.geometry.dispose();
     // Kayıtlı material'lar çağıranın malı (App useMemo ile üretir ve bırakır);

@@ -9,11 +9,12 @@ import type { ParamDef } from '../engine/params';
  *
  * Sözleşme `pointCloudMaterial.ts` ile birebir aynı (ARCHITECTURE.md · Point
  * Cloud Sözleşmesi): konumlar `uPositions` texture'ından okunur, geometri
- * yalnızca `aUv` taşır, z orijine ortalıdır, `w` parçacık tohumudur ve
+ * yalnızca `aUv` taşır, z orijine ortalıdır, `w` parçacık opaklığıdır (α) ve
  * `gl_PointSize` bölmesinde `max(-mv.z, 0.1)` kırpması korunur.
  *
  * Fark: her parçacık daire yerine bir ASCII karakteri çizer. Karakter,
- * parçacığın derinliğine göre seçilir — uzak seyrek, yakın yoğun.
+ * parçacığın derinliğine göre seçilir — uzak seyrek, yakın yoğun. Jitter
+ * tohumu aUv hash'iyle türetilir (w artık tohum taşımaz).
  */
 
 /** Hazır karakter setleri. İlki varsayılan. Hepsi boştan doluya sıralı. */
@@ -52,7 +53,7 @@ export interface AsciiMaterialUniforms {
   uCharSet: { value: number };
   /** 8..40 — karakterler okunabilir kalsın diye noktalardan büyük */
   uPointSize: { value: number };
-  /** 0..1 — w tohumuyla boyut saçılması; 0 = hepsi eşit boyutta */
+  /** 0..1 — aUv hash tohumuyla boyut saçılması; 0 = hepsi eşit boyutta */
   uSizeJitter: { value: number };
   /** karakter rengi */
   uColor: { value: THREE.Color };
@@ -64,6 +65,28 @@ export interface AsciiMaterialUniforms {
   uDepthBias: { value: number };
   /** 0..1 — 0 = saf derinlik haritası, 1 = karakterler tohuma göre karışık */
   uCharRandom: { value: number };
+  /**
+   * Fotoğraf renk texture'ı (Tur 11): konum grid'iyle aynı eşleme (sampler.ts
+   * sampleImageGrid). Değerini Engine.setPhoto yazar; null iken uHasImage =
+   * 0'dır ve uColor/uBgColor kullanılır.
+   */
+  uImageTexture: { value: THREE.Texture | null };
+  /** 0 = fotoğraf yok (uColor/uBgColor), 1 = fotoğraf renkleri açık */
+  uHasImage: { value: number };
+  /**
+   * Nesne ayırma (Tur 12 — şikayet 4): 1 → arka plan parçacıkları (w < 0.5)
+   * tamamen atılır (beyaz kağıt/perde yok, yalnızca büst); 0 → tüm sahne
+   * çizilir ve arka plan pikselleri parlayıp özneyi yutmasın diye karartılır.
+   * Değerini Engine.setObjectSeparation yazar.
+   */
+  uObjectSeparation: { value: number };
+  /**
+   * Renk modu (Tur 12 — şikayet 3): 1 (varsayılan) → karakter ve dolgu
+   * rengi doğrudan görselin RGB dokusundan (uImageTexture); 0 → dokular
+   * yok sayılır, uColor/uBgColor kullanılır. Değerini
+   * Engine.setUseTextureColor yazar.
+   */
+  uUseTextureColor: { value: number };
 }
 
 /**
@@ -135,17 +158,28 @@ const VERTEX = /* glsl */ `
 
   attribute vec2 aUv;
 
+  varying vec2 vUv;
   varying float vDepth;
   varying float vSeed;
+  varying float vOpacity;
 
   void main() {
     vec4 pos = texture2D(uPositions, aUv);
 
+    // Tur 11: renk, konumla aynı texel'i örnekler (uImageTexture grid ile
+    // birebir eşleşir) — karakter kendi fotoğraf pikselinin rengini alır.
+    vUv = aUv;
+
     // z orijin etrafında ortalı (−RANGE/2 .. +RANGE/2) → karakter seçimi için 0..1.
     vDepth = clamp(pos.z / ${POINTS_DEPTH_RANGE.toFixed(1)} + 0.5, 0.0, 1.0);
 
-    // w = parçacık başına sabit tohum (0..1); simülasyon bunu korur.
-    vSeed = pos.w;
+    // w = parçacık opaklığı (α): 1 ön plan, 0.4 arka plan (Tur 11 — tek
+    // buffer). Veri katmanı yazar, simülasyon korur.
+    vOpacity = clamp(pos.w, 0.0, 1.0);
+
+    // Tohum artık aUv hash'i: parçacık başına sabit, 0..1, boyut saçılması
+    // ve karakter rastgeleliği buradan gelir (karakter karede titremez).
+    vSeed = fract(sin(aUv.x * 12.9898 + aUv.y * 78.233) * 43758.5453);
 
     vec4 mv = modelViewMatrix * vec4(pos.xyz, 1.0);
 
@@ -169,13 +203,23 @@ const FRAGMENT = /* glsl */ `
   uniform float uBgOpacity;
   uniform float uDepthBias;
   uniform float uCharRandom;
+  uniform sampler2D uImageTexture;
+  uniform float uHasImage;
+  uniform float uObjectSeparation;
+  uniform float uUseTextureColor;
 
+  varying vec2 vUv;
   varying float vDepth;
   varying float vSeed;
+  varying float vOpacity;
 
   const float ALPHA_CUTOFF = ${ALPHA_CUTOFF};
 
   void main() {
+    // Tur 12 (şikayet 4): nesne ayırma AÇIK iken arka plan parçacıkları
+    // (w = BACKDROP_OPACITY < 0.5) tamamen atılır — yalnızca büst kalır.
+    if (uObjectSeparation > 0.5 && vOpacity < 0.5) discard;
+
     // Derinlikten gelen hücre konumu ile tohumdan gelen rastgele konumun
     // karışımı: uCharRandom = 0 → saf derinlik, 1 → parçacık başına rastgele
     // (tohum sabit olduğu için karakter karede titremez).
@@ -197,10 +241,23 @@ const FRAGMENT = /* glsl */ `
 
     // Karakter, hücre dolgusunun ÜSTÜNE gelir (source-over). Eşiğin altı artık
     // fragment'i atmaz — dolgu varsa hücre yine boyanmalı; yalnızca ikisi de
-    // yoksa atılır.
-    float alpha = glyph + uBgOpacity * (1.0 - glyph);
+    // yoksa atılır. Opaklık (Tur 11): ön plan 1.0, arka plan noktaları 0.4 —
+    // iki katman tek buffer'da, tek draw call.
+    float alpha = (glyph + uBgOpacity * (1.0 - glyph)) * vOpacity;
     if (alpha < 0.001) discard;
-    vec3 col = (uColor * glyph + uBgColor * uBgOpacity * (1.0 - glyph)) / alpha;
+
+    // Renk (Tur 12 — şikayet 3): uUseTextureColor AÇIK ve doku varsa karakter
+    // ve dolgu fotoğrafın/videonun kendi piksel rengini taşır; KAPALI ise
+    // uColor/uBgColor kullanılır.
+    vec3 col;
+    if (uHasImage > 0.5 && uUseTextureColor > 0.5) {
+      col = texture2D(uImageTexture, vUv).rgb;
+    } else {
+      col = (uColor * glyph + uBgColor * uBgOpacity * (1.0 - glyph)) / alpha;
+    }
+    // Tur 12 (şikayet 4): nesne ayırma KAPALI iken arka plan pikselleri
+    // derinlikle karartılır (×0.4) — parlak duvar büstü yutmasın.
+    if (uObjectSeparation < 0.5 && vOpacity < 0.5) col *= 0.4;
 
     gl_FragColor = vec4(col, alpha);
   }
@@ -222,6 +279,13 @@ export function createAsciiMaterial(): AsciiMaterial {
     uBgOpacity: { value: 0 },
     uDepthBias: { value: 0 },
     uCharRandom: { value: 0 },
+    // Tur 11: fotoğraf bağlanana kadar kapalı — Engine.setPhoto açar.
+    uImageTexture: { value: null },
+    uHasImage: { value: 0 },
+    // Tur 12: nesne ayırma kapalı (tüm sahne), renk modu açık (doku) —
+    // değerleri Engine yönetir.
+    uObjectSeparation: { value: 0 },
+    uUseTextureColor: { value: 1 },
   };
 
   const material = new THREE.ShaderMaterial({

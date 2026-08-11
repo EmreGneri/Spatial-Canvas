@@ -18,9 +18,9 @@ Değişiklik tartışılır, yazılır, imzalanır. Sessiz sapma yok.
 | Texture | Format | Boyut | İçerik |
 |---|---|---|---|
 | `depthTexture` | R32F, tek kanal | görsel çözünürlüğü | 0 = uzak, 1 = yakın |
-| `positionTexture` | RGBA32F veya RGBA16F | 384×384 (147.456 parçacık) | xyz = konum (**simülasyon her karede yazar**), w = seed (0..1) |
-| `homeTexture` | RGBA32F | 384×384 | xyz = dinlenme konumu (CPU: depth'ten bir kez), w = seed (0..1) |
+| `positionTexture` | RGBA32F veya RGBA16F | 384×384 (147.456 parçacık) | xyz = konum (**simülasyon her karede yazar**), w = opaklık (α) |
 
+| `homeTexture` | RGBA32F | 384×384 | xyz = dinlenme konumu (CPU: depth'ten bir kez), w = opaklık (α) |
 - **y-flip tek yerde çözülür:** texture upload'u (`src/engine/buffers.ts`, `flipY = true`).
   Sonuç: `v = 1` → görselin **üstü**. Shader'larda, UV'lerde, CPU'da flip **yoktur**.
 - Normalize etmek veri katmanının işi: Zeynep ham veri beklemez, hep 0..1 alır.
@@ -63,7 +63,7 @@ Değişiklik tartışılır, yazılır, imzalanır. Sessiz sapma yok.
 Sahne: tam ekran quad + ortho kamera, ana sahneden ayrı (`src/engine/simulation.ts`).
 
 - **Hızın yeri — karar:** Verlet (konum + önceki konum) tek texture'da
-  imkânsız: `w` = seed (sözleşme) + konum (3) + önceki konum (3) = 7 kanal >
+  imkânsız: `w` = opaklık (sözleşme) + konum (3) + önceki konum (3) = 7 kanal >
   RGBA'nın 4'ü. **Hız ping-pong çifti** kullanıldı (4 RT: konum ×2 + hız ×2) —
   Verlet'le aynı bellek, tek kuvvet ifadesi, iki ayrı pass (pos, vel).
 - **Format:** `EXT_color_buffer_float` varsa RGBA32F, yoksa RGBA16F (yarım
@@ -85,7 +85,10 @@ Sahne: tam ekran quad + ortho kamera, ana sahneden ayrı (`src/engine/simulation
 - **Fare:** hover'da sürekli kuvvet; sol tık OrbitControls'ta kalır. Canvas
   dışında kuvvet sıfır. Ekran konumu → z = 0 düzlemine izdüşüm (kamera
   dönmüşse de doğru — orbit'e dayanıklı).
-- **w (seed) korunur:** sim pos pass'i `cur.w`'yi kopyalar.
+- **w (opaklık) korunur:** sim pos pass'i `cur.w`'yi kopyalar. Değeri veri
+  katmanı yazar (sampler.ts: ön plan maskesi α; 0 = arka plan, gizli).
+- **Jitter tohumu:** render shader'ları tohumu aUv hash'iyle türetir
+  (boyut saçılması / karakter rastgeleliği) — w artık tohum taşımaz.
 
 | Uniform | Anlam | Varsayılan |
 |---|---|---|

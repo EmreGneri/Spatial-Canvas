@@ -12,7 +12,7 @@ env.backends.onnx.wasm!.wasmPaths = import.meta.env.DEV
   : '/ort/';
 env.backends.onnx.wasm!.numThreads = 1; // single-thread => no COOP/COEP headers needed
 
-const MODEL = 'onnx-community/depth-anything-v2-small';
+const MODEL = 'onnx-community/depth-anything-v2-base';
 
 // Depth Anything V2 training resolution. The image processor resizes every
 // input to this square, so we letterbox to the same size: the model then sees
@@ -39,6 +39,37 @@ export type DepthEstimateOptions = {
    * 0 disables the trim.
    */
   percentile?: number;
+  /**
+   * RGB-directed detail strength (λ). The depth model smooths facial detail
+   * (eye sockets, nose, lip lines); the source image's luminance high
+   * frequency brings it back: D_final = D + λ · HighFreq · Mask_fg, where
+   * HighFreq = Luminance − Blur(Luminance) and Mask_fg = smoothstep(0.15, 0.8, D).
+   * 0 disables. Default 0.25 — yüz bölgesindeki detayların z baskınlığı
+   * düşük α kavisinde korunur.
+   */
+  detailStrength?: number;
+  /**
+   * Ön plan ROI derinlik genişletmesi: model yüzü %2-3'lük dar bir aralığa
+   * sıkıştırır (burun ↔ göz çukuru mikro farkları kaybolur). Maskelenmiş ön
+   * planın min/max derinliği alınıp [STRETCH_LO, STRETCH_HI] aralığına
+   * yeniden dağıtılır: D_new = lo + (hi−lo) · (D − Dmin)/(Dmax − Dmin).
+   * Maske ile yumuşak harmanlanır (maske dışına bulaşmaz). false = kapalı.
+   * Varsayılan açık.
+   */
+  foregroundStretch?: boolean;
+  /**
+   * Sobel mikro kabartma (β): yüz bölgesindeki luminance gradyanlarına göre
+   * keskin mikro rölyef enjekte edilir: Z_disp = β · √(Gx² + Gy²) · Mask_fg.
+   * 0 = kapalı. Varsayılan 0.02.
+   */
+  sobelRelief?: number;
+  /**
+   * Dikey dilimlenme yumuşatması: model derinliği sert bant adımları içerir
+   * (yandan bakınca plaka katmanlaşması). Küçük menzilli bilateral bu mikro
+   * sıçramaları yayar; |ΔD| ≫ σ_r olan gerçek kenarlar korunur. false =
+   * kapalı. Varsayılan açık.
+   */
+  depthSmoothing?: boolean;
 };
 
 let estimator: Awaited<ReturnType<typeof pipeline<'depth-estimation'>>> | null = null;
@@ -62,15 +93,23 @@ export async function estimateDepth(
 ): Promise<DepthResult> {
   const model = await loadDepthModel();
   const useLetterbox = (opts.aspect ?? 'letterbox') === 'letterbox';
+  const detailStrength = opts.detailStrength ?? DETAIL_STRENGTH_DEFAULT;
+  const stretchEnabled = opts.foregroundStretch ?? FOREGROUND_STRETCH_DEFAULT;
+  const sobelRelief = opts.sobelRelief ?? SOBEL_RELIEF_DEFAULT;
+  const smoothingEnabled = opts.depthSmoothing ?? DEPTH_SMOOTHING_DEFAULT;
 
   let input: RawImage;
   let rect: { x: number; y: number; w: number; h: number } | null = null;
+  let lumCanvas: HTMLCanvasElement | null = null;
   if (useLetterbox) {
     const lb = letterboxCanvas(source, MODEL_INPUT_SIZE);
     input = await RawImage.fromCanvas(lb.canvas);
     rect = lb;
+    lumCanvas = lb.canvas;
   } else {
-    input = await RawImage.fromCanvas(toCanvas(source));
+    const src = toCanvas(source);
+    input = await RawImage.fromCanvas(src);
+    lumCanvas = scaleCanvasTo(src, MODEL_INPUT_SIZE);
   }
 
   const { predicted_depth } = await model(input);
@@ -79,15 +118,35 @@ export async function estimateDepth(
   let data = predicted_depth.data as Float32Array;
   let outWidth = width;
   let outHeight = height;
+  // Luminance, modelin gördüğü aynı kare uzayında hesaplanır — detay
+  // haritası depth ile birebir hizalı olsun diye (letterbox: kare canvas).
+  let lum: Float32Array | null = null;
+  if (detailStrength > 0) lum = luminanceOf(lumCanvas!);
   if (rect) {
     // The pipeline interpolates the output back to the input (square) size;
     // crop the letterbox frame so padded areas never enter the depth map.
     data = cropDepth(data, width, rect);
+    if (lum) lum = cropDepth(lum, width, rect);
     outWidth = rect.w;
     outHeight = rect.h;
   }
 
   const normalized = normalizeDepth(data, opts.percentile ?? 1);
+  if (smoothingEnabled) {
+    smoothDepthSteps(normalized, outWidth, outHeight);
+  }
+  if (detailStrength > 0 && lum) {
+    applyDetail(normalized, lum, outWidth, outHeight, detailStrength);
+  }
+  // Yüz detay aşamaları aynı ön plan maskesiyle çalışır (smoothstep(0.15, 0.8, D)).
+  const maskFg =
+    stretchEnabled || sobelRelief > 0 ? foregroundMask(normalized, outWidth, outHeight) : null;
+  if (stretchEnabled) {
+    applyForegroundStretch(normalized, maskFg!, outWidth, outHeight);
+  }
+  if (sobelRelief > 0 && lum) {
+    applySobelRelief(normalized, lum, maskFg!, outWidth, outHeight, sobelRelief);
+  }
   return { data: normalized, width: outWidth, height: outHeight };
 }
 
@@ -195,6 +254,241 @@ function normalizeDepth(data: Float32Array, pct: number): Float32Array {
   const s = hi - lo || 1;
   const out = new Float32Array(data.length);
   for (let i = 0; i < data.length; i++) out[i] = Math.min(1, Math.max(0, (data[i] - lo) / s));
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// RGB-directed depth detailing. The depth model smooths facial detail; the
+// source image's luminance high frequency brings it back, masked to the
+// foreground only so the background keeps its flat structure.
+// ---------------------------------------------------------------------------
+
+const DETAIL_STRENGTH_DEFAULT = 0.25;
+const DETAIL_BLUR_RADIUS = 3;
+// Düşük eşik: gölgeli/koyu yüz bölgeleri (göz çukuru, çene altı, siyah saç)
+// da detay/stretch/sobel maskesine girer — yüzey deliği üretmezler.
+const DETAIL_MASK_NEAR = 0.15;
+const DETAIL_MASK_FAR = 0.8;
+
+/** Grayscale luminance of a canvas: Y = 0.299R + 0.587G + 0.114B (0..1). */
+function luminanceOf(canvas: HTMLCanvasElement): Float32Array {
+  const ctx = canvas.getContext('2d')!;
+  const px = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+  const out = new Float32Array(canvas.width * canvas.height);
+  for (let i = 0; i < px.length; i += 4) {
+    out[i / 4] = (0.299 * px[i] + 0.587 * px[i + 1] + 0.114 * px[i + 2]) / 255;
+  }
+  return out;
+}
+
+/** Distort path: scale the source to the model's square so the luminance
+ *  space matches the depth output pixel-for-pixel. */
+function scaleCanvasTo(source: HTMLCanvasElement, size: number): HTMLCanvasElement {
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  canvas.getContext('2d')!.drawImage(source, 0, 0, size, size);
+  return canvas;
+}
+
+/**
+ * D_final = D + λ · (Y − Blur(Y)) · Mask_fg. Applied in-place on the
+ * normalized depth; output stays in 0..1 (contract).
+ */
+function applyDetail(
+  depth: Float32Array,
+  lum: Float32Array,
+  w: number,
+  h: number,
+  lambda: number,
+) {
+  const blur = boxBlur(lum, w, h, DETAIL_BLUR_RADIUS);
+  for (let i = 0; i < depth.length; i++) {
+    const highFreq = lum[i] - blur[i];
+    const mask = smoothstep(DETAIL_MASK_NEAR, DETAIL_MASK_FAR, depth[i]);
+    depth[i] = Math.min(1, Math.max(0, depth[i] + lambda * highFreq * mask));
+  }
+}
+
+/** Separable box blur (x pass then y pass); keeps the kernel small. */
+function boxBlur(src: Float32Array, w: number, h: number, radius: number): Float32Array {
+  const tmp = new Float32Array(src.length);
+  const out = new Float32Array(src.length);
+  const k = radius * 2 + 1;
+  for (let y = 0; y < h; y++) {
+    const row = y * w;
+    for (let x = 0; x < w; x++) {
+      let s = 0;
+      for (let dx = -radius; dx <= radius; dx++) {
+        s += src[row + Math.min(w - 1, Math.max(0, x + dx))];
+      }
+      tmp[row + x] = s / k;
+    }
+  }
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      let s = 0;
+      for (let dy = -radius; dy <= radius; dy++) {
+        s += tmp[Math.min(h - 1, Math.max(0, y + dy)) * w + x];
+      }
+      out[y * w + x] = s / k;
+    }
+  }
+  return out;
+}
+
+/** GLSL-style smoothstep: 0 below e0, 1 above e1, smooth Hermite between. */
+function smoothstep(e0: number, e1: number, x: number): number {
+  const t = Math.min(1, Math.max(0, (x - e0) / (e1 - e0)));
+  return t * t * (3 - 2 * t);
+}
+
+// ---------------------------------------------------------------------------
+// Yüz detay aşamaları (ROI stretch + Sobel mikro kabartma). Depth Anything
+// ön planı dar bir aralığa sıkıştırır; bu iki aşama yüz bölgesindeki mikro
+// derinlik farklarını görünür yapar. Sıra: normalize → detay (λ) → stretch
+// → sobel; böylece Sobel rölyefi stretch'in yeniden dağıtımından etkilenmez.
+// ---------------------------------------------------------------------------
+
+const FOREGROUND_STRETCH_DEFAULT = true;
+const SOBEL_RELIEF_DEFAULT = 0.02;
+/** Stretch hedef aralığı: tam [0,1]'e açmak arka planla çakışırdı. */
+const STRETCH_LO = 0.1;
+const STRETCH_HI = 0.95;
+/** Yumuşatma eşiği: ön plan maskesi bu değerin ALTINDAYSa stretch kapsamı dışı. */
+const STRETCH_MASK_LO = 0.1;
+
+const DEPTH_SMOOTHING_DEFAULT = true;
+const SMOOTH_RADIUS = 1;
+const SMOOTH_SIGMA_S = 1.2;
+const SMOOTH_SIGMA_R = 0.02;
+
+/**
+ * Dikey dilimlenme yumuşatması (hafif bilateral, ayrılabilir: yatay + dikey
+ * geçiş). Uzamsal çekirdek Gauss; derinlik farkı ağırlığı da Gauss —
+ * |ΔD| ≫ σ_r olan gerçek kenarlar (yüz/beden sınırı) korunurken modelin
+ * bant içi sert adımları yayılır. Küçük kernel + küçük σ_r: Sobel mikro
+ * kabartmanın yüksek frekanslı yüz detayları ezilmez. In-place, 0..1
+ * sözleşmesinde kalır.
+ */
+function smoothDepthSteps(depth: Float32Array, w: number, h: number) {
+  const weights: { d: number; g: number }[] = [];
+  for (let dx = -SMOOTH_RADIUS; dx <= SMOOTH_RADIUS; dx++) {
+    weights.push({ d: dx, g: Math.exp(-(dx * dx) / (2 * SMOOTH_SIGMA_S * SMOOTH_SIGMA_S)) });
+  }
+  const tmp = new Float32Array(depth.length);
+  // yatay geçiş → tmp (kenarlar kelepçeli)
+  for (let y = 0; y < h; y++) {
+    const row = y * w;
+    for (let x = 0; x < w; x++) {
+      const c = depth[row + x];
+      let s = 0;
+      let ws = 0;
+      for (const { d, g } of weights) {
+        const xn = Math.min(w - 1, Math.max(0, x + d));
+        const v = depth[row + xn];
+        const rw = g * Math.exp(-((v - c) * (v - c)) / (2 * SMOOTH_SIGMA_R * SMOOTH_SIGMA_R));
+        s += v * rw;
+        ws += rw;
+      }
+      tmp[row + x] = ws > 0 ? s / ws : c;
+    }
+  }
+  // dikey geçiş → depth (kenarlar kelepçeli)
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const c = tmp[y * w + x];
+      let s = 0;
+      let ws = 0;
+      for (const { d, g } of weights) {
+        const yn = Math.min(h - 1, Math.max(0, y + d));
+        const v = tmp[yn * w + x];
+        const rw = g * Math.exp(-((v - c) * (v - c)) / (2 * SMOOTH_SIGMA_R * SMOOTH_SIGMA_R));
+        s += v * rw;
+        ws += rw;
+      }
+      depth[y * w + x] = ws > 0 ? s / ws : c;
+    }
+  }
+}
+
+/** Ön plan maskesi: w_fg = smoothstep(0.15, 0.8, D) — detay maskesiyle aynı. */
+function foregroundMask(depth: Float32Array, w: number, h: number): Float32Array {
+  const out = new Float32Array(depth.length);
+  for (let i = 0; i < depth.length; i++) {
+    out[i] = smoothstep(DETAIL_MASK_NEAR, DETAIL_MASK_FAR, depth[i]);
+  }
+  return out;
+}
+
+/**
+ * Ön plan derinliğini [STRETCH_LO, STRETCH_HI]'e yeniden dağıtır. Min/max
+ * taraması yalnızca M ≥ 0.10 maskesi içinde yapılır (arka plan siluet artığı
+ * hesaba katılmaz); maskeli bölge tek ton ise dokunulmaz. Uygulamada maske
+ * ile yumuşak harman: maske = 1 tam genişletilir, maske = 0 hiç dokunulmaz —
+ * sınırda bıçak kesimi oluşmaz.
+ */
+function applyForegroundStretch(depth: Float32Array, mask: Float32Array, w: number, h: number) {
+  let mn = Infinity;
+  let mx = -Infinity;
+  for (let i = 0; i < depth.length; i++) {
+    if (mask[i] >= STRETCH_MASK_LO) {
+      if (depth[i] < mn) mn = depth[i];
+      if (depth[i] > mx) mx = depth[i];
+    }
+  }
+  const span = mx - mn;
+  if (!(span > 1e-4)) return; // ön plan tek ton → genişletilecek bir şey yok
+  for (let i = 0; i < depth.length; i++) {
+    const m = mask[i];
+    if (m > 0.001) {
+      const stretched = STRETCH_LO + (STRETCH_HI - STRETCH_LO) * ((depth[i] - mn) / span);
+      depth[i] = depth[i] + (stretched - depth[i]) * m;
+    }
+  }
+}
+
+/**
+ * Z_disp = β · √(Gx² + Gy²) · Mask_fg. 3×3 Sobel luminance gradyanları,
+ * kenarlar kelepçeli (clamp-to-edge); sonuç depth'e eklenir (0..1 sözleşmesi
+ * arayan kademede kırpılır).
+ */
+function applySobelRelief(
+  depth: Float32Array,
+  lum: Float32Array,
+  mask: Float32Array,
+  w: number,
+  h: number,
+  beta: number,
+) {
+  const mag = sobelMagnitude(lum, w, h);
+  for (let i = 0; i < depth.length; i++) {
+    depth[i] += beta * mag[i] * mask[i];
+  }
+}
+
+/** Sobel büyüklüğü |G| = √(Gx² + Gy²); clamp-to-edge sınır işlemi. */
+function sobelMagnitude(lum: Float32Array, w: number, h: number): Float32Array {
+  const out = new Float32Array(lum.length);
+  for (let y = 0; y < h; y++) {
+    const ym = Math.max(0, y - 1);
+    const yp = Math.min(h - 1, y + 1);
+    for (let x = 0; x < w; x++) {
+      const xm = Math.max(0, x - 1);
+      const xp = Math.min(w - 1, x + 1);
+      const tl = lum[ym * w + xm];
+      const t = lum[ym * w + x];
+      const tr = lum[ym * w + xp];
+      const l = lum[y * w + xm];
+      const r = lum[y * w + xp];
+      const bl = lum[yp * w + xm];
+      const b = lum[yp * w + x];
+      const br = lum[yp * w + xp];
+      const gx = tr + 2 * r + br - (tl + 2 * l + bl);
+      const gy = bl + 2 * b + br - (tl + 2 * t + tr);
+      out[y * w + x] = Math.sqrt(gx * gx + gy * gy);
+    }
+  }
   return out;
 }
 
