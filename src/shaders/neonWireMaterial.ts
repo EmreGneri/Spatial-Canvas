@@ -43,6 +43,20 @@ export interface NeonWireMaterialUniforms {
   /** çizgi rengi */
   uNeonColor: { value: THREE.Color };
   /**
+   * ORTAK UNIFORM'LAR (Engine sahipli). Engine.pushSharedUniforms bu dördünü
+   * kayıtlı TÜM modlara duck-typing ile yazar; kapı `uImageTexture`'ın
+   * varlığıdır. İsimler diğer iki modla birebir aynı olmak zorunda, yoksa
+   * neon bu yolların dışında kalır ve modlar farklı davranır.
+   */
+  /** Fotoğraf grid'i ya da canlı video dokusu; konum grid'iyle aynı eşleme. */
+  uImageTexture: { value: THREE.Texture | null };
+  /** 0 = doku yok (uNeonColor), 1 = görsel dokusu bağlı */
+  uHasImage: { value: number };
+  /** 1 = arka plan parçacıkları atılır (yalnızca özne), 0 = çizilir ve karartılır */
+  uObjectSeparation: { value: number };
+  /** 1 = renk görselden, 0 = doku yok sayılır ve uNeonColor kullanılır */
+  uUseTextureColor: { value: number };
+  /**
    * 0..1 — parlamanın çapı. Sprite'ı büyütür ve fazla alanı haleye ayırır;
    * 0'da sprite eski boyutunda kalır ve görünüm bu efekt eklenmeden önceki
    * haliyle birebir aynıdır.
@@ -99,6 +113,7 @@ const VERTEX = /* glsl */ `
 
   attribute vec2 aUv;
 
+  varying vec2 vUv;
   varying float vEdge;
   varying float vSeed;
   varying float vOpacity;
@@ -118,6 +133,10 @@ const VERTEX = /* glsl */ `
     // tüm ön plan aynı anda yanıp söner, tüm arka plan aynı tonda kalırdı.
     vSeed = fract(sin(aUv.x * 12.9898 + aUv.y * 78.233) * 43758.5453);
     vOpacity = clamp(pos.w, 0.0, 1.0);
+
+    // Renk, konumla AYNI texel'den okunur: uImageTexture konum grid'iyle
+    // birebir eşlenir (sampler.ts sampleImageGrid), diğer iki modla aynı.
+    vUv = aUv;
 
     // 3×3 Sobel, parçacığın kendi grid UV'si etrafında. Komşu mesafesi depth
     // texel'i kadar: uTexelSize depth çözünürlüğünden gelir, parçacık
@@ -171,7 +190,12 @@ const FRAGMENT = /* glsl */ `
   uniform float uFlickerSpeed;
   uniform float uFlickerIntensity;
   uniform float uColorVariance;
+  uniform sampler2D uImageTexture;
+  uniform float uHasImage;
+  uniform float uObjectSeparation;
+  uniform float uUseTextureColor;
 
+  varying vec2 vUv;
   varying float vEdge;
   varying float vSeed;
   varying float vOpacity;
@@ -196,6 +220,10 @@ const FRAGMENT = /* glsl */ `
   }
 
   void main() {
+    // Nesne ayırma AÇIK: arka plan parçacıkları (w < 0.5) tamamen atılır —
+    // yalnızca özne kalır. pointCloudMaterial/asciiMaterial ile aynı eşik.
+    if (uObjectSeparation > 0.5 && vOpacity < 0.5) discard;
+
     // Nokta merkezinden radyal mesafe, kenarda 1.0.
     float r = length(gl_PointCoord - 0.5) * 2.0;
     if (r > 1.0) discard;
@@ -215,10 +243,17 @@ const FRAGMENT = /* glsl */ `
     float halo = haloR * haloR;
     float shape = clamp(core + halo * uGlowRadius, 0.0, 1.0);
 
-    // -- ton sapması: ana rengin etrafında, parçacık tohumuna göre --
+    // -- taban renk: görsel dokusu ya da neon rengi --
+    // Diğer iki moddaki koşulun aynısı: doku bağlıysa VE renk modu açıksa
+    // parçacık kendi fotoğraf pikselini alır, değilse uNeonColor.
+    vec3 base = (uHasImage > 0.5 && uUseTextureColor > 0.5)
+      ? texture2D(uImageTexture, vUv).rgb
+      : uNeonColor;
+
+    // -- ton sapması: taban rengin etrafında, parçacık tohumuna göre --
     // Sapma miktarı uColorVariance ile çarpıldığı için 0'da kayma tam sıfırdır
-    // ve hsv gidiş-dönüşü birim dönüşüm olur: tam olarak uNeonColor çıkar.
-    vec3 hsv = rgb2hsv(uNeonColor);
+    // ve hsv gidiş-dönüşü birim dönüşüm olur: tam olarak taban renk çıkar.
+    vec3 hsv = rgb2hsv(base);
     hsv.x = fract(hsv.x + (vSeed - 0.5) * uColorVariance * HUE_SPAN);
     vec3 tint = hsv2rgb(hsv);
 
@@ -227,6 +262,10 @@ const FRAGMENT = /* glsl */ `
     // sapması kalır (grain'in uGrainSpeed = 0 davranışıyla aynı mantık).
     float wave = sin(uTime * uFlickerSpeed + vSeed * TAU) * 0.5 + 0.5;
     float flicker = mix(1.0, wave, uFlickerIntensity);
+
+    // Nesne ayırma KAPALI: arka plan pikselleri karartılır (×0.4) — parlak
+    // duvar özneyi yutmasın. Diğer iki moddaki çarpanın aynısı.
+    if (uObjectSeparation < 0.5 && vOpacity < 0.5) tint *= 0.4;
 
     // Kenar şiddeti rengi süzer: zayıf kenarlar sönük, keskin kenarlar parlak.
     // vOpacity (pos.w): arka plan parçacıkları 0.4 ile sönümlenir — diğer iki
@@ -245,6 +284,12 @@ export function createNeonWireMaterial(): NeonWireMaterial {
     uPointSize: { value: 3 },
     uEdgeThreshold: { value: 0.1 },
     uNeonColor: { value: new THREE.Color(0.2, 1.0, 0.85) },
+    // Varsayılanlar pointCloudMaterial/asciiMaterial ile aynı; Engine ilk
+    // setPhoto/setObjectSeparation çağrısında üzerine yazar.
+    uImageTexture: { value: null },
+    uHasImage: { value: 0 },
+    uObjectSeparation: { value: 0 },
+    uUseTextureColor: { value: 1 },
     // Yarıçap 0: sprite büyümez, hale yok — eski uGlow davranışıyla aynı.
     uGlowRadius: { value: 0 },
     uGlowIntensity: { value: 1.5 },
