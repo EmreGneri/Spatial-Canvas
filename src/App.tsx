@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { estimateDepth, loadDepthModel, luminanceHeightMap } from './depth';
+import { segmentForeground } from './engine/reconstruction/segmentation';
 import { Engine } from './engine';
 import { ControlPanel } from './ui/ControlPanel';
 import { createPointCloudMaterial, POINTS_PARAMS } from './shaders/pointCloudMaterial';
@@ -41,9 +42,17 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
   const [log, setLog] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [cameraOn, setCameraOn] = useState(false);
+  const [segment, setSegment] = useState(false);
+  const [useTextureColor, setUseTextureColor] = useState(true);
   const [fps, setFps] = useState(0);
   /** Editör dışından graf kurulduğunda (preset yükleme) editörü tazele. */
   const [graphTick, setGraphTick] = useState(0);
+  /** Son yüklenen fotoğraf kaynağı — nesne ayırma sonradan açılırsa RMBG'yi
+   *  yeniden çalıştırmak için saklanır (Tur 12: buton canlı shader'a bağlı). */
+  const lastPhotoRef = useRef<HTMLCanvasElement | HTMLImageElement | null>(null);
+  const lastDepthRef = useRef<{ data: Float32Array; width: number; height: number } | null>(null);
+  /** Bu kaynak için maske zaten üretildi mi? (video/kamera yollarında sıfırlanır) */
+  const maskLoadedRef = useRef(false);
 
   useEffect(() => {
     const engine = new Engine(containerRef.current!);
@@ -103,6 +112,9 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
     }
     streamRef.current?.getTracks().forEach((t) => t.stop());
     streamRef.current = null;
+    // Tur 12 (şikayet 1): GPU'daki video dokusunu bırak — yeni kaynak
+    // gelene kadar eski karelerin renkleri parçacıklarda kalmasın.
+    engineRef.current?.setVideoSource(null);
   }
 
   async function run(source: HTMLCanvasElement | HTMLImageElement) {
@@ -116,7 +128,29 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
       const depth = await estimateDepth(source);
       say(`çıkarım                  ${Math.round(performance.now() - t1)} ms  (${depth.width}x${depth.height})`);
 
-      engineRef.current!.setDepth(depth.data, depth.width, depth.height);
+      // Opsiyonel nesne/arka plan ayırma (RMBG): maske depth ile aynı görsel
+      // alanı kapsar (letterbox + kırpım) ama boyutu farklıdır; Engine maskeyi
+      // depth boyutuna örnekler ve siluete AND eder.
+      let mask: Float32Array | undefined;
+      let maskW = 0;
+      let maskH = 0;
+      lastPhotoRef.current = source;
+      lastDepthRef.current = { data: depth.data, width: depth.width, height: depth.height };
+      maskLoadedRef.current = false;
+      if (segment) {
+        const t2 = performance.now();
+        const seg = await segmentForeground(source);
+        mask = seg.mask;
+        maskW = seg.width;
+        maskH = seg.height;
+        maskLoadedRef.current = true;
+        say(`nesne ayırma (RMBG)      ${Math.round(performance.now() - t2)} ms  (${maskW}x${maskH})`);
+      }
+      // TUR 11: fotoğrafın kendisi de parçacık renklerine bağlanır (görev 1 —
+      // varsayılan mavi rampa yerine orijinal RGB). Kamera/video yolu bu
+      // çağrıyı yapmaz → shader'lar derinlik rampasına düşer.
+      engineRef.current!.setPhoto(source);
+      engineRef.current!.setDepth(depth.data, depth.width, depth.height, mask, maskW, maskH);
       say('depth → engine · point cloud konumları positionTexture\'dan okunur');
     } catch (err) {
       say(`HATA: ${err instanceof Error ? err.message : String(err)}`);
@@ -180,6 +214,38 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
     }
   }
 
+  /**
+   * NESNE AYIRMA BUTONU (Tur 12 — şikayet 4): durum shader'a CANLI bağlanır
+   * (Engine.setObjectSeparation — AÇIK: arka plan parçacıkları atılır, sadece
+   * büst kalır; KAPALI: tüm sahne, arka plan karartılmış). Yükleme sırasında
+   * maske üretilmediyse ve fotoğraf hâlâ eldeyse RMBG şimdi yeniden çalıştırılır
+   * (depth korunur, yalnızca maske türetilir).
+   */
+  async function toggleSegment() {
+    const next = !segment;
+    setSegment(next);
+    engineRef.current!.setObjectSeparation(next);
+    say(`nesne ayırma: ${next ? 'AÇIK (arka plan parçacıkları atılır — sadece büst)' : 'kapalı (tüm sahne, arka plan karartılır)'}`);
+    if (!next) return;
+    if (maskLoadedRef.current || !lastPhotoRef.current || !lastDepthRef.current) return;
+    // Maske yok — fotoğraf yüklüyken buton sonradan açıldı: şimdi ayır.
+    setBusy(true);
+    try {
+      const t2 = performance.now();
+      const seg = await segmentForeground(lastPhotoRef.current);
+      say(`nesne ayırma (RMBG)      ${Math.round(performance.now() - t2)} ms  (${seg.width}x${seg.height})`);
+      const d = lastDepthRef.current;
+      engineRef.current!.setDepth(d.data, d.width, d.height, seg.mask, seg.width, seg.height);
+      maskLoadedRef.current = true;
+    } catch (err) {
+      say(`HATA nesne ayırma: ${err instanceof Error ? err.message : String(err)}`);
+      engineRef.current!.setObjectSeparation(false);
+      setSegment(false);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function toggleCamera() {
     if (cameraOn) {
       teardownSource();
@@ -202,6 +268,12 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
       await video.play();
       setCameraOn(true);
       engineRef.current!.mediaType = 'camera';
+      // Tur 12 (şikayet 1): kamera da canlı renk dokusu olarak bağlanır —
+      // önceki resmin hayaleti parçacıklarda kalmaz.
+      lastPhotoRef.current = null;
+      lastDepthRef.current = null;
+      maskLoadedRef.current = false;
+      engineRef.current!.setVideoSource(video);
       startLuminanceLoop(video, 'kamera (model yok)');
       say('kamera açık · canlı luminance height map');
     } catch (err) {
@@ -223,6 +295,12 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
       videoRef.current = video;
       engineRef.current!.mediaType = 'upload';
       await video.play();
+      // Tur 12 (şikayet 1): video canlı renk dokusu olarak bağlanır —
+      // resimden videoya geçişte parçacık renklerinde resim hayaleti kalmaz.
+      lastPhotoRef.current = null;
+      lastDepthRef.current = null;
+      maskLoadedRef.current = false;
+      engineRef.current!.setVideoSource(video);
       say(`video yüklendi · ${file.name} · luminance yolu (model yok)`);
       startLuminanceLoop(video, 'video');
     } else if (file.type.startsWith('image/')) {
@@ -271,6 +349,21 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
         <button disabled={busy} onClick={toggleCamera}>
           {cameraOn ? 'kamerayı kapat' : 'kamera'}
         </button>
+        <button disabled={busy} onClick={toggleSegment} style={segment ? { background: '#2a3', color: '#fff', border: '1px solid #2a3' } : undefined}>
+          nesne ayırma: {segment ? 'AÇIK' : 'kapalı'}
+        </button>
+        <label style={{ display: 'flex', gap: 4, alignItems: 'center', color: '#889', fontSize: 12, cursor: 'pointer' }}>
+          <input
+            type="checkbox"
+            checked={useTextureColor}
+            onChange={(e) => {
+              const v = e.target.checked;
+              setUseTextureColor(v);
+              engineRef.current!.setUseTextureColor(v);
+            }}
+          />
+          orijinal renkler
+        </label>
         <span style={{ color: '#667', fontSize: 12 }}>görsel/video sürükle-bırak · tıklayıp döndür · hover = kuvvet</span>
         <span style={{ color: fps >= 30 ? '#6a6' : '#c66', fontSize: 12, fontVariantNumeric: 'tabular-nums' }}>
           {fps} fps
