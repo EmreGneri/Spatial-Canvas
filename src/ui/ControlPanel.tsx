@@ -1,21 +1,29 @@
-import { useState, type CSSProperties } from 'react';
-import type { Color } from 'three';
-import type { GrainPassUniforms } from '../shaders/grainPass';
-import type { PointCloudMaterial } from '../shaders/pointCloudMaterial';
-import { CHAR_SETS, type AsciiMaterial } from '../shaders/asciiMaterial';
+import { Fragment, useState, type CSSProperties } from 'react';
+import type { Color, IUniform } from 'three';
+import type { ParamDef } from '../engine/params';
+import { GRAIN_PARAMS, type GrainPassUniforms } from '../shaders/grainPass';
+import { POINTS_PARAMS, type PointCloudMaterial } from '../shaders/pointCloudMaterial';
+import { ASCII_PARAMS, CHAR_SETS, type AsciiMaterial } from '../shaders/asciiMaterial';
+import { NEON_PARAMS, type NeonWireMaterial } from '../shaders/neonWireMaterial';
+import { FEEDBACK_PARAMS, type FeedbackPassUniforms } from '../shaders/feedbackPass';
+import { CHROMATIC_PARAMS, type ChromaticPassUniforms } from '../shaders/chromaticPass';
+import type { RenderTargets } from '../shaders/renderPreset';
+import { PresetSection } from './PresetSection';
 import type { RenderMode } from './ModeSelector';
 
 /**
  * Render katmanının canlı kontrolleri. Sahiplik: Zeynep.
  *
- * Desen: her denetim uniform.value'ya DOĞRUDAN yazar; React state yalnızca
- * yanındaki sayısal/hex etiketi tazeler. Sahne, composer, material yeniden
- * kurulmaz. State her denetimin kendi içinde durduğu için bir slider'ı
- * oynatmak diğerlerini de re-render etmez.
+ * Denetimler ARTIK ELLE YAZILMIYOR: her bölüm ilgili `ParamDef[]` listesinden
+ * üretilir (POINTS_PARAMS, ASCII_PARAMS, NEON_PARAMS, FEEDBACK_PARAMS,
+ * CHROMATIC_PARAMS, GRAIN_PARAMS). Bir shader'a uniform eklemek için listeye
+ * satır eklemek yeterli — panel kendiliğinde algılar, bu dosyaya dokunulmaz.
+ * Aynı listeler preset serileştirmesini de sürdüğü için ikisi ayrışamaz.
  *
- * Mod bölümleri: yalnızca aktif render modunun grubu görünür. Grup unmount
- * olup geri geldiğinde denetimler başlangıç değerlerini yine uniform'dan
- * okur — kaynak doğruluk uniform'da, panelde değil.
+ * Desen değişmedi: her denetim uniform.value'ya DOĞRUDAN yazar; React state
+ * yalnızca yanındaki sayısal/hex etiketi tazeler. Sahne yeniden kurulmaz ve
+ * state her denetimin kendi içinde durduğu için bir slider diğerlerini
+ * re-render etmez.
  */
 
 const panelStyle: CSSProperties = {
@@ -34,7 +42,6 @@ const panelStyle: CSSProperties = {
   display: 'grid',
   gap: 12,
   alignContent: 'start',
-  // Bölüm sayısı arttı; kısa ekranda panel kendi içinde kaysın.
   overflowY: 'auto',
 };
 
@@ -49,6 +56,25 @@ const rowStyle: CSSProperties = { display: 'grid', gap: 4 };
 const labelRowStyle: CSSProperties = { display: 'flex', justifyContent: 'space-between' };
 const valueStyle: CSSProperties = { color: '#8ab' };
 
+/**
+ * ParamDef adım büyüklüğü taşımıyor; aralıktan türetilir. Ham aralık/200
+ * değeri 1-2-5×10^k basamağına yuvarlanır, yoksa 0.00015 gibi okunamayan
+ * adımlar çıkar.
+ */
+function niceStep(min: number, max: number): number {
+  const span = Math.abs(max - min) || 1;
+  const raw = span / 200;
+  const magnitude = Math.pow(10, Math.floor(Math.log10(raw)));
+  const normalized = raw / magnitude;
+  const multiplier = normalized < 1.5 ? 1 : normalized < 3.5 ? 2 : normalized < 7.5 ? 5 : 10;
+  return multiplier * magnitude;
+}
+
+/** Etiket ondalığı adımdan gelir: 0.001 adım → 3 hane. */
+function digitsFor(step: number): number {
+  return Math.max(0, Math.min(4, Math.ceil(-Math.log10(step))));
+}
+
 /** Tek sayısal uniform. State burada durur — panelin tamamı re-render olmaz. */
 function Slider({
   uniform,
@@ -56,14 +82,14 @@ function Slider({
   min,
   max,
   step,
-  digits = 2,
+  digits,
 }: {
   uniform: { value: number };
   label: string;
   min: number;
   max: number;
   step: number;
-  digits?: number;
+  digits: number;
 }) {
   const [value, setValue] = useState(uniform.value);
   return (
@@ -117,8 +143,59 @@ function ColorInput({ color, label }: { color: Color; label: string }) {
 }
 
 /**
- * Karakter seti seçici. Seçili değer material'dan okunur — panel mod
- * değişiminde unmount olduğu için kendi hatırladığına güvenemez.
+ * Bir parametre listesini denetimlere çevirir. Listede olup uniform'da
+ * karşılığı olmayan anahtar SESSİZCE ATLANIR — liste ve shader ayrı ellerden
+ * güncellenebildiği için panel bundan düşmemeli.
+ */
+function ParamGroup({
+  defs,
+  uniforms,
+}: {
+  defs: ParamDef[];
+  uniforms: Record<string, IUniform>;
+}) {
+  return (
+    <>
+      {defs.map((def) => {
+        const uniform = uniforms[def.key];
+        if (!uniform) return null;
+
+        if (def.kind === 'color') {
+          const value = uniform.value as Color | undefined;
+          if (!value || typeof value.getHexString !== 'function') return null;
+          return <ColorInput key={def.key} color={value} label={def.label} />;
+        }
+
+        if (typeof uniform.value !== 'number') return null;
+        const min = def.min ?? 0;
+        const max = def.max ?? 1;
+        const step = niceStep(min, max);
+        return (
+          <Slider
+            key={def.key}
+            uniform={uniform as { value: number }}
+            label={def.label}
+            min={min}
+            max={max}
+            step={step}
+            digits={digitsFor(step)}
+          />
+        );
+      })}
+    </>
+  );
+}
+
+/** Uniform arayüzlerini ParamGroup'un beklediği sözlüğe daraltır. */
+function asRecord(uniforms: object): Record<string, IUniform> {
+  return uniforms as unknown as Record<string, IUniform>;
+}
+
+/**
+ * Karakter seti seçici. ParamDef ile ifade edilemez: `uCharSet` uniform'u
+ * hücre sayısıdır, karakterlerin kendisi material API'sinde (setCharSet).
+ * Seçili değer material'dan okunur — panel mod değişiminde unmount olduğu
+ * için kendi hatırladığına güvenemez.
  */
 function CharSetSelect({ material }: { material: AsciiMaterial }) {
   const [chars, setChars] = useState(() => material.charSet);
@@ -150,48 +227,78 @@ export function ControlPanel({
   grain,
   points,
   ascii,
+  neon,
+  feedback,
+  chromatic,
   mode,
+  setMode,
 }: {
   grain: GrainPassUniforms;
   points: PointCloudMaterial;
   ascii: AsciiMaterial;
+  neon: NeonWireMaterial;
+  /** Feedback pass zincire eklenmemişse verilmez — bölüm de çıkmaz. */
+  feedback?: FeedbackPassUniforms;
+  /** Chromatic pass zincire eklenmemişse verilmez — bölüm de çıkmaz. */
+  chromatic?: ChromaticPassUniforms;
   mode: RenderMode;
+  /** Preset mod değiştirdiğinde çağrılır; takas Engine'den geçer. */
+  setMode?: (mode: RenderMode) => void;
 }) {
   const firstHeading: CSSProperties = { ...headingStyle, borderTop: 'none', paddingTop: 0 };
+
+  // Preset uygulandığında denetim grupları YENİDEN MOUNT edilir. Slider ve
+  // renk seçicileri başlangıç değerini mount anında uniform'dan okur; remount
+  // olmazsa uniform değişse de panel eski sayıyı göstermeye devam eder.
+  const [revision, setRevision] = useState(0);
+
+  const targets: RenderTargets = { mode, points, ascii, neon, grain, feedback, chromatic, setMode };
+
   return (
     <aside style={panelStyle}>
-      {mode === 'points' && (
-        <>
-          <strong style={firstHeading}>Point Cloud</strong>
-          <Slider uniform={points.uniforms.uPointSize} label="Point Size" min={2} max={20} step={0.1} digits={1} />
-          <Slider uniform={points.uniforms.uSizeJitter} label="Size Jitter" min={0} max={1} step={0.01} />
-          <Slider uniform={points.uniforms.uSoftness} label="Softness" min={0} max={1} step={0.01} />
-          <Slider uniform={points.uniforms.uBrightness} label="Brightness" min={0} max={3} step={0.01} />
-          <ColorInput color={points.uniforms.uNearColor.value} label="Near Color" />
-          <ColorInput color={points.uniforms.uFarColor.value} label="Far Color" />
-        </>
-      )}
+      <strong style={firstHeading}>Presets</strong>
+      <PresetSection targets={targets} onApplied={() => setRevision((r) => r + 1)} />
 
-      {mode === 'ascii' && (
-        <>
-          <strong style={firstHeading}>ASCII</strong>
-          <CharSetSelect material={ascii} />
-          <Slider uniform={ascii.uniforms.uPointSize} label="Point Size" min={8} max={40} step={0.5} digits={1} />
-          <Slider uniform={ascii.uniforms.uSizeJitter} label="Size Jitter" min={0} max={1} step={0.01} />
-          <Slider uniform={ascii.uniforms.uDepthBias} label="Depth Bias" min={-0.5} max={0.5} step={0.01} />
-          <Slider uniform={ascii.uniforms.uCharRandom} label="Char Random" min={0} max={1} step={0.01} />
-          <Slider uniform={ascii.uniforms.uBgOpacity} label="Bg Opacity" min={0} max={1} step={0.01} />
-          <ColorInput color={ascii.uniforms.uColor.value} label="Color" />
-          <ColorInput color={ascii.uniforms.uBgColor.value} label="Bg Color" />
-        </>
-      )}
+      <Fragment key={revision}>
+        {mode === 'points' && (
+          <>
+            <strong style={headingStyle}>Point Cloud</strong>
+            <ParamGroup defs={POINTS_PARAMS} uniforms={asRecord(points.uniforms)} />
+          </>
+        )}
 
-      <strong style={headingStyle}>Grain / Grading</strong>
-      <Slider uniform={grain.uGrainAmount} label="Grain Amount" min={0} max={0.3} step={0.005} />
-      <Slider uniform={grain.uGrainSpeed} label="Grain Speed" min={0} max={5} step={0.05} />
-      <Slider uniform={grain.uVignette} label="Vignette" min={0} max={1.5} step={0.01} />
-      <Slider uniform={grain.uContrast} label="Contrast" min={0.5} max={2} step={0.01} />
-      <Slider uniform={grain.uSaturation} label="Saturation" min={0} max={1.5} step={0.01} />
+        {mode === 'ascii' && (
+          <>
+            <strong style={headingStyle}>ASCII</strong>
+            <CharSetSelect material={ascii} />
+            <ParamGroup defs={ASCII_PARAMS} uniforms={asRecord(ascii.uniforms)} />
+          </>
+        )}
+
+        {mode === 'neon' && (
+          <>
+            <strong style={headingStyle}>Neon</strong>
+            <ParamGroup defs={NEON_PARAMS} uniforms={asRecord(neon.uniforms)} />
+          </>
+        )}
+
+        {feedback && (
+          <>
+            <strong style={headingStyle}>Feedback</strong>
+            <ParamGroup defs={FEEDBACK_PARAMS} uniforms={asRecord(feedback)} />
+          </>
+        )}
+
+        {chromatic && (
+          <>
+            <strong style={headingStyle}>Chromatic</strong>
+            <ParamGroup defs={CHROMATIC_PARAMS} uniforms={asRecord(chromatic)} />
+          </>
+        )}
+
+        <strong style={headingStyle}>Grain / Grading</strong>
+        <ParamGroup defs={GRAIN_PARAMS} uniforms={asRecord(grain)} />
+      </Fragment>
     </aside>
   );
 }
