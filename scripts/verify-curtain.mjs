@@ -29,6 +29,7 @@
 // sızıntısının maskesiz yolu bilinen davranıştır; buton oradadır).
 //   node scripts/verify-curtain.mjs [fotoğraf yolu]
 import assert from 'node:assert/strict';
+import { fileURLToPath } from 'node:url';
 import {
   AutoImageProcessor,
   env,
@@ -48,7 +49,11 @@ env.allowLocalModels = true;
 env.localModelPath = './public/models/';
 env.backends.onnx.wasm.numThreads = 1;
 
-const IMG = process.argv[2] ?? 'C:/Users/Emre/Desktop/thumbnail.jpg';
+// Varsayılan görsel proje içinde durur ve yol import.meta.url'den çözülür:
+// script hangi dizinden çağrılırsa çağrılsın aynı dosyayı bulur, ve makineye
+// özel mutlak yol (eskiden bir geliştiricinin masaüstü) repoda kalmaz.
+const DEFAULT_IMG = fileURLToPath(new URL('../assets/thumbnail.jpg', import.meta.url));
+const IMG = process.argv[2] ?? DEFAULT_IMG;
 const N = 384; // parçacık grid'i
 const DEPTH_SIZE = 518; // depth-anything-v2 eğitim boyutu (depth.ts)
 const MASK_SIZE = 1024; // RMBG eğitim boyutu (segmentation.ts)
@@ -56,7 +61,11 @@ const MASK_SIZE_HALF = MASK_SIZE / 2;
 
 import { existsSync } from 'node:fs';
 if (!existsSync(IMG)) {
-  console.log(`atlandı: görsel yok (${IMG}) — node scripts/verify-curtain.mjs <fotoğraf yolu>`);
+  console.log(
+    `atlandı: görsel yok (${IMG})\n` +
+      '  · assets/thumbnail.jpg ekleyin (özne + arka planı olan gerçek bir büst fotoğrafı), ya da\n' +
+      '  · node scripts/verify-curtain.mjs <fotoğraf yolu>',
+  );
   process.exit(0);
 }
 
