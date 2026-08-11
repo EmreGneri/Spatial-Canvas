@@ -24,6 +24,7 @@ import {
 const DEFAULT_POINTS: PointCloudState = {
   uPointSize: 6,
   uSizeJitter: 0.3,
+  uExtrusionDepth: 0,
   uSoftness: 0.5,
   uBrightness: 1,
   uNearColor: '#edf9ff',
@@ -75,6 +76,7 @@ export const BUILT_IN_PRESETS: { name: string; state: RenderState }[] = [
       points: {
         uPointSize: 11,
         uSizeJitter: 0.55,
+        uExtrusionDepth: 0,
         uSoftness: 0.9,
         uBrightness: 0.7,
         uNearColor: '#b8bcc4',
@@ -101,6 +103,7 @@ export const BUILT_IN_PRESETS: { name: string; state: RenderState }[] = [
       points: {
         uPointSize: 4,
         uSizeJitter: 0.2,
+        uExtrusionDepth: 0,
         uSoftness: 0.1,
         uBrightness: 1.4,
         uNearColor: '#ffffff',
@@ -155,6 +158,7 @@ export const BUILT_IN_PRESETS: { name: string; state: RenderState }[] = [
       points: {
         uPointSize: 5,
         uSizeJitter: 0.4,
+        uExtrusionDepth: 0,
         uSoftness: 0.6,
         uBrightness: 0.9,
         uNearColor: '#e8e4dc',
