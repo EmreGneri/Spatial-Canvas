@@ -89,6 +89,62 @@ Repoya yeni giren (insan veya asistan) bunları bilmeden değiştirmesin:
 
 ---
 
+## 2026-08-11 — Fotoğraf→3D kalite paketi (Emre)
+
+Fotoğraf → depth → point cloud zincirindeki dört darboğaz düzeltildi.
+Sözleşmeler değişmedi (R32F/RGBA32F, tek y-flip, 384 grid, aUv, GPGPU ping-pong);
+her değişiklik push öncesi tarayıcıda elle test edildi.
+
+### Depth çıkarımı (`src/depth.ts`)
+
+1. **Aspect koruması (letterbox).** Depth Anything V2 processor'ı girdiyi
+   518×518 kareye SIKIŞTIRARAK resize ediyordu — dikey portrelerde yüzler
+   yamuluyor, derinlik hatalı çıkıyordu. Artık girdi önce aynı kareye letterbox
+   yapılıyor (aspect korunur, pad = görselin ortalama rengi), model çıktısı pad
+   alanından kırpılıyor. Yan fayda: `depthTexture` artık orijinal dev boyutta
+   değil (12 MP fotoğrafta ~48 MB GPU → kırpılmış boyut). Eski davranış
+   `estimateDepth(source, { aspect: 'distort' })` ile seçilebilir.
+2. **Sağlam normalize.** Min-max öncesi en alt/üst %1 tıraşlanıyor (histogram
+   tabanlı, sıralama yok). Tek parlak outlier piksel 0..1 skalasını ezip ön
+   plan detayını düzleştiremiyor. `percentile: 0` ile eski davranış.
+3. **Bilinear örnekleme (`src/engine/buffers.ts`).** Home texture 384 grid'ine
+   doldurulurken nearest (tek piksel) yerine komşu 4 pikselin ağırlıklı
+   ortalaması — yüz hatları gibi ince geçişlerdeki aliasing gitti. Grid boyutu
+   depth boyutuna eşitken davranış birebir aynı (`verify-positions` kırmadı).
+
+### Video/kamera yolunda temporal stabilite (`src/App.tsx`, `src/depth.ts`)
+
+"Video modunda aşırı hareket" kaynağı tespit edildi: luminance her karede
+home'a 1:1 yazılıyor; codec gürültüsü tek parlaklık kademesiyle bile ölü
+bölgeyi (uRestLength 0.005) aşıp 147.456 parçacığın Z'sini dürtüyordu.
+
+1. **Temporal smoothing** (`LUMINANCE_SMOOTHING_ALPHA = 0.1`): yeni luminance
+   karesi geçen kareye `lerp(prev, cur, 0.1)` ile yapıştırılıyor — kısa gürültü
+   sönümlenir, yavaş ışık/motion değişimi akışkan kalır. İlk kare ham kabul
+   edilir. Yalnızca video/kamera yolu; fotoğraf depth pipeline'ına dokunulmadı.
+2. **Frame sync:** 100 ms `setInterval` yerine `requestVideoFrameCallback` —
+   luminance yalnızca gerçek yeni video karesinde hesaplanır (atlanan kare
+   sıçraması yok). rVFC desteklemeyen tarayıcıda interval fallback korunur.
+3. **Frame başına allocation yok:** `luminanceHeightMap` scratch
+   `Float32Array`'ini yeniden kullanır, lerp in-place — ilk kare dışında yeni
+   dizi yok.
+
+### Sözleşme ve performans
+
+- Engine, simulation shader'ları ve GPGPU ping-pong'a dokunulmadı; tüm
+  sözleşmeler birebir korundu (doğrulama: `npm run verify` ✓ · `npm run
+  typecheck` ✓ · `npm run build` ✓ · dev server HTTP 200 ✓).
+- `ARCHITECTURE.md` değişmedi — kontrat katmanına dokunulmadı.
+
+### Açık işler (bilinçli erteleme)
+
+- Sahne kesmesi algısı (video loop geçişinde bulut "patlaması") EKLENMEDİ —
+  smoothing + frame sync sonucu gözlemlenecek; hâlâ belirginse ele alınacak.
+- Önem-tabanlı partikül dağılımı (yüz/ön planda yoğunluk remap) değerlendirme
+  aşamasında, uygulanmadı.
+
+---
+
 ## 2026-08-10 — Gün 3: GPGPU parçacık simülasyonu (Emre)
 
 ## 2026-08-10 — Gün 5: node graph editörü (Emre)

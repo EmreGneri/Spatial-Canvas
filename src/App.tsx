@@ -16,8 +16,15 @@ import {
   toPreset,
 } from './engine/preset';
 
-export default function App() {
-  const containerRef = useRef<HTMLDivElement>(null);
+/**
+ * Video/kamera luminance yolunda temporal smoothing katsayısı (kalite kararı):
+ * luminance her karede home'a 1:1 yazılır; video codec gürültüsü parçacıkların
+ * Z'sini her karede dürttüğünde bulut sürekli titriyordu. lerp ile geçen kareye
+ * sabitlenir — gürültü ölür, gerçek hareket akışkan kalır. Küçük tutulur.
+ */
+const LUMINANCE_SMOOTHING_ALPHA = 0.1;
+
+export default function App() {  const containerRef = useRef<HTMLDivElement>(null);
   const engineRef = useRef<Engine | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -122,19 +129,55 @@ export default function App() {
   function startLuminanceLoop(source: HTMLCanvasElement | HTMLVideoElement | HTMLImageElement, label: string) {
     clearTimer(); // kaynağı bırakmaz — teardownSource'u çağıran taraf yapar
     let lastLog = 0;
-    const step = () => {
+    // Geçen smoothed kare. İlk karede geçmiş yoktur, ham kabul edilir; kaynak
+    // değişince (boyut değişimi) de sıfırlanır. lerp prev üzerinden in-place
+    // yapılır — frame başına allocation sıfırdır.
+    let prev: Float32Array | null = null;
+    // rVFC koruması: callback içinde iş tekrar tetiklenirse atla (birikme yok).
+    let scheduled = false;
+
+    const processFrame = () => {
+      scheduled = false;
       // Video ilk kareyi çözmeden drawImage boş/hatalı çizer.
       if (source instanceof HTMLVideoElement && source.readyState < 2) return;
       const t0 = performance.now();
       const hm = luminanceHeightMap(source, 256);
-      engineRef.current!.setDepth(hm.data, hm.width, hm.height);
+      const data = hm.data;
+      if (prev && prev.length === data.length) {
+        // Temporal smoothing: yeni kareyi geçmişe yapıştır. Düşük alpha kısa
+        // süreli parlaklık sıçramalarını sönümler, yavaş ışık değişimini bırakır.
+        for (let i = 0; i < data.length; i++) {
+          data[i] = prev[i] + LUMINANCE_SMOOTHING_ALPHA * (data[i] - prev[i]);
+        }
+        prev.set(data); // bir sonraki karenin geçmişi = bugünkü smoothed kare
+      } else {
+        prev = new Float32Array(data); // ilk kare / yeni boyut: ham + kopya
+      }
+      engineRef.current!.setDepth(data, hm.width, hm.height);
       if (performance.now() - lastLog > 2000) {
         lastLog = performance.now();
         say(`luminance · ${label} · ${Math.round(performance.now() - t0)} ms`);
       }
     };
-    step();
-    timerRef.current = window.setInterval(step, 100);
+
+    processFrame();
+    if (source instanceof HTMLVideoElement && 'requestVideoFrameCallback' in source) {
+      // Yalnızca gerçek yeni video karesi geldiğinde işle. 100ms interval
+      // video karelerini rastgele atlıyordu (sıçrama); rVFC her kareyi bir kez
+      // verir. Callback senkron çalışır, zincir pause'da doğal olarak ölür.
+      const tick = () => {
+        source.requestVideoFrameCallback(tick);
+        if (!scheduled) {
+          scheduled = true;
+          processFrame();
+        }
+      };
+      source.requestVideoFrameCallback(tick);
+    } else {
+      // rVFC desteklenmeyen tarayıcı: eski interval davranışı (kare kimliği
+      // yok, smoothing yine de titremeyi önler).
+      timerRef.current = window.setInterval(processFrame, 100);
+    }
   }
 
   async function toggleCamera() {

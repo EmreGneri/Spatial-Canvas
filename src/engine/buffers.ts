@@ -64,6 +64,11 @@ export function createHomeTexture(): THREE.DataTexture {
  * yazımı, points shader'ının okuduğu aUv grid'iyle birebir aynı formülden
  * üretilir: u = (i+0.5)/N, v = 1-(j+0.5)/N  (v=1 → üst satır, y-flip tek
  * yerde). w (seed) korunur.
+ *
+ * Depth örneklemesi bilinear: nearest bir grid hücresini tek piksele
+ * indirirken yüz hatları gibi ince geçişlerde aliasing yapıyordu (kenarın
+ * bir tarafı tüm hücreyi ezdiriyordu). Bilinear komşu 4 pikseli ağırlıkla
+ * karıştırır — 384 grid'ine inerken detayı kaybetmeden pürüzsüz kalır.
  */
 export function fillPositionsFromDepth(
   tex: THREE.DataTexture,
@@ -77,16 +82,36 @@ export function fillPositionsFromDepth(
   const halfH = POINTS_WORLD_HEIGHT / 2;
   for (let j = 0; j < n; j++) {
     const v = 1 - (j + 0.5) / n;
-    const depthRow = Math.min(depthHeight - 1, Math.floor((j / n) * depthHeight));
+    // Texel merkezini depth grid koordinatına çevir (−0.5: piksel 0'ın merkezi).
+    const y = ((j + 0.5) / n) * depthHeight - 0.5;
     for (let i = 0; i < n; i++) {
       const u = (i + 0.5) / n;
-      const depthCol = Math.min(depthWidth - 1, Math.floor((i / n) * depthWidth));
+      const x = ((i + 0.5) / n) * depthWidth - 0.5;
       const o = (j * n + i) * 4;
       data[o] = (u - 0.5) * 2 * halfW;
       data[o + 1] = (v - 0.5) * POINTS_WORLD_HEIGHT;
-      data[o + 2] = (depth[depthRow * depthWidth + depthCol] - 0.5) * POINTS_DEPTH_RANGE;
+      data[o + 2] = (sampleBilinear(depth, depthWidth, depthHeight, x, y) - 0.5) * POINTS_DEPTH_RANGE;
       // o+3: seed korunur
     }
   }
   tex.needsUpdate = true;
+}
+
+/** Bilinear örnekleme; grid dışı taşmalar kenara kelepçelenir. */
+function sampleBilinear(
+  depth: Float32Array,
+  w: number,
+  h: number,
+  x: number,
+  y: number,
+): number {
+  const x0 = Math.max(0, Math.floor(x));
+  const y0 = Math.max(0, Math.floor(y));
+  const x1 = Math.min(w - 1, x0 + 1);
+  const y1 = Math.min(h - 1, y0 + 1);
+  const tx = Math.min(1, Math.max(0, x - x0));
+  const ty = Math.min(1, Math.max(0, y - y0));
+  const top = depth[y0 * w + x0] * (1 - tx) + depth[y0 * w + x1] * tx;
+  const bot = depth[y1 * w + x0] * (1 - tx) + depth[y1 * w + x1] * tx;
+  return top * (1 - ty) + bot * ty;
 }
