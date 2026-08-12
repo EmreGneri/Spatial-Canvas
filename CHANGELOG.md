@@ -5,6 +5,115 @@ En yeni üstte.
 
 ---
 
+## 2026-08-12 — Gün 6: Export + Embed, video 3D, hacim ve ışık (Emre)
+
+Fotoğraf yolu + video yolu render kalitesi paketi. Sözleşme değişikliği YOK
+(texture formatları, w = opaklık, y-flip, GPGPU ping-pong aynı). Render
+katmanını doğrudan etkileyenler aşağıda "Render katmanına" başlığında.
+
+### Export + Embed (Gün 6 görevi)
+
+- **PNG export** — `canvas.toBlob`, o anki frame'i indirir. `preserveDrawingBuffer`
+  gerekmez: EffectComposer WebGL RT'lerine çizdiği için canvas her karede
+  günceldir. Opsiyonel `scale` (2x vs.) — daha büyük PNG.
+- **WebM export** — `MediaRecorder` + `canvas.captureStream(60)`. VP9 desteklenmezse
+  VP8/varsayılan. Süre döngüsel buton: 5/10/20 sn. 8 Mbps.
+- **Embed modu** — `<spatial-canvas>` custom element (`src/embed.ts`). Aynı
+  bundle, UI mount edilmez, depth modeli yalnızca `src` attribute'u varsa
+  `import('./depth')` ile lazy yüklenir. WebGL yoksa statik görsel fallback.
+  Vite config'te ikinci giriş (`rollupOptions.input.embed`) → `dist/assets/embed-*.js`
+  (~3.6 kB). Attribute yoksa URL parametreleri (`?src=`, `?preset=`).
+- **Preset dosya indir/yükle** — `preset.ts` `downloadPresetFile` +
+  `parsePresetFile`; UI'da "dosya ↓ / dosya ↑". localStorage slotlarına ek,
+  onların yerine değil. JSON, sürüm korumalı (aynı `applyPreset` yolu).
+
+### Video 3D (video oynatıcı mantığı geliştirmesi)
+
+1. **Luminance yükseltme** (`depth.ts` `luminanceHeightMap`): ham parlaklık
+   yerine ① hafif box blur (codec gürültüsü) ② Sobel kenar kabartma
+   (`edgeStrength`, yüz hatları z'de belirgin) ③ merkeze radyal Gaussian vurgu
+   (`centerBoost`, özne arka plandan ayrışır) → sonra 0..1 normalize.
+   `LuminanceOptions` ile ayarlanır; `App.tsx` video döngüsü varsayılanları
+   (0.35 / 0.5) kullanır.
+2. **Home blend** — video/kameralarda depth her karede değişiyor; home
+   toptan yazılırsa yay parçacığı her karede dürtülür (titreme, atalet kaybı).
+   `fillPositionsFromDepth` artık `opts.blend` alır: `dynamicHome` açıkken
+   home `0.8 yeni + 0.2 eski` lerp ile yazılır. `w` (iki seviyeli opaklık)
+   saf yazılır — ara opaklık değeri üretilmez (shader'lar nesne ayırmayı
+   yarı-opak sanmasın). `Engine.dynamicHome` bayrağı yalnızca video döngüsünde
+   true; fotoğraf yolu eski davranış (toptan yaz).
+3. **Grab (home çekişi)** — simülasyona `uGrabStrength` uniform'u
+   (`SIM_PARAMS`'a satır: "grab (home çekişi)" 0..0.5). Fare ALTINDAKİ
+   parçacıklar home yönünde ekstra kuvvet alır — video modunda deformasyon
+   akışla çakışmaz; imleç gezdiği yeri "temizler". UI'da kuvvet satırına slider.
+4. **Otomatik DPR** (`Engine.adaptResolution`) — FPS < 30 → pixel ratio ×0.75
+   (2.25x az piksel), ≥ 45 sürekli → geri yüksel. Histerezisli (salınım yok),
+   `adaptiveDpr = false` ile kapatılır. DPR değişiminde `composer.setSize` +
+   grain `uResolution` tazelenir (zaten `resize()`'da).
+5. **Luminance buffer havuzu** — `scratchBlur`/`scratchMag` ara kareleri:
+   video döngüsünde her kare yeni Float32Array alloc yok (GC baskısı düştü).
+
+### Nesne ayırma düzeltmesi (önemli — render katmanını ilgilendirir)
+
+Şikayet: RMBG maskesi 1024²'de üretilip depth boyutuna bilinear ölçeklenince
+kenar bandı 0.4-0.6 yumuşak değerlere iniyor; `buildSilhouette`'teki sert
+`>= 0.5` AND eşiği kenarları (saç, el, ince uzuvlar) siliyordu — kalan yalnızca
+özne çekirdeği ("sadece orta seçiliyor").
+
+- **Çözüm YANLIŞ denendi, geri alındı**: eşiği 0.5 → 0.35 gevşetmek arka
+  planı da (RMBG 0.0-0.2) ön plana sokuyordu, ayırma kayboluyordu.
+- **Doğru çözüm**: eşik 0.5'te AYNEN kalır (`silhouette.ts` iki yerde);
+  Engine'de maskeyi depth uzayına ölçekledikten SONRA
+  `dilateAndFeatherMask(mask, w, h)` uygulanır (`Engine.setDepth`) — bilinear
+  bandındaki yumuşak kenarlar morfolojik olarak geri kazanılır, uzak arka plan
+  (RMBG 0.0-0.1) dilate'ten etkilenmez. Ayırma çalışır ama agresif değildir.
+- Not: `dilateAndFeatherMask` 4px morf RMBG çözünürlüğünde (1024²) zaten
+  vardı; yeni çağrı DEPTH çözünürlüğünde ek bir güvence bandı.
+
+### 3D yapı iyileştirmesi — yüzey normalleri + ışık + fresnel (points modu)
+
+Point cloud hâlâ düz (renk rampası + sahte döküm gölgesi). Depth gradyanından
+yüzey normali türetip ışık/fresnel eklendi — **yalnızca `pointCloudMaterial.ts`**
+(kod tekrarını önlemek için ascii/neon'a taşınmadı; onların kendi estetiği var).
+
+- Vertex: `uPositions` komşu texellerinin z farkından
+  `normal = normalize(-D·dzdx, -D·dzdy, 1)` (CPU/ek texture yok; GPGPU
+  bozulmaz). Normal, extrude ÖNCESİ yüzey z'sinden — hacim parçacıkları da
+  yekpare ışık alır. Yeni varying: `vNormal`, `vViewDir`.
+- Fragment: `diffuse = 0.5 + 0.5·(n·L)` UVStrength ile karışım; fresnel
+  `pow(1-|n·v|, 1+uFresnelStrength·5)·fresnel·2` additive ekleme. Duvar
+  parçacıkları (w < 0.5) kenar parlamasında ×0.35 sönük.
+- Yeni uniform'lar + `POINTS_PARAMS` satırları (sözleşme kuralı):
+  `uLightStrength` (ışık gölgesi 0..1, varsayılan 0.45), `uLightDir`
+  (vector3, sabit üst-sol ön), `uFresnelStrength` (kenar parlaması 0..1,
+  varsayılan 0.35), `uNormalScale` (normal ölçeği 0..2, varsayılan 0.8).
+- ControlPanel/POINTS_PARAMS'tan otomatik slider'lar; eski preset'ler
+  (bu alanlar yoktu) `applyParams` ile güvenle atlanır, yeni görünüm alırlar.
+- Ascii/neon davranışı DEĞİŞMEDİ (ışık/fresnel yalnızca points'te).
+
+### Diğer
+
+- `volume.ts` — runtime'da kullanılmıyor (yalnızca verify testi), Gün 7
+  temizliğine bırakıldı.
+- Buffer havuzu + otomatik DPR ile video yolunda FPS koruması.
+
+### Render katmanına (kodu devralan için özet)
+
+1. **Points shader'ına 4 yeni uniform** (yukarıda) — listeye satır ekledim,
+   panel/preset otomatik. ShaderMaterial uniform objesindeki başlangıç değerleri
+   `createPointCloudMaterial` içinde.
+2. **`w` hâlâ opaklık (iki seviyeli)** — home blend'de de saf korunur.
+3. **Nesne ayırma** — maske artık depth çözünürlüğünde dilate; shader eşiği
+   (`w < 0.5`) DEĞİŞMEDİ.
+4. **ASCII/neon'a dokunulmadı** — ışık/fresnel points'e özel.
+
+### Doğrulama
+
+`npm run typecheck` ✓ · `npm run verify` ✓ (7 script: positions, depth, preset,
+volume, sampler, seg, curtain) · `npm run build` ✓
+
+---
+
 ## KURAL: git geçmişinde AI izi YOK (herkes, her commit)
 
 Bu reponun git geçmişi ve commit mesajları **hiçbir AI izi taşımaz**. İş

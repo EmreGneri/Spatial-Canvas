@@ -75,6 +75,22 @@ export interface PointCloudMaterialUniforms {
   uSoftness: { value: number };
   /** 0..3 — genel parlaklık çarpanı */
   uBrightness: { value: number };
+  /**
+   * GÜN 6 (3D iyileştirme 1) — yüzey normalleri + ışık: 0..1 ışık şiddeti.
+   * 0 = kapalı (eski düz görünüm). Normal, uPositions komşu texellerinden
+   * türetilir (CPU/ek texture gerekmez).
+   */
+  uLightStrength: { value: number };
+  /** Işık yönü (dünya uzayı, normalize) — n·light diffuse. */
+  uLightDir: { value: THREE.Vector3 };
+  /**
+   * GÜN 6 (3D iyileştirme 2) — fresnel: 0..1. Siluet kenarlarını n·view
+   * yönüne göre aydınlatır (hacim hissi). Power = uFresnelStrength * 5 + 1.
+   */
+  uFresnelStrength: { value: number };
+  /** Normal türetme ölçeği — aşırı kavisli/bantlı depth'te normale gürültü.
+   *  Küçük tut; büyükçe yüzey çizgileri görünür. */
+  uNormalScale: { value: number };
 }
 
 /**
@@ -90,6 +106,9 @@ export const POINTS_PARAMS: ParamDef[] = [
   { key: 'uFarColor', label: 'uzak rengi', min: 0, max: 1, default: 0, kind: 'color' },
   { key: 'uSoftness', label: 'yumuşaklık', min: 0, max: 1, default: 0.5 },
   { key: 'uBrightness', label: 'parlaklık', min: 0, max: 3, default: 1 },
+  { key: 'uLightStrength', label: 'ışık gölgesi', min: 0, max: 1, default: 0.45 },
+  { key: 'uFresnelStrength', label: 'kenar parlaması', min: 0, max: 1, default: 0.35 },
+  { key: 'uNormalScale', label: 'normal ölçeği', min: 0, max: 2, default: 0.8 },
 ];
 
 /** ShaderMaterial, uniform'ları tipli görünsün diye daraltılmış. */
@@ -102,6 +121,7 @@ const VERTEX = /* glsl */ `
   uniform float uPointSize;
   uniform float uSizeJitter;
   uniform float uExtrusionDepth;
+  uniform float uNormalScale;
 
   attribute vec2 aUv;
 
@@ -109,6 +129,8 @@ const VERTEX = /* glsl */ `
   varying float vDepth;
   varying float vOpacity;
   varying float vExtrusion;
+  varying vec3 vNormal;
+  varying vec3 vViewDir;
 
   /**
    * Hacmin arka sınırı (z, orijine ortalı −1..+1 uzayında). Parçacıklar ön
@@ -117,6 +139,7 @@ const VERTEX = /* glsl */ `
    * yan duvarlar bu yüzden render tarafında doğuyor.
    */
   const float BACK_PLANE_Z = -0.5;
+  const float TEX_STEP = 1.0 / 384.0;
 
   void main() {
     vec4 pos = texture2D(uPositions, aUv);
@@ -137,15 +160,18 @@ const VERTEX = /* glsl */ `
     // (1 / 0.4). Onunla dağıtım yapılsaydı blok değil iki ince levha çıkardı.
     float seed = fract(sin(aUv.x * 12.9898 + aUv.y * 78.233) * 43758.5453);
 
-    // -- Z HACMİ: ön yüzeyden arka düzleme kesintisiz dolgu --
-    // Parçacık, tohumuna göre kendi ön yüzeyi ile BACK_PLANE_Z arasında bir
-    // yere oturur. Tohum parçacık başına sabit olduğu için nokta karede
-    // titremez; grid boyunca düzgün dağıldığı için ara mesafeler dolar ve
-    // profilden bakınca yüzey değil KATI bir kesit görünür.
+    // -- Z HACMİ (Volumetric Shell): %70 ön yüzey / %30 kavisli arka dolgu --
+    // Ön yüzeyin (yüz, göz, elbise) netliği KESİNLİKLE korunur: seed < 0.7
+    // olan parçacıklar ön yüzeyde (pos.z) kalır — dağıtım, parçacıkların
+    // çoğunu boşluğa fırlatan eski "her seed'i Z'ye yay" mantığının tersine
+    // yalnızca kalan %30'u arkaya kavisli döker.
     //
     // Yalnızca ön plana uygulanır (w >= 0.5): arka plan noktaları veri
     // katmanının koyduğu duvardır, onları öne çekmek duvarı bulanıklaştırır.
-    float extrude = seed * uExtrusionDepth * step(0.5, vOpacity);
+    // t = (seed − 0.7) / 0.3: seed < 0.7 için 0 (tam ön yüzey), 0.7..1
+    // aralığında 0..1'e çekilir; uExtrusionDepth arka kütle kalınlığını ayarlar.
+    float t = clamp((seed - 0.7) / 0.3, 0.0, 1.0);
+    float extrude = t * uExtrusionDepth * step(0.5, vOpacity);
 
     // Hedef ASLA parçacığın önüne düşmez: zaten arka düzlemden geride olan bir
     // parçacık (siluet kenarındaki döküm) öne çekilmesin diye min() ile kırpılır.
@@ -154,6 +180,27 @@ const VERTEX = /* glsl */ `
 
     // Fragment gölgelemesi bu değeri okur: 0 = ön yüzey, büyüdükçe içeri.
     vExtrusion = extrude;
+
+    // GÜN 6 (3D iyileştirme 1) — YÜZEY NORMALİ: komşu texellerin z farkından.
+    // dz/dx, dz/dy → yüzey eğimi; ama ön yüze bakarken z artışı "bize doğru"
+    // (: z = (d−0.5)·2). Normal = normalize(−D·dzdx, −D·dzdy, 1) — düz yüzey
+    // (0,0,1), kavisler yönelir. ORİJİNAL yüzey z'sinden (pos.z, extrude
+    // öncesi) türetilir: arka dolgu parçacıkları da aynı normali alır, hacim
+    // yekpare bir kesit gibi ışık alır.
+    float zL = texture2D(uPositions, aUv + vec2(-TEX_STEP, 0.0)).z;
+    float zR = texture2D(uPositions, aUv + vec2(TEX_STEP, 0.0)).z;
+    float zD = texture2D(uPositions, aUv + vec2(0.0, -TEX_STEP)).z;
+    float zU = texture2D(uPositions, aUv + vec2(0.0, TEX_STEP)).z;
+    vec3 surf = normalize(vec3(
+      -(zR - zL) * uNormalScale,
+      -(zU - zD) * uNormalScale,
+      1.0
+    ));
+    vNormal = surf;
+
+    // GÜN 6 (3D iyileştirme 2) — görüş yönü (dünya uzayı) — fresnel için.
+    vec3 worldPos = vec3(pos.xy, z);
+    vViewDir = normalize(cameraPosition - worldPos);
 
     vec4 mv = modelViewMatrix * vec4(pos.xy, z, 1.0);
 
@@ -178,11 +225,16 @@ const FRAGMENT = /* glsl */ `
   uniform float uUseTextureColor;
   uniform float uSoftness;
   uniform float uBrightness;
+  uniform vec3 uLightDir;
+  uniform float uLightStrength;
+  uniform float uFresnelStrength;
 
   varying vec2 vUv;
   varying float vDepth;
   varying float vOpacity;
   varying float vExtrusion;
+  varying vec3 vNormal;
+  varying vec3 vViewDir;
 
   /** Arka düzleme oturan parçacık bu oranda karartılır (0.5 = %50 koyu). */
   const float EXTRUSION_SHADE = 0.5;
@@ -222,6 +274,30 @@ const FRAGMENT = /* glsl */ `
     // vExtrusion = 0 iken çarpan tam 1: efekt kapalıyken renk hiç değişmez.
     col *= 1.0 - EXTRUSION_SHADE * vExtrusion;
 
+    // GÜN 6 (3D iyileştirme 1) — DİFFUSE IŞIK: yüzey normali ışık yönüyle
+    // çarpılır; düz yüzey tam aydınlık, ışığa yönelen kavisler gölgelenir.
+    // Arka plan duvarı (w < 0.5) ve içeri itilen parçacıklar da ışık alır —
+    // profil kesiti okunur. 0.5 altı yumuşak geçiş (ışık sıfırlanmaz, yüzey
+    // kararmaz): zift siyah delikler oluşmaz (additive + siyah = boşluk).
+    if (uLightStrength > 0.001) {
+      vec3 n = normalize(vNormal);
+      float ndl = dot(n, normalize(uLightDir));
+      float diffuse = 0.5 + 0.5 * ndl; // rampa: (−1..1) → 0..1
+      col *= mix(1.0, diffuse, uLightStrength);
+    }
+
+    // GÜN 6 (3D iyileştirme 2) — FRESNEL: siluet kenarlarında (n·view → 0)
+    // parlak halka. Kavisli yüzeylerin kenarı (yüz/torso profili) aydınlanır,
+    // düz bölgeler (alın, duvar) etkilenmez. Güç: slider 0..1 → pow 1..6.
+    if (uFresnelStrength > 0.001) {
+      vec3 n = normalize(vNormal);
+      vec3 v = normalize(vViewDir);
+      float nv = clamp(abs(dot(n, v)), 0.0, 1.0);
+      float fres = pow(1.0 - nv, 1.0 + uFresnelStrength * 5.0);
+      if (vOpacity < 0.5) fres *= 0.35; // duvar kenar parlaması sönük
+      col += vec3(fres * uFresnelStrength * 2.0); // additive: kenar aydınlanır
+    }
+
     col *= uBrightness;
 
     // AdditiveBlending (src = SrcAlpha, dst = One): ekrana eklenen katkı
@@ -249,6 +325,14 @@ export function createPointCloudMaterial(): PointCloudMaterial {
     uUseTextureColor: { value: 1 },
     uSoftness: { value: 0.5 },
     uBrightness: { value: 1 },
+    // GÜN 6 (3D iyileştirme 1+2): ışık + fresnel — varsayılan AÇIK (demo için
+    // anında görünür); kullanıcı slider 0'a çekerek kapatır. Işık: üst-sol ön,
+    // hafif. Eski preset'ler (bu alanlar yoktu) applyParams ile atlanır — ışık
+    // kapatılmaz, yeni görünüm alırlar.
+    uLightStrength: { value: 0.45 },
+    uLightDir: { value: new THREE.Vector3(0.45, 0.75, 0.6).normalize() },
+    uFresnelStrength: { value: 0.35 },
+    uNormalScale: { value: 0.8 },
   };
 
   const material = new THREE.ShaderMaterial({

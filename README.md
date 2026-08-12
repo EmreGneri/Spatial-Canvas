@@ -4,9 +4,16 @@ Tarayıcıda çalışan mekânsal görsel motor. Fotoğraf → derinlik haritas�
 
 ## Durum
 
+> **SÜRÜM KURALI — git'e AI izi ASLA gitmez.** Bu reponun uzak geçmişine
+> (push'lanan her şeye) hiçbir AI/Claude/assistant/opencode atfı, `Co-authored-by:`
+> veya imza satırı girmez. Kural detayı ve neden: [CHANGELOG.md "KURAL" bölümü](CHANGELOG.md).
+> Commit mesajı yalnızca ne + neden; yazar alanı yalnızca insan (Emre / Zeynep).
+
+- **Gün 6 (export + embed + video 3D + ışık):** PNG/WebM export, `<spatial-canvas>` embed (lazy depth, WebGL fallback), preset dosya indir/yükle, luminance yükseltme (Sobel + merkez vurgu), home blend + grab (video akıcılığı), otomatik DPR, nesne ayırma kenar düzeltmesi, point cloud'a yüzey normalleri + ışık + fresnel. Detay: [CHANGELOG.md](CHANGELOG.md).
 - **Gün 1 (veri katmanı):** tamamlandı — depth pipeline, R32F depth texture, 384×384 position texture, pass zinciri seam'i, mimari sözleşme.
 - **Gün 1 (render katmanı):** tamamlandı — grain/vignette pass'i renk grading ile genişletildi, canlı slider paneli.
 - **Gün 2 (veri katmanı):** depth → 3D point cloud (konumlar shader'da `positionTexture`'dan okunur), perspektif kamera + OrbitControls, sürükle-bırak görsel/video, canlı kamera (luminance yolu). Hata düzeltmeleri ve sözleşme değişikliği: [CHANGELOG.md](CHANGELOG.md).
+- **Gün 6 (export + embed):** PNG/WebM export (`src/engine/export.ts`), `<spatial-canvas>` custom element embed modu (`src/embed.ts`), lazy depth model yükleme, WebGL fallback. Aynı bundle'dan ayrı build girişi (`vite.config.ts` → `rollupOptions.input.embed`).
 - **Gün 3 (veri katmanı):** GPGPU parçacık simülasyonu — 147k parçacık ping-pong render target'larda, yay + fare kuvvet alanı (itme / çekim / vortex), kare hızından bağımsız zaman adımı, FPS sayacı, `vercel.json`. `positionTexture` artık her karede GPU'da yeniden hesaplanıyor.
 - Depth inference doğrulandı (`scripts/verify-depth.mjs`, Node WASM yolu): model yükleme **345 ms**, 512×512 çıkarım **334 ms** (q8, tek thread). Tarayıcıda ilk yükleme WASM derlemesiyle daha yüksek olur — log'da ölçülür.
 
