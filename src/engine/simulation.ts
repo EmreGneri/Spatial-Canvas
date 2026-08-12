@@ -39,6 +39,12 @@ export interface SimulationUniforms extends Record<string, THREE.IUniform> {
   uForceStrength: { value: number };
   uMouseWorld: { value: THREE.Vector2 };
   uMouseActive: { value: number };
+  /**
+   * GÜN 6 (madde 5) — grab: 1 iken fare altındaki parçacıklar HOME'a çekilir
+   * (yerel sıfırlama). Video modunda fareyle yapılan deformasyon akışla
+   * çakışmasın: imleç gezdikçe parçacık home'una döner. 0 = kapalı.
+   */
+  uGrabStrength: { value: number };
 }
 
 /**
@@ -52,6 +58,7 @@ export const SIM_PARAMS: ParamDef[] = [
   { key: 'uForceMode', label: 'kuvvet modu', min: 0, max: 2, default: 0 },
   { key: 'uForceRadius', label: 'kuvvet yarıçapı', min: 0.05, max: 1, default: 0.35 },
   { key: 'uForceStrength', label: 'kuvvet şiddeti', min: 0, max: 0.1, default: 0.02 },
+  { key: 'uGrabStrength', label: 'grab (home çekişi)', min: 0, max: 0.5, default: 0 },
 ];
 
 const SIM_VERTEX = /* glsl */ `
@@ -75,6 +82,7 @@ const FORCE_GLSL = /* glsl */ `
   uniform float uDtScale;
   uniform vec2 uMouseWorld;
   uniform float uMouseActive;
+  uniform float uGrabStrength;
   varying vec2 vUv;
 
   vec3 computeForce(vec3 pos) {
@@ -85,6 +93,18 @@ const FORCE_GLSL = /* glsl */ `
     float distHome = length(toHome);
     if (distHome > uRestLength) {
       force += toHome * uStiffness;
+    }
+
+    // GÜN 6 (madde 5) — grab: fare ALTINDAKI parçacığı home'a çek. Ayrı bir
+    // kol (uGrabStrength): video modunda deformasyon akışla çakışmasın —
+    // imleç gezdiği yeri sıfırlar, uzak parçacıklar akışına devam eder.
+    if (uGrabStrength > 0.001) {
+      vec2 gd = pos.xy - uMouseWorld;
+      float gdist = length(gd);
+      if (uMouseActive > 0.5 && gdist < uForceRadius) {
+        float gfall = smoothstep(1.0, 0.0, gdist / uForceRadius);
+        force += toHome * (uGrabStrength * uStiffness * 0.5) * gfall;
+      }
     }
 
     // fare kuvvet alanı — z=0 düzleminde dünya koordinatı uMouseWorld
@@ -205,6 +225,7 @@ export function createSimulation(
     uForceStrength: { value: 0.02 },
     uMouseWorld: { value: new THREE.Vector2(0, 0) },
     uMouseActive: { value: 0 },
+    uGrabStrength: { value: 0 },
   };
 
   const posMaterial = new THREE.ShaderMaterial({

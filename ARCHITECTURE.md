@@ -1,7 +1,6 @@
 # spatial-canvas · Mimari Sözleşmesi
 
-v0.3 — Gün 3. Değişiklikler: GPGPU parçacık simülasyonu — `positionTexture` artık
-ping-pong render target texture'ı, `homeTexture` eklendi (dinlenme konumu).
+v0.4 — Gün 6. Değişiklikler: PNG/WebM export modülü (`src/engine/export.ts`), embed modu (`src/embed.ts`, `<spatial-canvas>` custom element), Vite embed build girişi.
 İki katmanın birbirine güvenli bağlanabilmesi için yazıldı.
 Değişiklik tartışılır, yazılır, imzalanır. Sessiz sapma yok.
 
@@ -121,13 +120,19 @@ RenderPass (point cloud sahnesi) → Grain/Vignette → [Zeynep: Feedback → Ch
 - Composer hedefi half-float; parçacık pass'leri (Gün 3) full float gerektirirse
   `EffectComposer` render target'ı güncellenir — bu da Zeynep'in kararı.
 
-## Kamera / Video Yolu (Gün 2)
+## Kamera / Video Yolu (Gün 2 + Gün 6)
 
 - Gün 1 kararı gereği: statik görsel → Depth-Anything-Small (model); video dosyası
   ve canlı kamera → depth modeli **YOK**, luminance height map
   (`src/depth.ts` → `luminanceHeightMap`): parlaklık = yükseklik, parlak = yakın.
 - Çıktı aynı `DepthResult` sözleşmesi: 0..1, satır 0 = üst. Engine'de mode
   ayrımı yok — tek `setDepth` girişi.
+- **Gün 6 (video 3D):** luminance artık ham parlaklık değil: ① hafif box blur
+  (codec gürültüsü), ② Sobel kenar kabartma (yüz hatları z'de belirgin),
+  ③ merkeze radyal vurgu (özne arka plandan ayrışır). Ayarlar
+  `LuminanceOptions` (`src/depth.ts`) — `edgeStrength`, `centerBoost`,
+  `centerRadius`, `smoothingRadius`; App.tsx video döngüsü varsayılanları
+  kullanır. Hepsi CPU'da, kare başına — maliyet çıkarımsız.
 
 ## Render Parametre Sözleşmesi (Gün 4)
 
@@ -240,6 +245,13 @@ gider, düğüm parametreleri graf params'ında yaşar.
 - Kanıt testi (GPU'suz): `node scripts/verify-preset.mjs` — sahte engine ile
   round-trip, sürüm koruması, bilinmeyen alan toleransı, graf aktifliği.
   Node'un uzantısız import sorunu `scripts/ts-extension-loader.mjs` ile çözülür.
+
+## Export + Embed (Gün 6 — Emre)
+
+- **PNG export** (`src/engine/export.ts`): `canvas.toBlob` — mevcut frame'i indirir. EffectComposer WebGL render target'larına çizdiği için ekran canvas'ı her karede günceldir; `preserveDrawingBuffer` gerekmez (senkron çağrı anında tarayıcı canvas içeriğini kopyalar).
+- **WebM export**: `MediaRecorder` + `canvas.captureStream(60)`. VP9 desteklenirse `video/webm;codecs=vp9`, yoksa VP8/varsayılan. Bit hızı 8 Mbps varsayılan.
+- **Embed modu** (`src/embed.ts`): `<spatial-canvas>` custom element. Aynı bundle, ayrı build girişi (`vite.config.ts` → `rollupOptions.input.embed`). UI mount edilmez; depth modeli yalnızca `src` attribute'u varsa lazy yüklenir (`import('./depth')`). WebGL yoksa statik görsel fallback (`<img>`). `IntersectionObserver` ile görünür olana kadar lazy init.
+- **Embed bundle**: `dist/assets/embed-*.js` (~3.4 kB) — ana uygulama (~402 kB) ile aynı chunk'ları paylaşır, depth modeli ayrı chunk'ta (~522 kB) lazy yüklenir.
 
 ## Model ve Runtime
 

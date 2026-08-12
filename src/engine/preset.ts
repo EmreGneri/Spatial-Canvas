@@ -127,7 +127,8 @@ export function applyPreset(target: PresetTarget, preset: Preset): ApplyResult {
 }
 
 // ---------------------------------------------------------------------------
-// localStorage slotları (tarayıcı). Dosya indirme/yükleme Gün 6'da gelir.
+// localStorage slotları (tarayıcı) + JSON dosya indirme/yükleme (Gün 6).
+// File indirme paylaşım + yedek; slotlar çalışma zamanı hızlı erişim.
 // ---------------------------------------------------------------------------
 
 const STORAGE_PREFIX = 'spatial-canvas.preset.';
@@ -177,4 +178,45 @@ export function listSlots(): string[] {
     if (key?.startsWith(STORAGE_PREFIX)) names.push(key.slice(STORAGE_PREFIX.length));
   }
   return names.sort();
+}
+
+/**
+ * Preset'i JSON dosyası olarak indirir (taşınabilir — paylaşım/backup).
+ * `downloadPresetFile` doğrudan <a download> tetikler.
+ */
+export function downloadPresetFile(preset: Preset): void {
+  const json = JSON.stringify(preset, null, 2);
+  const blob = new Blob([json], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `spatial-canvas-${(preset.name || 'preset').replace(/[^\w\-]+/g, '_')}.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+/**
+ * JSON dosyasından preset'i okur — sürümü doğrular (applyPreset'in açtığı
+ * path). Yükleme başarısızsa null döner; çağıran mesajı gösterir.
+ */
+export function parsePresetFile(file: File): Promise<Preset> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('dosya okunamadı'));
+    reader.onload = () => {
+      try {
+        const parsed = JSON.parse(String(reader.result)) as Preset;
+        if (parsed.version !== PRESET_VERSION) {
+          reject(
+            new Error(`preset sürümü ${parsed.version}, beklenen ${PRESET_VERSION}`),
+          );
+          return;
+        }
+        resolve(parsed);
+      } catch (err) {
+        reject(err instanceof Error ? err : new Error('bozuk JSON'));
+      }
+    };
+    reader.readAsText(file);
+  });
 }

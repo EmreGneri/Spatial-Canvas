@@ -131,6 +131,11 @@ export function buildSilhouette(
 ): SilhouetteResult {
   const mask = new Float32Array(depth.length);
   for (let i = 0; i < mask.length; i++) {
+    // RMBG maskesi sert 0.5 eşiğiyle kesilir: özne net (≥0.5), arka plan
+    // (RMBG 0.0-0.2) temiz ayrılır. Kenar bandındaki yumuşak değerler
+    // Engine.setDepth'te maskenin depth uzayında DILATE edilmesiyle geri
+    // kazandırılır (eşik burada gevşetilmez — RL): 0.5 altına inmek arka
+    // planı da ön plana sokar, ayırma yok olur.
     mask[i] =
       depth[i] >= SILHOUETTE_BIN_LO && (!foregroundMask || foregroundMask[i] >= 0.5) ? 1 : 0;
   }
@@ -146,7 +151,8 @@ export function buildSilhouette(
   // SON AND (Tur 9): nesne maskesi güven sınırıdır — morfolojik kapanışın,
   // bileşen birleştirmenin veya satır boşluk dolgusunun dirilttiği hiçbir
   // arka plan pikseli (maske < 0.5) ön plana dönemez. Beyaz duvar saç
-  // arasından sızmaz, perde/çanak oluşmaz.
+  // arasından sızmaz, perde/çanak oluşmaz. (Kenar kazancının kaynağı dilate
+  // — buraya eşik gevşetme YOK.)
   if (foregroundMask) {
     for (let i = 0; i < mask.length; i++) {
       if (foregroundMask[i] < 0.5) mask[i] = 0;

@@ -95,6 +95,16 @@ export interface PositionFillOptions {
    * Varsayılan açık.
    */
   importanceSampling?: boolean;
+  /**
+   * GÜN 6 (video 3D — madde 4): home texture güncelleme yumuşaklığı (0..1).
+   * 1 = toptan yaz (varsayılan), <1 = eski home verisiyle karıştır: yeni =
+   * eski·(1−blend) + yeni·blend. xyz blendlenir; w (iki seviyeli opaklık)
+   * aynen yazılır — ara opaklık değeri üretilmez. Video modunda home her
+   * karede değişir; toptan yazılırsa yay kuvveti parçacığı sürekli dürter
+   * (atiyoloji kaybı, titreme). 0.8 parçacık ataletini korurken videoyu takip
+   * eder.
+   */
+  blend?: number;
 }
 
 /**
@@ -122,11 +132,25 @@ export function fillPositionsFromDepth(
     foregroundMask: opts.foregroundMask,
     importanceSampling: opts.importanceSampling !== false,
   });
-  for (let o = 0, k = 0; o < data.length; o += 4, k += 4) {
-    data[o] = xyz[k];
-    data[o + 1] = xyz[k + 1];
-    data[o + 2] = xyz[k + 2];
-    data[o + 3] = xyz[k + 3];
+  const blend = opts.blend ?? 1;
+  if (blend >= 1) {
+    for (let o = 0, k = 0; o < data.length; o += 4, k += 4) {
+      data[o] = xyz[k];
+      data[o + 1] = xyz[k + 1];
+      data[o + 2] = xyz[k + 2];
+      data[o + 3] = xyz[k + 3];
+    }
+  } else {
+    // GÜN 6 (madde 4): yeni konum eskiyle karışır — w iki seviyeli opaklık
+    // aynen yazılır (ara değer üretilmez; aksi halde shader'lar nesne ayırmayı
+    // yarı-opak sanar).
+    const keep = 1 - blend;
+    for (let o = 0, k = 0; o < data.length; o += 4, k += 4) {
+      data[o] = data[o] * keep + xyz[k] * blend;
+      data[o + 1] = data[o + 1] * keep + xyz[k + 1] * blend;
+      data[o + 2] = data[o + 2] * keep + xyz[k + 2] * blend;
+      data[o + 3] = xyz[k + 3];
+    }
   }
   tex.needsUpdate = true;
 }

@@ -11,12 +11,15 @@ import { NodeGraphEditor } from './ui/NodeGraphEditor';
 import {
   applyPreset,
   deleteSlot,
+  downloadPresetFile,
   listSlots,
   loadSlot,
+  parsePresetFile,
   PRESET_VERSION,
   saveSlot,
   toPreset,
 } from './engine/preset';
+import { exportPNG, exportWebM } from './engine/export';
 
 /**
  * Video/kamera luminance yolunda temporal smoothing katsayısı (kalite kararı):
@@ -50,6 +53,8 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
   const [segment, setSegment] = useState(false);
   const [useTextureColor, setUseTextureColor] = useState(true);
   const [fps, setFps] = useState(0);
+  /** GÜN 6: WebM kayıt süresi — döngüsel butonla değiştirilir (5/10/20). */
+  const [webmSec, setWebmSec] = useState(5);
   /** Editör dışından graf kurulduğunda (preset yükleme) editörü tazele. */
   const [graphTick, setGraphTick] = useState(0);
   /** Son yüklenen fotoğraf kaynağı — nesne ayırma sonradan açılırsa RMBG'yi
@@ -62,8 +67,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
   useEffect(() => {
     const engine = new Engine(containerRef.current!);
     engineRef.current = engine;
-    setEngine(engine);
-    // Render katmanının shader'ı yer tutucunun yerine geçer (başlangıç modu).
+    setEngine(engine);    // Render katmanının shader'ı yer tutucunun yerine geçer (başlangıç modu).
     // Engine yer tutucuyu dispose eder; uPositions'ı her karede o yazar.
     // Modların parametre tanımları da kaydedilir — preset serileştirmesi bunları okur.
     engine.registerRenderMode('points', materials.points, POINTS_PARAMS);
@@ -77,6 +81,22 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
       'point cloud material → shaders/pointCloudMaterial (soft particle, additive)',
     ]);
     const fpsTimer = window.setInterval(() => setFps(engine.fps), 1000);
+    // GÜN 6 (URL) — ?preset=<slotAdı> sayfa açılışında yükler (paylaşılabilir link).
+    const urlPreset = new URLSearchParams(window.location.search).get('preset');
+    if (urlPreset) {
+      const preset = loadSlot(urlPreset);
+      if (preset) {
+        try {
+          const { applied, warnings } = applyPreset(engine, preset);
+          setLog((prev) => [...prev, `URL preset yüklendi: "${urlPreset}" · düğümler: ${applied.length}`]);
+          for (const w of warnings) setLog((prev) => [...prev, `  uyarı: ${w}`]);
+        } catch (err) {
+          setLog((prev) => [...prev, `URL preset HATA: ${err instanceof Error ? err.message : String(err)}`]);
+        }
+      } else {
+        setLog((prev) => [...prev, `URL preset bulunamadı: "${urlPreset}"`]);
+      }
+    }
     return () => {
       clearInterval(fpsTimer);
       teardownSource();
@@ -115,6 +135,13 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
    */
   function teardownSource() {
     clearTimer();
+    // GÜN 6 (madde 4): canlı home modunu kapat — sonraki fotoğraf yolu toptan
+    // yazar (eski davranış korunur).
+    const engine = engineRef.current;
+    if (engine) {
+      engine.dynamicHome = false;
+      engine.simUniforms.uGrabStrength.value = 0;
+    }
     const video = videoRef.current;
     if (video) {
       video.pause();
@@ -179,6 +206,12 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
   /** Kamera/video: depth modeli yok, parlaklık = yükseklik. */
   function startLuminanceLoop(source: HTMLCanvasElement | HTMLVideoElement | HTMLImageElement, label: string) {
     clearTimer(); // kaynağı bırakmaz — teardownSource'u çağıran taraf yapar
+    // GÜN 6 (madde 4): canlı home → blend yazım + gevşetilmiş yay. Home her
+    // karede değişir; toptan yazılırsa parçacık sürekli dürülür (titreme).
+    const engine = engineRef.current!;
+    engine.dynamicHome = true;
+    engine.simUniforms.uStiffness.value = Math.max(engine.simUniforms.uStiffness.value, 0.05);
+    if (engine.simUniforms.uRestLength.value < 0.008) engine.simUniforms.uRestLength.value = 0.008;
     let lastLog = 0;
     // Geçen smoothed kare. İlk karede geçmiş yoktur, ham kabul edilir; kaynak
     // değişince (boyut değişimi) de sıfırlanır. lerp prev üzerinden in-place
@@ -192,7 +225,13 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
       // Video ilk kareyi çözmeden drawImage boş/hatalı çizer.
       if (source instanceof HTMLVideoElement && source.readyState < 2) return;
       const t0 = performance.now();
-      const hm = luminanceHeightMap(source, 256);
+      const hm = luminanceHeightMap(source, 256, {
+        // GÜN 6: kenar kabartma + merkez vurgu — yüz hatları 3D'de belirgin,
+        // özne arka plandan ayrışır. Varsayılanlar flu hal için ayarlı; video
+        // gürültüsü smoothing + temporal lerp ile bastırılır.
+        edgeStrength: 0.35,
+        centerBoost: 0.5,
+      });
       const data = hm.data;
       if (prev && prev.length === data.length) {
         // Temporal smoothing: yeni kareyi geçmişe yapıştır. Düşük alpha kısa
@@ -385,9 +424,47 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
         </label>
         <span style={{ color: '#667', fontSize: 12 }}>görsel/video sürükle-bırak · tıklayıp döndür · hover = kuvvet</span>
         <span style={{ color: fps >= 30 ? '#6a6' : '#c66', fontSize: 12, fontVariantNumeric: 'tabular-nums' }}>
-          {fps} fps
+         {fps} fps
         </span>
-      </div>
+        <button
+         type="button"
+         disabled={!engine}
+         onClick={() => {
+         const canvas = engineRef.current?.renderer.domElement;
+         if (!canvas) return;
+         exportPNG(canvas)
+          .then(() => say('PNG indirildi'))
+          .catch((e) => say(`PNG HATA: ${e instanceof Error ? e.message : String(e)}`));
+         }}
+         style={{ fontSize: 12, padding: '3px 10px', background: '#1a1a22', color: '#c8c8d4', border: '1px solid #26262e', borderRadius: 3, cursor: 'pointer' }}
+        >
+         PNG
+        </button>
+        <button
+         type="button"
+         disabled={!engine}
+         onClick={() => {
+         const canvas = engineRef.current?.renderer.domElement;
+         if (!canvas) return;
+         say('WebM kaydı başladı...');
+         exportWebM(canvas, { durationSec: webmSec })
+          .then(() => say(`WebM indirildi (${webmSec} sn)`))
+          .catch((e) => say(`WebM HATA: ${e instanceof Error ? e.message : String(e)}`));
+         }}
+         style={{ fontSize: 12, padding: '3px 10px', background: '#1a1a22', color: '#c8c8d4', border: '1px solid #26262e', borderRadius: 3, cursor: 'pointer' }}
+        >
+         WebM ({webmSec}sn)
+        </button>
+        <button
+         type="button"
+         disabled={!engine}
+         onClick={() => { setWebmSec(webmSec === 5 ? 10 : webmSec === 10 ? 20 : 5); }}
+         style={{ fontSize: 11, padding: '2px 6px', background: 'none', color: '#667', border: 'none', cursor: 'pointer' }}
+         title="süreyi değiştir: 5/10/20 sn"
+        >
+         ⏱
+        </button>
+        </div>
 
       <div
         ref={containerRef}
@@ -474,6 +551,30 @@ function PresetControls({
     setSlots(listSlots());
   }
 
+  /** GÜN 6: anlık durumu JSON dosyası olarak indir — paylaşım + yedek. */
+  function exportFile() {
+    const n = name.trim() || 'preset';
+    try {
+      downloadPresetFile(toPreset(engine, n));
+      say(`preset dosyası indirildi: ${n}.json`);
+    } catch (err) {
+      say(`dosya indirme HATA: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /** GÜN 6: JSON dosyasından preset aç — sürüm koruması uygulanır. */
+  async function importFile(file: File) {
+    try {
+      const preset = await parsePresetFile(file);
+      const { applied, warnings } = applyPreset(engine, preset);
+      say(`dosya preset yüklendi: "${preset.name}" · aktif düğümler: ${applied.length}`);
+      for (const w of warnings) say(`  uyarı: ${w}`);
+      onGraphChanged();
+    } catch (err) {
+      say(`dosya preset HATA: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
   return (
     <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap', color: '#889' }}>
       <span style={{ fontSize: 12 }}>preset:</span>
@@ -491,6 +592,26 @@ function PresetControls({
       >
         kaydet
       </button>
+      <button
+        type="button"
+        onClick={exportFile}
+        style={{ fontSize: 12, padding: '3px 10px', background: '#1a1a22', color: '#c8c8d4', border: '1px solid #26262e', borderRadius: 3, cursor: 'pointer' }}
+      >
+        dosya ↓
+      </button>
+      <label style={{ fontSize: 12, padding: '3px 10px', background: '#1a1a22', color: '#c8c8d4', border: '1px solid #26262e', borderRadius: 3, cursor: 'pointer' }}>
+        dosya ↑
+        <input
+          type="file"
+          accept="application/json,.json"
+          style={{ display: 'none' }}
+          onChange={(e) => {
+            const f = e.target.files?.[0];
+            if (f) importFile(f);
+            e.target.value = '';
+          }}
+        />
+      </label>
       {slots.map((n) => (
         <span key={n} style={{ ...row, gap: 4 }}>
           <button type="button" onClick={() => load(n)} style={{ fontSize: 12, padding: '3px 10px', background: '#1a1a22', color: '#8ab', border: '1px solid #26262e', borderRadius: 3, cursor: 'pointer' }}>
@@ -518,6 +639,7 @@ function ForceControls({ engine }: { engine: Engine }) {
   const [radius, setRadius] = useState(u.uForceRadius.value);
   const [strength, setStrength] = useState(u.uForceStrength.value);
   const [stiffness, setStiffness] = useState(u.uStiffness.value);
+  const [grabStrength, setGrabStrength] = useState(u.uGrabStrength.value);
 
   const row: CSSProperties = { display: 'flex', gap: 8, alignItems: 'center', fontSize: 12 };
 
@@ -542,6 +664,8 @@ function ForceControls({ engine }: { engine: Engine }) {
         onChange={(v) => { u.uForceStrength.value = v; setStrength(v); }} />
       <Slider label="yay" min={0.01} max={0.3} step={0.005} value={stiffness}
         onChange={(v) => { u.uStiffness.value = v; setStiffness(v); }} />
+      <Slider label="grab (home)" min={0} max={0.5} step={0.01} value={grabStrength}
+        onChange={(v) => { u.uGrabStrength.value = v; setGrabStrength(v); }} />
       <span style={{ color: '#667' }}>sapma ≈ {(strength / stiffness).toFixed(2)} birim</span>
     </div>
   );

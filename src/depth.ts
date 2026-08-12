@@ -467,8 +467,37 @@ function applySobelRelief(
   }
 }
 
-/** Sobel büyüklüğü |G| = √(Gx² + Gy²); clamp-to-edge sınır işlemi. */
-function sobelMagnitude(lum: Float32Array, w: number, h: number): Float32Array {
+/** Sobel büyüklüğü |G| = √(Gx² + Gy²); clamp-to-edge sınır işlemi.
+ *  GÜN 6 (opt): çıktı buffer'ı havuzdan (outPool) gelir — alloc yok. */
+function sobelMagnitude(
+  lum: Float32Array,
+  w: number,
+  h: number,
+  outPool?: Float32Array | null,
+): Float32Array {
+  if (outPool && outPool.length === lum.length) {
+    const out = outPool;
+    for (let y = 0; y < h; y++) {
+      const ym = Math.max(0, y - 1);
+      const yp = Math.min(h - 1, y + 1);
+      for (let x = 0; x < w; x++) {
+        const xm = Math.max(0, x - 1);
+        const xp = Math.min(w - 1, x + 1);
+        const tl = lum[ym * w + xm];
+        const t = lum[ym * w + x];
+        const tr = lum[ym * w + xp];
+        const l = lum[y * w + xm];
+        const r = lum[y * w + xp];
+        const bl = lum[yp * w + xm];
+        const b = lum[yp * w + x];
+        const br = lum[yp * w + xp];
+        const gx = tr + 2 * r + br - (tl + 2 * l + bl);
+        const gy = bl + 2 * b + br - (tl + 2 * t + tr);
+        out[y * w + x] = Math.sqrt(gx * gx + gy * gy);
+      }
+    }
+    return out;
+  }
   const out = new Float32Array(lum.length);
   for (let y = 0; y < h; y++) {
     const ym = Math.max(0, y - 1);
@@ -496,6 +525,12 @@ function sobelMagnitude(lum: Float32Array, w: number, h: number): Float32Array {
  * Kamera/video yolu (Gün 1 kararı): depth modeli YOK — parlaklık = yükseklik.
  * Aynı DepthResult sözleşmesi: 0..1, 0 = uzak (karanlık), 1 = yakın (parlak),
  * satır 0 = üst. Görsel modelden geçmediği için çıkarım süresi yok.
+ *
+ * GÜN 6 — Video 3D geliştirmesi (1 + 2):
+ * - Yerel kontrast + ön plan vurgusu: luminance yalnızca global parlaklık
+ *   yerine, merkezdeki özneyi yükseltir (yüz/nesne arka plandan ayrılır).
+ * - Kenar kabartma (Sobel): yüz hatları 3D'de belirginleşir (fotoğraf
+ *   yolundaki applySobelRelief ile aynı ilke, luminance üzerinde CPU).
  */
 // Canlı kamerada saniyede ~10 kez çağrılır: her karede yeni canvas + yeni 2D
 // context açmak yerine tek bir çizim yüzeyi yeniden kullanılır.
@@ -504,10 +539,30 @@ let scratchCtx: CanvasRenderingContext2D | null = null;
 // Luminance buffer'ı da aynı nedenle yeniden kullanılır: video yolunda her
 // frame'de yeni Float32Array ayırmak çöp biriktirir, scratch değişmez.
 let scratchData: Float32Array | null = null;
+// GÜN 6 (opt): geçici işlem buffer'ları — her karede boxBlur/Sobel için yeni
+// Float32Array ayırmak GC baskısı yaratır. Boyut değişince yeniden boyutlandırılır.
+let scratchBlur: Float32Array | null = null;
+let scratchMag: Float32Array | null = null;
+
+/**
+ * Görsel işleme oluşumunu yapılandıran seçenekler. Varsayılanlar flu haline
+ * göre ayarlanır: video oynatıcı modu iyi görünmelidir, gerçek zamanlıdır.
+ */
+export interface LuminanceOptions {
+  /** Kenar kabartma gücü (β_video). 0 = kapalı. Varsayılan 0.35. */
+  edgeStrength?: number;
+  /** Merkez/ön plan vurgusu (α_video): yüz bölgesini z'de yükseltir. Varsayılan 0.5. */
+  centerBoost?: number;
+  /** Ön plan vurgusunun uzamsal yarıçapı (0..1, normalize). Varsayılan 0.35. */
+  centerRadius?: number;
+  /** Yumuşatma yarıçapı (piksel) — yüksek frekanslı codec gürültüsünü bastırır. Varsayılan 1. */
+  smoothingRadius?: number;
+}
 
 export function luminanceHeightMap(
   source: HTMLCanvasElement | HTMLVideoElement | HTMLImageElement,
   size = 256,
+  opts: LuminanceOptions = {},
 ): DepthResult {
   let srcW: number;
   let srcH: number;
@@ -543,5 +598,99 @@ export function luminanceHeightMap(
   for (let i = 0; i < px.length; i += 4) {
     data[i / 4] = (0.299 * px[i] + 0.587 * px[i + 1] + 0.114 * px[i + 2]) / 255;
   }
-  return { data, width: size, height };
+
+  // GÜN 6 — video 3D iyileştirmeleri (CPU'da, gerçek zamanlı):
+  const edgeStrength = opts.edgeStrength ?? 0.35;
+  const centerBoost = opts.centerBoost ?? 0.5;
+  const centerRadius = opts.centerRadius ?? 0.35;
+  const smoothingRadius = opts.smoothingRadius ?? 1;
+
+  if (smoothingRadius > 0) {
+    // Codec gürültüsünü bastır — yüksek frekanslı parazit z'yi titreştirir.
+    // tmp buffer havuzlanır (scratchBlur): video döngüsünde alloc yok.
+    // Cihaz havuzunu bu noktada sabitle — scratchBlur ilk çağrıda havuzdan gelir.
+  boxBlurInPlace(data, size, height, smoothingRadius, scratchBlur);
+  }
+  if (edgeStrength > 0) {
+    // Yüz hatlarını (göz çukuru, burun, çene) z'de belirginleştir. Fotoğraf
+    // yolundaki Sobel kabartma ile aynı ilke; video yolunda luminance the
+    // z-kaynağıdır, diret olarak eklenir.
+    if (!scratchMag || scratchMag.length !== data.length) {
+      scratchMag = new Float32Array(data.length);
+    }
+    sobelMagnitude(data, size, height, scratchMag);
+    for (let i = 0; i < data.length; i++) data[i] += edgeStrength * scratchMag[i];
+  }
+  if (centerBoost > 0) {
+    // Merkeze radyal vurgu: yüz/gövde arka plandan ayrılsın. Ekranda merkeze
+    // yakın piksel daha "yakın" (z yükselir); arka plan ayırt edici özelliği
+    // görüntünün dışa dönük kenarlarında kalır.
+    const cx = (size - 1) / 2;
+    const cy = (height - 1) / 2;
+    const rMax = Math.max(1, Math.min(cx, cy));
+    const rad = Math.max(0.01, centerRadius);
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < size; x++) {
+        const dx = (x - cx) / rMax;
+        const dy = (y - cy) / rMax;
+        const d2 = dx * dx + dy * dy;
+        const g = Math.exp(-(d2 / (2 * rad * rad)));
+        data[y * size + x] += centerBoost * g;
+      }
+    }
+  }
+  // 0..1 sözleşmesi (normalize et — global boost/edge sonrası en/çok kayabilir).
+  return { data: normalizeInPlace(data), width: size, height };
+}
+
+/** In-place min-max normalize (0..1 sözleşmesi). */
+function normalizeInPlace(data: Float32Array): Float32Array {
+  let mn = Infinity;
+  let mx = -Infinity;
+  for (const v of data) {
+    if (v < mn) mn = v;
+    if (v > mx) mx = v;
+  }
+  const span = mx - mn || 1;
+  for (let i = 0; i < data.length; i++) data[i] = Math.min(1, Math.max(0, (data[i] - mn) / span));
+  return data;
+}
+
+/** In-place separable box blur (video yolunda hull temporal smoothing ile birlikte).
+ *  GÜN 6 (opt): takas buffer'ı havuzdan (scratchBlur) gelir — alloc yok. */
+function boxBlurInPlace(
+  src: Float32Array,
+  w: number,
+  h: number,
+  radius: number,
+  tmpPool?: Float32Array | null,
+): Float32Array {
+  // tmp her iki geçişte de TAMAMEN yazılır — temizlemeye gerek yok.
+  const tmp = tmpPool && tmpPool.length >= src.length ? tmpPool : new Float32Array(src.length);
+  const k = radius * 2 + 1;
+  for (let y = 0; y < h; y++) {
+    const row = y * w;
+    for (let x = 0; x < w; x++) {
+      let s = 0;
+      for (let dx = -radius; dx <= radius; dx++) {
+        s += src[row + Math.min(w - 1, Math.max(0, x + dx))];
+      }
+      tmp[row + x] = s / k;
+    }
+  }
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      let s = 0;
+      for (let dy = -radius; dy <= radius; dy++) {
+        s += tmp[Math.min(h - 1, Math.max(0, y + dy)) * w + x];
+      }
+      src[y * w + x] = s / k;
+    }
+  }
+  // Havuz yeniden boyutlandıysa (ilk çağrı) global'e yaz.
+  const pool = tmpPool as Float32Array | null;
+  if (pool && pool !== tmp) {
+    scratchBlur = tmp;
+  }
+  return src;
 }

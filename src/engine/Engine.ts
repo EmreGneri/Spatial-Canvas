@@ -18,7 +18,7 @@ import { SIM_PARAMS } from './simulation';
 import { GRAIN_PARAMS } from '../shaders/grainPass';
 import { applyParams, collectParams, type ParamDef, type ParamValues } from './params';
 import { activeNodes, createDefaultGraph, topologicalOrder, validateGraph, type Graph } from './graph';
-import { resampleBilinear } from './reconstruction/silhouette.ts';
+import { resampleBilinear, dilateAndFeatherMask } from './reconstruction/silhouette.ts';
 import type { CameraPose, MediaType } from './preset';
 
 const MAX_DPR = 2;
@@ -110,6 +110,15 @@ export class Engine {
   /** Kaynak türü (preset'e yalnızca bu yazılır; medyanın kendisi asla). */
   mediaType: MediaType = 'synthetic';
 
+  /**
+   * GÜN 6 (video 3D — madde 4): video/kamera kaynağı aktifken home depth'i
+   * her karede değişir. Toptan yazılırsa yay parçacığı sürekli dürter
+   * (atiyoloji kaybı + titreme). Bu bayrak açıkken fillPositionsFromDepth
+   * blend ile yazılır (0.8) ve yay/ölü bölge videoya göre gevşetilir.
+   * Yalnızca startLuminanceLoop (canlı) sırasında true — fotoğraf yolu değil.
+   */
+  dynamicHome = false;
+
   /** Graf = sahnenin tek doğruluk kaynağı (Gün 4). */
   private graph: Graph = createDefaultGraph();
   /** Aktif render modları: ad → { material, parametre tanımları }. */
@@ -122,9 +131,21 @@ export class Engine {
   /** Aktif material'ı Engine mi üretti? Yalnızca öyleyse dispose eder. */
   private ownsPointsMaterial = true;
 
+  /**
+   * GÜN 6 (opt): otomatik DPR düşürme. FPS sürdürülebilir eşiğin (30) altına
+   * düşerse drawing buffer 384→256'ya iner (karede 2.25x daha az piksel);
+   * tekrar 45+ olursa geri yükselir. Histerezis: sık sık salınım yapmaz.
+   * Kullanıcı yüksek DPR istiyorsa capsMaxDpr=1 vererek kapatabilir.
+   */
+  adaptiveDpr = true;
+  private currentDpr = 0;
+  private lowFpsCount = 0;
+  private highFpsCount = 0;
+
   constructor(container: HTMLElement) {
     this.renderer = new THREE.WebGLRenderer({ antialias: false });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, MAX_DPR));
+    this.currentDpr = Math.min(window.devicePixelRatio || 1, MAX_DPR);
+    this.renderer.setPixelRatio(this.currentDpr);
     container.appendChild(this.renderer.domElement);
 
     this.homeTexture = createHomeTexture();
@@ -450,6 +471,12 @@ export class Engine {
         maskWidth === width && maskHeight === height
           ? foregroundMask
           : resampleBilinear(foregroundMask, maskWidth, maskHeight, width, height);
+      // Kenar güvencesi: bilinear ölçekleme siluet kenarındaki yumuşak değerleri
+      // (< 0.5) üretir; buildSilhouette'teki sert AND bu bandı keserdi (önceki
+      // hata: "sadece orta seçiliyor"). Eşiği gevşetmeden (arka plan da sızardı)
+      // maske depth uzayında HAFİF dilate edilir — dar morf: kenar +1px geri
+      // kazanılır, uzak arka plan (RMBG 0.0-0.1) hâlâ temiz kalır.
+      mask = dilateAndFeatherMask(mask, width, height);
     }
     const current = this.currentDepthTexture;
     // Canlı kamera saniyede ~10 kez çağırır; boyut aynıysa texture'ı yeniden
@@ -464,7 +491,12 @@ export class Engine {
     // Home'u depth'ten doldur. Tohumlama YALNIZCA ilk seferde: canlı kamera
     // saniyede ~10 kez setDepth çağırır, her seferinde tohumlanırsa konumlar
     // sıfırlanır ve fareyle yapılan deformasyon sürekli silinir.
-    fillPositionsFromDepth(this.homeTexture, data, width, height, { foregroundMask: mask });
+    // GÜN 6 (madde 4): video/kamera kaynağında (dynamicHome) home %80 yeni
+    // %20 eski ile yazılır — parçacık ataleti korunur, titreme söner.
+    fillPositionsFromDepth(this.homeTexture, data, width, height, {
+      foregroundMask: mask,
+      blend: this.dynamicHome ? 0.8 : 1,
+    });
     // TUR 11: fotoğraf yüklüyse parçacık renklerini de aynı grid/remap ile
     // doldur (setPhoto'dan önce setDepth gelirse texture boş kalır — renkler
     // sonraki setDepth'te yazılır).
@@ -587,6 +619,43 @@ export class Engine {
       this.fps = Math.round((this.frameCount * 1000) / (now - this.lastFpsSample));
       this.frameCount = 0;
       this.lastFpsSample = now;
+      // GÜN 6 (opt): otomatik çözünürlük uyarlaması — histerezisli geçit.
+      this.adaptResolution();
+    }
+  }
+
+  /**
+   * FPS'ye göre pixel ratio'yu düşür/yükselt. Histerezis: 30 altı 1 sn üst
+   * üste görülürse düşür (384→256 = 2.25x daha az piksel); 45 üstü 2 sn
+   * sürerse geri yükselt. Salınımı önler, düşük + yüksek DPR cihazlarda
+   * video yolunu akıcı tutar.
+   */
+  private adaptResolution() {
+    if (!this.adaptiveDpr) return;
+    const maxDpr = Math.min(window.devicePixelRatio || 1, MAX_DPR);
+    if (this.fps > 0 && this.fps < 30) {
+      this.lowFpsCount++;
+      this.highFpsCount = 0;
+      if (this.lowFpsCount >= 1 && this.currentDpr > 0.75) {
+        this.currentDpr = Math.max(0.75, this.currentDpr * 0.75);
+        this.renderer.setPixelRatio(this.currentDpr);
+        this.resize(); // drawing buffer + composer + grain uResolution
+        this.lowFpsCount = 0;
+        console.log(`[engine] DPR ${this.renderer.getPixelRatio().toFixed(2)} — düşük FPS (${this.fps})`);
+      }
+    } else if (this.fps >= 45) {
+      this.highFpsCount++;
+      this.lowFpsCount = 0;
+      if (this.highFpsCount >= 2 && this.currentDpr < maxDpr) {
+        this.currentDpr = Math.min(maxDpr, this.currentDpr / 0.75);
+        this.renderer.setPixelRatio(this.currentDpr);
+        this.resize();
+        this.highFpsCount = 0;
+        console.log(`[engine] DPR ${this.renderer.getPixelRatio().toFixed(2)} — toparlandı (${this.fps})`);
+      }
+    } else {
+      // Orta bölge: sayaçları tut — salınım bastırılır.
+      this.lowFpsCount = Math.max(0, this.lowFpsCount - 0);
     }
   }
 
