@@ -4,6 +4,11 @@ import { createAsciiMaterial, ASCII_PARAMS } from './shaders/asciiMaterial';
 import { createNeonWireMaterial, NEON_PARAMS } from './shaders/neonWireMaterial';
 import { createDefaultGraph } from './engine/graph';
 import type { Preset } from './engine/preset';
+import {
+  createSignatureElement,
+  createSkeletonElement,
+  EMBED_CHROME_CSS,
+} from './ui/embedChrome';
 
 /**
  * EMBED MODU (Gün 6 — Emre).
@@ -28,6 +33,7 @@ const EMBED_STYLES = `
   .container { width: 100%; height: 100%; position: relative; }
   .fallback { width: 100%; height: 100%; object-fit: cover; display: none; }
   .error { color: #c66; font: 12px monospace; padding: 8px; }
+${EMBED_CHROME_CSS}
 `;
 
 class SpatialCanvasElement extends HTMLElement {
@@ -36,6 +42,8 @@ class SpatialCanvasElement extends HTMLElement {
   private fallbackImg: HTMLImageElement | null = null;
   private observer: IntersectionObserver | null = null;
   private loaded = false;
+  private skeleton: HTMLElement | null = null;
+  private skeletonTimer = 0;
 
   static get observedAttributes() {
     return ['src', 'preset', 'mode', 'width', 'height'];
@@ -55,6 +63,13 @@ class SpatialCanvasElement extends HTMLElement {
     this.fallbackImg.className = 'fallback';
     this.fallbackImg.alt = 'spatial-canvas fallback';
     this.container.appendChild(this.fallbackImg);
+
+    // Gömülü görünüm: yüklenirken siyah boşluk yerine nefes alan iskelet, ve
+    // köşede küçük saydam imza. Tanım EmbedView ile ortak (ui/embedChrome).
+    this.container.classList.add('sc-embed-root');
+    this.skeleton = createSkeletonElement(document);
+    this.container.appendChild(this.skeleton);
+    this.container.appendChild(createSignatureElement(document));
 
     // WebGL yoksa fallback'e düş
     if (!this.checkWebGL()) {
@@ -84,8 +99,17 @@ class SpatialCanvasElement extends HTMLElement {
 
   disconnectedCallback() {
     this.observer?.disconnect();
+    clearInterval(this.skeletonTimer);
     this.engine?.dispose();
     this.engine = null;
+  }
+
+  /** İlk kare çizildiyse iskeleti kaldırır ve yoklamayı durdurur. */
+  private hideSkeletonWhenDrawn() {
+    if (!this.engine || this.engine.fps <= 0) return;
+    clearInterval(this.skeletonTimer);
+    this.skeleton?.remove();
+    this.skeleton = null;
   }
 
   attributeChangedCallback(name: string, oldVal: string | null, newVal: string | null) {
@@ -138,6 +162,11 @@ class SpatialCanvasElement extends HTMLElement {
 
       // GÜN 6 (URL): attribute yoksa URL paramları kullanılır.
       this.applyUrlParams();
+
+      // İskelet ilk KARE çizilene kadar durur. Engine'in kurulmuş olması
+      // yetmez: depth gelene kadar sahne boştur, iskeleti erken kaldırmak
+      // siyah bir boşluk gösterirdi. fps > 0 ilk karenin kanıtı.
+      this.skeletonTimer = window.setInterval(() => this.hideSkeletonWhenDrawn(), 200);
     } catch (err) {
       this.showFallback(err instanceof Error ? err.message : 'Engine başlatılamadı');
     }

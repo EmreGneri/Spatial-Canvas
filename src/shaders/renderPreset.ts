@@ -34,6 +34,14 @@ export interface PointCloudState {
   uBrightness: number;
   uNearColor: string;
   uFarColor: string;
+  /** Gün 6 (Emre) — yüzey normali + diffuse ışık şiddeti, 0..1. */
+  uLightStrength: number;
+  /** Işık yönü, dünya uzayı. Uygulanırken normalize edilir. */
+  uLightDir: [number, number, number];
+  /** Normal türetme ölçeği — büyükte yüzey çizgileri belirir. */
+  uNormalScale: number;
+  /** Fresnel: siluet kenarı parlaması, 0..1. */
+  uFresnelStrength: number;
 }
 
 export interface AsciiState {
@@ -145,6 +153,10 @@ export function serializeRenderState(targets: RenderTargets): RenderState {
       uBrightness: p.uBrightness.value,
       uNearColor: `#${p.uNearColor.value.getHexString()}`,
       uFarColor: `#${p.uFarColor.value.getHexString()}`,
+      uLightStrength: p.uLightStrength.value,
+      uLightDir: [p.uLightDir.value.x, p.uLightDir.value.y, p.uLightDir.value.z],
+      uNormalScale: p.uNormalScale.value,
+      uFresnelStrength: p.uFresnelStrength.value,
     },
     ascii: {
       uPointSize: a.uPointSize.value,
@@ -222,6 +234,18 @@ export function applyRenderState(
     num(state.points.uBrightness, p.uBrightness);
     col(state.points.uNearColor, p.uNearColor);
     col(state.points.uFarColor, p.uFarColor);
+    num(state.points.uLightStrength, p.uLightStrength);
+    num(state.points.uNormalScale, p.uNormalScale);
+    num(state.points.uFresnelStrength, p.uFresnelStrength);
+    // Vektör YERİNDE güncellenir (uniform'un tuttuğu nesne korunur) ve
+    // normalize edilir: shader n·light bekliyor, elle yazılmış bir preset
+    // birim boyda olmayabilir. Sıfır vektör normalize'da NaN üretirdi.
+    const dir = state.points.uLightDir;
+    if (Array.isArray(dir) && dir.length === 3 && dir.every((n) => typeof n === 'number')) {
+      const [x, y, z] = dir;
+      if (x * x + y * y + z * z > 1e-8) p.uLightDir.value.set(x, y, z).normalize();
+      else warnings.push('uLightDir sıfır vektör — yok sayıldı');
+    }
   }
 
   if (state.ascii) {
