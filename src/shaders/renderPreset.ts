@@ -1,6 +1,7 @@
 import type { PointCloudMaterial } from './pointCloudMaterial';
 import type { AsciiMaterial } from './asciiMaterial';
 import type { NeonWireMaterial } from './neonWireMaterial';
+import type { SolidMaterial } from './solidMaterial';
 import type { FeedbackPassUniforms } from './feedbackPass';
 import type { ChromaticPassUniforms } from './chromaticPass';
 import type { GrainPassUniforms } from './grainPass';
@@ -16,8 +17,9 @@ import type { RenderMode } from '../ui/ModeSelector';
  * modun parametrelerini düz bir sözlükte tutuyor, üç modu birden alamıyor).
  *
  * Serileştirilmeyenler (motor/çalışma zamanı sahipli, kullanıcı kolu değil):
- *   uPositions, uAtlas, uDepth, uTexelSize, uHasDepth, tDiffuse, tPrev,
- *   uTime, uResolution.
+ *   uPositions, uAtlas, tDiffuse, tPrev, uTime, uResolution.
+ *   (Neon'un eski uDepth/uTexelSize/uHasDepth uniform'ları Gün C'de kaldırıldı:
+ *   kenarlar artık uPositions'ın z'sinden türetiliyor.)
  *
  * Renkler hex ('#rrggbb') olarak yazılır; geri yüklerken THREE.Color YERİNDE
  * değiştirilir (yeni nesne atanmaz) — ControlPanel renk seçicileri mount
@@ -26,6 +28,15 @@ import type { RenderMode } from '../ui/ModeSelector';
 
 export const RENDER_PRESET_VERSION = 1;
 
+/**
+ * DİKKAT (Gün C bulgusu): bu dosya `engine/params.ts` ParamDef listelerinin
+ * ELLE YAZILMIŞ ikinci kopyasıdır. Gün 6'da eklenen ışık/fresnel/normal
+ * kolları buraya işlenmemiş, yani hazır preset'ler (presets.ts) ve render
+ * preset kaydı o değerleri SESSİZCE düşürüyordu. Eksikler tamamlandı ve yeni
+ * alanlar OPSİYONEL yazıldı (eski kayıtlar açılmaya devam eder). Kalıcı çözüm
+ * bu katmanı da ParamDef listeleri üzerinden yürütmektir — CHANGELOG'da açık
+ * iş olarak duruyor.
+ */
 export interface PointCloudState {
   uPointSize: number;
   uSizeJitter: number;
@@ -34,6 +45,10 @@ export interface PointCloudState {
   uBrightness: number;
   uNearColor: string;
   uFarColor: string;
+  uLightStrength?: number;
+  uFresnelStrength?: number;
+  uNormalScale?: number;
+  uAoStrength?: number;
 }
 
 export interface AsciiState {
@@ -57,12 +72,21 @@ export interface NeonState {
   uEdgeThreshold: number;
   uGlowRadius: number;
   uGlowIntensity: number;
-  /** @deprecated uGlowIntensity'ye bölündü. Eski kayıtlarda bulunabilir. */
-  uGlow?: number;
   uNeonColor: string;
   uFlickerSpeed: number;
   uFlickerIntensity: number;
   uColorVariance: number;
+}
+
+export interface SolidState {
+  uBrightness: number;
+  uLightStrength: number;
+  uFresnelStrength: number;
+  uNearColor: string;
+  uFarColor: string;
+  uWallColor: string;
+  uAoStrength?: number;
+  uSpecular?: number;
 }
 
 export interface FeedbackState {
@@ -93,6 +117,7 @@ export interface RenderState {
   points: PointCloudState;
   ascii: AsciiState;
   neon: NeonState;
+  solid: SolidState;
   feedback: FeedbackState;
   chromatic: ChromaticState;
   grain: GrainState;
@@ -108,6 +133,7 @@ export interface RenderTargets {
   points: PointCloudMaterial;
   ascii: AsciiMaterial;
   neon: NeonWireMaterial;
+  solid: SolidMaterial;
   grain: GrainPassUniforms;
   feedback?: FeedbackPassUniforms;
   chromatic?: ChromaticPassUniforms;
@@ -130,6 +156,7 @@ export function serializeRenderState(targets: RenderTargets): RenderState {
   const p = targets.points.uniforms;
   const a = targets.ascii.uniforms;
   const n = targets.neon.uniforms;
+  const s = targets.solid.uniforms;
   const g = targets.grain;
   const f = targets.feedback;
   const c = targets.chromatic;
@@ -145,6 +172,10 @@ export function serializeRenderState(targets: RenderTargets): RenderState {
       uBrightness: p.uBrightness.value,
       uNearColor: `#${p.uNearColor.value.getHexString()}`,
       uFarColor: `#${p.uFarColor.value.getHexString()}`,
+      uLightStrength: p.uLightStrength.value,
+      uFresnelStrength: p.uFresnelStrength.value,
+      uNormalScale: p.uNormalScale.value,
+      uAoStrength: p.uAoStrength.value,
     },
     ascii: {
       uPointSize: a.uPointSize.value,
@@ -166,6 +197,16 @@ export function serializeRenderState(targets: RenderTargets): RenderState {
       uFlickerIntensity: n.uFlickerIntensity.value,
       uColorVariance: n.uColorVariance.value,
       // uTime serileştirilmez: material kendi sürüyor, kullanıcı kolu değil.
+    },
+    solid: {
+      uBrightness: s.uBrightness.value,
+      uLightStrength: s.uLightStrength.value,
+      uFresnelStrength: s.uFresnelStrength.value,
+      uNearColor: `#${s.uNearColor.value.getHexString()}`,
+      uFarColor: `#${s.uFarColor.value.getHexString()}`,
+      uWallColor: `#${s.uWallColor.value.getHexString()}`,
+      uAoStrength: s.uAoStrength.value,
+      uSpecular: s.uSpecular.value,
     },
     feedback: f
       ? {
@@ -222,6 +263,12 @@ export function applyRenderState(
     num(state.points.uBrightness, p.uBrightness);
     col(state.points.uNearColor, p.uNearColor);
     col(state.points.uFarColor, p.uFarColor);
+    // Gün C: eksik kalan kollar (num, sayı olmayanı atlar → eski kayıtlarda
+    // alan yoksa uniform'un mevcut değeri korunur).
+    num(state.points.uLightStrength, p.uLightStrength);
+    num(state.points.uFresnelStrength, p.uFresnelStrength);
+    num(state.points.uNormalScale, p.uNormalScale);
+    num(state.points.uAoStrength, p.uAoStrength);
   }
 
   if (state.ascii) {
@@ -244,11 +291,23 @@ export function applyRenderState(
     num(state.neon.uGlowRadius, n.uGlowRadius);
     // Geriye dönük: uGlow tek başınayken parlaklık çarpanıydı. Yeni anahtar
     // yoksa eskisi okunur, varsa eskisi yok sayılır.
-    num(state.neon.uGlowIntensity ?? state.neon.uGlow, n.uGlowIntensity);
+    num(state.neon.uGlowIntensity ?? (state.neon as { uGlow?: number }).uGlow, n.uGlowIntensity);
     col(state.neon.uNeonColor, n.uNeonColor);
     num(state.neon.uFlickerSpeed, n.uFlickerSpeed);
     num(state.neon.uFlickerIntensity, n.uFlickerIntensity);
     num(state.neon.uColorVariance, n.uColorVariance);
+  }
+
+  if (state.solid) {
+    const s = targets.solid.uniforms;
+    num(state.solid.uBrightness, s.uBrightness);
+    num(state.solid.uLightStrength, s.uLightStrength);
+    num(state.solid.uFresnelStrength, s.uFresnelStrength);
+    col(state.solid.uNearColor, s.uNearColor);
+    col(state.solid.uFarColor, s.uFarColor);
+    col(state.solid.uWallColor, s.uWallColor);
+    num(state.solid.uAoStrength, s.uAoStrength);
+    num(state.solid.uSpecular, s.uSpecular);
   }
 
   if (state.feedback) {

@@ -5,6 +5,422 @@ En yeni üstte.
 
 ---
 
+## 2026-08-13 — Gün C: denetim turu — solid kabuk düzeltmesi, 3D okunurluk, video derinliği (Emre + Zeynep)
+
+Tüm dosyaların uçtan uca denetimi. Aşağıdaki maddelerin ilk üçü **hata**, geri
+kalanı kalite/performans; hiçbiri üretici (generative) model kullanmaz.
+
+### Hatalar (kök neden → düzeltme)
+
+1. **Solid kabuk DİKEY TERS kuruluyordu (`mesh.ts`).** Köşe satırı `remap.yOf`'a
+   ve satır koordinatına `v` (alttan üste, aUv sözleşmesi) veriliyordu; oysa
+   `yOf` SATIR koordinatı bekler (üstten alta — `sampler.ts` ile aynı). Sonuç:
+   fotoğrafın üstü dünyanın altına düşen bir geometri, üzerine DOĞRU yönde
+   boyanmış fotoğraf dokusu. `t = j/N` ayrıldı, `v = 1 − t` yalnızca dünya/uv
+   için kullanılıyor. Regresyon testi: `verify-mesh.mjs` "dikey hiza" (üst yarısı
+   yakın depth → mesh'in üst köşeleri öne çıkar).
+2. **Ön yüzün sarımı İÇE dönüktü (`mesh.ts`) → solid modda fotoğraf hiç
+   görünmüyordu.** Hücre köşeleri döngüsel sırada (sol-üst → sağ-üst → sağ-alt →
+   sol-alt) dünya koordinatında SAAT yönündedir; `computeVertexNormals` bu
+   sarımdan ön yüz normallerini −z'ye çeviriyor, `solidMaterial`'ın duvar
+   sınıflaması (`n.z < 0 → duvar`) ön yüzün TAMAMINI `uWallColor`'a boyuyordu.
+   Yani ekranda görünen şey düz gri bir kütle, fotoğraf dokusu ise yalnızca
+   görünmeyen arka kapağın üstündeydi. Sarım ters çevrildi (ön yüz +z'den CCW =
+   dışa), arka kapak eski sarımı aldı, duvar şeridi formülü aynı kaldı (kenar
+   yönü front'tan türetilir). `verify-mesh.mjs` artık yönü de doğruluyor.
+   Yan kazanç: kabuk dışa yönlü olduğu için material `FrontSide` çiziyor —
+   solid modun fragment maliyeti yarıya indi (eskiden `DoubleSide` zorunluydu).
+3. **"Maskeyi göster" hiç çalışmıyordu (`App.tsx`).** Overlay canvas'ı
+   `showMask &&` ile koşullu render ediliyor, çizim ise aynı tıklama içinde
+   yapılıyordu: React henüz mount etmediği için `segOverlayRef.current` null
+   dönüyor ve fonksiyon sessizce çıkıyordu. Çizim mount sonrası `useEffect`'e
+   taşındı; maske yoksa sebebi log'a yazılıyor (sessiz boş kutu yok).
+4. **Neon kenarları parçacıklardan KAYIYORDU (`neonWireMaterial.ts`).** Sobel,
+   depth texture'ını GRID uv'siyle örnekliyordu: konum grid'i önem remap'iyle
+   büküktür, depth ise ham görüntü uzayında (üstelik texel adımı depth
+   çözünürlüğünden alınıyordu, grid'den değil). Kenarlar artık `uPositions`'ın
+   z'sinden türetiliyor — hiza tanım gereği garanti. `uDepth`/`uTexelSize`/
+   `uHasDepth` uniform'ları ve `setDepthTexture` API'si (+ `App.pushDepthToNeon`
+   borusu) tamamen kalktı. Normalizasyon 0.25 → 0.125 (z aralığı depth'in iki
+   katı) — `uEdgeThreshold`'un anlamı ve varsayılanı değişmedi.
+5. **PNG export'u siyah inebiliyordu (`export.ts` + `App.tsx`).** WebGL çizim
+   tamponu compositing sonrası temizlenir (`preserveDrawingBuffer` kapalı);
+   `toBlob` tıklama görevinde çağrıldığında tampon boş olabiliyordu. Yeni
+   `Engine.renderFrame()` aynı görev içinde tek kare çizip capture'ı besliyor.
+6. **RMBG letterbox aynası yanlış içerik dolduruyordu (`segmentation.ts`).**
+   5 argümanlı `drawImage(image, dx, dy, dw, dh)` kaynak olarak canvas'ın
+   TAMAMINI alıp hedefe sıkıştırır: kenar şeridi yerine küçültülmüş bütün kare
+   aynalanıyordu. 9 argümanlı biçime geçildi (kaynak dikdörtgeni açık).
+7. **Video yolunda kare başına tahsis (`depth.ts`).** `boxBlurInPlace` havuzu
+   ASLA dolmuyordu (`tmpPool !== tmp` koşulu ilk çağrıda null olduğu için hiç
+   yazmıyordu) → her karede yeni `Float32Array`. Havuz modül düzeyine alındı;
+   `sobelMagnitude`'un havuzlu/havuzsuz iki kopya gövdesi tek gövdeye indi.
+8. **Sızıntılar:** `App` cleanup'ında `materials.solid.dispose()` eksikti;
+   `embed.ts` kayıtlı material'ların YANINDA beşinci bir point cloud material'ı
+   üretip takıyordu (hem sızıntı hem registry adı eşleşmemesi) ve hiçbirini
+   bırakmıyordu. Embed'in `mode` attribute'u `observedAttributes`'ta ilan
+   edilmiş ama hiçbir yerde okunmuyordu (ölü API) — artık uygulanıyor.
+9. **Ölü kod:** `reconstruction/volume.ts` (`calculateVolumeMaps`) uygulamanın
+   hiçbir yerinden çağrılmıyordu (yalnızca kendi testi vardı) — dosya,
+   `verify-volume.mjs` ve `npm run verify` zincirindeki adımı kaldırıldı.
+   `sampler.ts`'te kullanılmayan `isForeground` çözümlemesi ve
+   `Engine.adaptResolution`'daki `lowFpsCount - 0` no-op satırı da gitti.
+10. **Render preset kaymasi (`renderPreset.ts`).** Bu dosya ParamDef
+    listelerinin ELLE yazılmış ikinci kopyasıdır ve Gün 6'da eklenen
+    ışık/fresnel/normal kolları buraya işlenmemişti: hazır preset'ler ve render
+    preset kaydı o değerleri sessizce düşürüyordu. Eksikler tamamlandı (yeni
+    alanlar opsiyonel — eski kayıtlar açılmaya devam eder). **Açık iş:** bu
+    katmanın da `ParamDef` listeleri üzerinden yürütülmesi (tek kaynak).
+
+### 3D okunurluk (odak 1)
+
+11. **Bakılı oklüzyon (`sampler.computeAoMap` + `sampleAoGrid`).** Depth
+    haritasından ucuz bir kapanma yaklaşımı: 8 yön × 3 yarıçap, komşu ne kadar
+    daha yakınsa merkez o kadar kapalı; sonuç `[0.35, 1]`'e kırpılır ve
+    yumuşatılır. Taşıyıcı **renk grid'inin ALPHA kanalı** —
+    `fillImageColorTexture` `a = ao·255` yazar; ek texture, ek bant genişliği,
+    ek draw call YOK. `pointCloudMaterial` ve `solidMaterial` `uAoStrength`
+    (0.6 / 0.7) ile tüketir; video dokusunda alpha = 1 olduğu için efekt
+    kendiliğinden kapanır, `uAoStrength = 0` nötrdür. Çukurlar (göz boşluğu,
+    çene altı, saç sınırı, kol-gövde arası) kararıyor — yönlü ışık + fresnel
+    tek başına yüzeyi kabartma gibi okutmuyordu. Test: `verify-sampler.mjs`
+    "bakılı oklüzyon" (kabartma dibi kararır, tepe ve uzak düz alan nötr).
+12. **Kabuk normalleri geometriden geliyor (`mesh.ts` → `ShellMeshData.normals`).**
+    `computeVertexNormals` KULLANILMIYOR: front/back/duvar köşeleri paylaşıldığı
+    için ortalama normal siluet sınırında ön yüzü duvarla karıştırıyordu. Ön yüz
+    normali z alanının merkezi farkından (`−dz/dx, −dz/dy, 1`), arka kapak
+    (0, 0, −1). Ek olarak köşe başına **kabuk kimliği** (`aShell`: front 1,
+    back 0) taşınıyor — duvar/kapak sınıflaması artık normal tahmininden değil
+    bu attribute'tan yapılıyor (dik yüzeyler, burun kanadı/çene profili, yanlış
+    duvar sayılmıyor).
+13. **Kabuk çözünürlüğü 128 → 192 (`MESH_GRID_SIZE`).** Kabuk yalnızca fotoğraf
+    yüklenişinde bir kez kurulur; 2.25× köşe yüzey detayını taşıyor.
+    **Ölçüm** (Node, 518×518 depth, tam kadraj ön plan — en kötü durum):
+    `computeAoMap` 64 ms · `sampleAoGrid` (remap + 384² grid dahil) 77 ms ·
+    `buildShellMesh(192)` 182 ms / 131.360 üçgen. Aynı yolda depth çıkarımı
+    tarayıcıda saniyeler sürüyor; kare başına maliyet YOK (video mesh üretmez).
+14. **Solid gölgelemesi:** Blinn spekülar vurgu (`uSpecular`, 0.15) ve daha
+    güçlü diffuse (`uLightStrength` 0.45 → 0.55) eklendi — katı, kavisli kütle
+    okuması. İkisi de SOLID_PARAMS'ta (preset'e girer).
+
+### Video girdisi (odak 2)
+
+15. **İşaretli mikro rölyef (`luminanceHeightMap`).** Eskiden `|Sobel|`
+    doğrudan z'ye ekleniyordu; büyüklük her kenarda POZİTİF olduğu için her
+    kenar bir SIRT oluyordu (yüz hatları kabartma değil tel kafes; arka plan
+    detayı öne fırlıyordu). Artık işaretli yüksek frekans (`raw − low-pass`)
+    kullanılıyor — fotoğraf yolundaki `applyDetail` ile aynı ilke.
+16. **Netlik (defocus) ipucu — yeni `focusStrength` (0.55).** Parlaklık kötü bir
+    derinlik vekilidir (beyaz duvar öne fırlar, siyah saç dibe çöker). Videoda
+    ise neredeyse her zaman geçerli bir ipucu var: özne NET, arka plan FLU.
+    Yerel gradyan enerjisi geniş yarıçapla yumuşatılıp kare ortalamasına
+    normalleştiriliyor (net → 1, flu → 0) ve z tabanı bununla harmanlanıyor.
+    `centerBoost` 0.5 → 0.3 (merkez varsayımının payı azaldı).
+17. **Zamansal kararlı normalizasyon (`stableRange`, EMA α = 0.15).** Kare
+    başına min/max normalizasyonu, tek bir parlama/gölgede sahnenin TAMAMININ
+    z eşlemesini kaydırıyordu (bulut nefes alıyordu). Uçlar kareler arasında
+    taşınıyor; kaynak değişiminde `resetLuminanceState()` sıfırlıyor.
+18. **Hareket duyarlı temporal harman (`App.tsx`).** Sabit α = 0.1 gürültüyü
+    söndürüyordu ama gerçek hareketi de ~10 kare geciktiriyordu (el sallamada
+    hayalet iz). Piksel başına fark büyükse katsayı 1'e açılıyor: durgun bölge
+    kararlı, hareketli bölge anında takip ediyor.
+
+### FPS (kaliteden ödün vermeden)
+
+19. **Kimlik pass'leri artık çizilmiyor.** `uBloomStrength = 0` iken
+    UnrealBloomPass tüm mip zincirini (5 downsample + 5 upsample + luminosity)
+    boşuna çiziyordu; `uFeedbackAmount = 0` iken feedback iki tam ekran geçişi,
+    `uAmount = 0` iken chromatic bir geçiş yapıyordu — üçü de varsayılan
+    ayarda MATEMATİKSEL KİMLİK. Pass'ler `chainEnabled` (graf kolu) + parametre
+    kontrolünü `update()` kancasında birleştirip `enabled`'ı kendileri
+    hesaplıyor; Engine artık `enabled`'a doğrudan yazmıyor. Feedback atlanan
+    karelerde birikimi bayat bırakmasın diye `needsClear` işaretliyor.
+20. **Uyarlamalı DPR tabanı 0.75 → 1.0.** CSS pikselinin altında örneklemek
+    görünür bulanıklıktır; uyarlama yalnızca DPR > 1 fazlalığını geri alıyor.
+21. **`willReadFrequently`** okuma yapan tüm 2D context'lerde (tarayıcı uyarısı
+    gerçek bir yavaş yol işaretiydi).
+
+### Yapılmayanlar (bilinçli, açık iş)
+
+- **Video için gerçek depth modeli.** Kalitede en büyük atlama Depth-Anything'i
+  video karelerinde düşük hızda çalıştırmak olurdu (üretici model değil,
+  ayrıştırıcı — yasak kapsamında değil). Ana iş parçacığında kare başına
+  ~300-800 ms takılma yaratacağı için Web Worker şart; bu turun kapsamı dışında
+  bırakıldı. Luminance yolu bunun yerine netlik ipucuyla güçlendirildi.
+- **Solid modun video/kamerada çalışması.** Kabuk kare başına ~180 ms (192
+  ızgara) + siluet maliyeti demek; ayrıca her karede yeni BufferGeometry
+  tahsisi. Fotoğraf-only sözleşmesi korundu, ama artık SESSİZ değil: mod
+  seçildiğinde sebebi log'a yazılıyor (`Engine.solidAvailable`).
+- **`renderPreset.ts`'in ParamDef'e taşınması** (yukarıda madde 10) — eksik
+  alanlar tamamlandı, yapısal birleştirme sonraya.
+- **`Engine.ts` yorumlarındaki çift kodlanmış UTF-8 artığı** (`sÃ¶zleÅŸme`
+  gibi) dokunulmadı: davranışı etkilemiyor ve düzeltmek dosyanın tamamını
+  diff'e sokardı.
+
+**Doğrulama:** `npm run typecheck` ✓ · `npm run build` ✓ · `npm run verify` ✓
+(7 zincir; volume zinciri kaldırıldı, mesh + sampler + position zincirleri
+büyüdü).
+GPU tarafı `src/dev-smoke.ts` ile ölçüldü (gitignore'lu; tarayıcı konsolundan
+`(await import('/src/dev-smoke.ts')).smoke()`): dört material'ın GLSL'i
+uyarısız derleniyor, kabuk ÖN yüzü kameraya bakıyor (`coveredFrac` 0.21) ve
+fotoğraf dokusunun rengini taşıyor — düzeltmeden önce burada duvar grisi
+vardı; AO alpha'sı 1 → 0.35 arasında pikseli 183 → 99'a düşürüyor
+(`mix(1, 0.35, 0.7)` ile birebir).
+
+Canlı motor tanısı için dev-only kanca: `window.__engine` (yalnızca
+`import.meta.env.DEV`). Sentetik görselle ölçülen durum — kabuk geometrisi
+`position/uv/normal/aShell`, 18.848 köşe / 37.692 üçgen, ön normallerin
+9424/9424'ü DIŞA (+z), arka kapağın 9424/9424'ü −z, `side = FrontSide`,
+mesh görünür + nokta bulutu gizli; "maskeyi göster" overlay'i 256×256 çiziyor
+(21.351 ön plan / 41.185 arka plan pikseli).
+
+---
+
+## 2026-08-13 — Gün B (temizlik): Relief / clean shell (Emre + Zeynep)
+
+**Sorun (üç şikâyet):** solid mesh "buruşuk kağıt + kutu gibi uzamış" görünüyordu.
+Kök nedenler: ① segmentasyon varsayılan KAPALI olduğundan maske yoktu — siluet
+eşiği `depth ≥ 0.05`'e düşüyor, arka plan da 3B oluyor ve büst "içi doldurulmuş
+yastık"a dönüyordu (silüet kesme mesh.ts'te zaten vardı, maskenin KENDİSİ
+üretilmiyordu). ② Z hesabı ham depth'i doğrudan örnekliyordu. ③ arka kapak ve
+duvar şeridi front ile aynı UV'yi paylaşıyordu → fotoğraf dokusu sünüyordu.
+
+1. **Depth smoothing + ekstrüzyon sönümü (`mesh.ts`):** Z hesabı artık ham
+   depth'i değil, ayrılabilir 3×3 box blur'dan geçirilmiş haritayı örnekler
+   (`boxBlur3x3`, kenar kelepçeli; düz bölgeler birebir korunur). Yeni seçenek
+   `depthScale` (varsayılan **0.7**): `(d − 0.5)·range` terimi %30 sönümlenir,
+   kavis bileşeni ölçeklenmez → yüz hatları sivri/patlak değil. Siluet/remap/
+   kaide ham depth'ten beslenir (maske keskinliği korunur), parçacık yolu
+   etkilenmez.
+2. **Duvar/arka kapak koyulaştırma (`solidMaterial.ts`):** sınıflama normalden
+   yapılır — duvar şeritleri dikey (n.z ≈ 0), arka kapak −z'ye bakar (n.z < 0);
+   yalnızca ön yüzey fotoğraf dokusunu taşır. `col = mix(col, uWallColor, wallAmt)`
+   renk seçiminden sonra, ışıktan ÖNCE → duvarlar koyu mat kaide rengine oturur,
+   diffuse ışık + fresnel üstünde çalışır (plastik büst kenarı). `uWallColor`
+   (#23262e) SOLID_PARAMS + render preset'ine girdi. NORMALDEN sınıflama
+   bilinçli: ayrı duvar köşeleri üretmek yönlü kenar dengesini (su geçirmezlik)
+   bozardı — geometri dokunulmadı. Ayrıca solid fragment'teki
+   `uObjectSeparation > 0.5 → discard` guard'ı KALDIRILDI: mesh zaten silüetle
+   kesilmiş; otomatik segmentasyonda objectSeparation hep AÇIK gelince mesh
+   tamamen siliniyordu (latent hata).
+3. **Otomatik segmentasyon (`App.tsx`):** fotoğraf yükleme yolu her seferinde
+   `segmentForeground` çalıştırır: maske depth'e gider, parçacıklar da arka
+   planı atar (`setObjectSeparation(true)`, buton state'i AÇIK görünür). Boş
+   maske güvenliği: hiç ≥ 0.5 piksel yoksa maske atlanır (sentetik görsel
+   sahneyi sıfırlamaz); hata yolda da maske olmadan devam, say() ile duyurulur.
+   `toggleSegment` aynen kalır (kapat/aç). Video/kamera etkilenmez (solid
+   fotoğraf-only).
+4. **Doğrulama (`verify-mesh.mjs`):** yeni ekstrüzyon sabitleri — köşe z
+   0.2 → 0.14, merkez 0.2896 → 0.2296, maskeli 0.2176, iç köşe −0.14;
+   `depthScale: 1` ile eski matematiğin (0.2896) korunduğu ayrıca doğrulanır.
+   Blur düz/yarım sahnelerin iç bölge değerlerini bozmaz (sabit ortalaması
+   kendisidir). Su geçirmezlik sayımı, determinizm (deterministik blur) ve
+   diğer zincirler değişmedi.
+
+**Doğrulama:** `npm run typecheck` ✓ · `npm run build` ✓ · `npm run verify` ✓
+(9 zincir). Manuel: fotoğraf yükle → Solid → yalnızca büst, pürüzsüz yüz, koyu
+çerçeve; video/kamerada kırık render yok.
+
+---
+
+## 2026-08-13 — Gün B: `solid` kapalı kabuk modu + mesh doğrulaması (Emre)
+
+**Sözleşme:** dört mod oldu — `'points' | 'ascii' | 'neon' | 'solid'` (ModeSelector
+`RenderMode`, Engine `registerRenderMode`, editör `EditorRenderMode`). Solid
+fotoğraf-only: depth grid'ini kapalı bir z-kabuk meshine çevirir, nokta bulutu
+yerine GEOMETRİ çizilir.
+
+- **`buildShellMesh` (`reconstruction/mesh.ts`):** 512×512-ish grid → `2(N−1)²`
+  quadrilater'ü çıkarır; gövde (front, z pozitif içe) + kapak (back, z negatif
+  içe, gövde kenar rengiyle aynı) + duvar şeridi (siluet sınırında, z katmanı
+  arası) öncelik sırası: gövde → duvar → kapak. Köşeler `((N−1)k + i) * 2`
+  index şemasıyla `vertices / normals / uvs(indices)` çıktısı. Fotomerkez
+  koordinat `(u·(S−1), v·(S−1))` — grid köşeler UV uzayında texel merkezinde
+  (bilinear doku örneklemesi köşe rengini 4 texelin ortalaması verir).
+  `importanceSampling` seçeneği: `true` (varsayılan) = remap konsantrasyonu,
+  `false` = düz örgü.
+- **`Engine.setShellGeometry`:** lazy `THREE.Mesh` (mesh material solid),
+  geçerli geometriyi dispose eder, `syncRenderVisibility` ile nokta
+  bulutunu/meshi gizler — solid mod + hazır kabuk → mesh görünür, nokta
+  bulutu gizli; aksi halde nokta bulutu görünür (video/kamera solid'e meshi
+  vermez, graceful fallback). `releasePhoto` kabuğu bırakır.
+- **`solidMaterial.ts`:** ShaderMaterial — depth rampası / doku grid'i
+  (`sampleImageGrid` çıktısı, LINEAR filtre), diffuse ışık + fresnel kenar
+  parlaması (points ailesi), opak, DoubleSide, depthWrite açık. SOLID_PARAMS
+  render preset'ine girdi (uBrightness/uLightStrength/uFresnelStrength/
+  uNearColor/uFarColor).
+- **UI:** ModeSelector + editör renderer düğümü + ControlPanel Solid grubu
+  (dört mod), `embed.ts` solid kaydı, renderPreset state/serialize/apply
+  solid bloğu, hazır preset'lere DEFAULT_SOLID.
+- **Doğrulama (`scripts/verify-mesh.mjs`, `npm run verify` zincirine girdi):**
+  düz sahne köşe z değerleri (Front/EDGE_WALL/Back), süreklilik (cap z =
+  wall z', wall z = front z'), census (yönlü kenar dengesi = su geçirmezlik),
+  yarım düzlem / masked (remap açık/kapalı) köşe adetleri, UV yüzey alanı
+  genişliği, öncelik sayaçları, determinizm. Mesh tarafında bulunan iki hata
+  bu turda kapandı: sign haritasının cell döngüsünün içine taşınması (front
+  tris sayacıyla yürüyüş back kenarlarını da sayıyordu) + back yüz sargısının
+  front'un birebir tersi yapılması (census dengesi). Test tarafında bulunan
+  iki hata: köşe index formülü ve back z toleransı (Float32).
+- **Düzeltme (solid vertex shader derleme hatası):** ShaderMaterial vertex
+  öneki `position`/`normal`/`uv` attribute'larını, `modelViewMatrix`/
+  `projectionMatrix`/`cameraPosition` uniform'larını zaten bildirir —
+  solidMaterial.ts bunları elle yeniden bildiriyordu (diğer shader'lar
+  yalnızca üçünün görmediği `aUv`'yi bildirir, o yüzden onlar derleniyordu);
+  WebGL2'de three.js `#define attribute in` uygulayınca ikili bildirim
+  "redefinition" ile vertex derlemesini öldürüyordu. Yeniden bildirimler
+  kaldırıldı — varying'ler (vUv/vNormal/vViewDir/vViewDepth/vDepth) iki
+  uçta birebir uyumlu, uniform tipleri sözleşmeyle aynı.
+
+**Doğrulama:** `node scripts/verify-mesh.mjs` ✓ · `npm run typecheck` ✓ ·
+`npm run verify` ✓ (9 zincir, verify-mesh dahil).
+
+---
+
+## 2026-08-13 — Gün B: Önem-tabanlı örnekleme mask-aware + doğrulama (Emre)
+
+**Sözleşme:** önem remap'i artık segmentation fg maskesini de görür — formül
+`0.5·depth + 0.3·center + 0.2·contrast + FG_IMPORTANCE_WEIGHT(0.4)·fg`
+(`sampler.ts` `buildImportanceRemap`). "Yüz/ön plan garantisi" depth/merkez
+varsayımlarından değil maskenin kendisinden gelir; arka plan bölgesine
+örnekleme çekilmez.
+
+- **Mask-aware:** `foregroundMask` remap'e iletilir (önceden yalnızca siluet
+  AND'inde kullanılıyordu). Renk grid'i hizası kapatıldı: `sampleImageGrid` +
+  `fillImageColorTexture` aynı maskeyi alır; `Engine.setDepth` işlenmiş maskeyi
+  `lastFgMask`'ta saklar, `setPhoto` sonradan gelse de renkler parçacıklardan
+  kaymaz. Kıyas: maskeli önem AÇIK modda ön plan texel oranı kapalı moddan
+  yüksek (verify-sampler 24f).
+- **Boyut güvenliği:** fgMask boyutu depth ile uyuşmuyorsa `RangeError` —
+  sessiz yanlış sonuç yerine sert hata (volume.ts stili).
+- **Doğrulama (açık iş 475 kapanır):** verify-sampler'a bölüm 24 eklendi —
+  CDF monotonluğu + aralık, yoğunluk kayması (zonlu depth → medyan kayar),
+  yoğunluk clamp'ı (eğim oranı sınırı uçtan uca), mask-aware kayma, RangeError.
+  `buildImportanceRemap` test için export edildi; `invCdf` uç değer kelepçesi
+  eklendi (q=1 taşması — sözleşme [0, n−1]).
+- Gün 3 (satır 475) "uygulanmadı" kaydı güncellendi: temel remap zaten
+  varsayılan AÇIK çalışıyordu; Gün B yalnızca maskeyi bağladı + doğruladı.
+
+**Doğrulama:** `node scripts/verify-sampler.mjs` ✓ (bölüm 24 dahil) ·
+`npm run typecheck` ✓ · `npm run build` ✓ · `npm run verify` ✓.
+
+---
+
+**Sözleşme:** render artık ham çizilmiyor — zincir ACES tonemapping ile
+kapanıyor, görünüm üç yeni eksende kontrol ediliyor. İki önemli şema
+değişikliği:
+
+1. `feedback` düğümü "post-pass zinciri"ne iki üye ekledi: bloom
+   (BLOOM_PARAMS — uBloomStrength/uBloomRadius/uBloomThreshold) parametre
+   listesine giriyor; FXAA parametresiz ve her zaman açık. Giriş kenarı
+   kesilince ikisi de `pass.enabled = false` ile kapanır (yeni zincir:
+   `RenderPass → FXAA → Feedback → ChroAber → Bloom → Grain → Output`).
+2. `output` düğümü "sonuca dokunmaz" olmaktan çıktı: **global look**
+   kollarını taşıyor (LOOK_PARAMS — uExposure, uFogDensity, uFogColor,
+   `src/shaders/look.ts`). Sözleşmenin "output sonuca dokunmaz" cümlesi
+   kaldırıldı (graph.ts, ARCHITECTURE.md).
+
+- **ACES + exposure:** `renderer.toneMapping = ACESFilmicToneMapping`, zincir
+  sonunda `OutputPass` (tonemapping + sRGB). Exposure her karede
+  `Engine.pushLookUniforms` ile lookUniforms köprüsünden geçer.
+- **Global look köprüsü:** `Engine.lookUniforms` tek doğruluk kaynağı —
+  UI/preset köprüye yazar, Engine her karede üç render material'ına
+  (points/ascii/neon: uFogDensity/uFogColor aynı adlarla) + renderer'a işler.
+  Sis üstel: `1 − exp(−d²·k)`; `uFogDensity = 0` iken görünüm bit-birebir
+  korunur.
+- **Bloom:** `src/shaders/bloomPass.ts` — UnrealBloomPass sarmalayıcı,
+  BLOOM_PARAMS sözlüğü `update(time)` kancasında iç parametrelere senkron
+  edilir (TickablePass deseni; preset/UI uniform adlarını bilmez).
+- **FXAA:** `src/shaders/fxaaPass.ts` — antialias kapatıkken nokta kenarı
+  pırıltısını keser; RenderPass'ten hemen sonra (efekt kenarlarını bozmaz).
+  Resolution uniform'ı setSize kancasında güncellenir.
+- **Bloom ssot:** varsayılanlar tek kaynakta (`BLOOM_DEFAULTS` — güç **0**,
+  yarıçap 0.5, eşik 0.85); sarmalayıcı da BLOOM_PARAMS da oradan okur.
+  Güç 0 olduğundan bloom anahtarı olmayan eski preset'ler bit-birebir
+  orijinal görünümünü korur ("varsayılan görünüm değişmez" kuralı).
+- **Output aktiflik sözleşmesi:** look kolları `setGraph`'ta aktiflikten
+  BAĞIMSIZ uygulanır — feedback kenarı kopuk olsa da (output inaktif olsa da)
+  graf editörü değişikliği ve preset round-trip (`toPreset` → `applyPreset`)
+  yazılır. Kopuk zincirde kaydedilip geri yüklenen preset look'unu korur
+  (bölüm 5 tunç testi).
+- Eski preset'ler uyumlu: applyParams bilinmeyen anahtarı atlar → bloom
+  varsayılanları (0/0.5/0.85) ve look varsayılanları (1/0) uygulanır.
+  Tunç testi `verify-preset.mjs` bölüm 1-2'de bloom + look round-trip'i.
+
+**Doğrulama:** `npm run typecheck` + `npm run build` + `verify-preset.mjs`
+(bölüm 1: uBloomStrength/uExposure/uFogDensity tungsten; bölüm 2: geri
+kurulum; bölüm 5: kopuk zincirde look round-trip). Görsel doğrulama
+`npm run dev`'de manuel — "Look (ACES + sis)" ve "Bloom" bölümleri kanlı
+canlı (bloom varsayılan kapalı).
+
+---
+
+## 2026-08-13 — Gün 8: Mod takası tek kapıya (Emre)
+
+**Sözleşme:** render modu artık üç koldan (ModeSelector, ControlPanel, graf
+editörü) değiştirilebilir ve **üçü de aynı sonucu doğurur** — graf yalnızca
+kayıt anında değil, her takasta `params.mode` ile güncellenir. "Graf = tek
+doğruluk kaynağı" ilkesi mod seçimi için de tutar.
+
+- `Engine.selectRenderMode(mode)`: renderer düğümünün `params.mode`'unu graf
+  üzerinde günceller. Material takası yalnızca `setPointsMaterial`'ın işidir;
+  sıra: önce takas, sonra bu çağrı (böylece sonraki `setGraph` aynı material'ı
+  tekrar takmaya çalışmaz — setPointsMaterial dispose eder).
+- `App.changeMode(next)`: tek kapı — `setPointsMaterial` → `selectRenderMode`
+  → UI state → `graphTick`. ModeSelector `onChange`, ControlPanel `setMode`
+  ve editör `onRenderModeChange` hep buraya düşer.
+- Editörün renderer düğümü artık üç modu da sunar (points/ascii/neon; eskiden
+  points/ascii). Mod değişimi `onRenderModeChange` ile dışarı bildirilir.
+- Editör tazelenmesi (`graphTick`) düğüm seçimini sıfırlamaz — düğüm id'leri
+  her grafta sabittir, panel değeri her render'da engine'den okunur. Mod
+  değişimi sonrası seçimli düğümün paneli kapanmaz (önceden kapanırdı).
+
+**Doğrulama:** `npm run typecheck`; `verify-preset.mjs` bölüm 2.5 —
+selectRenderMode sonrası kaydedilen/geri yüklenen preset doğru modu taşır.
+UI akışı `npm run dev`'de manuel (ModeSelector ↔ editör ↔ ControlPanel
+üçlüsünde mod senkronu).
+
+---
+
+## 2026-08-13 — Gün 7: Post-pass zinciri (Zeynep)
+
+**Sözleşme:** `feedback` graf düğümü artık post-pass zincirinin tamamını
+yönetir — feedback birikimi + chromatic aberration + grain/vignette. Üç pass
+da aynı düğümden açılır/kapanır; parametreleri düğümde düz sözlükle yaşar
+(FEEDBACK_PARAMS + CHROMATIC_PARAMS + GRAIN_PARAMS). `neon` yanlış anlaması
+düzeltildi: neon bir render MODE'udur (renderer düğümü), pass değildir.
+
+**Engine** (`src/engine/Engine.ts`):
+- `FeedbackPass` ve `ChromaticAberrationPass` composer'a zincire eklendi:
+  `RenderPass → Feedback → ChroAber → Grain → Output` (sıra: ARCHITECTURE.md).
+- `feedback` düğümü aktif → üç pass da açık; giriş kenarı kesik → feedback +
+  chromatic `pass.enabled = false`, grain `removePass` (geri açılınca aynı
+  indekse `insertPass`). Böylece kenar koparma kanıt akışı zincirin tamamını
+  kapsar.
+- Feedforward kuralı: `uFeedbackAmount = 0` iken feedback çıkışı girişe
+  bit-birebir eşit, `uAmount = 0` iken chromatic aynı koşul — varsayılan
+  görünüm değişmez.
+- Uniform adları ParamDef listelerinde yaşar: `FEEDBACK_PARAMS`
+  (`src/shaders/feedbackPass.ts`), `CHROMATIC_PARAMS`
+  (`src/shaders/chromaticPass.ts`), `GRAIN_PARAMS` (`src/shaders/grainPass.ts`);
+  ayrı bir settings dosyası YOKTUR — listeler Engine, preset ve editörün
+  ortak doğruluk kaynağıdır.
+- Preset akışı to/apply için `node.params` eşlemesi güncellendi: feedback
+  düğümü üç paramdef listesini birden seri/yükler; eski preset'ler (tek
+  grain listesi) uyumlu kalır (`applyParams` bilinmeyeni sildiğinden
+  feedback/chromatic değerleri varsayılana döner).
+
+**UI** (`src/ui/NodeGraphEditor.tsx`, `src/App.tsx`):
+- Feedback düğümü artık feedback + chromatic + grain/vignette sliderlarını
+  bir arada gösterir (param paneli ParamDef'den üretildiği için değişiklik
+  yalnızca `nodeDefs` eşlemesinde).
+- Sağ panel Feedback ve Chromatic bölümleri (`ControlPanel` yeni `feedback`
+  ve `chromatic` uniform prop'ları).
+
+**Doğrulama:** `scripts/verify-preset.mjs` feedback/chromatic tungsten,
+grain `uGrainAmount` ile birlikte round-trip'i kanıtlıyor (3. bölüm).
+
+---
+
 ## 2026-08-12 — Gün 6: Export + Embed, video 3D, hacim ve ışık (Emre)
 
 Fotoğraf yolu + video yolu render kalitesi paketi. Sözleşme değişikliği YOK
@@ -354,8 +770,8 @@ bölgeyi (uRestLength 0.005) aşıp 147.456 parçacığın Z'sini dürtüyordu.
 
 - Sahne kesmesi algısı (video loop geçişinde bulut "patlaması") EKLENMEDİ —
   smoothing + frame sync sonucu gözlemlenecek; hâlâ belirginse ele alınacak.
-- Önem-tabanlı partikül dağılımı (yüz/ön planda yoğunluk remap) değerlendirme
-  aşamasında, uygulanmadı.
+- Önem-tabanlı partikül dağılımı (yüz/ön planda yoğunluk remap) → **uygulandı**
+  (Gün B 2026-08-13: mask-aware + doğrulama; yukarıya bak).
 
 ---
 

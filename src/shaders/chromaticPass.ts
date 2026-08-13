@@ -9,8 +9,8 @@ import type { ParamDef } from '../engine/params';
  * kaydırılarak örneklenir. G merkezde kalır (referans kanal), R dışa,
  * B içe kayar — gerçek bir lensteki kırılma sırası bu.
  *
- * Zincirdeki yeri (ARCHITECTURE.md · Pass Zinciri):
- *   RenderPass → Feedback → ChroAber → Grain/Vignette → Output
+ * Zincirdeki yeri (ARCHITECTURE.md · Pass Zinciri, Gün A'dan beri):
+ *   RenderPass → FXAA → Feedback → ChroAber → Bloom → Grain/Vignette → Output
  *
  * Pass kancası: `update(time)` sunar (TickablePass), Engine her karede çağırır.
  */
@@ -36,6 +36,11 @@ export const CHROMATIC_PARAMS: ParamDef[] = [
 /** ShaderPass, uniform'ları tipli görünsün ve kanca kapsansın diye. */
 export type ChromaticPass = ShaderPass & {
   uniforms: ChromaticPassUniforms;
+  /**
+   * Zincir kolu (graf 'feedback' düğümü). `enabled` bundan ve kayma
+   * miktarından türetilir — Engine enabled'a doğrudan yazmaz.
+   */
+  chainEnabled: boolean;
   /** Pass sözleşmesi: Engine her karede çağırır. */
   update: (time: number) => void;
 };
@@ -98,10 +103,14 @@ export function createChromaticPass(): ChromaticPass {
   });
 
   const chromatic = pass as ChromaticPass;
-  // Pass zamandan bağımsız (kayma yalnızca uniform'lardan gelir). Kancayı yine
-  // de sunar: Engine zinciri tek tip gezer, ileride nefes alan bir aberasyon
-  // istenirse bağlanacak yer burası.
-  chromatic.update = () => {};
+  chromatic.chainEnabled = true;
+  // Pass zamandan bağımsız (kayma yalnızca uniform'lardan gelir). Kanca yine
+  // de dolu: GÜN C (FPS, kalite kaybı YOK) — uAmount = 0 iken üç örnek aynı
+  // texel'e düşer, çıkış girişe bit-birebir eşittir; o durumda tam ekran
+  // kopyayı hiç çizmemek daha ucuzdur. Varsayılan görünüm zaten 0'dır.
+  chromatic.update = () => {
+    chromatic.enabled = chromatic.chainEnabled && chromatic.uniforms.uAmount.value > 0.0001;
+  };
 
   return chromatic;
 }

@@ -1,6 +1,7 @@
 # spatial-canvas · Mimari Sözleşmesi
 
-v0.4 — Gün 6. Değişiklikler: PNG/WebM export modülü (`src/engine/export.ts`), embed modu (`src/embed.ts`, `<spatial-canvas>` custom element), Vite embed build girişi.
+v0.5 — Gün C (denetim turu). Değişiklikler: kabuk mesh'i normalleri + kabuk kimliğini (`aShell`) kendisi üretir ve DIŞA yönlüdür; renk grid'inin ALPHA kanalı bakılı oklüzyon taşır; neon kenarları depth yerine `uPositions`'tan türetilir; luminance (video) yolu netlik ipucu + zamansal kararlı normalizasyon kazandı; kimlik durumundaki post-pass'ler çizilmez; `reconstruction/volume.ts` kaldırıldı.
+v0.4 — Gün 6: PNG/WebM export modülü (`src/engine/export.ts`), embed modu (`src/embed.ts`, `<spatial-canvas>` custom element), Vite embed build girişi.
 İki katmanın birbirine güvenli bağlanabilmesi için yazıldı.
 Değişiklik tartışılır, yazılır, imzalanır. Sessiz sapma yok.
 
@@ -20,6 +21,13 @@ Değişiklik tartışılır, yazılır, imzalanır. Sessiz sapma yok.
 | `positionTexture` | RGBA32F veya RGBA16F | 384×384 (147.456 parçacık) | xyz = konum (**simülasyon her karede yazar**), w = opaklık (α) |
 
 | `homeTexture` | RGBA32F | 384×384 | xyz = dinlenme konumu (CPU: depth'ten bir kez), w = opaklık (α) |
+| `uImageTexture` (fotoğraf grid'i) | RGBA8, sRGB | 384×384 | rgb = fotoğraf pikseli (konum grid'iyle aynı remap), **a = bakılı oklüzyon (Gün C)** |
+
+- **AO KANALI (Gün C):** renk grid'inin alpha'sı `sampler.computeAoMap`
+  çıktısıdır (depth farkından çukur kapanması, `[0.35, 1]`). Ek texture yoktur:
+  render material'ları aynı örneklemede `.a`'yı `uAoStrength` ile tüketir.
+  Video kaynağında `uImageTexture` canlı `VideoTexture`'dır ve alpha = 1
+  olduğundan AO kendiliğinden nötrdür. `uAoStrength = 0` → görünüm değişmez.
 - **y-flip tek yerde çözülür:** texture upload'u (`src/engine/buffers.ts`, `flipY = true`).
   Sonuç: `v = 1` → görselin **üstü**. Shader'larda, UV'lerde, CPU'da flip **yoktur**.
 - Normalize etmek veri katmanının işi: Zeynep ham veri beklemez, hep 0..1 alır.
@@ -56,6 +64,23 @@ Değişiklik tartışılır, yazılır, imzalanır. Sessiz sapma yok.
   için `uPositions`'ı her karede günceller; material buna dokunmaz.
 - Texture'lara erişim: `engine.positionTexture`, `engine.depthTexture`
   (depth hesaplanana dek `null`).
+- **Gün C — türetilmiş veri KONUM texture'ından okunur, depth'ten değil.**
+  Konum grid'i önem remap'iyle büküktür (aşağı), depth ham görüntü uzayındadır;
+  depth'i `aUv` ile örneklemek iki farklı uzayı karıştırır. `pointCloudMaterial`
+  yüzey normalini komşu texel'lerin z'sinden türetir; `neonWireMaterial` Sobel
+  kenarlarını da (eski `uDepth`/`uTexelSize`/`uHasDepth` + `setDepthTexture`
+  kaldırıldı — kenarlar kayıyordu). Render katmanının Engine'den depth
+  beslemesi isteyen bir yolu KALMADI.
+- **Önem tabanlı örnekleme (Gün B):** depth'ten konuma dönüşüm önem remap'iyle
+  bükülür (`buildImportanceRemap` — `0.5·depth + 0.3·center + 0.2·contrast +
+  0.4·fg`). fg = segmentation maskesi; verilmezse center terimi kadraj
+  merkezine göre, verilirse ÖZNENİN kütle merkezine göre hesaplanır (kenarda
+  duran özne yoğunluk kaybetmez). Yoğunluk `SAMPLE_MIN/MAX_DENSITY`
+  ([0.15, 2.5])'a kırpılır;
+  CDF + invCdf örnekleme koordinatını büker, grid/aUv sözleşmesi değişmez.
+  Renk grid'i (sampleImageGrid) AYNI maskeyi almalıdır — hizalama kuralı:
+  setDepth'te işlenen maske `Engine.lastFgMask`'ta saklanır, setPhoto onu
+  kullanır. fgMask boyut uyumsuzluğu RangeError'dur (sessiz sapma yok).
 
 ## GPGPU Simülasyon (Gün 3 — Emre)
 
@@ -106,33 +131,74 @@ Simülasyon uniform'ları `engine.simUniforms` ile okunur (UI Gün 4).
 ## Pass Zinciri (Render Katmanı)
 
 Sahip: **Zeynep**. Sıra ve composer Engine'de (`src/engine/Engine.ts`).
-Gün 4'ten itibaren zincir GRAFTAN kurulur: feedback düğümü aktifse
-grain/vignette composer'a eklenir, değilse çıkar (`Engine.setPostPassEnabled`).
+Gün 4'ten itibaren zincir GRAFTAN kurulur. Gün 7: 'feedback' düğümü post-pass
+zincirini yönetmeye başladı; Gün A ile zincir FXAA + bloom ekledi:
+aktifken hepsi çalışır, giriş kenarı kesilince feedback + chromatic + bloom +
+FXAA `pass.enabled = false` ile, grain `removePass` ile kapanır (geri açılınca
+aynı indekse `insertPass`).
 
 ```
-RenderPass (point cloud sahnesi) → Grain/Vignette → [Zeynep: Feedback → Chromatic Aberration → Neon Wireframe] → Output
+RenderPass → FXAA → Feedback → ChroAber → Bloom → Grain/Vignette → Output
 ```
 
-- Gün 1'deki grain/vignette seam'dir: zincirin çalıştığını kanıtlar, Zeynep genişletir.
+- Feedback: TouchDesigner tarzı birikim (ping-pong, half-float; `feedbackPass.ts`
+  içindeki ölçüm tablosu). `uFeedbackAmount = 0` iken çıkış girişe bit-birebir
+  eşittir — varsayılan görünüm kaybolmaz. Chromatic: `uAmount = 0` iken aynı
+  koşul.
+- FXAA: `antialias: false` kurulumuna karşı kenar yumuşatma; YERİ kritiktir
+  (RenderPass'ten hemen sonra — efektlerin kendi kenarlarını bozmaz).
+  Parametresizdir, preset'e girmez, `feedback` düğümüyle birlikte kapanır.
+- Bloom: `bloomPass.ts` sarmalayıcı — `BLOOM_PARAMS` sözlüğü (uBloomStrength/
+  uBloomRadius/uBloomThreshold) `update(time)` kancasında UnrealBloomPass'in
+  iç parametrelerine senkron edilir (TickablePass deseni). feedback düğümünün
+  parametre listesindedir.
+- Output: ACES tonemapping + sRGB çıkışı (`OutputPass`); exposure
+  `renderer.toneMappingExposure` üzerinden `lookUniforms` köprüsünden gelir.
+- **GLOBAL LOOK (Gün A):** exposure + fog `Engine.lookUniforms` köprüsünde
+  yaşar (`shaders/look.ts`, `LOOK_PARAMS`) — output graf düğümünün
+  parametreleridir. Engine her karede köprüyü üç render material'ına
+  (uFogDensity/uFogColor, aynı uniform adları) ve renderer'a işler.
 - **Pass kancası:** Engine pass içlerine (uniform isimleri) doğrudan yazmaz. Her
   pass opsiyonel `update(time)` yöntemi sunar (`TickablePass`), Engine her
-  karede çağırır. Yeni pass'ler (Feedback, ChroAber, Neon) aynı kancayı kullanır.
+  karede çağırır. Feedback `update` birikimi eski kare sayısından temizler.
+- **KİMLİK PASS'İ ÇİZİLMEZ (Gün C — FPS, kalite kaybı yok):** feedback, chromatic
+  ve bloom `enabled`'ı kendileri hesaplar: `chainEnabled` (graf 'feedback'
+  düğümünün kolu — Engine yalnızca bunu yazar) **VE** parametrenin kimlik
+  olmaması. `uFeedbackAmount = 0` → çıkış girişe bit-birebir eşit (iki tam ekran
+  geçişi boşa), `uAmount = 0` → chromatic aynı, `uBloomStrength = 0` → mip
+  zinciri boşa. Üçünün de VARSAYILANI 0'dır. Feedback atlanan karelerde birikim
+  bayatladığı için `needsClear` işaretler (geri açılınca leke basmaz). FXAA
+  parametresizdir, kimlik durumu yoktur — yalnızca `enabled` ile yönetilir.
 - Composer hedefi half-float; parçacık pass'leri (Gün 3) full float gerektirirse
   `EffectComposer` render target'ı güncellenir — bu da Zeynep'in kararı.
 
 ## Kamera / Video Yolu (Gün 2 + Gün 6)
 
-- Gün 1 kararı gereği: statik görsel → Depth-Anything-Small (model); video dosyası
-  ve canlı kamera → depth modeli **YOK**, luminance height map
-  (`src/depth.ts` → `luminanceHeightMap`): parlaklık = yükseklik, parlak = yakın.
+- Gün 1 kararı gereği: statik görsel → Depth-Anything-V2 (model, `src/depth.ts`
+  `MODEL` sabiti — bugün `-base`); video dosyası ve canlı kamera → depth modeli
+  **YOK**, luminance height map (`luminanceHeightMap`).
 - Çıktı aynı `DepthResult` sözleşmesi: 0..1, satır 0 = üst. Engine'de mode
   ayrımı yok — tek `setDepth` girişi.
-- **Gün 6 (video 3D):** luminance artık ham parlaklık değil: ① hafif box blur
-  (codec gürültüsü), ② Sobel kenar kabartma (yüz hatları z'de belirgin),
-  ③ merkeze radyal vurgu (özne arka plandan ayrışır). Ayarlar
-  `LuminanceOptions` (`src/depth.ts`) — `edgeStrength`, `centerBoost`,
-  `centerRadius`, `smoothingRadius`; App.tsx video döngüsü varsayılanları
-  kullanır. Hepsi CPU'da, kare başına — maliyet çıkarımsız.
+- **Gün C (video derinliği).** Boru hattı sırası — hepsi CPU'da, kare başına,
+  çıkarımsız; havuzlanmış buffer'larla tahsissiz:
+  1. luminance (ham),
+  2. **netlik (defocus) ipucu:** ham luminance'ın gradyan enerjisi → geniş
+     yarıçaplı yumuşatma → kare ortalamasına normalizasyon (net = 1, flu = 0).
+     Parlaklık kötü bir derinlik vekilidir; videoda geçerli olan ipucu
+     "özne net, arka plan flu"dur. Ağırlık: `focusStrength` (0.55).
+  3. taban = `mix(low-pass, focus, focusStrength)`,
+  4. **işaretli** mikro rölyef: `edgeStrength · (raw − low-pass)`. (Eskiden
+     `|Sobel|` eklenirdi; büyüklük her zaman pozitif olduğu için her kenar
+     SIRT oluyordu — kabartma değil tel kafes.)
+  5. merkeze radyal vurgu (`centerBoost`, 0.3 — netlik ipucu geldiği için payı
+     azaltıldı),
+  6. **zamansal kararlı normalizasyon** (`stableRange`, EMA α = 0.15): kare
+     başına min/max, tek parlamada tüm sahnenin z eşlemesini kaydırıyordu.
+     Kaynak değişiminde `resetLuminanceState()` çağrılır (App).
+- **Temporal harman App'te ve hareket duyarlıdır:** α = 0.12 + |Δ|·6 (1'e
+  kırpılı) — durgun bölge kararlı, hareketli bölge gecikmesiz.
+- Solid modu fotoğraf-only kalır: video/kamera kabuk üretmez, nokta bulutuna
+  düşülür ve sebebi log'a yazılır (`Engine.solidAvailable`).
 
 ## Render Parametre Sözleşmesi (Gün 4)
 
@@ -170,13 +236,16 @@ media → depth → particles → renderer → feedback → output
 ```
 
 - 6 düğüm tipi: `media` (tür: synthetic|upload|camera; medya gömülmez),
-  `depth`, `particles` (SIM_PARAMS), `feedback` (post-pass zinciri — bugün
-  grain/vignette; Zeynep'in feedback/chroaber/neon'u bu düğüme eklenir),
-  `renderer` (mode + aktif material'ın parametreleri), `output`.
+  `depth`, `particles` (SIM_PARAMS), `feedback` (POST-PASS ZİNCİRİ — Gün 7 +
+  Gün A: feedback birikimi + chromatic + bloom + grain/vignette, parametresiz
+  FXAA ile birlikte; zincir bu düğümden açılır/kapanır, parametreleri düğümde
+  düz sözlükle yaşar), `renderer` (mode + aktif material'ın parametreleri),
+  `output` (Gün A: ekran çıktısı — global look: ACES exposure + sis,
+  LOOK_PARAMS).
 - Kenar = veri akışı. **Aktiflik = media'dan erişilebilirlik**: feedback
-  düğümünün giriş kenarı kesilirse post-pass composer'dan çıkar, grain/vignette
-  gerçekten kaybolur (Engine.setGraph). Çevrimler (feedback) kural dışı değil:
-  topolojik sıra (Kahn) çözülmeyenleri sona ekler.
+  düğümünün giriş kenarı kesilirse post-pass zinciri (feedback → chromatic →
+  grain/vignette) gerçekten kapanır (Engine.setGraph). Çevrimler (feedback)
+  kural dışı değil: topolojik sıra (Kahn) çözülmeyenleri sona ekler.
 - Engine: `setGraph(graph)` sırayla ① renderer modunu kurar ② composer'ı
   aktifliğe göre yeniden kurar ③ düğüm parametrelerini uniform'lara uygular.
   `registerRenderMode(name, material, params)` modları graf için kaydeder;
@@ -194,16 +263,53 @@ gider, düğüm parametreleri graf params'ında yaşar.
 - 6 düğüm sabit kurulur (düğüm silme v1'de yok, yalnızca kenar koparma:
   kenar seç + Backspace/Delete veya kaynaktan çekerek başka hedefe taşıma).
 - **Kablo çek → pass kapanır:** feedback düğümünün giriş kenarı kopunca
-  `setGraph` post-pass'i composer'dan çıkarır; geri takılınca döner.
+  `setGraph` post-pass zincirini kapatır (feedback + chromatic enabled=false,
+  grain composer'dan çıkar); geri takılınca üçü de döner.
 - Seçili düğümün parametre paneli `ParamDef` listesinden üretilir (isim
   bilmez): sayı → slider, renk → color input, renderer → mod düğmeleri
   (points/ascii), media → kaynak türü salt-okunur (medya gömülmez).
 - Düğüm konumları yalnızca UI'dır — graf şemasına YAZILMAZ, preset'te yoktur.
 - Graf motor dışından kurulduğunda (preset yükleme) `graphTick` prop'u ile
-  editör tazelenir; düğüm seçimi sıfırlanır.
+  editör tazelenir; düğüm seçimi KORUNUR (id'ler her grafta sabittir, panel
+  değeri her render'da engine'den okur).
+- **Gün 8 — mod takası tek kapıdan:** ModeSelector, ControlPanel ve editörün
+  renderer düğümü `App.changeMode`'a düşer; sıra: `setPointsMaterial` (material
+  takası) → `Engine.selectRenderMode(mode)` (renderer düğümünün `params.mode`
+  graf üzerinde güncellenir — graf tek doğruluk kaynağı kalır) → UI state →
+  `graphTick`. Üç kol da birbirinin değişikliğini görür; editör mod butonları
+  points/ascii/neon/solid'in dördünü sunar.
+- **Gün B — `solid` render modu (fotoğraf-only):** `buildShellMesh`
+  (`reconstruction/mesh.ts`) depth grid'ini kapalı z-kabuk meshine çevirir
+  (gövde + duvar şeridi + kapak; su geçirmezlik yönlü kenar dengesi =
+  her kenar iki yönde tam 1 kez — `verify-mesh.mjs`). `Engine.setShellGeometry`
+  meshi sahneye koyar; solid mod + kabuk hazır → nokta bulutu gizlenir, mesh
+  görünür (video/kamera solid'e mesh vermez — graceful fallback, nokta bulutu).
+  UV grid uzayındadır (köşe uv'si 4 texel merkezinin ortası → bilinear köşe
+  rengi). Material (`solidMaterial.ts`) points ailesinden: diffuse ışık +
+  fresnel + spekülar + AO + opak + depthWrite; SOLID_PARAMS render preset'ine
+  girer (Gün A loop köprüsü uFogDensity/uFogColor solid'de de çalışır). Gün B
+  temizlik: Z hesabı 3×3 box blur'dan geçen depth'i örnekler ve ekstrüzyon
+  `depthScale` (0.7) ile sönümlenir (kavis ölçeklenmez); siluet/remap/kaide ham
+  depth'ten beslenir. Fotoğraf yüklenişinde segmentasyon otomatik çalışır
+  (RMBG maskesi siluete AND edilir) — arka plan büstü yastığa çevirmez.
+- **Gün C — kabuk sözleşmesi üç madde kazandı (üçü de HATA düzeltmesi):**
+  1. **Dikey hiza:** köşe satırı `remap.yOf`'a SATIR koordinatı (üstten alta,
+     `t = j/N`) verir; dünya/uv `v = 1 − t` ayrı hesaplanır. Eskiden `v`
+     veriliyordu → mesh dikey ters, üzerine doğru yönde boyanmış doku.
+  2. **Yön:** ön yüz `+z`'den bakınca CCW'dir (normali DIŞA). Kapalı ve tutarlı
+     yönlü yüzeyde tek yüzün dışa bakması hepsinin dışa bakmasıdır → material
+     `FrontSide` çizer (fragment maliyeti yarı). Eski sarım içe dönüktü ve
+     duvar sınıflaması ön yüzü komple duvar rengine boyuyordu.
+  3. **Normal + kabuk kimliği geometriden gelir** (`ShellMeshData.normals`,
+     `.shell` → `aShell` attribute'u): `computeVertexNormals` KULLANILMAZ, çünkü
+     front/back/duvar köşeleri paylaşılır (su geçirmezlik sayımı bunu ister) ve
+     ortalama normal siluet sınırında ön yüzü duvarla karıştırır. Ön yüz normali
+     z alanının merkezi farkından, arka kapak (0,0,−1). Duvar/kapak sınıflaması
+     `aShell` interpolasyonundandır (front 1 → back 0), normal tahmininden
+     DEĞİL — dik yüzeyler (burun kanadı, çene profili) duvar sayılmaz.
+  Kabuk ızgarası 128 → **192** (kabuk yalnızca fotoğraf yüklenişinde kurulur).
 - Bilinen sınırlar: ascii karakter seti (setCharSet API'si) editörde
-  düzenlenmez; ModeSelector'dan yapılan mod takası editörün renderer
-  düğümüne yansımaz (kayıtta toPreset doğru değeri yazar).
+  düzenlenmez (ControlPanel'de düzenlenir).
 
 ## Preset Şeması v1 (Gün 4)
 
@@ -220,8 +326,8 @@ gider, düğüm parametreleri graf params'ında yaşar.
       { "id": "depth",     "type": "depth",     "params": {} },
       { "id": "particles", "type": "particles", "params": { "uStiffness": 0.08, "uForceMode": 0, "..." : "..." } },
       { "id": "renderer",  "type": "renderer",  "params": { "mode": "points", "uPointSize": 6, "..." : "..." } },
-      { "id": "feedback",  "type": "feedback",  "params": { "uGrainAmount": 0.06, "uVignette": 0.45, "..." : "..." } },
-      { "id": "output",    "type": "output",    "params": {} }
+      { "id": "feedback",  "type": "feedback",  "params": { "uGrainAmount": 0.06, "uVignette": 0.45, "uFeedbackAmount": 0, "uDecay": 0.98, "uAmount": 0, "uBloomStrength": 0, "..." : "..." } },
+      { "id": "output",    "type": "output",    "params": { "uExposure": 1, "uFogDensity": 0, "..." : "..." } }
     ],
     "edges": [
       { "from": "media", "to": "depth" },

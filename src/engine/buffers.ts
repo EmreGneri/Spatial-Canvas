@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { sampleImageGrid, sampleVolumePositions } from './reconstruction/index.ts';
+import { sampleAoGrid, sampleImageGrid, sampleVolumePositions } from './reconstruction/index.ts';
 
 /**
  * Texture sözleşmesi — ARCHITECTURE.md ile birebir.
@@ -179,6 +179,12 @@ export function createImageColorTexture(): THREE.DataTexture {
 export interface ImageColorFillOptions {
   /** Önem tabanlı örnekleme — fillPositionsFromDepth ile AYNI ayar. Varsayılan açık. */
   importanceSampling?: boolean;
+  /**
+   * Ön plan maskesi — fillPositionsFromDepth ile AYNI girdi (hizalama): renk
+   * grid'i konum grid'iyle birebir aynı remap'i kurmalıdır, aksi halde
+   * renkler parçacıklardan kayar. Opsiyonel.
+   */
+  foregroundMask?: Float32Array;
 }
 
 /**
@@ -199,15 +205,20 @@ export function fillImageColorTexture(
 ) {
   const n = POSITION_TEXTURE_SIZE;
   const data = tex.image.data as Uint8Array;
-  const grid = sampleImageGrid(rgb, imgWidth, imgHeight, depth, depthWidth, depthHeight, {
+  const sampleOpts = {
     gridSize: n,
     importanceSampling: opts.importanceSampling !== false,
-  });
-  for (let o = 0, k = 0; o < data.length; o += 4, k += 3) {
+    foregroundMask: opts.foregroundMask,
+  };
+  const grid = sampleImageGrid(rgb, imgWidth, imgHeight, depth, depthWidth, depthHeight, sampleOpts);
+  // ALPHA = bakılı oklüzyon (Gün C): aynı remap, aynı hizalama. Render
+  // shader'ları .a'yı AO çarpanı olarak tüketir (uAoStrength); ek texture yok.
+  const ao = sampleAoGrid(depth, depthWidth, depthHeight, sampleOpts);
+  for (let o = 0, k = 0, a = 0; o < data.length; o += 4, k += 3, a++) {
     data[o] = Math.round(grid[k] * 255);
     data[o + 1] = Math.round(grid[k + 1] * 255);
     data[o + 2] = Math.round(grid[k + 2] * 255);
-    data[o + 3] = 255;
+    data[o + 3] = Math.round(Math.min(1, Math.max(0, ao[a])) * 255);
   }
   tex.needsUpdate = true;
 }

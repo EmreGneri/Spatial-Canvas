@@ -1,0 +1,244 @@
+// mesh.ts sözleşme testi (GPU gerekmez, saf CPU) — Gün B: kapalı kabuk.
+// Köşe ızgarası + front/back üçgenleme + sınır duvar şeridi; su geçirmezlik
+// yönlü kenar sayımıyla doğrulanır (her kenar her iki yönde TAM BİR kez).
+// Gün C eklemeleri: dikey hiza (flip regresyonu), DIŞA yönlü sarım, köşe
+// normalleri ve kabuk kimliği (shell).
+//   node scripts/verify-mesh.mjs
+import assert from 'node:assert/strict';
+import {
+  buildShellMesh,
+  MESH_GRID_SIZE,
+  MESH_MIN_WALL_Z,
+} from '../src/engine/reconstruction/mesh.ts';
+import { EDGE_WALL_Z } from '../src/engine/reconstruction/sampler.ts';
+
+const N = MESH_GRID_SIZE;
+const W = 64;
+const H = 64;
+
+// --- 1. boyut güvenliği (sampler stili, sessiz sapma yok) ---
+assert.throws(
+  () => buildShellMesh(new Float32Array(15), 4, 4),
+  RangeError,
+  'depth boyut uyumsuz → RangeError',
+);
+assert.throws(
+  () => buildShellMesh(new Float32Array(16), 4, 4, { foregroundMask: new Float32Array(15) }),
+  RangeError,
+  'fgMask boyut uyumsuz → RangeError',
+);
+// Uyumlu boyutlar hata üretmez.
+buildShellMesh(new Float32Array(16), 4, 4, { gridSize: 8 });
+
+// --- 2. tam arka plan → null (siluet yok → kabuk yok) ---
+assert.equal(buildShellMesh(new Float32Array(W * H).fill(0), W, H), null, 'd=0 → null');
+
+// --- 3. düz 0.6 (tam kadraj ön plan): tüm köşeler içeride, z formülü ---
+// K = (N+1)² köşe; her köşe F+B = 2K pozisyon; kavis formülü merkezde
+// 0.14 + 0.0896 (verify-sampler test 7 ile aynı; ekstrüzyon depthScale 0.7 ile
+// sönümlenir — Gün B temizlik).
+const flat = buildShellMesh(new Float32Array(W * H).fill(0.6), W, H) ?? assert.fail('flat null');
+const S = N + 1;
+assert.equal(flat.positions.length, S * S * 2 * 3, 'tüm köşeler içeride (2K pozisyon)');
+assert.equal(flat.uvs.length, S * S * 2 * 2, 'uv boyutu 2K×2');
+assert.equal(flat.normals.length, flat.positions.length, 'normal boyutu = pozisyon boyutu');
+assert.equal(flat.shell.length, flat.positions.length / 3, 'shell köşe başına tek değer');
+for (let t = 0; t < flat.indices.length; t++) {
+  assert.ok(flat.indices[t] < flat.positions.length / 3, `index aralık içinde @${t}`);
+}
+// Merkez köşe: z = 0.14 + 0.1·1·0.896 = 0.2296. Köşe (0,0): dünya (−1, 1) ve
+// uv (0, 1) — aUv sözleşmesi (v=1 üst, satır 0 = üst).
+assert.ok(Math.abs(flat.positions[0] + 1) < 1e-6, 'köşe (0,0) x = −1');
+assert.ok(Math.abs(flat.positions[1] - 1) < 1e-6, 'köşe (0,0) y = +1');
+// Köşe (0,0): R² = 2 ≥ 1 → kavis YOK (verify-sampler test 7 ile aynı kural).
+assert.ok(Math.abs(flat.positions[2] - 0.14) < 1e-6, 'köşe (0,0) z = 0.14 (R² ≥ 1 → kavis yok)');
+assert.ok(Math.abs(flat.uvs[0]) < 1e-6 && Math.abs(flat.uvs[1] - 1) < 1e-6, 'köşe (0,0) uv = (0, 1)');
+const center = ((N / 2) * S + N / 2) * 2; // köşe (N/2, N/2) → k = ... → F index 2k
+assert.ok(Math.abs(flat.positions[center * 3 + 2] - 0.2296) < 1e-6, 'merkez köşe z = 0.2296');
+// depthScale=1 eskisiyle aynı matematiği verir (seçenek geçiyor).
+const unscaled = buildShellMesh(new Float32Array(W * H).fill(0.6), W, H, { depthScale: 1 }) ?? assert.fail('unscaled null');
+assert.ok(
+  Math.abs(unscaled.positions[center * 3 + 2] - 0.2896) < 1e-6,
+  'depthScale 1 → eski ekstrüzyon matematiği (0.2896)',
+);
+// Back köşeleri tam EDGE_WALL_Z düzleminde (düz kapak).
+assert.ok(Math.abs(flat.positions[center * 3 + 5] - EDGE_WALL_Z) < 1e-6, 'back köşe z = EDGE_WALL_Z');
+// z sözleşmesi: tüm köşeler [-1, +1], NaN yok.
+for (let t = 2; t < flat.positions.length; t += 3) {
+  assert.ok(Number.isFinite(flat.positions[t]), `z sınırlı @${t}`);
+  assert.ok(flat.positions[t] >= -1 && flat.positions[t] <= 1, `z [-1,+1] @${t}`);
+}
+// uv sözleşmesi: [0,1]².
+for (let t = 0; t < flat.uvs.length; t++) {
+  assert.ok(flat.uvs[t] >= 0 && flat.uvs[t] <= 1, `uv [0,1] @${t}`);
+}
+// Normal + shell sözleşmesi (Gün C): front normali +z'ye bakar (dışa), back
+// tam (0,0,−1); shell front 1 / back 0. Düz yüzeyde front normali tam (0,0,1).
+for (let k = 0; k < flat.shell.length; k += 2) {
+  assert.equal(flat.shell[k], 1, `front shell = 1 @${k}`);
+  assert.equal(flat.shell[k + 1], 0, `back shell = 0 @${k}`);
+  const o = k * 3;
+  assert.ok(flat.normals[o + 2] > 0, `front normal +z @${k}`);
+  assert.ok(Math.abs(flat.normals[o + 5] + 1) < 1e-6, `back normal = −z @${k}`);
+}
+
+// --- 4. SU GEÇİRMEZLİK (yönlü kenar sayımı): her kenar her iki yönde TAM
+// BİR kez — kapalı, oriyente edilebilir yüzey. Sıfır genişlikli kıvrımlar
+// (k=1/k=2 diyagonal) kenar üretmez; bu sahnelerde böyle hücre yoktur. ---
+function census(mesh, label) {
+  const key = (a, b) => a * 1000000 + b;
+  const edgeKey = (a, b) => (a < b ? key(a, b) : key(b, a));
+  const dir = new Map();
+  const undir = new Map();
+  for (let t = 0; t < mesh.indices.length; t += 3) {
+    const a = mesh.indices[t];
+    const b = mesh.indices[t + 1];
+    const c = mesh.indices[t + 2];
+    for (const [p, q] of [[a, b], [b, c], [c, a]]) {
+      dir.set(key(p, q), (dir.get(key(p, q)) ?? 0) + 1);
+      undir.set(edgeKey(p, q), (undir.get(edgeKey(p, q)) ?? 0) + 1);
+    }
+  }
+  const bad = [];
+  for (const [dk, count] of dir) {
+    const p = (dk / 1000000) | 0;
+    const q = dk % 1000000;
+    const rev = dir.get(key(q, p)) ?? 0;
+    if (count !== 1 || rev !== 1) bad.push(`${p}→${q} (${count}/${rev})`);
+  }
+  assert.equal(bad.length, 0, `${label}: yönlü kenar dengesi (${bad.slice(0, 5).join(', ')})`);
+  // Her yönsüz kenar tam 2 kez → her yüz kenarını paylaşıyor.
+  for (const [uk, count] of undir) {
+    assert.equal(count, 2, `${label}: kenar ${uk} 2 yüz tarafından (${count})`);
+  }
+}
+census(flat, 'düz 0.6');
+
+// --- 4b. YÖN (Gün C): ön yüz üçgenleri +z'den bakınca CCW olmalı, yani
+// geometrik normalleri DIŞA (+z) bakar. Kapalı ve tutarlı yönlü yüzeyde tek
+// üçgenin dışa bakması hepsinin dışa bakması demektir (material FrontSide
+// çizer). Eski sarım içe dönüktü: computeVertexNormals normalleri ters
+// veriyor, fragment'teki duvar sınıflaması ön yüzü komple duvar sayıyor ve
+// fotoğraf dokusu yalnızca görünmeyen arka kapağa biniyordu. ---
+function faceNormalZ(mesh, t) {
+  const [a, b, c] = [mesh.indices[t], mesh.indices[t + 1], mesh.indices[t + 2]];
+  const p = (i) => [mesh.positions[i * 3], mesh.positions[i * 3 + 1], mesh.positions[i * 3 + 2]];
+  const [ax, ay] = p(a);
+  const [bx, by] = p(b);
+  const [cx, cy] = p(c);
+  return (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
+}
+// İlk üçgen bir FRONT üçgenidir (üçgenleme sırası: hücre başına önce front).
+assert.ok(faceNormalZ(flat, 0) > 0, 'ön yüz sarımı CCW (+z), yani normali DIŞA bakar');
+// Arka kapak ters yönde: ilk back üçgeni (front çiftinden sonraki üçgen).
+assert.ok(faceNormalZ(flat, 6) < 0, 'arka kapak sarımı ters (normali −z)');
+
+// --- 4c. DİKEY HİZA (Gün C regresyonu): fotoğrafın ÜST yarısı yakın (d=0.9),
+// alt yarısı uzak (d=0.2) ise mesh'in ÜST köşeleri de öne çıkmalıdır. Bu test
+// eskiden başarısız olurdu: köşe satırı `remap.yOf`/satır koordinatına v
+// (alttan üste) veriliyordu, mesh dikey TERS kuruluyor ve doğru yönde boyanan
+// fotoğraf dokusu ters geometriye biniyordu. ---
+const vertical = new Float32Array(W * H);
+for (let y = 0; y < H; y++) {
+  for (let x = 0; x < W; x++) vertical[y * W + x] = y < H / 2 ? 0.9 : 0.2;
+}
+const vert = buildShellMesh(vertical, W, H, { curvature: 0, importanceSampling: false, gridSize: 32 })
+  ?? assert.fail('vertical null');
+let topZ = null;
+let botZ = null;
+let topY = -Infinity;
+let botY = Infinity;
+for (let k = 0; k < vert.positions.length; k += 6) {
+  const x = vert.positions[k];
+  const y = vert.positions[k + 1];
+  if (Math.abs(x) > 1e-6) continue; // orta sütun
+  if (y > topY) { topY = y; topZ = vert.positions[k + 2]; }
+  if (y < botY) { botY = y; botZ = vert.positions[k + 2]; }
+}
+assert.ok(topZ !== null && botZ !== null, 'orta sütunda köşe bulundu');
+assert.ok(topZ > botZ, `üst köşe öne çıkar (üst z=${topZ?.toFixed(3)} > alt z=${botZ?.toFixed(3)})`);
+
+// --- 5. yarım düzlem (sol 0.4 / sağ 0.02), remap KAPALI: sınır bandı
+// arkaya dökülür, siluet içi dokunulmaz, duvar güvencesi korunur ---
+// Köşe sayısı: i ∈ 0..N/2 (N/2+1 sütun — köşe N/2, u=0.5 → xv=31.5, bilinear
+// alpha eşiği TAM 0.5 → İÇERİDE) × j ∈ 0..N = S satır.
+const halfDepth = new Float32Array(W * H).fill(0.02);
+for (let y = 0; y < H; y++) {
+  for (let x = 0; x < W / 2; x++) halfDepth[y * W + x] = 0.4;
+}
+const half = buildShellMesh(halfDepth, W, H, { curvature: 0, importanceSampling: false }) ?? assert.fail('half null');
+const halfCols = N / 2 + 1;
+assert.equal(half.positions.length, halfCols * S * 2 * 3, 'yarım düzlem köşe sayısı (N/2+1 sütun)');
+// Köşe konumunu dünya koordinatından bul (sıralı index yalnızca TAM dolu
+// ızgarada geçerli; seyrek sahnede 2K sıkıştırılmıştır).
+function zAt(mesh, wx, wy) {
+  for (let k = 0; k < mesh.positions.length; k += 6) {
+    if (Math.abs(mesh.positions[k] - wx) < 1e-6 && Math.abs(mesh.positions[k + 1] - wy) < 1e-6) {
+      return mesh.positions[k + 2];
+    }
+  }
+  return undefined;
+}
+const wx_of = (i) => (i / N - 0.5) * 2;
+const wy_of = (j) => (1 - j / N - 0.5) * 2;
+// Siluet içi (u = 0.375, v ortası): z = (0.4−0.5)·2·0.7 = −0.14, döküm yok.
+const iIn = (N * 3) / 8;
+const jMid = N / 2;
+assert.ok(Math.abs(zAt(half, wx_of(iIn), wy_of(jMid)) + 0.14) < 1e-6, 'iç köşe z = −0.14 (döküm yok)');
+// Sınır bandı (u ≈ 0.5⁻): ince kabuk + döküm → arkaya çekilir ama duvar
+// güvencesinin (MESH_MIN_WALL_Z) altına inemez.
+const zB = zAt(half, wx_of(N / 2 - 1), wy_of(jMid));
+assert.ok(typeof zB === 'number' && zB < -0.25, `sınır bandı → arkaya döküldü (z = ${zB?.toFixed(4)})`);
+assert.ok(zB >= MESH_MIN_WALL_Z, `duvar güvencesi: z ≥ ${MESH_MIN_WALL_Z} (z = ${zB?.toFixed(4)})`);
+census(half, 'yarım düzlem');
+
+// --- 6. maske-aware: fg maske sol yarı → yalnızca sol köşeler + kavis
+// formülü remap'siz tamlanır; remap açıkken su geçirmezlik korunur ---
+const flat60 = new Float32Array(W * H).fill(0.6);
+const fg = new Float32Array(W * H);
+for (let y = 0; y < H; y++) {
+  for (let x = 0; x < W / 2; x++) fg[y * W + x] = 1;
+}
+// (a) remap KAPALI — köşe ızgarası görüntüyle 1:1 hizalı.
+const maskedNoRemap = buildShellMesh(flat60, W, H, { curvature: 0.1, foregroundMask: fg, importanceSampling: false }) ?? assert.fail('masked noremap null');
+assert.equal(maskedNoRemap.positions.length, halfCols * S * 2 * 3, 'maske remap\'siz → N/2+1 sütun köşesi');
+let maxX = -Infinity;
+for (let t = 0; t < maskedNoRemap.positions.length; t += 6) {
+  if (maskedNoRemap.positions[t] > maxX) maxX = maskedNoRemap.positions[t];
+}
+assert.ok(maxX <= 0, `maske 0 bölgede köşe yok (max x = ${maxX.toFixed(4)})`);
+// Sol-orta köşe (u = 0.25, v ortası): kavis formülü R² = 0.25 → z = 0.14 + 0.0776.
+const iQuarter = N / 4;
+assert.ok(
+  Math.abs(zAt(maskedNoRemap, wx_of(iQuarter), wy_of(jMid)) - 0.2176) < 1e-3,
+  `maskeli köşe z = 0.2176 (gerçek: ${zAt(maskedNoRemap, wx_of(iQuarter), wy_of(jMid)).toFixed(4)})`,
+);
+census(maskedNoRemap, 'maske sol yarı (remap kapalı)');
+// (b) remap AÇIK — örnekleme yoğunluğu ön plana kayar (parçacık paritesi);
+// köşe sayısı farklıdır, su geçirmezlik + z sözleşmesi korunmalı.
+const masked = buildShellMesh(flat60, W, H, { curvature: 0.1, foregroundMask: fg }) ?? assert.fail('masked null');
+census(masked, 'maske sol yarı (remap açık)');
+assert.ok(masked.positions.length / 6 > halfCols * S, `remap açıkken ön plana yoğunlaşma (K = ${masked.positions.length / 6})`);
+for (let t = 2; t < masked.positions.length; t += 6) {
+  assert.ok(Number.isFinite(masked.positions[t]), `remap z sınırlı @${t}`);
+  assert.ok(masked.positions[t] >= -1 && masked.positions[t] <= 1, `remap z [-1,+1] @${t}`);
+}
+// Normaller birim uzunlukta (fragment normalize etse de sözleşme budur).
+for (let k = 0; k < masked.normals.length; k += 3) {
+  const len = Math.hypot(masked.normals[k], masked.normals[k + 1], masked.normals[k + 2]);
+  assert.ok(Math.abs(len - 1) < 1e-5, `normal birim uzunlukta @${k} (${len})`);
+}
+// Duvar şeridi var: toplam üçgen > front+back (4·iç hücre).
+assert.ok(
+  masked.indices.length / 3 > (halfCols - 2) * N * 4 + 500,
+  'sınır duvar şeridi üretildi (front+back dışında üçgenler var)',
+);
+
+// --- 7. determinizm: aynı girdi → birebir aynı çıktı ---
+const again = buildShellMesh(flat60, W, H, { curvature: 0.1, foregroundMask: fg }) ?? assert.fail('determinizm null');
+assert.equal(JSON.stringify(again.positions), JSON.stringify(masked.positions), 'deterministik positions');
+assert.equal(JSON.stringify(again.uvs), JSON.stringify(masked.uvs), 'deterministik uvs');
+assert.equal(JSON.stringify(again.normals), JSON.stringify(masked.normals), 'deterministik normals');
+assert.equal(JSON.stringify(again.indices), JSON.stringify(masked.indices), 'deterministik indices');
+
+console.log('OK · kapalı kabuk mesh (köşe ızgarası + front/back + duvar şeridi, su geçirmezlik, DIŞA yönlü sarım, dikey hiza, köşe normalleri + shell, z/uv sözleşmesi, maske + remap hizası, determinizm)');

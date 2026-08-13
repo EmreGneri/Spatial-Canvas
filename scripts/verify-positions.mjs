@@ -12,6 +12,8 @@ import {
   POSITION_TEXTURE_SIZE as N,
   POINTS_DEPTH_RANGE,
   createHomeTexture,
+  createImageColorTexture,
+  fillImageColorTexture,
   fillPositionsFromDepth,
 } from '../src/engine/buffers.ts';
 import { BACKDROP_OPACITY, EDGE_WALL_Z } from '../src/engine/reconstruction/sampler.ts';
@@ -89,4 +91,30 @@ fillPositionsFromDepth(wide, new Float32Array(160 * 80), 160, 80); // 2:1
 const rightmost = xyz(wide.image.data, N - 1, 0).x;
 assert.ok(Math.abs(rightmost - (2 - 2 / N)) < 1e-5, '2:1 kaynakta yarı genişlik ≈ 2 olmalı');
 
-console.log('OK · position sözleşmesi (z ortalı, satır 0 = üst, iki seviyeli w, aspect doğru)');
+// --- 5. RENK GRID'İ ALPHA = bakılı oklüzyon (Gün C sözleşmesi) ---
+// Kabartmanın dibi (etrafı daha yakın) kararır, uzak düz alan 255 kalır;
+// RGB kanalları fotoğrafı taşımaya devam eder (AO onları BOYAMAZ).
+{
+  const iw = 64;
+  const ih = 64;
+  const d = new Float32Array(iw * ih).fill(0.4);
+  const lo = iw / 2 - 8;
+  const hi = iw / 2 + 8;
+  for (let y = lo; y < hi; y++) {
+    for (let x = lo; x < hi; x++) d[y * iw + x] = 0.9;
+  }
+  const rgb = new Float32Array(iw * ih * 3).fill(0.5);
+  const colorTex = createImageColorTexture();
+  fillImageColorTexture(colorTex, rgb, iw, ih, d, iw, ih, { importanceSampling: false });
+  const px = colorTex.image.data;
+  const alphaAt = (u, v) => px[(Math.round(v * (N - 1)) * N + Math.round(u * (N - 1))) * 4 + 3];
+  const rgbAt = (u, v) => px[(Math.round(v * (N - 1)) * N + Math.round(u * (N - 1))) * 4];
+  assert.equal(alphaAt(0.02, 0.02), 255, 'uzak düz alan → AO nötr (alpha 255)');
+  assert.ok(
+    alphaAt(lo / iw - 0.01, 0.5) < 240,
+    `kabartma dibi → alpha kararır (${alphaAt(lo / iw - 0.01, 0.5)})`,
+  );
+  assert.equal(rgbAt(0.5, 0.5), 128, 'AO yazımı RGB kanallarını bozmaz (0.5 → 128)');
+}
+
+console.log('OK · position sözleşmesi (z ortalı, satır 0 = üst, iki seviyeli w, aspect doğru) + renk grid alpha = AO');

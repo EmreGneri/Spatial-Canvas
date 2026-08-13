@@ -3,6 +3,7 @@ import type { Engine } from '../engine';
 import type { PointCloudMaterial } from '../shaders/pointCloudMaterial';
 import type { AsciiMaterial } from '../shaders/asciiMaterial';
 import type { NeonWireMaterial } from '../shaders/neonWireMaterial';
+import type { SolidMaterial } from '../shaders/solidMaterial';
 
 /**
  * Render modu seçici. Sahiplik: Zeynep.
@@ -14,18 +15,20 @@ import type { NeonWireMaterial } from '../shaders/neonWireMaterial';
  * material konum alamaz (ARCHITECTURE.md · Point Cloud Sözleşmesi).
  */
 
-export type RenderMode = 'points' | 'ascii' | 'neon';
+export type RenderMode = 'points' | 'ascii' | 'neon' | 'solid';
 
 export interface RenderModeMaterials {
   points: PointCloudMaterial;
   ascii: AsciiMaterial;
   neon: NeonWireMaterial;
+  solid: SolidMaterial;
 }
 
 const MODES: { id: RenderMode; label: string }[] = [
   { id: 'points', label: 'Point Cloud' },
   { id: 'ascii', label: 'ASCII' },
   { id: 'neon', label: 'Neon' },
+  { id: 'solid', label: 'Solid' },
 ];
 
 const rowStyle: CSSProperties = {

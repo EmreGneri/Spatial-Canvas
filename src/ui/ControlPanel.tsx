@@ -5,8 +5,11 @@ import { GRAIN_PARAMS, type GrainPassUniforms } from '../shaders/grainPass';
 import { POINTS_PARAMS, type PointCloudMaterial } from '../shaders/pointCloudMaterial';
 import { ASCII_PARAMS, CHAR_SETS, type AsciiMaterial } from '../shaders/asciiMaterial';
 import { NEON_PARAMS, type NeonWireMaterial } from '../shaders/neonWireMaterial';
+import { SOLID_PARAMS, type SolidMaterial } from '../shaders/solidMaterial';
 import { FEEDBACK_PARAMS, type FeedbackPassUniforms } from '../shaders/feedbackPass';
 import { CHROMATIC_PARAMS, type ChromaticPassUniforms } from '../shaders/chromaticPass';
+import { BLOOM_PARAMS, type BloomPassUniforms } from '../shaders/bloomPass';
+import { LOOK_PARAMS, type LookUniforms } from '../shaders/look';
 import type { RenderTargets } from '../shaders/renderPreset';
 import { PresetSection } from './PresetSection';
 import type { RenderMode } from './ModeSelector';
@@ -228,19 +231,27 @@ export function ControlPanel({
   points,
   ascii,
   neon,
+  solid,
   feedback,
   chromatic,
+  bloom,
+  look,
   mode,
   setMode,
 }: {
   grain: GrainPassUniforms;
-  points: PointCloudMaterial;
+points: PointCloudMaterial;
   ascii: AsciiMaterial;
   neon: NeonWireMaterial;
+  solid: SolidMaterial;
   /** Feedback pass zincire eklenmemişse verilmez — bölüm de çıkmaz. */
   feedback?: FeedbackPassUniforms;
   /** Chromatic pass zincire eklenmemişse verilmez — bölüm de çıkmaz. */
   chromatic?: ChromaticPassUniforms;
+  /** Gün A: bloom sözlüğü (BLOOM_PARAMS). */
+  bloom?: BloomPassUniforms;
+  /** Gün A: global look köprüsü (LOOK_PARAMS — ACES exposure + fog). */
+  look?: LookUniforms;
   mode: RenderMode;
   /** Preset mod değiştirdiğinde çağrılır; takas Engine'den geçer. */
   setMode?: (mode: RenderMode) => void;
@@ -252,7 +263,7 @@ export function ControlPanel({
   // olmazsa uniform değişse de panel eski sayıyı göstermeye devam eder.
   const [revision, setRevision] = useState(0);
 
-  const targets: RenderTargets = { mode, points, ascii, neon, grain, feedback, chromatic, setMode };
+  const targets: RenderTargets = { mode, points, ascii, neon, solid, grain, feedback, chromatic, setMode };
 
   return (
     <aside style={panelStyle}>
@@ -282,6 +293,13 @@ export function ControlPanel({
           </>
         )}
 
+        {mode === 'solid' && (
+          <>
+            <strong style={headingStyle}>Solid</strong>
+            <ParamGroup defs={SOLID_PARAMS} uniforms={asRecord(solid.uniforms)} />
+          </>
+        )}
+
         {feedback && (
           <>
             <strong style={headingStyle}>Feedback</strong>
@@ -293,6 +311,20 @@ export function ControlPanel({
           <>
             <strong style={headingStyle}>Chromatic</strong>
             <ParamGroup defs={CHROMATIC_PARAMS} uniforms={asRecord(chromatic)} />
+          </>
+        )}
+
+        {bloom && (
+          <>
+            <strong style={headingStyle}>Bloom</strong>
+            <ParamGroup defs={BLOOM_PARAMS} uniforms={asRecord(bloom)} />
+          </>
+        )}
+
+        {look && (
+          <>
+            <strong style={headingStyle}>Look (ACES + sis)</strong>
+            <ParamGroup defs={LOOK_PARAMS} uniforms={asRecord(look)} />
           </>
         )}
 
