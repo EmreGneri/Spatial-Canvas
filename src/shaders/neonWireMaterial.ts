@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { POSITION_TEXTURE_SIZE } from '../engine/buffers';
 import type { ParamDef } from '../engine/params';
 
 /**
@@ -13,15 +14,18 @@ import type { ParamDef } from '../engine/params';
  * `max(-mv.z, 0.1)` kırpması korunur.
  *
  * Fark: post-process kenar bulma DEĞİL. Her parçacık vertex shader'da kendi
- * depth komşularına Sobel uygular ve kenar üzerinde değilse ELENİR. Eleme
- * vertex'te yapılır (fragment'ta discard etmek yerine): kenar dışı parçacıklar
- * hiç rasterleştirilmez. Sonuç 3B uzayda süzülen neon kenar çizgileridir —
- * kamera döndükçe çizgiler de gerçekten döner, ekran uzayında yapışıp kalmaz.
+ * KONUM komşularının z'sine Sobel uygular ve kenar üzerinde değilse ELENİR.
+ * Eleme vertex'te yapılır (fragment'ta discard etmek yerine): kenar dışı
+ * parçacıklar hiç rasterleştirilmez. Sonuç 3B uzayda süzülen neon kenar
+ * çizgileridir — kamera döndükçe çizgiler de gerçekten döner, ekran uzayında
+ * yapışıp kalmaz.
  *
- * BAĞIMLILIK: Engine yalnızca `uPositions`'ı yazar. `uDepth` ve ondan türeyen
- * `uTexelSize` bu material'ın dışarıdan beslenmesini ister —
- * `setDepthTexture(engine.depthTexture)` her `setDepth()` sonrası çağrılmalı.
- * Beslenmezse (depth henüz yok) hiçbir şey çizilmez, hata da vermez.
+ * BAĞIMLILIK YOK (Gün C): kenarlar `uPositions`'tan türetildiği için material
+ * dışarıdan depth beslemesi İSTEMEZ (eski `setDepthTexture`/`uDepth` kaldırıldı).
+ * Sebep: depth texture'ı ham görüntü uzayındadır, konum grid'i ise önem
+ * remap'iyle büküktür — depth'i grid uv'siyle okumak kenarları parçacıkların
+ * bulunduğu yerden kaydırıyordu. Ek fayda: kenarlar fare deformasyonunu ve
+ * video akışını da doğal olarak takip eder.
  */
 
 export interface NeonWireMaterialUniforms {
@@ -30,12 +34,6 @@ export interface NeonWireMaterialUniforms {
    * material asla atama yapmaz.
    */
   uPositions: { value: THREE.Texture | null };
-  /** Depth haritası (R32F, 0 = uzak, 1 = yakın). setDepthTexture() besler. */
-  uDepth: { value: THREE.Texture | null };
-  /** Komşu örnekleme mesafesi = 1 / depth çözünürlüğü. setDepthTexture() türetir. */
-  uTexelSize: { value: THREE.Vector2 };
-  /** 0 veya 1 — depth bağlı mı. 0'da tüm parçacıklar elenir (boş kare). */
-  uHasDepth: { value: number };
   /** 1..10 — kenar noktalarının boyutu */
   uPointSize: { value: number };
   /** 0..1 — Sobel eşiği; düşükte çok çizgi, yüksekte az */
@@ -76,6 +74,9 @@ export interface NeonWireMaterialUniforms {
   uFlickerIntensity: { value: number };
   /** 0..1 — tohumdan gelen ton sapması; 0 = tam olarak seçili renk */
   uColorVariance: { value: number };
+  /** Gün A (fog) — global look köprüsünden (Engine.lookUniforms) yazılır. */
+  uFogDensity: { value: number };
+  uFogColor: { value: THREE.Color };
 }
 
 /** Parametre sözleşmesi (Gün 4): neon modunun preset'e giren kolları. */
@@ -90,23 +91,13 @@ export const NEON_PARAMS: ParamDef[] = [
   { key: 'uColorVariance', label: 'Color Variance', min: 0, max: 1, default: 0 },
 ];
 
-/** ShaderMaterial, uniform'ları tipli görünsün ve depth beslemesi kapsansın diye. */
+/** ShaderMaterial, uniform'ları tipli görünsün diye daraltılmış. */
 export type NeonWireMaterial = THREE.ShaderMaterial & {
   uniforms: NeonWireMaterialUniforms;
-  /**
-   * Depth haritasını bağlar ve `uTexelSize`'ı çözünürlüğünden türetir.
-   * `null` (ya da boyutsuz texture) → `uHasDepth = 0`, hiçbir şey çizilmez.
-   * Engine `setDepth()` boyut aynıysa aynı texture nesnesini yerinde
-   * günceller, değişince yenisini üretir — bu yüzden her seferinde çağrılır.
-   */
-  setDepthTexture: (texture: THREE.Texture | null) => void;
 };
 
 const VERTEX = /* glsl */ `
   uniform sampler2D uPositions;
-  uniform sampler2D uDepth;
-  uniform vec2 uTexelSize;
-  uniform float uHasDepth;
   uniform float uPointSize;
   uniform float uEdgeThreshold;
   uniform float uGlowRadius;
@@ -117,10 +108,23 @@ const VERTEX = /* glsl */ `
   varying float vEdge;
   varying float vSeed;
   varying float vOpacity;
+  varying float vViewDepth;
 
-  /** Sobel'in tek kanallı depth örneği (R32F: 0 = uzak, 1 = yakın). */
-  float depthAt(vec2 uv) {
-    return texture2D(uDepth, clamp(uv, 0.0, 1.0)).r;
+  /** Parçacık grid'inin texel adımı — komşu örneklemesi bu adımla yapılır. */
+  const float TEX_STEP = 1.0 / ${POSITION_TEXTURE_SIZE.toFixed(1)};
+
+  /**
+   * Sobel'in tek kanallı örneği: KONUM texture'ının z'si (Gün C düzeltmesi).
+   * Eskiden depth texture'ı GRID uv'siyle okunuyordu — iki farklı uzay: konum
+   * grid'i önem remap'iyle büküktür (sampler.buildImportanceRemap), depth ise
+   * ham görüntü uzayındadır. Kenarlar bu yüzden parçacıkların bulunduğu yerden
+   * KAYIYORDU (ve texel adımı depth çözünürlüğünden alınıyordu, grid'den
+   * değil). Konumun z'sini örneklemek hizayı tanım gereği garanti eder; ayrıca
+   * Engine→material depth besleme bağımlılığı (setDepthTexture) tamamen düşer
+   * ve kenarlar fare deformasyonunu da takip eder.
+   */
+  float zAt(vec2 uv) {
+    return texture2D(uPositions, clamp(uv, 0.0, 1.0)).z;
   }
 
   void main() {
@@ -138,25 +142,25 @@ const VERTEX = /* glsl */ `
     // birebir eşlenir (sampler.ts sampleImageGrid), diğer iki modla aynı.
     vUv = aUv;
 
-    // 3×3 Sobel, parçacığın kendi grid UV'si etrafında. Komşu mesafesi depth
-    // texel'i kadar: uTexelSize depth çözünürlüğünden gelir, parçacık
-    // grid'inden değil, yoksa kenarlar çözünürlük değişince kayar.
-    vec2 t = uTexelSize;
-    float tl = depthAt(aUv + vec2(-t.x,  t.y));
-    float tm = depthAt(aUv + vec2( 0.0,  t.y));
-    float tr = depthAt(aUv + vec2( t.x,  t.y));
-    float ml = depthAt(aUv + vec2(-t.x,  0.0));
-    float mr = depthAt(aUv + vec2( t.x,  0.0));
-    float bl = depthAt(aUv + vec2(-t.x, -t.y));
-    float bm = depthAt(aUv + vec2( 0.0, -t.y));
-    float br = depthAt(aUv + vec2( t.x, -t.y));
+    // 3×3 Sobel, parçacığın kendi grid UV'si etrafında; komşu mesafesi GRID
+    // texel'i (konum texture'ının adımı).
+    vec2 t = vec2(TEX_STEP);
+    float tl = zAt(aUv + vec2(-t.x,  t.y));
+    float tm = zAt(aUv + vec2( 0.0,  t.y));
+    float tr = zAt(aUv + vec2( t.x,  t.y));
+    float ml = zAt(aUv + vec2(-t.x,  0.0));
+    float mr = zAt(aUv + vec2( t.x,  0.0));
+    float bl = zAt(aUv + vec2(-t.x, -t.y));
+    float bm = zAt(aUv + vec2( 0.0, -t.y));
+    float br = zAt(aUv + vec2( t.x, -t.y));
 
     float gx = (tr + 2.0 * mr + br) - (tl + 2.0 * ml + bl);
     float gy = (tl + 2.0 * tm + tr) - (bl + 2.0 * bm + br);
 
-    // 0.25 normalizasyonu: tam siyah→beyaz basamakta |g| = 4 olur, bölünce
-    // gradyan ~0..1 aralığına oturur ve uEdgeThreshold anlamlı bir aralık olur.
-    float edge = length(vec2(gx, gy)) * 0.25 * uHasDepth;
+    // 0.125 normalizasyonu: z, depth'in İKİ KATI aralıkta (−1..+1 karşılık
+    // 0..1) — tam basamakta |g| = 8 olur. Bölen yarıya indirildiği için
+    // uEdgeThreshold'un anlamı ve varsayılanı (0.1) değişmez.
+    float edge = length(vec2(gx, gy)) * 0.125;
     vEdge = clamp(edge, 0.0, 1.0);
 
     // Kenar değilse ELE: nokta merkezi clip hacminin dışına atılır ve boyutu
@@ -168,6 +172,7 @@ const VERTEX = /* glsl */ `
     }
 
     vec4 mv = modelViewMatrix * vec4(pos.xyz, 1.0);
+    vViewDepth = -mv.z;
 
     // Hale sprite'ın DIŞINA taşamaz; parlama çapı büyüdükçe sprite da büyür,
     // yoksa uGlowRadius yalnızca noktanın içini bulanıklaştırırdı. Fragment
@@ -194,11 +199,14 @@ const FRAGMENT = /* glsl */ `
   uniform float uHasImage;
   uniform float uObjectSeparation;
   uniform float uUseTextureColor;
+  uniform float uFogDensity;
+  uniform vec3 uFogColor;
 
   varying vec2 vUv;
   varying float vEdge;
   varying float vSeed;
   varying float vOpacity;
+  varying float vViewDepth;
 
   const float TAU = 6.28318530718;
   /** Ton sapmasının tam genişliği (HSV turu). 0.3 → ±54°, komşu renklere ulaşır. */
@@ -267,10 +275,17 @@ const FRAGMENT = /* glsl */ `
     // duvar özneyi yutmasın. Diğer iki moddaki çarpanın aynısı.
     if (uObjectSeparation < 0.5 && vOpacity < 0.5) tint *= 0.4;
 
-    // Kenar şiddeti rengi süzer: zayıf kenarlar sönük, keskin kenarlar parlak.
-    // vOpacity (pos.w): arka plan parçacıkları 0.4 ile sönümlenir — diğer iki
+// Kenar şiddeti rengi süzer: zayıf kenarlar sönük, keskin kenarlar parlak.
+    // vOpacity (pos.w): arka plan parçacıkları 0.4 ile sınırlanır — diğer iki
     // mod da w'yi alpha çarpanı olarak tükettiği için modlar arası tutarlı.
-    gl_FragColor = vec4(tint * uGlowIntensity * vEdge * flicker, shape * vOpacity);
+    vec3 neon = tint * uGlowIntensity * vEdge * flicker;
+
+    // Gün A (fog): kamera uzaklığıyla üstel sis — uFogDensity = 0 iken
+    // görünüm hiç değişmez. Uzak kenarlar arka rengine yığılır.
+    float fogF = 1.0 - exp(-uFogDensity * uFogDensity * vViewDepth * vViewDepth);
+    neon = mix(neon, uFogColor, fogF);
+
+    gl_FragColor = vec4(neon, shape * vOpacity);
   }
 `;
 
@@ -278,9 +293,6 @@ export function createNeonWireMaterial(): NeonWireMaterial {
   // Her material kendi uniform objesini alır; iki instance state paylaşmaz.
   const uniforms: NeonWireMaterialUniforms = {
     uPositions: { value: null },
-    uDepth: { value: null },
-    uTexelSize: { value: new THREE.Vector2(1 / 512, 1 / 512) },
-    uHasDepth: { value: 0 },
     uPointSize: { value: 3 },
     uEdgeThreshold: { value: 0.1 },
     uNeonColor: { value: new THREE.Color(0.2, 1.0, 0.85) },
@@ -298,6 +310,9 @@ export function createNeonWireMaterial(): NeonWireMaterial {
     // İkisi de 0: efekt varsayılan olarak kapalı, mevcut görünüm değişmez.
     uFlickerIntensity: { value: 0 },
     uColorVariance: { value: 0 },
+    // Gün A (fog): kapalı başlar — Engine.lookUniforms her karede işler.
+    uFogDensity: { value: 0 },
+    uFogColor: { value: new THREE.Color(0.02, 0.03, 0.07) },
   };
 
   const material = new THREE.ShaderMaterial({
@@ -327,22 +342,6 @@ export function createNeonWireMaterial(): NeonWireMaterial {
     // Material bırakılınca döngü de durmalı, yoksa sayfa boyunca sürer.
     neon.addEventListener('dispose', () => cancelAnimationFrame(frame));
   }
-
-  neon.setDepthTexture = (texture: THREE.Texture | null) => {
-    const image = texture?.image as { width?: number; height?: number } | undefined;
-    const width = image?.width ?? 0;
-    const height = image?.height ?? 0;
-    if (!texture || width <= 0 || height <= 0) {
-      // Depth yok: sampler'ı boş bırak, eleme bayrağını indir. Vertex'te
-      // edge = 0 olur, hiçbir parçacık geçmez — boş kare, hata yok.
-      uniforms.uDepth.value = null;
-      uniforms.uHasDepth.value = 0;
-      return;
-    }
-    uniforms.uDepth.value = texture;
-    uniforms.uTexelSize.value.set(1 / width, 1 / height);
-    uniforms.uHasDepth.value = 1;
-  };
 
   return neon;
 }

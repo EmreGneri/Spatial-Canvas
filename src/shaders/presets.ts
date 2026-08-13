@@ -6,6 +6,7 @@ import {
   type NeonState,
   type PointCloudState,
   type RenderState,
+  type SolidState,
 } from './renderPreset';
 
 /**
@@ -55,6 +56,16 @@ const DEFAULT_NEON: NeonState = {
   uColorVariance: 0,
 };
 
+/** solidMaterial.ts factory değerleri. */
+const DEFAULT_SOLID: SolidState = {
+  uBrightness: 1,
+  uLightStrength: 0.45,
+  uFresnelStrength: 0.35,
+  uNearColor: '#d9f2ff',
+  uFarColor: '#0f1a47',
+  uWallColor: '#23262e',
+};
+
 /** Feedback kapalı: uFeedbackAmount 0 iken diğerlerinin etkisi yoktur. */
 const FEEDBACK_OFF: FeedbackState = {
   uFeedbackAmount: 0,
@@ -84,6 +95,7 @@ export const BUILT_IN_PRESETS: { name: string; state: RenderState }[] = [
       },
       ascii: { ...DEFAULT_ASCII },
       neon: { ...DEFAULT_NEON },
+      solid: { ...DEFAULT_SOLID },
       feedback: { ...FEEDBACK_OFF },
       chromatic: { ...CHROMATIC_OFF },
       grain: {
@@ -111,6 +123,7 @@ export const BUILT_IN_PRESETS: { name: string; state: RenderState }[] = [
       },
       ascii: { ...DEFAULT_ASCII },
       neon: { ...DEFAULT_NEON },
+      solid: { ...DEFAULT_SOLID },
       feedback: { ...FEEDBACK_OFF },
       chromatic: { ...CHROMATIC_OFF },
       grain: {
@@ -139,6 +152,7 @@ export const BUILT_IN_PRESETS: { name: string; state: RenderState }[] = [
         charSet: ' .:-=+*#%@',
       },
       neon: { ...DEFAULT_NEON },
+      solid: { ...DEFAULT_SOLID },
       feedback: { ...FEEDBACK_OFF },
       chromatic: { uAmount: 0.002, uRadial: 1, uAngle: 0 },
       grain: {
@@ -166,6 +180,7 @@ export const BUILT_IN_PRESETS: { name: string; state: RenderState }[] = [
       },
       ascii: { ...DEFAULT_ASCII },
       neon: { ...DEFAULT_NEON },
+      solid: { ...DEFAULT_SOLID },
       feedback: {
         uFeedbackAmount: 0.82,
         uZoom: 1.006,
@@ -203,6 +218,7 @@ export const BUILT_IN_PRESETS: { name: string; state: RenderState }[] = [
         uFlickerIntensity: 0,
         uColorVariance: 0,
       },
+      solid: { ...DEFAULT_SOLID },
       feedback: {
         uFeedbackAmount: 0.35,
         uZoom: 1,

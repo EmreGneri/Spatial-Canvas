@@ -4,6 +4,10 @@ import type { Graph } from './graph';
 import { collectParams, applyParams, type ParamDef, type ParamValues } from './params';
 import { SIM_PARAMS } from './simulation';
 import { GRAIN_PARAMS } from '../shaders/grainPass';
+import { FEEDBACK_PARAMS } from '../shaders/feedbackPass';
+import { CHROMATIC_PARAMS } from '../shaders/chromaticPass';
+import { BLOOM_PARAMS } from '../shaders/bloomPass';
+import { LOOK_PARAMS } from '../shaders/look';
 
 /**
  * PRESET ŞEMASI v1 (Gün 4 — ARCHITECTURE.md ile birebir).
@@ -47,12 +51,17 @@ export type Preset = PresetV1;
  */
 export interface PresetSource {
   mediaType: MediaType;
-  /** Aktif render modu adı ('points' | 'ascii'). */
+  /** Aktif render modu adı ('points' | 'ascii' | 'neon' | 'solid'). */
   renderMode: string;
   getCameraPose(): CameraPose;
   currentGraph: Graph;
   simUniforms: Record<string, THREE.IUniform>;
   grainUniforms: Record<string, THREE.IUniform>;
+  feedbackUniforms: Record<string, THREE.IUniform>;
+  chromaticUniforms: Record<string, THREE.IUniform>;
+  /** Gün A: bloom sözlüğü + global look köprüsü (output düğümü kolları). */
+  bloomUniforms: Record<string, THREE.IUniform>;
+  lookUniforms: Record<string, THREE.IUniform>;
   /** Aktif render modunun güncel parametre DEĞERLERİ (defs + material). */
   activeRenderParams(): ParamValues;
 }
@@ -76,7 +85,17 @@ export function toPreset(source: PresetSource, name: string): Preset {
       if (node.type === 'particles') {
         params = collectParams(SIM_PARAMS, source.simUniforms);
       } else if (node.type === 'feedback') {
-        params = collectParams(GRAIN_PARAMS, source.grainUniforms);
+        // Post-pass zinciri: feedback + chromatic + bloom + grain parametreleri
+        // aynı düğümde yaşar (Engine.setGraph ile birebir eşleşen düz sözlük).
+        params = {
+          ...collectParams(GRAIN_PARAMS, source.grainUniforms),
+          ...collectParams(FEEDBACK_PARAMS, source.feedbackUniforms),
+          ...collectParams(CHROMATIC_PARAMS, source.chromaticUniforms),
+          ...collectParams(BLOOM_PARAMS, source.bloomUniforms),
+        };
+      } else if (node.type === 'output') {
+        // Gün A: output düğümü global look kollarını taşır (exposure + fog).
+        params = collectParams(LOOK_PARAMS, source.lookUniforms);
       } else if (node.type === 'renderer') {
         params = { mode: source.renderMode, ...source.activeRenderParams() };
       }

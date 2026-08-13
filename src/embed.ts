@@ -1,7 +1,9 @@
+import type * as THREE from 'three';
 import { Engine } from './engine';
 import { createPointCloudMaterial, POINTS_PARAMS } from './shaders/pointCloudMaterial';
 import { createAsciiMaterial, ASCII_PARAMS } from './shaders/asciiMaterial';
 import { createNeonWireMaterial, NEON_PARAMS } from './shaders/neonWireMaterial';
+import { createSolidMaterial, SOLID_PARAMS } from './shaders/solidMaterial';
 import { createDefaultGraph } from './engine/graph';
 import type { Preset } from './engine/preset';
 
@@ -32,6 +34,8 @@ const EMBED_STYLES = `
 
 class SpatialCanvasElement extends HTMLElement {
   private engine: Engine | null = null;
+  /** Render modu material'ları — sahiplik burada, dispose'da bırakılır. */
+  private materials: { points: THREE.Material; ascii: THREE.Material; neon: THREE.Material; solid: THREE.Material } | null = null;
   private container: HTMLDivElement | null = null;
   private fallbackImg: HTMLImageElement | null = null;
   private observer: IntersectionObserver | null = null;
@@ -86,6 +90,12 @@ class SpatialCanvasElement extends HTMLElement {
     this.observer?.disconnect();
     this.engine?.dispose();
     this.engine = null;
+    // Material sahipliği çağırandadır (Engine yalnızca kendi yer tutucusunu
+    // bırakır) — embed de kendi ürettiklerini burada bırakır.
+    if (this.materials) {
+      for (const material of Object.values(this.materials)) material.dispose();
+      this.materials = null;
+    }
   }
 
   attributeChangedCallback(name: string, oldVal: string | null, newVal: string | null) {
@@ -96,6 +106,21 @@ class SpatialCanvasElement extends HTMLElement {
     if (name === 'preset' && this.engine) {
       this.applyPreset(newVal);
     }
+    if (name === 'mode' && this.engine) {
+      this.applyMode(newVal);
+    }
+  }
+
+  /** Render modunu ada göre uygular (points | ascii | neon | solid). */
+  private applyMode(mode: string | null) {
+    if (!mode || !this.engine || !this.materials) return;
+    const material = (this.materials as Record<string, THREE.Material>)[mode];
+    if (!material) {
+      console.warn(`[spatial-canvas] bilinmeyen mode: '${mode}'`);
+      return;
+    }
+    this.engine.setPointsMaterial(material);
+    this.engine.selectRenderMode(mode);
   }
 
   private checkWebGL(): boolean {
@@ -123,12 +148,25 @@ class SpatialCanvasElement extends HTMLElement {
     if (!this.container) return;
     try {
       this.engine = new Engine(this.container);
-      // Materyalleri kaydet (embed'de UI yok ama preset modu uygulanabilir)
-      this.engine.registerRenderMode('points', createPointCloudMaterial(), POINTS_PARAMS);
-      this.engine.registerRenderMode('ascii', createAsciiMaterial(), ASCII_PARAMS);
-      this.engine.registerRenderMode('neon', createNeonWireMaterial(), NEON_PARAMS);
-      this.engine.setPointsMaterial(createPointCloudMaterial());
+      // Materyalleri kaydet (embed'de UI yok ama preset modu uygulanabilir).
+      // Takılan material KAYITLI olanla AYNI olmalı: ayrı bir kopya üretmek
+      // (eski hata) hem sızdırıyor hem de registry adı eşleşmediği için
+      // renderMode/solid mantığını yanlış besliyordu.
+      this.materials = {
+        points: createPointCloudMaterial(),
+        ascii: createAsciiMaterial(),
+        neon: createNeonWireMaterial(),
+        solid: createSolidMaterial(),
+      };
+      this.engine.registerRenderMode('points', this.materials.points, POINTS_PARAMS);
+      this.engine.registerRenderMode('ascii', this.materials.ascii, ASCII_PARAMS);
+      this.engine.registerRenderMode('neon', this.materials.neon, NEON_PARAMS);
+      this.engine.registerRenderMode('solid', this.materials.solid, SOLID_PARAMS);
+      this.engine.setPointsMaterial(this.materials.points);
       this.engine.setGraph(createDefaultGraph());
+      // `mode` observedAttributes'ta ilan edilmişti ama hiçbir yerde
+      // OKUNMUYORDU (ölü API). Artık mod gerçekten uygulanır.
+      this.applyMode(this.getAttribute('mode'));
 
       const src = this.getAttribute('src');
       if (src) await this.loadSource(src);

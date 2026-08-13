@@ -94,16 +94,22 @@ export const MASK_FEATHER_RADIUS = 2;
  * RMBG'nin öznenin içine düşen < 0.5 hataları (yüz/el kenarı) genişletilmiş
  * marj sayesinde ön plan adayı olmaya devam eder; uzak arka plan yine 0
  * kalır (perde koruması sürer).
+ *
+ * `dilateRadius` (varsayılan MASK_DILATE_RADIUS): maskeyi depth uzayına
+ * ölçekleyip ÇAĞIRAN taraf (Engine.setDepth) burada ölçek-orantılı yarıçap
+ * verir — bilinear küçültmenin yumuşattığı band genişliği ölçekle büyür;
+ * sabit 4px ince uzuvları yine kaybettirirdi ("sadece orta").
  */
 export function dilateAndFeatherMask(
   mask: Float32Array,
   w: number,
   h: number,
+  dilateRadius: number = MASK_DILATE_RADIUS,
 ): Float32Array {
   const dilated = new Float32Array(mask.length);
-  minMaxPass(mask, dilated, w, h, MASK_DILATE_RADIUS, true, true);
+  minMaxPass(mask, dilated, w, h, dilateRadius, true, true);
   const tmp = new Float32Array(mask.length);
-  minMaxPass(dilated, tmp, w, h, MASK_DILATE_RADIUS, false, true);
+  minMaxPass(dilated, tmp, w, h, dilateRadius, false, true);
   return boxBlur(tmp, w, h, MASK_FEATHER_RADIUS);
 }
 

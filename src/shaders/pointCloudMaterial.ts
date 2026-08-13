@@ -91,6 +91,15 @@ export interface PointCloudMaterialUniforms {
   /** Normal türetme ölçeği — aşırı kavisli/bantlı depth'te normale gürültü.
    *  Küçük tut; büyükçe yüzey çizgileri görünür. */
   uNormalScale: { value: number };
+  /**
+   * GÜN C — bakılı oklüzyon şiddeti (0..1). Oklüzyon renk grid'inin ALPHA
+   * kanalında gelir (sampler.computeAoMap): çukurlar kararır, kabartma okunur.
+   * Doku yokken / video dokusunda alpha = 1 → etkisiz. 0 = kapalı.
+   */
+  uAoStrength: { value: number };
+  /** Gün A (fog) — global look köprüsünden (Engine.lookUniforms) yazılır. */
+  uFogDensity: { value: number };
+  uFogColor: { value: THREE.Color };
 }
 
 /**
@@ -109,6 +118,7 @@ export const POINTS_PARAMS: ParamDef[] = [
   { key: 'uLightStrength', label: 'ışık gölgesi', min: 0, max: 1, default: 0.45 },
   { key: 'uFresnelStrength', label: 'kenar parlaması', min: 0, max: 1, default: 0.35 },
   { key: 'uNormalScale', label: 'normal ölçeği', min: 0, max: 2, default: 0.8 },
+  { key: 'uAoStrength', label: 'oklüzyon (AO)', min: 0, max: 1, default: 0.6 },
 ];
 
 /** ShaderMaterial, uniform'ları tipli görünsün diye daraltılmış. */
@@ -131,6 +141,7 @@ const VERTEX = /* glsl */ `
   varying float vExtrusion;
   varying vec3 vNormal;
   varying vec3 vViewDir;
+  varying float vViewDepth;
 
   /**
    * Hacmin arka sınırı (z, orijine ortalı −1..+1 uzayında). Parçacıklar ön
@@ -203,6 +214,8 @@ const VERTEX = /* glsl */ `
     vViewDir = normalize(cameraPosition - worldPos);
 
     vec4 mv = modelViewMatrix * vec4(pos.xy, z, 1.0);
+    // Gün A (fog): kamera uzaklığı — fragment sis karışımı bu değeri kullanır.
+    vViewDepth = -mv.z;
 
     // Tohumla boyut saçılması. 1 etrafında simetrik: ortalama boyut sabit kalır,
     // uSizeJitter = 0 iken çarpan tam 1 olur (saçılma kapanır).
@@ -228,6 +241,9 @@ const FRAGMENT = /* glsl */ `
   uniform vec3 uLightDir;
   uniform float uLightStrength;
   uniform float uFresnelStrength;
+  uniform float uAoStrength;
+  uniform float uFogDensity;
+  uniform vec3 uFogColor;
 
   varying vec2 vUv;
   varying float vDepth;
@@ -235,6 +251,7 @@ const FRAGMENT = /* glsl */ `
   varying float vExtrusion;
   varying vec3 vNormal;
   varying vec3 vViewDir;
+  varying float vViewDepth;
 
   /** Arka düzleme oturan parçacık bu oranda karartılır (0.5 = %50 koyu). */
   const float EXTRUSION_SHADE = 0.5;
@@ -261,9 +278,14 @@ const FRAGMENT = /* glsl */ `
     // Renk (Tur 12 — şikayet 3): uUseTextureColor AÇIK ve doku varsa parçacık
     // kendi pikselinin RGB'sini alır (fotoğraf grid'i ya da canlı video);
     // KAPALI ise doku yok sayılır, renk Near/Far derinlik gradyanından gelir.
+    // ALPHA kanalı = bakılı oklüzyon (Gün C); doku yokken 1 (nötr).
+    vec4 img = uHasImage > 0.5 ? texture2D(uImageTexture, vUv) : vec4(0.0, 0.0, 0.0, 1.0);
     vec3 col = (uHasImage > 0.5 && uUseTextureColor > 0.5)
-      ? texture2D(uImageTexture, vUv).rgb
+      ? img.rgb
       : mix(uFarColor, uNearColor, vDepth);
+    // OKLÜZYON: çukurlar (göz boşluğu, çene altı, kol-gövde arası) kararır —
+    // additive bulutta hacmi okutan en güçlü ipucu. uAoStrength = 0 → nötr.
+    col *= mix(1.0, img.a, uAoStrength);
     // Tur 12 (şikayet 4): nesne ayırma KAPALI iken arka plan pikselleri
     // derinlikle karartılır (×0.4) — parlak duvar büstü yutmasın.
     if (uObjectSeparation < 0.5 && vOpacity < 0.5) col *= 0.4;
@@ -300,6 +322,12 @@ const FRAGMENT = /* glsl */ `
 
     col *= uBrightness;
 
+    // Gün A (fog): kamera uzaklığıyla üstel sis — uFogDensity = 0 iken
+    // çarpan tam 1 (görünüm hiç değişmez). Uzak parçacıklar arka renge
+    // yığılır, derinlik katmanları ayrışır.
+    float fogF = 1.0 - exp(-uFogDensity * uFogDensity * vViewDepth * vViewDepth);
+    col = mix(col, uFogColor, fogF);
+
     // AdditiveBlending (src = SrcAlpha, dst = One): ekrana eklenen katkı
     // col * alpha olur, yumuşak kenar doğal olarak sönümlenir.
     gl_FragColor = vec4(col, alpha);
@@ -333,6 +361,10 @@ export function createPointCloudMaterial(): PointCloudMaterial {
     uLightDir: { value: new THREE.Vector3(0.45, 0.75, 0.6).normalize() },
     uFresnelStrength: { value: 0.35 },
     uNormalScale: { value: 0.8 },
+    uAoStrength: { value: 0.6 },
+    // Gün A (fog): kapalı başlar — Engine.lookUniforms her karede işler.
+    uFogDensity: { value: 0 },
+    uFogColor: { value: new THREE.Color(0.02, 0.03, 0.07) },
   };
 
   const material = new THREE.ShaderMaterial({

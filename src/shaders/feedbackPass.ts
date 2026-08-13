@@ -10,8 +10,8 @@ import type { ParamDef } from '../engine/params';
  * render target arasında ping-pong ile taşınır (bir texture'a hem yazıp hem
  * okumak tanımsızdır).
  *
- * Zincirdeki yeri (ARCHITECTURE.md · Pass Zinciri):
- *   RenderPass → Feedback → ChroAber → Grain/Vignette → Output
+ * Zincirdeki yeri (ARCHITECTURE.md · Pass Zinciri, Gün A'dan beri):
+ *   RenderPass → FXAA → Feedback → ChroAber → Bloom → Grain/Vignette → Output
  *
  * Pass kancası: `update(time)` sunar (TickablePass), Engine her karede çağırır.
  */
@@ -142,6 +142,12 @@ const COPY_FRAGMENT = /* glsl */ `
 export class FeedbackPass extends Pass {
   readonly uniforms: FeedbackPassUniforms;
   readonly material: THREE.ShaderMaterial;
+  /**
+   * Zincir kolu (graf 'feedback' düğümü). `enabled` bundan VE birikim
+   * miktarından türetilir (update kancasında) — Engine enabled'a doğrudan
+   * yazmaz.
+   */
+  chainEnabled = true;
 
   private targets: [THREE.WebGLRenderTarget, THREE.WebGLRenderTarget];
   private readIndex = 0;
@@ -203,6 +209,14 @@ export class FeedbackPass extends Pass {
     // Sekme arka plana düşüp döndüğünde birikimde donmuş eski kare durur ve
     // ekrana bir anda leke olarak yayılır. Uzun boşlukta temiz başla.
     if (last !== null && time - last > STALE_GAP_SECONDS) this.needsClear = true;
+    // GÜN C (FPS, kalite kaybı YOK): uFeedbackAmount = 0 iken çıkış girişe
+    // bit-birebir eşittir (mix(cur, combined, 0)); iki tam ekran çizimi
+    // (birikim + kopya) boşa gider. Varsayılan görünüm 0'dır. Atlanan
+    // karelerde birikim tamponu bayatlar — geri açılınca leke basmasın diye
+    // temizlik işaretlenir.
+    const active = this.chainEnabled && this.uniforms.uFeedbackAmount.value > 0.001;
+    if (!active) this.needsClear = true;
+    this.enabled = active;
   }
 
   setSize(width: number, height: number) {

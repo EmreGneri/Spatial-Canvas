@@ -14,6 +14,9 @@ import assert from 'node:assert/strict';
 import {
   BACKDROP_OPACITY,
   EDGE_WALL_Z,
+  buildImportanceRemap,
+  computeAoMap,
+  sampleAoGrid,
   sampleImageGrid,
   sampleVolumePositions,
 } from '../src/engine/reconstruction/sampler.ts';
@@ -555,3 +558,194 @@ assert.ok(
 );
 
 console.log('OK · volume sampler (1:1 grid, siluet: delik/gradyan/duvar/uzuv/boşluk, döküm, evrensel kavis, iki seviyeli opaklık + arka plan noktası (tek buffer), son AND + tam kadraj koruması, resample, TUR 10: ince kabuk + maske dilate/tüy, TUR 11: Z_PIN + sampleImageGrid)');
+
+// --- 24. ÖNEM REMAP (Gün B): mask-aware + CDF monotonluğu + yoğunluk clamp'ı
+// + boyut güvenliği. buildImportanceRemap doğrudan test edilir — sampleVolume
+// testleri importanceSampling: false ile koştuğundan remap'in kendisi daha
+// önce hiç doğrulanmamıştı. ---
+
+// 24a. CDF monotonluğu + aralık: her remap xOf/yOf monoton artan ve
+// kaynak boyutuna dökülür (taşma yok, düz depth'te ~doğrusal).
+{
+  const flat = new Float32Array(W * H).fill(0.5);
+  const remap = buildImportanceRemap(flat, W, H);
+  let prevX = -1;
+  let prevY = -1;
+  for (let q = 0; q <= 32; q++) {
+    const t = q / 32;
+    const x = remap.xOf(t);
+    const y = remap.yOf(t);
+    assert.ok(x >= prevX, `xOf monoton @t=${t}`);
+    assert.ok(y >= prevY, `yOf monoton @t=${t}`);
+    assert.ok(x >= 0 && x <= W - 1, `xOf aralık [0, w−1] @t=${t}`);
+    assert.ok(y >= 0 && y <= H - 1, `yOf aralık [0, h−1] @t=${t}`);
+    prevX = x;
+    prevY = y;
+  }
+  // Düz depth → CDF ≈ doğrusal: xOf(0.25)/xOf(0.75) simetrik.
+  assert.ok(Math.abs(remap.xOf(0.25) + remap.xOf(0.75) - (W - 1)) < 4, 'düz depth → simetrik CDF');
+}
+
+// 24b. Yoğunluk kayması: sol yarı depth yüksek (önemli) → örnekleme sola
+// yoğunlaşır; CDF ortancası merkezin soluna kayar. (Kapalı modda kayma yok.)
+{
+  const zone = new Float32Array(W * H).fill(0.1);
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W / 2; x++) zone[y * W + x] = 0.9;
+  }
+  const m = buildImportanceRemap(zone, W, H);
+  assert.ok(
+    m.xOf(0.5) < (W - 1) / 2 - 4,
+    `yoğun sol yarı → medyan sola kaymalı (xOf(0.5) = ${m.xOf(0.5)})`,
+  );
+  assert.ok(
+    m.yOf(0.5) >= 0 && m.yOf(0.5) <= H - 1,
+    'tekdüze üst/alt → yOf medyan serbest aralıkta',
+  );
+}
+
+// 24c. Yoğunluk clamp'ı [SAMPLE_MIN, SAMPLE_MAX]: tek spike remap'te eğim
+// oranı sınırlanır. Eğim = d(q)/d(xOf) = kaynak yoğunluğu; clamp yoksa spike
+// bandının ağırlığı tüm sütunların ortalamasını patlatır, eğim oranı
+// 2.5/0.15 = 16.67 sınırını anlamlı şekilde aşar. Merkez spike → xOf eğim
+// maks/min oranı ≤ 2.5/0.15 · 1.5 (blur + interpolasyon payı).
+{
+  const spike = new Float32Array(W * H).fill(0.4);
+  for (let y = 28; y <= 35; y++) {
+    for (let x = 28; x <= 35; x++) spike[y * W + x] = 1.0;
+  }
+  const r = buildImportanceRemap(spike, W, H);
+  const dq = 0.02;
+  const slope = (q) => (r.xOf(q + dq) - r.xOf(q)) / dq;
+  let minSlope = Infinity;
+  let maxSlope = -Infinity;
+  for (let q = 0; q <= 0.98; q += 0.02) {
+    const s = slope(q);
+    if (s < minSlope) minSlope = s;
+    if (s > maxSlope) maxSlope = s;
+  }
+  assert.ok(
+    maxSlope / minSlope <= (2.5 / 0.15) * 1.5,
+    `yoğunluk clamp'ı: eğim oranı ≤ 16.67·1.5 (gerçek: ${(maxSlope / minSlope).toFixed(2)})`,
+  );
+}
+
+// 24d. MASK-AWARE önem (Gün B): malzemesi düz depth (yoğunluk ~eşit) +
+// fg maskesi sol yarı 1 / sağ yarı 0 → örnekleme maskenin işaretli bölgesine
+// kayar. Maskesiz remap ile fark doğrudan karşılaştırılır (hizalama: renk
+// grid'i de aynı maskeyi alır — Karar Gün B/1).
+{
+  const flat = new Float32Array(W * H).fill(0.5);
+  const fg = new Float32Array(W * H);
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W / 2; x++) fg[y * W + x] = 1;
+  }
+  const noMask = buildImportanceRemap(flat, W, H);
+  const withMask = buildImportanceRemap(flat, W, H, fg);
+  assert.ok(
+    withMask.xOf(0.5) + 3 < noMask.xOf(0.5),
+    `fg maske → medyan sola kaymalı (maskeli ${withMask.xOf(0.5).toFixed(2)} vs maskesiz ${noMask.xOf(0.5).toFixed(2)})`,
+  );
+  // Maske = 0 (arka plan) bölgesi aç biriktirmez: sağ yarının başındaki
+  // yoğunluk maskesizden büyük DEĞİL (örnekleme oraya çekilmez).
+  assert.ok(
+    withMask.xOf(0.75) <= noMask.xOf(0.75) + 1,
+    `maske 0 bölgeye çekilmez (maskeli ${withMask.xOf(0.75).toFixed(2)} vs maskesiz ${noMask.xOf(0.75).toFixed(2)})`,
+  );
+}
+
+// 24e. Boyut güvenliği: fgMask depth ile aynı uzunlukta değilse RangeError —
+// sessiz yanlış sonuç yerine sert hata (volume.ts sözleşme stili).
+{
+  assert.throws(
+    () => buildImportanceRemap(new Float32Array(16), 4, 4, new Float32Array(15)),
+    RangeError,
+    'uyumsuz fgMask boyutu → RangeError',
+  );
+  assert.throws(
+    () => buildImportanceRemap(new Float32Array(16), 4, 4, new Float32Array(17)),
+    RangeError,
+    'büyük fgMask boyutu da → RangeError',
+  );
+  // Uyumlu boyut düzgün çalışır (hata yok).
+  buildImportanceRemap(new Float32Array(16), 4, 4, new Float32Array(16));
+  // output — null maske ile de çalışır (varsayılan yol).
+  buildImportanceRemap(new Float32Array(16), 4, 4, null);
+}
+
+// 24f. UÇTAN UCA: önem AÇIK ≈ varsayılan — sampleVolumePositions varsayılan
+// çağrısı remap'i kurar ve maskeli remap konum akışını da büker (renk
+// grid'iyle hizalı kalır — sampleImageGrid test 23'te kapalı; burada maskeli
+// remap'in iki yola birden aktarıldığını doğrularız).
+{
+  const seq = new Float32Array(W * H).fill(0.5);
+  const fg = new Float32Array(W * H);
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W / 2; x++) fg[y * W + x] = 1;
+  }
+  // Aynı fg maskesiyle KAPALI remap referanstır: siluet sol yarı (fg=1) ön
+  // plan, sağ yarı arka plan → 1:1 grid yaklaşık %50 w=1 texel üretir.
+  // Maskeli önem remap'i sol yarıya yoğunlaşır → w=1 oranı AÇIK modda yüksek.
+  const posOn = sampleVolumePositions(seq, W, H, {
+    curvature: 0,
+    importanceSampling: true,
+    foregroundMask: fg,
+  });
+  const posOff = sampleVolumePositions(seq, W, H, {
+    curvature: 0,
+    importanceSampling: false,
+    foregroundMask: fg,
+  });
+  const countFg = (arr) => {
+    let c = 0;
+    for (let k = 3; k < arr.length; k += 4) if (arr[k] > 0.5) c++;
+    return c;
+  };
+  const cOn = countFg(posOn);
+  const cOff = countFg(posOff);
+  assert.ok(
+    cOn > cOff,
+    `fg maske + önem açık → ön plan texel oranı artar (açık ${cOn} vs kapalı ${cOff})`,
+  );
+  // Renk akışı: maskeli remap ile sampleImageGrid çalışır (hatasız, hizalı).
+  const rgb = new Float32Array(W * H * 3).fill(0.5);
+  const grid = sampleImageGrid(rgb, W, H, seq, W, H, { foregroundMask: fg });
+  assert.equal(grid.length, N * N * 3, 'maskeli sampleImageGrid → grid×grid×3 çıktı');
+}
+
+// 25. BAKILI OKLÜZYON (Gün C): depth farkından çukur karartması. Kabartmanın
+// DİBİNDEKİ (etrafı daha yakın) pikseller kararır; düz alan ve kabartmanın
+// TEPESİ nötr (1.0) kalır. Grid taşıyıcısı (sampleAoGrid) hizayı bozmaz.
+{
+  const flat = new Float32Array(W * H).fill(0.4);
+  // Ortada 16×16 kabartma (d = 0.9): sınırının HEMEN DIŞI kapanır.
+  const lo = W / 2 - 8;
+  const hi = W / 2 + 8;
+  for (let y = lo; y < hi; y++) {
+    for (let x = lo; x < hi; x++) flat[y * W + x] = 0.9;
+  }
+  const ao = computeAoMap(flat, W, H);
+  assert.equal(ao.length, W * H, 'AO haritası depth boyutunda');
+  for (const v of ao) assert.ok(v >= 0 && v <= 1, 'AO 0..1 aralığında');
+  const at = (x, y) => ao[y * W + x];
+  // Kabartmanın dibi (1 px dışı) ile uzak düz köşe.
+  const foot = at(lo - 1, W / 2);
+  const far = at(2, 2);
+  const top = at(W / 2, W / 2);
+  assert.ok(foot < far - 0.05, `kabartma dibi kararır (dip ${foot.toFixed(3)} < düz ${far.toFixed(3)})`);
+  assert.ok(Math.abs(far - 1) < 1e-6, `uzak düz alan nötr (${far.toFixed(4)})`);
+  assert.ok(Math.abs(top - 1) < 1e-6, `kabartma tepesi nötr (${top.toFixed(4)})`);
+  assert.throws(
+    () => computeAoMap(new Float32Array(15), 4, 4),
+    RangeError,
+    'AO: depth boyut uyumsuz → RangeError',
+  );
+  // Grid taşıyıcısı: N² çıktı, aralık korunur, remap'siz hâli 1:1 hizalı.
+  const grid = sampleAoGrid(flat, W, H, { importanceSampling: false });
+  assert.equal(grid.length, N * N, 'AO grid N×N');
+  for (const v of grid) assert.ok(v >= 0 && v <= 1, 'AO grid 0..1');
+  const gridAt = (u, v) => grid[Math.round(v * (N - 1)) * N + Math.round(u * (N - 1))];
+  assert.ok(gridAt(0.02, 0.02) > gridAt(lo / W - 0.01, 0.5), 'AO grid çukuru taşıyor');
+}
+
+console.log('OK · önem remap (Gün B: mask-aware, CDF monotonluğu, yoğunluk clamp, RangeError, uçtan uca renk hizası) + Gün C bakılı oklüzyon');

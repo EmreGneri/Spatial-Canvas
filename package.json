@@ -10,7 +10,7 @@
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "fetch:assets": "node scripts/fetch-assets.mjs",
-    "verify": "node scripts/verify-positions.mjs && node scripts/verify-depth.mjs && node scripts/verify-preset.mjs && node scripts/verify-volume.mjs && node scripts/verify-sampler.mjs && node scripts/verify-seg.mjs && node scripts/verify-curtain.mjs"
+    "verify": "node scripts/verify-positions.mjs && node scripts/verify-depth.mjs && node scripts/verify-preset.mjs && node scripts/verify-sampler.mjs && node scripts/verify-seg.mjs && node scripts/verify-curtain.mjs && node scripts/verify-mesh.mjs"
   },
   "dependencies": {
     "@huggingface/transformers": "^4.2.0",
