@@ -109,8 +109,12 @@ export async function segmentForeground(
 }
 
 /** Kaynağı `size`×`size` kareye, en-boy korunarak ortalar (depth.ts ile aynı
- *  letterbox geometrisi; dolgu rengi görüntünün ortalama tonu — model düz
- *  dolguyu "bilinmeyen bölge" olarak ele alır). */
+ *  letterbox geometrisi). Kadraj bandı görüntünün KENDİ kenar şeridinin ayna
+ *  uzantısıyla doldurulur — düz ortalama ton dolgusu, çerçeveye değen özneyi
+ *  (saç, kol, omuz) RMBG'nin "bilinmeyen bölge" önceliğine kaptırıp maskeyi
+ *  içeri çekiyordu ("çok orta fokuslu"); yansımalı devam, kenar pikselinin
+ *  ön plan adayı sayılmaya devam etmesini sağlar. Yansımanın erişmediği
+ *  köşeler (ancak aşırı dar/geniş kadrajda) ortalama tonla dolar. */
 function letterboxCanvas(
   source: HTMLCanvasElement | HTMLImageElement,
   size: number,
@@ -125,7 +129,7 @@ function letterboxCanvas(
   const thumb = document.createElement('canvas');
   thumb.width = 16;
   thumb.height = 16;
-  const tctx = thumb.getContext('2d')!;
+  const tctx = thumb.getContext('2d', { willReadFrequently: true })!;
   tctx.drawImage(src, 0, 0, 16, 16);
   const tdata = tctx.getImageData(0, 0, 16, 16).data;
   let r = 0;
@@ -141,10 +145,43 @@ function letterboxCanvas(
   const canvas = document.createElement('canvas');
   canvas.width = size;
   canvas.height = size;
-  const ctx = canvas.getContext('2d')!;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true })!;
   ctx.fillStyle = `rgb(${Math.round(r / n)},${Math.round(g / n)},${Math.round(b / n)})`;
   ctx.fillRect(0, 0, size, size);
   ctx.drawImage(src, x, y, w, h);
+  // Yansımalı dolgu: her band, görüntüyü ilgili kenarından aynalayarak doldurur.
+  // Canvas'ın kendinden kendine çizimi güvenlidir (kaynak, blit'ten önce okunur);
+  // dikey aynalar önce, yataylar sonra çizilir ki köşeler de sürekli kalsın.
+  // DÜZELTME: 5 argümanlı drawImage(image, dx, dy, dw, dh) KAYNAK olarak
+  // canvas'ın TAMAMINI alır ve hedef dikdörtgene sıkıştırır — aynalanan şey
+  // kenar şeridi değil, küçültülmüş bütün kare oluyordu (RMBG'ye uydurma
+  // içerik gidiyordu). 9 argümanlı biçim kaynak dikdörtgenini de verir.
+  ctx.save();
+  ctx.translate(2 * x, 0);
+  ctx.scale(-1, 1);
+  ctx.drawImage(canvas, x, y, w, h, x, y, w, h);
+  ctx.restore();
+  ctx.save();
+  ctx.translate(2 * (x + w), 0);
+  ctx.scale(-1, 1);
+  ctx.drawImage(canvas, x, y, w, h, x, y, w, h);
+  ctx.restore();
+  const topBand = Math.min(y, h);
+  if (topBand > 0) {
+    ctx.save();
+    ctx.translate(0, 2 * y);
+    ctx.scale(1, -1);
+    ctx.drawImage(canvas, 0, y, size, topBand, 0, y, size, topBand);
+    ctx.restore();
+  }
+  const bottomBand = Math.min(size - (y + h), h);
+  if (bottomBand > 0) {
+    ctx.save();
+    ctx.translate(0, 2 * (y + h));
+    ctx.scale(1, -1);
+    ctx.drawImage(canvas, 0, y + h - bottomBand, size, bottomBand, 0, y + h - bottomBand, size, bottomBand);
+    ctx.restore();
+  }
   return { canvas, x, y, w, h };
 }
 
@@ -153,6 +190,6 @@ function toCanvas(source: HTMLCanvasElement | HTMLImageElement): HTMLCanvasEleme
   const canvas = document.createElement('canvas');
   canvas.width = source.naturalWidth;
   canvas.height = source.naturalHeight;
-  canvas.getContext('2d')!.drawImage(source, 0, 0);
+  canvas.getContext('2d', { willReadFrequently: true })!.drawImage(source, 0, 0);
   return canvas;
 }

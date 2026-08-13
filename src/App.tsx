@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
-import { estimateDepth, loadDepthModel, luminanceHeightMap } from './depth';
+import { estimateDepth, loadDepthModel, luminanceHeightMap, resetLuminanceState } from './depth';
 import { segmentForeground } from './engine/reconstruction/segmentation';
 import { Engine } from './engine';
 import { ControlPanel } from './ui/ControlPanel';
 import { createPointCloudMaterial, POINTS_PARAMS } from './shaders/pointCloudMaterial';
 import { createAsciiMaterial, ASCII_PARAMS } from './shaders/asciiMaterial';
 import { createNeonWireMaterial, NEON_PARAMS } from './shaders/neonWireMaterial';
+import { createSolidMaterial, SOLID_PARAMS } from './shaders/solidMaterial';
 import { ModeSelector, type RenderMode } from './ui/ModeSelector';
 import { NodeGraphEditor } from './ui/NodeGraphEditor';
 import {
@@ -27,7 +28,14 @@ import { exportPNG, exportWebM } from './engine/export';
  * Z'sini her karede dürttüğünde bulut sürekli titriyordu. lerp ile geçen kareye
  * sabitlenir — gürültü ölür, gerçek hareket akışkan kalır. Küçük tutulur.
  */
-const LUMINANCE_SMOOTHING_ALPHA = 0.1;
+const LUMINANCE_SMOOTHING_ALPHA = 0.12;
+/**
+ * GÜN C — hareket duyarlı harman: sabit α = 0.1 gürültüyü söndürüyordu ama
+ * gerçek hareketi de ~10 kare geciktiriyordu (el sallamada iz/hayalet). Piksel
+ * başına fark büyükse harman katsayısı 1'e doğru açılır: durgun bölge kararlı,
+ * hareketli bölge anında takip eder. |Δ| ≥ ~0.15 → tam takip.
+ */
+const LUMINANCE_MOTION_GAIN = 6;
 
 export default function App() {  const containerRef = useRef<HTMLDivElement>(null);
   const engineRef = useRef<Engine | null>(null);
@@ -44,6 +52,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
       points: createPointCloudMaterial(),
       ascii: createAsciiMaterial(),
       neon: createNeonWireMaterial(),
+      solid: createSolidMaterial(),
     }),
     [],
   );
@@ -51,6 +60,8 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
   const [busy, setBusy] = useState(false);
   const [cameraOn, setCameraOn] = useState(false);
   const [segment, setSegment] = useState(false);
+  /** Tanılama: RMBG maskesini overlay olarak göster (model mi, morf mu?). */
+  const [showMask, setShowMask] = useState(false);
   const [useTextureColor, setUseTextureColor] = useState(true);
   const [fps, setFps] = useState(0);
   /** GÜN 6: WebM kayıt süresi — döngüsel butonla değiştirilir (5/10/20). */
@@ -63,16 +74,24 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
   const lastDepthRef = useRef<{ data: Float32Array; width: number; height: number } | null>(null);
   /** Bu kaynak için maske zaten üretildi mi? (video/kamera yollarında sıfırlanır) */
   const maskLoadedRef = useRef(false);
+  /** Maske overlay canvas'ı ve görünürlük aynası — async yollardan (run,
+   *  toggleSegment) drawMaskOverlay çağrılır; state'i beklemez. */
+  const segOverlayRef = useRef<HTMLCanvasElement | null>(null);
+  const maskOverlayOnRef = useRef(false);
 
   useEffect(() => {
     const engine = new Engine(containerRef.current!);
     engineRef.current = engine;
-    setEngine(engine);    // Render katmanının shader'ı yer tutucunun yerine geçer (başlangıç modu).
+    setEngine(engine);
+    // Yalnızca dev: tarayıcı konsolundan motor durumunu ölçmek için
+    // (dev-smoke.ts ve elle tanı). Üretim bundle'ında yok.
+    if (import.meta.env.DEV) (window as unknown as { __engine?: Engine }).__engine = engine;    // Render katmanının shader'ı yer tutucunun yerine geçer (başlangıç modu).
     // Engine yer tutucuyu dispose eder; uPositions'ı her karede o yazar.
     // Modların parametre tanımları da kaydedilir — preset serileştirmesi bunları okur.
     engine.registerRenderMode('points', materials.points, POINTS_PARAMS);
     engine.registerRenderMode('ascii', materials.ascii, ASCII_PARAMS);
     engine.registerRenderMode('neon', materials.neon, NEON_PARAMS);
+    engine.registerRenderMode('solid', materials.solid, SOLID_PARAMS);
     engine.setPointsMaterial(materials.points);
     const textureType = engine.simTextureLabel;
     setLog((prev) => [
@@ -106,20 +125,12 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
       materials.points.dispose();
       materials.ascii.dispose();
       materials.neon.dispose();
+      materials.solid.dispose(); // düzeltme: solid material sızdırılıyordu
       setEngine(null);
     };
   }, [materials]);
 
   const say = (line: string) => setLog((prev) => [...prev, line]);
-
-  /**
-   * Neon modu depth haritasını kendi vertex shader'ında Sobel'liyor, ama Engine
-   * yalnızca uPositions'ı yazıyor — depth'i biz bağlıyoruz. setDepth() boyut
-   * değişince YENİ bir texture üretiyor, o yüzden her çağrıdan sonra tazelenir.
-   */
-  function pushDepthToNeon() {
-    materials.neon.setDepthTexture(engineRef.current?.depthTexture ?? null);
-  }
 
   function clearTimer() {
     if (timerRef.current !== null) {
@@ -171,30 +182,54 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
       const depth = await estimateDepth(source);
       say(`çıkarım                  ${Math.round(performance.now() - t1)} ms  (${depth.width}x${depth.height})`);
 
-      // Opsiyonel nesne/arka plan ayırma (RMBG): maske depth ile aynı görsel
+      // Nesne/arka plan ayırma (RMBG): fotoğraflarda OTOMATİK — Gün B temizlik
+      // kararı: solid mesh silüeti maskeyle kesilir (arka plan büstü yastığa
+      // çevirir), parçacıklar da arka planı atar. Maske depth ile aynı görsel
       // alanı kapsar (letterbox + kırpım) ama boyutu farklıdır; Engine maskeyi
-      // depth boyutuna örnekler ve siluete AND eder.
+      // depth boyutuna örnekler ve siluete AND eder. Başarısızlıkta maske
+      // olmadan devam (silüet depth eşiğine düşer) — hoparlörden say edilir.
       let mask: Float32Array | undefined;
       let maskW = 0;
       let maskH = 0;
       lastPhotoRef.current = source;
       lastDepthRef.current = { data: depth.data, width: depth.width, height: depth.height };
       maskLoadedRef.current = false;
-      if (segment) {
-        const t2 = performance.now();
+      const t2 = performance.now();
+      try {
         const seg = await segmentForeground(source);
-        mask = seg.mask;
-        maskW = seg.width;
-        maskH = seg.height;
-        maskLoadedRef.current = true;
-        say(`nesne ayırma (RMBG)      ${Math.round(performance.now() - t2)} ms  (${maskW}x${maskH})`);
+        // Güvenlik: boş maske (sentetik/soyut görsel) kullanılmaz — AND tüm
+        // silueti sıfırlar, mesh null'a düşer, parçacıklar ölür.
+        let hasFg = false;
+        for (let q = 0; q < seg.mask.length; q++) {
+          if (seg.mask[q] >= 0.5) {
+            hasFg = true;
+            break;
+          }
+        }
+        if (hasFg) {
+          mask = seg.mask;
+          maskW = seg.width;
+          maskH = seg.height;
+          maskLoadedRef.current = true;
+          say(`nesne ayırma (RMBG)      ${Math.round(performance.now() - t2)} ms  (${maskW}x${maskH})`);
+          setSegment(true);
+          engineRef.current!.setObjectSeparation(true);
+        } else {
+          say('nesne ayırma: RMBG boş maske üretti — maske atlandı (tüm sahne)');
+          setSegment(false);
+          engineRef.current!.setObjectSeparation(false);
+        }
+      } catch (err) {
+        say(`nesne ayırma atlandı (${err instanceof Error ? err.message : String(err)}) — maske olmadan devam`);
+        setSegment(false);
+        engineRef.current!.setObjectSeparation(false);
       }
       // TUR 11: fotoğrafın kendisi de parçacık renklerine bağlanır (görev 1 —
       // varsayılan mavi rampa yerine orijinal RGB). Kamera/video yolu bu
       // çağrıyı yapmaz → shader'lar derinlik rampasına düşer.
       engineRef.current!.setPhoto(source);
       engineRef.current!.setDepth(depth.data, depth.width, depth.height, mask, maskW, maskH);
-      pushDepthToNeon();
+      if (maskOverlayOnRef.current) drawMaskOverlay();
       say('depth → engine · point cloud konumları positionTexture\'dan okunur');
     } catch (err) {
       say(`HATA: ${err instanceof Error ? err.message : String(err)}`);
@@ -206,6 +241,8 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
   /** Kamera/video: depth modeli yok, parlaklık = yükseklik. */
   function startLuminanceLoop(source: HTMLCanvasElement | HTMLVideoElement | HTMLImageElement, label: string) {
     clearTimer(); // kaynağı bırakmaz — teardownSource'u çağıran taraf yapar
+    // Yeni kaynak eski karenin normalizasyon aralığını miras almasın.
+    resetLuminanceState();
     // GÜN 6 (madde 4): canlı home → blend yazım + gevşetilmiş yay. Home her
     // karede değişir; toptan yazılırsa parçacık sürekli dürülür (titreme).
     const engine = engineRef.current!;
@@ -226,25 +263,31 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
       if (source instanceof HTMLVideoElement && source.readyState < 2) return;
       const t0 = performance.now();
       const hm = luminanceHeightMap(source, 256, {
-        // GÜN 6: kenar kabartma + merkez vurgu — yüz hatları 3D'de belirgin,
-        // özne arka plandan ayrışır. Varsayılanlar flu hal için ayarlı; video
-        // gürültüsü smoothing + temporal lerp ile bastırılır.
+        // GÜN 6/C: işaretli mikro rölyef + netlik (defocus) ipucu + ölçülü
+        // merkez vurgusu. Netlik ipucu asıl yapıyı taşır (özne net → yakın),
+        // parlaklık yalnızca taban olur; codec gürültüsü smoothing + zamansal
+        // harmanla, kare-arası z kayması EMA aralığıyla bastırılır.
         edgeStrength: 0.35,
-        centerBoost: 0.5,
+        centerBoost: 0.3,
+        focusStrength: 0.55,
       });
       const data = hm.data;
       if (prev && prev.length === data.length) {
-        // Temporal smoothing: yeni kareyi geçmişe yapıştır. Düşük alpha kısa
-        // süreli parlaklık sıçramalarını sönümler, yavaş ışık değişimini bırakır.
+        // Temporal smoothing (hareket duyarlı): durgun bölgede güçlü sönüm,
+        // hareketli bölgede anında takip — sabit alpha iz bırakıyordu.
         for (let i = 0; i < data.length; i++) {
-          data[i] = prev[i] + LUMINANCE_SMOOTHING_ALPHA * (data[i] - prev[i]);
+          const d = data[i] - prev[i];
+          const a = Math.min(
+            1,
+            LUMINANCE_SMOOTHING_ALPHA + Math.abs(d) * LUMINANCE_MOTION_GAIN,
+          );
+          data[i] = prev[i] + a * d;
         }
         prev.set(data); // bir sonraki karenin geçmişi = bugünkü smoothed kare
       } else {
         prev = new Float32Array(data); // ilk kare / yeni boyut: ham + kopya
       }
       engineRef.current!.setDepth(data, hm.width, hm.height);
-      pushDepthToNeon();
       if (performance.now() - lastLog > 2000) {
         lastLog = performance.now();
         say(`luminance · ${label} · ${Math.round(performance.now() - t0)} ms`);
@@ -293,7 +336,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
       say(`nesne ayırma (RMBG)      ${Math.round(performance.now() - t2)} ms  (${seg.width}x${seg.height})`);
       const d = lastDepthRef.current;
       engineRef.current!.setDepth(d.data, d.width, d.height, seg.mask, seg.width, seg.height);
-      pushDepthToNeon(); // maske silueti değiştirir → neon kenarları tazelenmeli
+      if (maskOverlayOnRef.current) drawMaskOverlay();
       maskLoadedRef.current = true;
     } catch (err) {
       say(`HATA nesne ayırma: ${err instanceof Error ? err.message : String(err)}`);
@@ -302,6 +345,66 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
     } finally {
       setBusy(false);
     }
+  }
+
+  function toggleMaskOverlay() {
+    setShowMask((on) => !on);
+  }
+
+  /**
+   * MASKE OVERLAY'İ MOUNT SONRASI ÇİZİLİR (düzeltme). Eskiden toggle
+   * fonksiyonunun içinden çizilirdi: overlay canvas'ı `showMask &&` ile
+   * koşullu render edildiği için React henüz mount etmemiş oluyor,
+   * `segOverlayRef.current` null dönüyor ve drawMaskOverlay sessizce
+   * çıkıyordu — buton hiç çalışmıyor görünüyordu. Effect mount'tan SONRA
+   * koşar; maske yoksa kullanıcıya sebebi söylenir (sessiz boş kutu yok).
+   */
+  useEffect(() => {
+    maskOverlayOnRef.current = showMask;
+    if (!showMask) return;
+    drawMaskOverlay();
+    if (!engineRef.current?.foregroundMask) {
+      say('maskeyi göster: bu kaynakta maske yok (video/kamera ya da nesne ayırma kapalı)');
+    }
+  }, [showMask, engine]);
+
+  /** RMBG maskesini (Engine'de işlenmiş hali: resample + dilate) gri tonlama
+   *  overlay olarak çizer — "model mi morf mu" tanısı için (K1/K3 ayarını
+   *  görsel doğrulamak). Maske yoksa (video/kamera) overlay temizlenir. */
+  function drawMaskOverlay() {
+    const canvas = segOverlayRef.current;
+    const engine = engineRef.current;
+    if (!canvas || !engine) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    const mask = engine.foregroundMask;
+    const dt = engine.depthTexture;
+    if (!mask || !dt) {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      return;
+    }
+    const dims = dt.image as { width: number; height: number };
+    const w = dims.width;
+    const h = dims.height;
+    const off = document.createElement('canvas');
+    off.width = w;
+    off.height = h;
+    const octx = off.getContext('2d')!;
+    const img = octx.createImageData(w, h);
+    for (let i = 0; i < mask.length; i++) {
+      const v = Math.round(Math.min(1, Math.max(0, mask[i])) * 255);
+      img.data[i * 4] = v;
+      img.data[i * 4 + 1] = v;
+      img.data[i * 4 + 2] = v;
+      img.data[i * 4 + 3] = 255;
+    }
+    octx.putImageData(img, 0, 0);
+    const cap = 256;
+    const scale = Math.min(1, cap / w, cap / h);
+    canvas.width = Math.max(1, Math.round(w * scale));
+    canvas.height = Math.max(1, Math.round(h * scale));
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(off, 0, 0, canvas.width, canvas.height);
   }
 
   async function toggleCamera() {
@@ -376,9 +479,30 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
     }
   }
 
+  /**
+   * GÜN 8: mod değiştirmenin TEK kapısı — ModeSelector, ControlPanel ve
+   * graf editörü hep buraya düşer. Sıra: ① material takası (Engine'in tek
+   * bilinen yolu, eskisini dispose etmez) ② Engine.selectRenderMode →
+   * graf params.mode güncellenir (graf = tek doğruluk kaynağı) ③ UI state
+   * ④ editör tazelenir — üç kol da birbirinin değişikliğini görür.
+   */
+  function changeMode(next: RenderMode) {
+    const engine = engineRef.current;
+    if (!engine) return;
+    if (next === mode) return;
+    engine.setPointsMaterial(materials[next]);
+    engine.selectRenderMode(next);
+    setMode(next);
+    setGraphTick((t) => t + 1);
+    // Solid kabuk fotoğraf-only: sessiz fallback yerine sebebi söylenir.
+    if (next === 'solid' && !engine.solidAvailable) {
+      say('solid: kabuk yok (fotoğraf gerekir) — nokta bulutunda kalındı');
+    }
+  }
+
   return (
     <div style={{ padding: 24, display: 'grid', gap: 16, justifyItems: 'start' }}>
-      <h1 style={{ font: 'inherit', fontSize: 18, margin: 0 }}>spatial-canvas · Gün 3 — GPGPU parçacık simülasyonu</h1>
+      <h1 style={{ font: 'inherit', fontSize: 18, margin: 0 }}>spatial-canvas · Gün A — ACES + bloom + FXAA + sis (global look)</h1>
 
       <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
         <button
@@ -410,6 +534,9 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
         <button disabled={busy} onClick={toggleSegment} style={segment ? { background: '#2a3', color: '#fff', border: '1px solid #2a3' } : undefined}>
           nesne ayırma: {segment ? 'AÇIK' : 'kapalı'}
         </button>
+        <button disabled={busy} onClick={toggleMaskOverlay} style={showMask ? { background: '#a53', color: '#fff', border: '1px solid #a53' } : undefined}>
+          maskeyi göster: {showMask ? 'AÇIK' : 'kapalı'}
+        </button>
         <label style={{ display: 'flex', gap: 4, alignItems: 'center', color: '#889', fontSize: 12, cursor: 'pointer' }}>
           <input
             type="checkbox"
@@ -432,6 +559,10 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
          onClick={() => {
          const canvas = engineRef.current?.renderer.domElement;
          if (!canvas) return;
+         // WebGL çizim tamponu compositing sonrası geçersizdir
+         // (preserveDrawingBuffer kapalı): yakalamadan HEMEN ÖNCE, aynı
+         // görevde bir kare çizilmezse PNG boş iner. Kancayı export
+         // modülü çağırır — ölçekli yol da aynı tampondan okur.
          exportPNG(canvas, 'spatial-canvas', {
            onBeforeCapture: () => engineRef.current?.renderFrame(),
          })
@@ -476,23 +607,32 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
           const file = e.dataTransfer.files?.[0];
           if (file) handleFile(file);
         }}
-        style={{ width: 640, height: 420, border: '1px solid #222', background: '#000' }}
-      />
-      {engine && <ModeSelector engine={engine} materials={materials} mode={mode} onChange={setMode} />}
-      {engine && <NodeGraphEditor engine={engine} graphTick={graphTick} />}
+        style={{ width: 640, height: 420, border: '1px solid #222', background: '#000', position: 'relative' }}
+      >
+        {showMask && (
+          <canvas
+            ref={segOverlayRef}
+            style={{ position: 'absolute', left: 8, bottom: 8, border: '1px solid #444', background: '#111', pointerEvents: 'none' }}
+          />
+        )}
+      </div>
+      {engine && <ModeSelector engine={engine} materials={materials} mode={mode} onChange={changeMode} />}
+      {engine && <NodeGraphEditor engine={engine} graphTick={graphTick} onRenderModeChange={changeMode} />}
       {engine && <PresetControls engine={engine} say={say} onGraphChanged={() => setGraphTick((t) => t + 1)} />}
       {engine && <ForceControls engine={engine} />}
       <pre style={{ margin: 0, color: '#8ab', whiteSpace: 'pre-wrap' }}>{log.join('\n')}</pre>
       {engine && (
         <ControlPanel
           grain={engine.grainUniforms}
+          feedback={engine.feedbackUniforms}
+          chromatic={engine.chromaticUniforms}
+          bloom={engine.bloomUniforms}
+          look={engine.lookUniforms}
           points={materials.points}
           ascii={materials.ascii}
           neon={materials.neon}
-          setMode={(next) => {
-            engine.setPointsMaterial(materials[next]);
-            setMode(next);
-          }}
+          solid={materials.solid}
+          setMode={changeMode}
           mode={mode}
         />
       )}

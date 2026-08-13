@@ -29,8 +29,13 @@ import {
 import type { ParamDef } from '../engine/params';
 import { SIM_PARAMS } from '../engine/simulation';
 import { GRAIN_PARAMS } from '../shaders/grainPass';
+import { FEEDBACK_PARAMS } from '../shaders/feedbackPass';
+import { CHROMATIC_PARAMS } from '../shaders/chromaticPass';
+import { BLOOM_PARAMS } from '../shaders/bloomPass';
+import { LOOK_PARAMS } from '../shaders/look';
 import { POINTS_PARAMS } from '../shaders/pointCloudMaterial';
 import { ASCII_PARAMS } from '../shaders/asciiMaterial';
+import { SOLID_PARAMS } from '../shaders/solidMaterial';
 
 /**
  * NODE GRAPH EDITÖRÜ (Gün 5 — veri katmanının UI'ı, Emre).
@@ -39,13 +44,16 @@ import { ASCII_PARAMS } from '../shaders/asciiMaterial';
  * (kenar bağla/kopar, parametre) engine.setGraph'a gider; editör ayrı bir
  * durum ağacı tutmaz. Düğüm konumları yalnızca UI'dır, graf şemasında yoktur.
  *
- * Kanıt akışı: feedback düğümüne giden kabloyu çek → grain/vignette pass
- * composer'dan çıkar, sahne gerçekten değişir. Kabloyu geri tak → gelir.
+ * Kanıt akışı: feedback düğümüne giden kabloyu çek → post-pass zinciri
+ * (feedback birikimi + chromatic + grain/vignette) composer'dan çıkar,
+ * sahne gerçekten değişir. Kabloyu geri tak → hepsi geri gelir.
  *
- * Bilinen sınırlar (v1): düğüm SİLİNEMEZ (yalnızca kenar), renderer modu
- * ModeSelector'dan değişirse editör params'ı tazelense de seçili düğüm
- * paneli eski modu gösterebilir; ascii karakter seti (setCharSet API'si)
- * editörde düzenlenmez.
+ * Bilinen sınırlar (v1): düğüm SİLİNEMEZ (yalnızca kenar); ascii karakter
+ * seti (setCharSet API'si) editörde düzenlenmez — ControlPanel'de düzenlenir.
+ * GÜN 8: mod takası çift yönlü senkron — editörün renderer düğümünden mod
+ * değiştirmek onRenderModeChange ile dışarı bildirilir; dışarıdaki takaslar
+ * (ModeSelector/ControlPanel) Engine.selectRenderMode ile graf params'ına
+ * yazdığı için editör tazelenince doğru modu görür.
  */
 
 const NODE_META: Record<NodeType, { label: string; color: string }> = {
@@ -60,8 +68,17 @@ const NODE_META: Record<NodeType, { label: string; color: string }> = {
 /** Düğüm tipleri hangi parametre tanımını taşır — editörün tek eşlemesi. */
 function nodeDefs(type: NodeType, mode?: unknown): ParamDef[] {
   if (type === 'particles') return SIM_PARAMS;
-  if (type === 'feedback') return GRAIN_PARAMS;
-  if (type === 'renderer') return String(mode) === 'ascii' ? ASCII_PARAMS : POINTS_PARAMS;
+  if (type === 'feedback') {
+    // Post-pass zinciri (Gün 7 + Gün A): feedback + chromatic + bloom + grain
+    // hepsi bu düğümde.
+    return [...FEEDBACK_PARAMS, ...CHROMATIC_PARAMS, ...BLOOM_PARAMS, ...GRAIN_PARAMS];
+  }
+  if (type === 'renderer') {
+    if (String(mode) === 'ascii') return ASCII_PARAMS;
+    if (String(mode) === 'solid') return SOLID_PARAMS;
+    return POINTS_PARAMS;
+  }
+  if (type === 'output') return LOOK_PARAMS;
   return [];
 }
 
@@ -123,7 +140,19 @@ function toRfEdges(graph: Graph): Edge[] {
   }));
 }
 
-export function NodeGraphEditor({ engine, graphTick }: { engine: Engine; graphTick: number }) {
+/** Editörün sunduğu modlar — ModeSelector ile aynı küme, bağımlılık yok. */
+export type EditorRenderMode = 'points' | 'ascii' | 'neon' | 'solid';
+
+export function NodeGraphEditor({
+  engine,
+  graphTick,
+  onRenderModeChange,
+}: {
+  engine: Engine;
+  graphTick: number;
+  /** Editörden mod değişti — App UI state'ini senkronlamak için. */
+  onRenderModeChange?: (mode: EditorRenderMode) => void;
+}) {
   // useNodesState lazy init almaz; engine.currentGraph ilk render'da sabittir.
   const initialNodes = useMemo(() => toRfNodes(engine.currentGraph), [engine]);
   const initialEdges = useMemo(() => toRfEdges(engine.currentGraph), [engine]);
@@ -150,11 +179,14 @@ export function NodeGraphEditor({ engine, graphTick }: { engine: Engine; graphTi
     [engine],
   );
 
-  // Graf motor dışından kurulduysa (preset yükleme) UI'ı tazele.
+  // Graf motor dışından kurulduysa (preset yükleme, Gün 8: mod takası) UI'ı
+  // tazele. Düğüm id'leri her grafta sabittir (6 sabit düğüm), seçim paneli
+  // değeri her render'da engine.currentGraph'tan okur — seçimi sıfırlamak
+  // kullanıcıyı ezerdi (mod değişimi sonrası panel kapanırdı), bu yüzden
+  // yalnızca düğüm/kenar UI'ı güncellenir.
   useEffect(() => {
     setNodes(toRfNodes(engine.currentGraph));
     setEdges(toRfEdges(engine.currentGraph));
-    setSelectedId(null);
   }, [graphTick, engine, setNodes, setEdges]);
 
   const onConnect = useCallback(
@@ -261,7 +293,13 @@ export function NodeGraphEditor({ engine, graphTick }: { engine: Engine; graphTi
           <Controls showInteractive={false} />
         </ReactFlow>
       </div>
-      <ParamPanel engine={engine} node={selected} defs={selected ? nodeDefs(selected.type, selected.params.mode) : []} onParam={setNodeParam} />
+      <ParamPanel
+        engine={engine}
+        node={selected}
+        defs={selected ? nodeDefs(selected.type, selected.params.mode) : []}
+        onParam={setNodeParam}
+        onRenderModeChange={onRenderModeChange}
+      />
     </div>
   );
 }
@@ -272,11 +310,13 @@ function ParamPanel({
   node,
   defs,
   onParam,
+  onRenderModeChange,
 }: {
   engine: Engine;
   node: GraphNode | undefined;
   defs: ParamDef[];
   onParam: (nodeId: string, key: string, value: number | string) => void;
+  onRenderModeChange?: (mode: EditorRenderMode) => void;
 }) {
   const row: React.CSSProperties = {
     display: 'flex',
@@ -302,11 +342,14 @@ function ParamPanel({
       {node.type === 'renderer' && (
         <div style={row}>
           <span>mod:</span>
-          {(['points', 'ascii'] as const).map((m) => (
+          {(['points', 'ascii', 'neon', 'solid'] as const).map((m) => (
             <button
               key={m}
               type="button"
-              onClick={() => onParam(node.id, 'mode', m)}
+              onClick={() => {
+                onParam(node.id, 'mode', m);
+                onRenderModeChange?.(m);
+              }}
               style={{
                 fontWeight: String(node.params.mode) === m ? 700 : 400,
                 fontSize: 12,
