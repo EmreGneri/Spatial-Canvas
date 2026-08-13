@@ -432,7 +432,9 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
          onClick={() => {
          const canvas = engineRef.current?.renderer.domElement;
          if (!canvas) return;
-         exportPNG(canvas)
+         exportPNG(canvas, 'spatial-canvas', {
+           onBeforeCapture: () => engineRef.current?.renderFrame(),
+         })
           .then(() => say('PNG indirildi'))
           .catch((e) => say(`PNG HATA: ${e instanceof Error ? e.message : String(e)}`));
          }}

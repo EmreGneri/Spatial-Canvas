@@ -1,3 +1,4 @@
+import type * as THREE from 'three';
 import { Engine } from './engine';
 import { createPointCloudMaterial, POINTS_PARAMS } from './shaders/pointCloudMaterial';
 import { createAsciiMaterial, ASCII_PARAMS } from './shaders/asciiMaterial';
@@ -44,6 +45,12 @@ class SpatialCanvasElement extends HTMLElement {
   private loaded = false;
   private skeleton: HTMLElement | null = null;
   private skeletonTimer = 0;
+  /** Render modu material'ları — burada üretilir, burada bırakılır. */
+  private materials: {
+    points: THREE.Material;
+    ascii: THREE.Material;
+    neon: THREE.Material;
+  } | null = null;
 
   static get observedAttributes() {
     return ['src', 'preset', 'mode', 'width', 'height'];
@@ -102,6 +109,13 @@ class SpatialCanvasElement extends HTMLElement {
     clearInterval(this.skeletonTimer);
     this.engine?.dispose();
     this.engine = null;
+    // Engine yalnızca kendi yer tutucusunu bırakır; bunlar bizim.
+    if (this.materials) {
+      this.materials.points.dispose();
+      this.materials.ascii.dispose();
+      this.materials.neon.dispose();
+      this.materials = null;
+    }
   }
 
   /** İlk kare çizildiyse iskeleti kaldırır ve yoklamayı durdurur. */
@@ -147,11 +161,20 @@ class SpatialCanvasElement extends HTMLElement {
     if (!this.container) return;
     try {
       this.engine = new Engine(this.container);
-      // Materyalleri kaydet (embed'de UI yok ama preset modu uygulanabilir)
-      this.engine.registerRenderMode('points', createPointCloudMaterial(), POINTS_PARAMS);
-      this.engine.registerRenderMode('ascii', createAsciiMaterial(), ASCII_PARAMS);
-      this.engine.registerRenderMode('neon', createNeonWireMaterial(), NEON_PARAMS);
-      this.engine.setPointsMaterial(createPointCloudMaterial());
+      // Materyalleri kaydet (embed'de UI yok ama preset modu uygulanabilir).
+      // Aktif material KAYITLI OLANIN AYNISI olmalı: ayrı bir
+      // createPointCloudMaterial() çağrısı dördüncü bir instance üretir,
+      // preset 'points' moduna geçtiğinde kayıtlı olana takas edilir ve
+      // fazladan üretilen hiç bırakılmadan GPU'da kalırdı.
+      this.materials = {
+        points: createPointCloudMaterial(),
+        ascii: createAsciiMaterial(),
+        neon: createNeonWireMaterial(),
+      };
+      this.engine.registerRenderMode('points', this.materials.points, POINTS_PARAMS);
+      this.engine.registerRenderMode('ascii', this.materials.ascii, ASCII_PARAMS);
+      this.engine.registerRenderMode('neon', this.materials.neon, NEON_PARAMS);
+      this.engine.setPointsMaterial(this.materials.points);
       this.engine.setGraph(createDefaultGraph());
 
       const src = this.getAttribute('src');
