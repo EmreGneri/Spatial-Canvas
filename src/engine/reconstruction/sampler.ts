@@ -10,8 +10,13 @@
  *
  * Derinlik detayı depth.ts'te üretilir (ROI stretch + Sobel kabartma); bu
  * modül yalnızca grid'i örnekler:
- *   z = (d − 0.5)·range + kavis + kenar dökümü.
- * Kavis EVRENSELDİR (subject-agnostic): Z_kavis = α · sqrt(max(0, 1 − R²)) ·
+ *   z = (d − 0.5)·zSpan + kavis + kenar dökümü,
+ * zSpan = ANATOMIC_DEPTH_RATIO · 2 · min(rx, ry) — SİLÜET ORANLI derinlik
+ * uzamı (siluet yoksa eski sabit `range`). Ön plan dalındaki z uzayı
+ * sabitlerinin TAMAMI zUnit = zSpan/2 ile ölçeklenir (EDGE_WALL_Z,
+ * THIN_SHELL_Z, kavis); ARKA PLAN dalı ölçeklenmez — duvar `range` ve
+ * BACKDROP_Z_PIN ile geride kalır.
+ * Kavis EVRENSELDİR (subject-agnostic): Z_kavis = α · zUnit · sqrt(max(0, 1 − R²)) ·
  * w_fg — elipsoit, dünya merkezine oturur ve ön plan maskesiyle (w_fg)
  * sınırlanır; kafa/insan varsayımı yoktur, her tür özne (nesne, araç,
  * manzara) aynı yüzey kavisleştirmesini alır. Yandan bakıldığında tek
@@ -60,6 +65,21 @@
 import { buildSilhouette } from './silhouette.ts';
 
 export const VOLUME_GRID_SIZE = 384;
+
+/**
+ * ANATOMİK DERİNLİK ORANI: efektif z uzamı, siluetin DÜNYA yarı-eksenlerinin
+ * küçüğüne oranlanır — zSpan = ANATOMIC_DEPTH_RATIO · 2 · min(rx, ry).
+ *
+ * Eskiden z uzamı sabit `range` (2) idi: derinlik uzamı HER ZAMAN bulut
+ * yüksekliğinin tamamıydı, yani 25 cm derinliğindeki bir büst boyu kadar
+ * derin çiziliyordu (kullanıcı şikâyeti: "kafa üstü anatomik olmayacak kadar
+ * dışarı fırlıyor"). 0.7 oranı, gerçek bir gövdenin derinliğinin en dar
+ * silüet eksenine yakın olduğu gözleminden gelir; ölçü siluetten okunduğu
+ * için özne-agnostiktir (kafa/insan varsayımı yok).
+ *
+ * Siluet yoksa (body = null) ESKİ DAVRANIŞ korunur: zSpan = range.
+ */
+export const ANATOMIC_DEPTH_RATIO = 0.7;
 
 /**
  * Kenar dökümü hedef z'si: siluet sınırındaki band arkaya doğru çekilir
@@ -204,6 +224,14 @@ export function sampleVolumePositions(
   // varsayımı YOKTUR: aynı hesaplama her özne şekline uygulanır.
   const body = computeBodyGeometry(alpha, depthWidth, depthHeight, halfH);
   const d1 = body ? BACK_FILL_DEPTH * Math.min(body.rx, body.ry) : 0;
+  // Silüet-oranlı z uzamı: derinlik artık bulut yüksekliğine değil ÖZNENİN
+  // kendi genişliğine oranlıdır (bkz. ANATOMIC_DEPTH_RATIO). zUnit = zSpan/2
+  // — z uzayındaki TÜM sabitler (EDGE_WALL_Z, THIN_SHELL_Z, kavis) kullanım
+  // yerinde bununla ölçeklenir; ölçeklenmezlerse kabuk yine kutuya döner
+  // (yüzey küçülür, duvar/kabuk eski uzamda kalır). Sabitlerin KENDİLERİ
+  // değişmez — sözleşme değerleri oldukları gibi durur.
+  const zSpan = body ? ANATOMIC_DEPTH_RATIO * 2 * Math.min(body.rx, body.ry) : range;
+  const zUnit = zSpan / 2;
 
   for (let j = 0; j < grid; j++) {
     const v = 1 - (j + 0.5) / grid;
@@ -235,19 +263,21 @@ export function sampleVolumePositions(
         continue;
       }
       const d = sampleBilinear(depth, depthWidth, depthHeight, x, y);
-      // Depth terimi: (d − 0.5)·range — z aralığı sabit sözleşme
-      // (POINTS_DEPTH_RANGE = 2, dünya z ∈ [−1, +1]).
-      let z = (d - 0.5) * range;
+      // Depth terimi: (d − 0.5)·zSpan — uzam siluet oranlıdır (range değil);
+      // dünya z sözleşmesi [−1, +1] son kırpmada korunur.
+      let z = (d - 0.5) * zSpan;
       // Ön plan maskesi: depth arttıkça kavis güçlenir, arka plan düz kalır.
       const wFg = smoothstep(FG_MASK_NEAR, FG_MASK_FAR, d);
       if (curvature > 0) {
-        // Z_kavis = α · sqrt(max(0, 1 − R²)) · w_fg. Elipsoit merkezi (0,0)
-        // (dünya merkezi), yarı eksenler halfW/halfH; R dünya koordinatında
-        // normalize edilir. EVRENSEL formül: insan varsayımı yoktur, her özne
-        // (nesne, araç, manzara) aynı yüzey kavisleştirmesini alır.
+        // Z_kavis = α · zUnit · sqrt(max(0, 1 − R²)) · w_fg. Elipsoit merkezi
+        // (0,0) (dünya merkezi), yarı eksenler halfW/halfH; R dünya
+        // koordinatında normalize edilir. EVRENSEL formül: insan varsayımı
+        // yoktur, her özne (nesne, araç, manzara) aynı yüzey kavisleştirmesini
+        // alır. zUnit çarpanı: kavis de z uzamıyla birlikte küçülmezse ince
+        // bir büstte bombe yüzeyin kendisinden baskın çıkar.
         const rx = (u - 0.5) * 2;
         const r2 = rx * rx + ry * ry;
-        z += curvature * Math.sqrt(Math.max(0, 1 - r2)) * wFg;
+        z += curvature * zUnit * Math.sqrt(Math.max(0, 1 - r2)) * wFg;
       }
       // İnce kabuk (Tur 10): kabuk ön yüzün (döküm öncesi z) en az
       // THIN_SHELL_Z ARKASINA iner — kenar dökümü buna eklenir.
@@ -283,15 +313,19 @@ export function sampleVolumePositions(
           const edgeFade = Math.min(u, Math.min(1 - u, Math.min(v, 1 - v))) * 4.0;
           const edgeFactor = Math.min(1.0, edgeFade);
           const fillSmooth = smoothstep(0, 1, fill) * 0.35 * edgeFactor;
-          z += (EDGE_WALL_Z - z) * fillSmooth * round;
+          // Döküm hedefi de z uzamıyla ölçeklenir (EDGE_WALL_Z · zUnit):
+          // sabit −0.8 ince bir büstte yüzeyin kat kat arkasına düşer, kabuk
+          // yine kutuya döner.
+          z += (EDGE_WALL_Z * zUnit - z) * fillSmooth * round;
         }
       }
       // THIN SHELL (Tur 10): en dış siluet pikselleri (dist ≤ THIN_SHELL_PX)
       // ön yüzlerinin en az THIN_SHELL_Z arkasına düşer — döküm gücü kadraj
       // kenarı sönümüyle zayıflayan bölgelerde bile profil açısında kağıt
       // inceliğinde iç boşluk görünmez. Döküm zaten daha arkaya çektiyse
-      // min() korur.
-      if (dPx <= THIN_SHELL_PX) z = Math.min(z, zFront - THIN_SHELL_Z);
+      // min() korur. Kabuk kalınlığı da z uzamıyla ölçeklenir (·zUnit) —
+      // sabit 0.05 daralan uzamda oransal olarak kalınlaşırdı.
+      if (dPx <= THIN_SHELL_PX) z = Math.min(z, zFront - THIN_SHELL_Z * zUnit);
       // z aralığı sözleşmesi: her zaman [-1, +1], orijine ortalı kalır.
       out[o + 2] = Math.min(1, Math.max(-1, z));
       // Opaklık: SERT BINARY siluet (0 veya 1 — Tur 9). Siluet içi (gölge,

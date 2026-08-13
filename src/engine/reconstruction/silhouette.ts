@@ -6,17 +6,23 @@
  *   1. Eşik: d ≥ SILHOUETTE_BIN_LO → aday. Eşik 0.05'tir — ince el/parmak
  *      yapıları eşiğe takılıp silinmesin diye düşük tutulur; arka plan
  *      gürültüsü ise geometri kurallarıyla elenir. Opsiyonel nesne maskesi
- *      (segmentation.ts: subject-agnostic ön plan) verildiyse adaylık maskeye
- *      bağlanır: maske < 0.5 asla aday DEĞİLDİR; maske ≥ 0.5 VE depth ≥ eşik
- *      kesişimi aday yapar — depth eşiği maske geçişini gevşetemez.
+ *      (segmentation.ts: subject-agnostic ön plan) verildiyse MASKE
+ *      OTORİTEDİR: adaylık YALNIZCA maske ≥ 0.5 koşuludur, depth eşiği
+ *      devre dışı kalır. Sebep: maske özneyi doğru bulduğunda derinliği
+ *      düşük kalan bölge (koyu saç, arkaya giden kol) depth eşiğine takılıp
+ *      siliniyordu — depth maskeyi cezalandırıyordu. Sızma koruması eşikte
+ *      değil, 6. maddedeki SON AND'dedir.
  *   2. Morfolojik kapanış (dilate + erode): siluet İÇİNDEKİ delikler ve ince
  *      kırılmalar kapatılır. Kapanışla gelen pikseller "filled" işaretlenir:
  *      derinlik sürekliliği denetiminde köprü görevi görürler (iç delikler
  *      gradyan kesme yüzünden bileşeni parçalamaz).
- *   3. Bileşen analizi (4-komşu sel) + gövde birleştirme: bağlantı yalnızca
- *      DERİNLİK SÜREKLİLİĞİYLE kurulur — komşu iki aday pikselin depth farkı
- *      GRADIENT_BREAK (0.15)'i aşıyorsa sel o yöne ilerlemez (maske teması
- *      yeterli değildir). Böylece eşiğe sızan arka plan (duvar/zemin) özneye
+ *   3. Bileşen analizi (4-komşu sel) + gövde birleştirme: bağlantı DERİNLİK
+ *      SÜREKLİLİĞİYLE veya MASKE GÜVENİYLE kurulur — komşu iki aday pikselin
+ *      depth farkı GRADIENT_BREAK (0.15)'i aşıyorsa sel o yöne ilerlemez,
+ *      MEĞER Kİ iki piksel de nesne maskesinin içinde (≥ 0.5) olsun: gerçek
+ *      bir uzuv (kalkık kol) yüzden öne çıktığı için 0.15'i aşar ve maske
+ *      güveni olmadan "severed" sayılıp eleniyordu. Böylece eşiğe sızan arka
+ *      plan (duvar/zemin — maskesi düşüktür) özneye
  *      BİRLEŞEMEZ: derinlik sıçramasıyla ayrışır, ayrı bileşen olarak ele
  *      alınır. Çekirdek seçilir (çerçeveye değmeyen en büyük; yoksa yalnızca
  *      ALT kenara değen en büyük; yoksa en büyük). Çerçeveye değmek ELEME
@@ -138,17 +144,19 @@ export function buildSilhouette(
 ): SilhouetteResult {
   const mask = new Float32Array(depth.length);
   for (let i = 0; i < mask.length; i++) {
-    // Aday: depth eşiği (0.05) — ince el/parmak 0.05'in altındaysa bile
-    // siluetten düşebilir (daha da düşük eşik arka planı sızdırır).
-    // Maske verildiyse ayrıca maske ≥ 0.5 şartı aranır (dilate/tüy bandının
-    // "tanımsız" değerleri aday olamaz; bandı geri kazandıran mekanizma
-    // Engine.setDepth'teki MASK_DILATE_RADIUS morfolojisidir).
+    // Aday (MASKE OTORİTEDİR): nesne maskesi verildiyse adaylık YALNIZCA
+    // maskeye bakar. Eskiden ek olarak depth ≥ SILHOUETTE_BIN_LO aranırdı;
+    // maske özneyi doğru bulsa bile derinliği düşük kalan bölge (koyu saç,
+    // arkaya giden kol) o eşikte siliniyordu — yani depth, maskeyi
+    // CEZALANDIRIYORDU. Maske YOKSA depth eşiği aynen kalır (0.05 — ince
+    // el/parmak korunur, arka plan gürültüsü geometri kurallarıyla elenir).
+    // Sızma koruması bu satırda değil, fonksiyon sonundaki SON AND'dedir.
     mask[i] =
       !foregroundMask
         ? depth[i] >= SILHOUETTE_BIN_LO
           ? 1
           : 0
-        : foregroundMask[i] >= 0.5 && depth[i] >= SILHOUETTE_BIN_LO
+        : foregroundMask[i] >= 0.5
           ? 1
           : 0;
   }
@@ -160,7 +168,7 @@ export function buildSilhouette(
   for (let i = 0; i < mask.length; i++) {
     if (mask[i] >= 0.5 && orig[i] < 0.5) filled[i] = 1;
   }
-  keepForeground(mask, w, h, depth, filled);
+  keepForeground(mask, w, h, depth, filled, foregroundMask ?? null);
   // SON AND (Tur 9): nesne maskesi güven sınırıdır — morfolojik kapanışın,
   // bileşen birleştirmenin veya satır boşluk dolgusunun dirilttiği hiçbir
   // arka plan pikseli (maske < 0.5) ön plana dönemez. Beyaz duvar saç
@@ -249,9 +257,11 @@ function boxBlur(src: Float32Array, w: number, h: number, radius: number): Float
 
 /**
  * Bileşen seçimi + gövde birleştirme + satır boşluk dolgusu:
- * - Sel (4-komşu) yalnızca DERİNLİK SÜREKLİLİĞİYLE ilerler: komşu fark
- *   GRADIENT_BREAK'i aşarsa o yönde bağlantı kurulmaz; filled pikseller
- *   (kapanışla gelen iç delikler) her koşulda köprüdür.
+ * - Sel (4-komşu) DERİNLİK SÜREKLİLİĞİYLE veya MASKE GÜVENİYLE ilerler: komşu
+ *   fark GRADIENT_BREAK'i aşarsa bağlantı kurulmaz — meğer ki iki piksel de
+ *   nesne maskesinin içinde (≥ 0.5) olsun (gerçek uzuv kurtulur, maskesi
+ *   düşük duvar kurtulmaz); filled pikseller (kapanışla gelen iç delikler)
+ *   her koşulda köprüdür.
  * - Çekirdek: (1) çerçeveye değmeyen en büyük bileşen, (2) yoksa yalnızca
  *   alt kenara değen en büyük (zemin teması güvenilir), (3) yoksa en büyük.
  *   TAM KADRAJ KORUMASI: adaylar en büyük bileşenin %10'una ulaşmalıdır —
@@ -285,6 +295,7 @@ function keepForeground(
   h: number,
   depth: Float32Array,
   filled: Uint8Array,
+  foregroundMask: Float32Array | null,
 ) {
   const n = mask.length;
   const compId = new Int32Array(n).fill(-1);
@@ -299,11 +310,18 @@ function keepForeground(
   let nextId = 0;
 
   // Bağlantı: kapanış köprüsü (iç delik dolgusu) VEYA depth gradyan sürekliliği
-  // — birbirine yakın derinlikteki komşular aynı bileşendir; maske yalnızca
-  // selin gezdiği adayları daraltır (yukarıda), bağlantının kendisini
-  // maskelemeye çalışmaz (uzuv/duvar ayrımı gradyan eşiğinin işi).
+  // VEYA MASKE GÜVENİ — iki pikselin İKİSİ de nesne maskesinin içindeyse
+  // (≥ 0.5) bağlantı kurulur. Sebep: gerçek bir uzuv (havaya kalkmış kol)
+  // yüzden ÖNE çıktığı için |Δd| GRADIENT_BREAK'i (0.15) aşıyor, bileşen
+  // "severed" sayılıp eleniyordu (kullanıcı fotoğrafında kol + kürk siliniyor).
+  // Duvar reddi KORUNUR: duvarın maskesi düşüktür, maske kolu bu koşulu
+  // açamaz — gradyan eşiği duvar/zemin için tek başına hâlâ karar vericidir.
+  // Maske yoksa davranış AYNEN eskisi gibidir.
   const connected = (p: number, q: number) =>
-    filled[p] || filled[q] || Math.abs(depth[p] - depth[q]) <= GRADIENT_BREAK;
+    filled[p] ||
+    filled[q] ||
+    Math.abs(depth[p] - depth[q]) <= GRADIENT_BREAK ||
+    (foregroundMask !== null && foregroundMask[p] >= 0.5 && foregroundMask[q] >= 0.5);
 
   for (let i = 0; i < n; i++) {
     if (mask[i] < 0.5 || compId[i] >= 0) continue;

@@ -68,12 +68,19 @@ for (let k = 0; k < flat0.length; k += 4) {
   assert.equal(flat0[k + 2], -1, 'düz d=0 → arka plan z = −1 (sabit arka sınır, kırpıldı)');
 }
 const flat1 = sampleVolumePositions(new Float32Array(W * H).fill(1), W, H);
-// Sabit z sözleşmesi (range = 2): d = 1 → (1−0.5)·2 = 1. Merkez: kavis +
-// 0.1·1·w_fg(1) = 0.1 → 1.1 → ÜST SINIRA KIRPILIR (+1). Köşe (R² ≥ 1) ve
-// grid kenarı da aynı sınıra oturur — kutu/duvar yok, düz yüzey.
-assert.ok(Math.abs(at(flat1, N >> 1, N >> 1).z - 1) < 1e-6, 'dolu merkez → z = +1 (kırpılır)');
-assert.ok(Math.abs(at(flat1, 0, 0).z - 1) < 1e-6, 'kadraj köşesi → DÜZ (kenar sınır değil, döküm yok, kavis R²≥1)');
-assert.ok(Math.abs(at(flat1, 32, N >> 1).z - 1) < 1e-6, 'grid kenarına bitişik → düz kalır (duvar yok, yalnızca kavis)');
+// SİLÜET ORANLI z uzamı: tam kadraj siluetinde rx = ry = 0.984375 →
+// zSpan = 0.7·2·0.984375 = 1.378125, zUnit = 0.6890625. Artık ÜST SINIRA
+// KIRPILMAZ (eski sabit range = 2 kırpıyordu) — kutu/duvar yok, düz yüzey.
+//   merkez  (u = 192.5/384, v = 1−u): R² = 1.3562e−5 → sqrt(1−R²) = 0.99999322,
+//           w_fg(1) = 1 → z = 0.5·1.378125 + 0.1·0.6890625·0.99999322
+//                          = 0.6890625 + 0.06890578 = 0.75796828
+//   köşe(0,0): R² ≈ 1.9896 ≥ 1 → kavis YOK → z = 0.6890625
+//   kenar(32,192): 2u−1 = −0.83072917, 2v−1 = −0.00260417 → R² = 0.69011676
+//           → sqrt = 0.55667157 → z = 0.6890625 + 0.1·0.6890625·0.55667157
+//                                   = 0.6890625 + 0.03835819 = 0.72742059
+assert.ok(Math.abs(at(flat1, N >> 1, N >> 1).z - 0.757968283) < 1e-6, 'dolu merkez → z = 0.75796828 (silüet oranlı uzam, kırpma yok)');
+assert.ok(Math.abs(at(flat1, 0, 0).z - 0.6890625) < 1e-6, 'kadraj köşesi → DÜZ (kenar sınır değil, döküm yok, kavis R²≥1)');
+assert.ok(Math.abs(at(flat1, 32, N >> 1).z - 0.727420591) < 1e-6, 'grid kenarına bitişik → düz kalır (duvar yok, yalnızca kavis)');
 // Radyal sönümleme YOK: bbox içi (kafa üstü, köşeler) asla α'dan delinmez.
 assert.equal(wAt(flat1, 0, 0), 1, 'köşe → w = 1 (radyal delme yok)');
 assert.equal(wAt(flat1, N >> 1, 0), 1, 'üst sınır → w = 1 (radyal delme yok)');
@@ -83,11 +90,18 @@ assert.equal(wAt(flat1, N - 1, 0), 1, 'üst-sağ köşe → w = 1 (radyal delme 
 const depth = new Float32Array(W * H);
 for (let row = 0; row < H / 2; row++) depth.fill(1, row * W, (row + 1) * W); // satır 0 = üst
 const half = sampleVolumePositions(depth, W, H);
-// Sabit z sözleşmesi (range = 2): üst yarı → (1−0.5)·2 = 1 + kavis
-// (R² ≈ 0.248 → 0.08675) = 1.08675 → üst sınıra kırpılır (+1).
-assert.ok(Math.abs(at(half, N >> 1, N >> 2).z - 1) < 1e-5, 'üst yarı içi → z = +1 (kavisle sınıra kırpılır)');
+// SİLÜET ORANLI uzam: siluet yalnızca ÜST yarı → rx = 0.984375, ry = 0.484375
+// → zSpan = 0.7·2·0.484375 = 0.678125, zUnit = 0.3390625. Derinlik uzamı
+// öznenin kendi boyuna oranlanır; artık +1'e kırpılmaz.
+//   üst yarı içi (192, 96): 2u−1 = 0.00260417, 2v−1 = 0.49739583 →
+//     R² = 0.24740936 → sqrt(1−R²) = 0.86752558, w_fg(1) = 1 →
+//     z = 0.5·0.678125 + 0.1·0.3390625·0.86752558 = 0.3390625 + 0.02941419
+//       = 0.36847684
+//   üst kadraj sınırı (192, 0): 2v−1 = 0.99739583 → R² = 0.99480525 →
+//     sqrt = 0.07207462 → z = 0.3390625 + 0.00244381 = 0.34150629
+assert.ok(Math.abs(at(half, N >> 1, N >> 2).z - 0.368476843) < 1e-5, 'üst yarı içi → z = 0.36847684 (silüet oranlı uzam)');
 const topEdge = at(half, N >> 1, 0).z; // kadraj sınırı: döküm sönümlü (kare duvar yok), yalnızca kavis payı
-assert.ok(topEdge > 0.98 && topEdge <= 1, `üst kadraj sınırı → kenar sönümlü (prizma duvarı yok, z = ${topEdge.toFixed(6)})`);
+assert.ok(Math.abs(topEdge - 0.341506285) < 1e-5, `üst kadraj sınırı → kenar sönümlü (prizma duvarı yok, z = ${topEdge.toFixed(6)})`);
 assert.ok(
   Math.abs(at(half, N >> 1, N - 1).z + 1) < 1e-6,
   'alt satır (uzak) → arka plan z = −1 (d = 0 → (0−0.5)·range − PIN → tabana kırpılır)',
@@ -151,19 +165,21 @@ const rim = sampleVolumePositions(rimDepth, W, H, {
   curvature: 0,
   importanceSampling: false,
 });
-// Sabit z sözleşmesi (range = 2): iç bölge z = (0.4−0.5)·2 = −0.2;
-// sınır bandı: döküm EDGE_WALL_Z'ye (−0.8) yaklaşır; ince kabuk tavanı
-// zFront − THIN_SHELL_Z = −0.25.
+// SİLÜET ORANLI uzam: siluet sol yarı → rx = 0.484375, ry = 0.984375 →
+// zSpan = 0.678125, zUnit = 0.3390625. İç bölge z = (0.4−0.5)·0.678125
+// = −0.0678125; sınır bandı döküm hedefine (EDGE_WALL_Z·zUnit = −0.27125)
+// yaklaşır, ince kabuk tavanı zFront − THIN_SHELL_Z·zUnit
+// = −0.0678125 − 0.05·0.3390625 = −0.08476563.
 const interior = at(rim, 80, N >> 1); // x ≈ 12.9 → siluet içi
 const band = at(rim, 184, N >> 1); // x ≈ 30.3 → sınıra yakın ÖN PLAN (sert w = 1)
 const cut = at(rim, N >> 1, N >> 1); // x ≈ 31.6 → sınırın hemen dışı (eşik keser)
 const bg = at(rim, 300, N >> 1); // x ≈ 49.7 → arka plan
-assert.ok(Math.abs(interior.z + 0.2) < 1e-6, 'siluet içi → döküm yok, z = −0.2');
+assert.ok(Math.abs(interior.z + 0.0678125) < 1e-6, 'siluet içi → döküm yok, z = −0.0678125');
 assert.equal(interior.w, 1, 'siluet içi → w = 1');
 assert.equal(band.w, 1, 'sınıra yakın ön plan → SERT w = 1 (ara opaklık yok)');
 assert.ok(
-  band.z > -0.81 && band.z < -0.25,
-  `sınır bandı → kısmen dökülmüş (z = ${band.z.toFixed(6)}, kabuk tavanı −0.25)`,
+  band.z > -0.27125 && band.z < -0.084765625,
+  `sınır bandı → kısmen dökülmüş (z = ${band.z.toFixed(6)}, duvar hedefi −0.27125, kabuk tavanı −0.08476563)`,
 );
 assert.ok(
   Math.abs(cut.w - BACKDROP_OPACITY) < 1e-6,
@@ -187,19 +203,22 @@ const flat60 = sampleVolumePositions(new Float32Array(W * H).fill(0.6), W, H, {
   curvature: 0,
   importanceSampling: false,
 });
-// Sabit z sözleşmesi (range = 2): gövde içi z = (0.6−0.5)·2 = 0.2 (düz).
-assert.ok(Math.abs(at(flat60, N >> 1, N >> 1).z - 0.2) < 1e-6, 'gövde içi → z = 0.2 (range)');
-assert.ok(Math.abs(at(flat60, N >> 1, 96).z - 0.2) < 1e-6, 'üst band (eski skull alanı) → ekstra bombe YOK');
-// Kavis formülü (evrensel):
-// Z = (d−0.5)·range + α·sqrt(max(0,1−R²))·w_fg.
-// Merkezde R² = 0, w_fg(0.6) = smoothstep(0.2,0.7,0.6) = 0.896 →
-// kavis = 0.1·1·0.896 = 0.0896; z = 0.2 + 0.0896.
+// SİLÜET ORANLI uzam (tam kadraj): zSpan = 1.378125, zUnit = 0.6890625 →
+// gövde içi z = (0.6−0.5)·1.378125 = 0.1378125 (düz).
+assert.ok(Math.abs(at(flat60, N >> 1, N >> 1).z - 0.1378125) < 1e-6, 'gövde içi → z = 0.1378125 (zSpan)');
+assert.ok(Math.abs(at(flat60, N >> 1, 96).z - 0.1378125) < 1e-6, 'üst band (eski skull alanı) → ekstra bombe YOK');
+// Kavis formülü (evrensel, z uzamıyla ölçekli):
+// Z = (d−0.5)·zSpan + α·zUnit·sqrt(max(0,1−R²))·w_fg.
+// Merkezde R² = 1.3562e−5 → sqrt(1−R²) = 0.99999322,
+// w_fg(0.6) = smoothstep(0.2,0.7,0.6) = 0.896 →
+// kavis = 0.1·0.6890625·0.99999322·0.896 = 0.06173958;
+// z = 0.1378125 + 0.06173958 = 0.19955208.
 const curved = sampleVolumePositions(new Float32Array(W * H).fill(0.6), W, H, {
   curvature: 0.1,
   importanceSampling: false,
 });
-assert.ok(Math.abs(at(curved, N >> 1, N >> 1).z - 0.2896) < 1e-5, 'merkez → evrensel kavis katkısı');
-assert.ok(Math.abs(at(curved, 0, 0).z - 0.2) < 1e-6, 'köşe (R² ≥ 1) → kavis yok');
+assert.ok(Math.abs(at(curved, N >> 1, N >> 1).z - 0.199552081) < 1e-5, 'merkez → evrensel kavis katkısı');
+assert.ok(Math.abs(at(curved, 0, 0).z - 0.1378125) < 1e-6, 'köşe (R² ≥ 1) → kavis yok');
 
 // --- 8. çerçeveye değen uzuv korunur; dikey açık hava doldurulmaz ---
 // Gövde alt yarıda (çerçeveye değmez), kol ÜST kenara (y = 0) değiyor ve
@@ -271,10 +290,11 @@ const ext = sampleVolumePositions(new Float32Array(W * H).fill(0.4), W, H, {
   curvature: 0,
   importanceSampling: false,
 });
-// Sabit z sözleşmesi (range = 2): düz 0.4 → z = (0.4−0.5)·2 = −0.2.
-assert.ok(Math.abs(at(ext, 0, 0).z + 0.2) < 1e-6, 'kadraj köşesi → DÜZ (döküm yok)');
-assert.ok(Math.abs(at(ext, N >> 1, N >> 1).z + 0.2) < 1e-6, 'iç merkez → dokunulmaz (z = −0.2)');
-assert.ok(Math.abs(at(ext, 32, N >> 1).z + 0.2) < 1e-6, 'grid kenarına bitişik → DÜZ (duvar yok)');
+// SİLÜET ORANLI uzam (tam kadraj): zSpan = 1.378125 → düz 0.4 →
+// z = (0.4−0.5)·1.378125 = −0.1378125.
+assert.ok(Math.abs(at(ext, 0, 0).z + 0.1378125) < 1e-6, 'kadraj köşesi → DÜZ (döküm yok)');
+assert.ok(Math.abs(at(ext, N >> 1, N >> 1).z + 0.1378125) < 1e-6, 'iç merkez → dokunulmaz (z = −0.1378125)');
+assert.ok(Math.abs(at(ext, 32, N >> 1).z + 0.1378125) < 1e-6, 'grid kenarına bitişik → DÜZ (duvar yok)');
 
 // --- 11. derinlik gradyan kesmesi: bitişik ama süreksiz blok gövdeye yapışmaz ---
 // Özne 0.4, duvar 0.9 DOĞRUDAN bitişik (maske tek blob): |Δd| = 0.5 > 0.15 →
@@ -365,8 +385,10 @@ for (let k = 3; k < half.length; k += 4) {
 // yapılmaz (düz duvar), ama nokta üretilir: tek buffer, siyah boşluk yok.
 // Sınır bandındaki arka plan texelleri bilinear derinlik karışımı alır
 // (en yakın texel d ≈ 0.4167 → z ≈ −0.3167); derin saf bölge −1. Ön plan
-// yüzeyinin EN DÜŞÜK noktası (kabuk/duvar) −0.25 → arka plan her texelde
-// onun bile arkasındadır (z ≤ −0.3167 < −0.25).
+// yüzeyinin EN DÜŞÜK noktası (kabuk/duvar) bu sahnede −0.00594 (silüet
+// oranlı uzam: zSpan = 0.678125) → arka plan her texelde onun arkasındadır
+// (z ≤ −0.3167). Arka plan dalı ÖLÇEKLENMEZ: range + BACKDROP_Z_PIN ile
+// geride kalır (duvar sözleşmesi).
 const halfNo = sampleVolumePositions(depth, W, H, {
   curvature: 0.1,
   importanceSampling: false,
@@ -508,9 +530,11 @@ for (let k = 2; k < single.length; k += 4) {
 
 // --- 21. İNCE KABUK (Tur 10): en dış siluet pikselleri ön yüzlerinin
 // THIN_SHELL_Z (0.05) arkasına düşer; siluet içi dokunulmaz. ---
-// rim sahnesi: sınır bandı (x ≈ 30.3, dist ≈ 0.75px) → zFront = −0.2,
-// kabuk tavanı z ≤ −0.25 (döküm EDGE_WALL_Z −0.8 duvar düzlemine gider);
-// siluet içi (x ≈ 12.9, dist ≈ 18.6px) → kabuk uygulanmaz.
+// rim sahnesi (zUnit = 0.3390625): sınır bandı (x ≈ 30.3, dist ≈ 0.75px) →
+// zFront = −0.0678125, kabuk tavanı zFront − THIN_SHELL_Z·zUnit
+// = −0.0678125 − 0.05·0.3390625 = −0.08476563 (döküm EDGE_WALL_Z·zUnit
+// = −0.27125 duvar düzlemine gider); siluet içi (x ≈ 12.9, dist ≈ 18.6px)
+// → kabuk uygulanmaz.
 const rimShell = sampleVolumePositions(rimDepth, W, H, {
   curvature: 0,
   importanceSampling: false,
@@ -518,10 +542,10 @@ const rimShell = sampleVolumePositions(rimDepth, W, H, {
 const bandPx = at(rimShell, 184, N >> 1);
 const innerPx = at(rimShell, 80, N >> 1);
 assert.ok(
-  bandPx.z <= -0.25,
-  `sınır bandı → ince kabuk (z = ${bandPx.z.toFixed(6)} ≤ −0.25, kağıt inceliği yok)`,
+  bandPx.z <= -0.084765625,
+  `sınır bandı → ince kabuk (z = ${bandPx.z.toFixed(6)} ≤ −0.08476563, kağıt inceliği yok)`,
 );
-assert.ok(Math.abs(innerPx.z + 0.2) < 1e-6, 'siluet içi → ince kabuk uygulanmaz (z = −0.2)');
+assert.ok(Math.abs(innerPx.z + 0.0678125) < 1e-6, 'siluet içi → ince kabuk uygulanmaz (z = −0.0678125)');
 
 // --- 22. MASKE GENİŞLETME + TÜY (Tur 10): RMBG'nin öznenin İÇİNE düşen
 // < 0.5 hataları (yüz/el kenarı) güven marjıyla kapanır; uzak arka plan

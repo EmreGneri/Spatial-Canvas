@@ -34,10 +34,16 @@ buildShellMesh(new Float32Array(16), 4, 4, { gridSize: 8 });
 assert.equal(buildShellMesh(new Float32Array(W * H).fill(0), W, H), null, 'd=0 → null');
 
 // --- 3. düz 0.6 (tam kadraj ön plan): tüm köşeler içeride, z formülü ---
-// K = (N+1)² köşe; her köşe F+B = 2K pozisyon. Sabit z sözleşmesi (range =
-// 2): merkez köşe (R² ≈ 0): (0.6−0.5)·2·0.7 = 0.14 + kavis
-// 0.1·sqrt(1−R²)·0.896 = 0.0896 → 0.2296 (ekstrüzyon depthScale 0.7 sönümlü,
-// kavis çarpanı sabit; verify-sampler ile aynı yüzey kuralı).
+// K = (N+1)² köşe; her köşe F+B = 2K pozisyon. SİLÜET ORANLI z uzamı:
+// tam kadraj siluet (64×64) → rx = ry = 0.984375 →
+// zSpan = ANATOMIC_DEPTH_RATIO·2·min(rx,ry) = 0.7·2·0.984375 = 1.378125,
+// zUnit = 0.6890625. `depthScale` (0.7) DEĞİŞMEDİ — zSpan `range`in YERİNE
+// geçer, onun üstüne gelmez. Merkez köşe (u = v = 0.5 → R² = 0, w_fg(0.6) =
+// 0.896):
+//   z = (0.6−0.5)·1.378125·0.7 + 0.1·0.6890625·1·0.896
+//     = 0.09646875 + 0.06174    = 0.15820875
+// (kavis depthScale ile ölçeklenmez — Gün B kuralı; verify-sampler ile aynı
+// yüzey kuralı, oradaki uzam ölçeği burada da geçerli.)
 const flat = buildShellMesh(new Float32Array(W * H).fill(0.6), W, H) ?? assert.fail('flat null');
 const S = N + 1;
 assert.equal(flat.positions.length, S * S * 2 * 3, 'tüm köşeler içeride (2K pozisyon)');
@@ -47,25 +53,28 @@ assert.equal(flat.shell.length, flat.positions.length / 3, 'shell köşe başın
 for (let t = 0; t < flat.indices.length; t++) {
   assert.ok(flat.indices[t] < flat.positions.length / 3, `index aralık içinde @${t}`);
 }
-// Merkez köşe: z = 0.14 + 0.0896 = 0.2296. Köşe (0,0): dünya
-// (−1, 1) ve uv (0, 1) — aUv sözleşmesi (v=1 üst, satır 0 = üst).
+// Köşe (0,0): dünya (−1, 1) ve uv (0, 1) — aUv sözleşmesi (v=1 üst,
+// satır 0 = üst).
 assert.ok(Math.abs(flat.positions[0] + 1) < 1e-6, 'köşe (0,0) x = −1');
 assert.ok(Math.abs(flat.positions[1] - 1) < 1e-6, 'köşe (0,0) y = +1');
 // Köşe (0,0): R² = 2 ≥ 1 → kavis YOK (verify-sampler test 7 ile aynı kural).
-assert.ok(Math.abs(flat.positions[2] - 0.14) < 1e-6, 'köşe (0,0) z = 0.14 (R² ≥ 1 → kavis yok)');
+//   z = (0.6−0.5)·1.378125·0.7 = 0.09646875
+assert.ok(Math.abs(flat.positions[2] - 0.09646875) < 1e-6, 'köşe (0,0) z = 0.09646875 (R² ≥ 1 → kavis yok)');
 assert.ok(Math.abs(flat.uvs[0]) < 1e-6 && Math.abs(flat.uvs[1] - 1) < 1e-6, 'köşe (0,0) uv = (0, 1)');
 const center = ((N / 2) * S + N / 2) * 2; // köşe (N/2, N/2) → k = ... → F index 2k
-assert.ok(Math.abs(flat.positions[center * 3 + 2] - 0.2296) < 1e-5, 'merkez köşe z = 0.2296');
-// depthScale=1: 0.5·range·1 + kavis = 0.2 + 0.0896 = 0.2896.
+assert.ok(Math.abs(flat.positions[center * 3 + 2] - 0.15820875) < 1e-5, 'merkez köşe z = 0.15820875');
+// depthScale=1: (0.6−0.5)·zSpan·1 + kavis = 0.1378125 + 0.06174 = 0.1995525.
 const unscaled = buildShellMesh(new Float32Array(W * H).fill(0.6), W, H, { depthScale: 1 }) ?? assert.fail('unscaled null');
 assert.ok(
-  Math.abs(unscaled.positions[center * 3 + 2] - 0.2896) < 1e-5,
-  'depthScale 1 → ölçeksiz ekstrüzyon matematiği (0.2896)',
+  Math.abs(unscaled.positions[center * 3 + 2] - 0.1995525) < 1e-5,
+  'depthScale 1 → ölçeksiz ekstrüzyon matematiği (0.1995525)',
 );
-// Back köşeleri sabit duvar düzleminde (EDGE_WALL_Z = −0.8).
+// Back köşeleri duvar düzleminde: wallZ = EDGE_WALL_Z·zUnit
+// = −0.8·0.6890625 = −0.55125 (z uzamı daraldığında duvar da daralır —
+// yoksa kabuk yine kutuya döner).
 assert.ok(
-  Math.abs(flat.positions[center * 3 + 5] + 0.8) < 1e-6,
-  'back köşe z = EDGE_WALL_Z (sabit duvar düzlemi)',
+  Math.abs(flat.positions[center * 3 + 5] + 0.55125) < 1e-6,
+  'back köşe z = EDGE_WALL_Z·zUnit (ölçekli duvar düzlemi)',
 );
 // z sözleşmesi: tüm köşeler [-1, +1], NaN yok.
 for (let t = 2; t < flat.positions.length; t += 3) {
@@ -185,16 +194,18 @@ function zAt(mesh, wx, wy) {
 }
 const wx_of = (i) => (i / N - 0.5) * 2;
 const wy_of = (j) => (1 - j / N - 0.5) * 2;
-// Sabit z sözleşmesi (range = 2, depthScale 0.7): siluet içi (u = 0.375,
-// v ortası): z = (0.4−0.5)·2·0.7 = −0.14, döküm yok.
+// SİLÜET ORANLI uzam: siluet sol yarı → rx = 0.484375, ry = 0.984375 →
+// zSpan = 0.7·2·0.484375 = 0.678125, zUnit = 0.3390625. Siluet içi
+// (u = 0.375, v ortası): z = (0.4−0.5)·0.678125·0.7 = −0.04746875, döküm yok.
 const iIn = (N * 3) / 8;
 const jMid = N / 2;
-assert.ok(Math.abs(zAt(half, wx_of(iIn), wy_of(jMid)) + 0.14) < 1e-5, 'iç köşe z = −0.14 (döküm yok)');
-// Sınır bandı (u ≈ 0.5⁻): ince kabuk + döküm → arkaya çekilir ama sabit
-// duvar güvencesinin (minWallZ = EDGE_WALL_Z + 0.02 = −0.78) altına inemez.
+assert.ok(Math.abs(zAt(half, wx_of(iIn), wy_of(jMid)) + 0.04746875) < 1e-5, 'iç köşe z = −0.04746875 (döküm yok)');
+// Sınır bandı (u ≈ 0.5⁻): ince kabuk + döküm → arkaya çekilir ama ÖLÇEKLİ
+// duvar güvencesinin (minWallZ = MESH_MIN_WALL_Z·zUnit = −0.78·0.3390625
+// = −0.26446875) altına inemez.
 const zB = zAt(half, wx_of(N / 2 - 1), wy_of(jMid));
 assert.ok(typeof zB === 'number' && zB < -0.005, `sınır bandı → arkaya döküldü (z = ${zB?.toFixed(6)})`);
-assert.ok(zB >= -0.78, `duvar güvencesi: z ≥ −0.78 (z = ${zB?.toFixed(6)})`);
+assert.ok(zB >= -0.26446875, `duvar güvencesi: z ≥ −0.26446875 (z = ${zB?.toFixed(6)})`);
 census(half, 'yarım düzlem');
 
 // --- 6. maske-aware: fg maske sol yarı → yalnızca sol köşeler + kavis
@@ -212,13 +223,15 @@ for (let t = 0; t < maskedNoRemap.positions.length; t += 6) {
   if (maskedNoRemap.positions[t] > maxX) maxX = maskedNoRemap.positions[t];
 }
 assert.ok(maxX <= 0, `maske 0 bölgede köşe yok (max x = ${maxX.toFixed(4)})`);
+// Maskeli siluet de sol yarıdır → zSpan = 0.678125, zUnit = 0.3390625.
 // Sol-orta köşe (u = 0.25, v ortası): R² = 0.25 → kavis katsayısı
-// √0.75 = 0.866025. z = (0.6−0.5)·2·0.7 + 0.1·0.866025·0.896
-// = 0.14 + 0.0776 = 0.2176.
+// √0.75 = 0.8660254.
+//   z = (0.6−0.5)·0.678125·0.7 + 0.1·0.3390625·0.8660254·0.896
+//     = 0.04746875 + 0.02630985 = 0.0737786
 const iQuarter = N / 4;
 assert.ok(
-  Math.abs(zAt(maskedNoRemap, wx_of(iQuarter), wy_of(jMid)) - 0.2176) < 1e-4,
-  `maskeli köşe z = 0.2176 (gerçek: ${zAt(maskedNoRemap, wx_of(iQuarter), wy_of(jMid)).toFixed(6)})`,
+  Math.abs(zAt(maskedNoRemap, wx_of(iQuarter), wy_of(jMid)) - 0.0737786) < 1e-4,
+  `maskeli köşe z = 0.0737786 (gerçek: ${zAt(maskedNoRemap, wx_of(iQuarter), wy_of(jMid)).toFixed(6)})`,
 );
 census(maskedNoRemap, 'maske sol yarı (remap kapalı)');
 // (b) remap AÇIK — örnekleme yoğunluğu ön plana kayar (parçacık paritesi);
