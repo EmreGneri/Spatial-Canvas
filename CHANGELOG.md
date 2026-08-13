@@ -5,6 +5,37 @@ En yeni üstte.
 
 ---
 
+## 2026-08-13 — Gün D: CV dönüşümü — pose + splat + eval fazı, Gün 0 sözleşmesi (Emre)
+
+Karar: 7 günlük CV fazının Gün 0 sözleşmesi imzalandı. Maddeler
+`ARCHITECTURE.md` → "Gün D — CV Dönüşümü" bölümünde:
+
+- **GaussianBuffer sözleşmesi (gSplat):** `gSplatA` (RGBA32F: xyz + opaklık),
+  `gSplatB` (RGBA32F: normal + ölçek), `gSplatC` (RGBA8: rgb + AO). Yazan:
+  veri katmanı (füzyon), okuyan: render katmanı; uPositions kuralının aynısı.
+- **PoseTrack:** `{ id, R, t, timeMs, scale, fovY }`; dünya orijini = ilk
+  keyframe; `scale` depth hizalamasından (`d_metric ≈ a·d_pred + b`).
+- **İntrinsik:** varsayılan 60° dikey, ParamDef'e girer; değişim poz zincirini
+  geçersiz kılar.
+- **Füzyon:** GaussianBuffer + `keyframeIndex` kanalı; delik = NA sentinel,
+  diffusion/inpainting YASAK.
+- **Eval:** `eval-out/report.json` şeması (metrik/değer/dataset/split/column;
+  kolonlar depth | seg | pose | timing; 6 sabit ablasyon kolu).
+- **Akış (G3):** `flow.ts` sözleşmesi (320×180, 300–500 nokta) + `verify-flow.mjs`.
+- Node graph'a `pose` + `fusion` düğümleri; 5. render modu `splat`
+  (`SPLAT_PARAMS`). Yeni verify: `verify-pose.mjs`.
+- Kesme sırası + sınır bildirimi (loop closure yok; kapsam 30–60 sn, 8–20
+  keyframe, statik sahne).
+
+Not: render katmanını ilgilendiren maddelerde (gSplat, splat modu) Zeynep'in
+onayı ilk sabah senkronunda teyit edilir. Bu tur yalnızca sözleşme metni —
+kod değişikliği yok; iskelet Gün 1'de.
+
+**Doğrulama:** doküman değişikliği — `npm run verify` / typecheck / build
+durumu değişmedi.
+
+---
+
 ## 2026-08-13 — Gün C: denetim turu — solid kabuk düzeltmesi, 3D okunurluk, video derinliği (Emre + Zeynep)
 
 Tüm dosyaların uçtan uca denetimi. Aşağıdaki maddelerin ilk üçü **hata**, geri
