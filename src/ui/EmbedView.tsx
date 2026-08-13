@@ -3,6 +3,7 @@ import { Engine } from '../engine';
 import { createPointCloudMaterial, POINTS_PARAMS } from '../shaders/pointCloudMaterial';
 import { createAsciiMaterial, ASCII_PARAMS } from '../shaders/asciiMaterial';
 import { createNeonWireMaterial, NEON_PARAMS } from '../shaders/neonWireMaterial';
+import { createSolidMaterial, SOLID_PARAMS } from '../shaders/solidMaterial';
 import { applyRenderState, type RenderState } from '../shaders/renderPreset';
 import { EMBED_CHROME_CSS, SIGNATURE_TEXT } from './embedChrome';
 import type { RenderMode } from './ModeSelector';
@@ -50,15 +51,26 @@ export function EmbedView({
       points: createPointCloudMaterial(),
       ascii: createAsciiMaterial(),
       neon: createNeonWireMaterial(),
+      // Gün B: dördüncü mod. Kabuk yalnızca fotoğrafta kurulur; kabuk yokken
+      // Engine solid material'ı takmaz, son sağlam material'da kalır.
+      solid: createSolidMaterial(),
     };
     engine.registerRenderMode('points', materials.points, POINTS_PARAMS);
     engine.registerRenderMode('ascii', materials.ascii, ASCII_PARAMS);
     engine.registerRenderMode('neon', materials.neon, NEON_PARAMS);
+    engine.registerRenderMode('solid', materials.solid, SOLID_PARAMS);
     engine.setPointsMaterial(materials[mode]);
 
     if (preset) {
       applyRenderState(
-        { mode, points: materials.points, ascii: materials.ascii, neon: materials.neon, grain: engine.grainUniforms },
+        {
+          mode,
+          points: materials.points,
+          ascii: materials.ascii,
+          neon: materials.neon,
+          solid: materials.solid,
+          grain: engine.grainUniforms,
+        },
         preset,
       );
     }
@@ -82,6 +94,7 @@ export function EmbedView({
       materials.points.dispose();
       materials.ascii.dispose();
       materials.neon.dispose();
+      materials.solid.dispose();
       setReady(false);
     };
     // mode/preset açılış değerleridir; değişimlerinde motoru yeniden kurmak

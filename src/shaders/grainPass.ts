@@ -37,7 +37,7 @@ export interface GrainPassUniforms {
  * kolları. uTime ve uResolution hesaplanır, kullanıcı kolu değil — yoklar.
  */
 export const GRAIN_PARAMS: ParamDef[] = [
-  { key: 'uGrainAmount', label: 'grain', min: 0, max: 0.3, default: 0.06 },
+  { key: 'uGrainAmount', label: 'grain', min: 0, max: 0.3, default: 0 },
   { key: 'uGrainSpeed', label: 'grain hızı', min: 0, max: 5, default: 1 },
   { key: 'uVignette', label: 'vignette', min: 0, max: 1.5, default: 0.45 },
   { key: 'uContrast', label: 'kontrast', min: 0.5, max: 2, default: 1.05 },
@@ -56,10 +56,10 @@ export function createGrainPass(): GrainPass {
   const uniforms: GrainPassUniforms = {
     tDiffuse: { value: null },
     uTime: { value: 0 },
-    // Başlangıç = nötre yakın bir bakış. Slider aralıklarının uçları (kontrast 2,
-    // doygunluk 0, vignette 1.5) sahneyi gri ve ezik gösterir; uçlar denemek için,
-    // varsayılan için değil. Görsel dil netleşince buradan sabitlenir.
-    uGrainAmount: { value: 0.06 },
+    // Başlangıç = nötr bakış: grain kapalı (0) — film greni yalnızca kullanıcı
+    // açınca gelir. Vignette/kontrast/doygunluk nötre yakın durur; uçlar
+    // denemek için, varsayılan için değil.
+    uGrainAmount: { value: 0 },
     uGrainSpeed: { value: 1 },
     uVignette: { value: 0.45 },
     uContrast: { value: 1.05 },

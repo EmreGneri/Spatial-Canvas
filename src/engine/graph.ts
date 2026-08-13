@@ -11,14 +11,17 @@ import type { ParamValues } from './params';
  *   media      — görsel kaynağı (synthetic | upload | camera; medya gömülmez)
  *   depth      — depth boru hattı (model / luminance)
  *   particles  — GPGPU simülasyonu (parametreleri SIM_PARAMS)
- *   feedback   — post-pass zinciri (bugün grain/vignette; Zeynep'in feedback,
- *                chromatic aberration, neon wireframe bu düğüme eklenir)
- *   renderer   — render modu (mode: 'points' | 'ascii' + material parametreleri)
- *   output     — ekran çıktısı (sonuca dokunmaz, zinciri kapatır)
+ *   feedback   — POST-PASS ZİNCİRİ (Gün 7 + Gün A): feedback birikimi +
+ *                chromatic aberration + bloom + grain/vignette (ve her
+ *                parametresi olmayan FXAA) — zincir bu düğümden açılır/kapanır,
+ *                parametreleri düğümde düz sözlükle yaşar
+ *   renderer   — render modu (mode: 'points' | 'ascii' | 'neon' | 'solid' + material parametreleri)
+ *   output     — ekran çıktısı (Gün A: global look — ACES exposure + sis;
+ *                LOOK_PARAMS kollarını taşır)
  *
  * Kenar = veri akışı. Bir düğümün "aktif" olması media'dan erişilebilir
- * olmasına bağlı: feedback düğümünün giriş kenarı kesilirse o pass gerçekten
- * devre dışı kalır (engine setGraph'te composer'ı buna göre kurar).
+ * olmasına bağlı: feedback düğümünün giriş kenarı kesilirse post-pass zinciri
+ * gerçekten kapanır (engine setGraph composer'ı buna göre kurar).
  */
 
 export type NodeType = 'media' | 'depth' | 'particles' | 'feedback' | 'renderer' | 'output';

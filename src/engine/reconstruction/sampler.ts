@@ -128,6 +128,16 @@ const FG_MASK_FAR = 0.7;
 const SAMPLE_MIN_DENSITY = 0.15;
 const SAMPLE_MAX_DENSITY = 2.5;
 
+/**
+ * Fg maskesi (segmentation) önem ağırlığı (Gün B): depth+center+contrast
+ * formülüne maskenin kattığı ek terim. Maske = 1 ön plan bölgesi → +0.4
+ * önem — "yüz/ön plan" garantisi; duvara yapışık özne veya derinlik
+ * ayrımı yapan arka plan maskenin güveniyle yoğunlaşır. Yoğunluk ortalama
+ * normalizasyonu + SAMPLE_MIN/MAX_DENSITY clamp'ı arkasından geçtiği için
+ * skala güvenlidir.
+ */
+const FG_IMPORTANCE_WEIGHT = 0.4;
+
 export interface VolumeSampleOptions {
   /** Grid boyutu (kare). Varsayılan 384. */
   gridSize?: number;
@@ -173,14 +183,16 @@ export function sampleVolumePositions(
   const curvature = opts.curvature ?? DEFAULT_CURVATURE;
   const out = new Float32Array(n * 4);
   const remap =
-    opts.importanceSampling === false ? null : buildImportanceRemap(depth, depthWidth, depthHeight);
+    opts.importanceSampling === false
+      ? null
+      : buildImportanceRemap(depth, depthWidth, depthHeight, opts.foregroundMask ?? null);
   // Siluet: delik doldurma + gradyan kesme + bileşen analizi + satır dolgusu
   // + SERT BINARY alpha/isForeground (Tur 9) ve siluet sınırına mesafe (dist).
   // α hem opaklık hem kavis maskesi; dist kenar dökümünü besler. Opsiyonel
   // nesne maskesi (segmentation.ts) siluete AND edilir — subject-agnostic ön
   // plan izolasyonu; maske < 0.5 arka plan hiçbir geometri kuralıyla ön plana
   // diriltilemez (perde/çanak oluşmaz).
-  const { alpha, isForeground, dist } = buildSilhouette(
+  const { alpha, dist } = buildSilhouette(
     depth,
     depthWidth,
     depthHeight,
@@ -309,6 +321,12 @@ export interface ImageSampleOptions {
   gridSize?: number;
   /** Önem remap'i — sampleVolumePositions ile BİREBİR aynı ayar (hizalama). */
   importanceSampling?: boolean;
+  /**
+   * Ön plan maskesi — sampleVolumePositions ile BİREBİR aynı girdi (hizalama):
+   * renk grid'i konum grid'iyle aynı remap'i kurmalıdır, aksi halde renkler
+   * parçacıklardan kayar. Opsiyonel.
+   */
+  foregroundMask?: Float32Array;
 }
 
 /**
@@ -329,7 +347,9 @@ export function sampleImageGrid(
   const n = grid * grid;
   const out = new Float32Array(n * 3);
   const remap =
-    opts.importanceSampling === false ? null : buildImportanceRemap(depth, depthW, depthH);
+    opts.importanceSampling === false
+      ? null
+      : buildImportanceRemap(depth, depthW, depthH, opts.foregroundMask ?? null);
   // Depth koordinatını fotoğraf uzayına ölçekle: aspect aynı olduğundan
   // yalnızca çözünürlük oranı gerekir.
   const sx = imgW / depthW;
@@ -344,6 +364,98 @@ export function sampleImageGrid(
       const x = remap ? remap.xOf(u) * sx - 0.5 : u * imgW - 0.5;
       const o = (j * grid + i) * 3;
       sampleBilinearRgb(rgb, imgW, imgH, x, y, out, o);
+    }
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// BAKILI OKLÜZYON (Gün C — 3D okunurluk).
+//
+// Tek fotoğraftan gerçek ışık taşıması hesaplanamaz; bu iki fonksiyon depth
+// haritasından UCUZ bir oklüzyon yaklaşımı üretir: bir piksel, çevresindeki
+// piksellerden ne kadar DAHA GERİDEYSE o kadar kapalıdır (göz çukuru, çene
+// altı, saç sınırı, kol-gövde arası). Yönlü ışık + fresnel tek başına yüzeyi
+// kabartma gibi göstermiyordu; çukur karartması derinliği okutan asıl sinyaldir.
+//
+// Çıktı, renk grid'inin ALPHA kanalında taşınır (buffers.fillImageColorTexture)
+// — ek texture, ek bant genişliği ve ek draw call yok. Video dokusunda alpha
+// = 1 olduğu için efekt kendiliğinden kapanır.
+// ponytail: gerçek AO değil, depth farkı sezgiseli; SSAO gerekirse GPU'da
+// derinlik tamponundan kurulur.
+// ---------------------------------------------------------------------------
+
+/** Örnekleme yarıçapları (depth genişliğine oran) — mikro + orta ölçek çukur. */
+const AO_RADII = [0.004, 0.01, 0.02];
+/** Bu depth farkı tam kapanma sayılır (0..1 depth uzayında). */
+const AO_FALLOFF = 0.08;
+/** Kapanmanın karartma kazancı ve en koyu değeri. */
+const AO_GAIN = 1.6;
+const AO_MIN = 0.35;
+
+/**
+ * Depth haritasından oklüzyon haritası (0..1; 1 = açık, AO_MIN = en koyu).
+ * 8 yön × 3 yarıçap, kenarlar kelepçeli; sonuç hafif blur'lanır (tap
+ * gürültüsü yüzeyde benek bırakmasın).
+ */
+export function computeAoMap(depth: Float32Array, w: number, h: number): Float32Array {
+  if (depth.length !== w * h) {
+    throw new RangeError(`computeAoMap: depth boyutu (${depth.length}) ${w}x${h} ile uyuşmuyor`);
+  }
+  const dirs = [
+    [1, 0], [-1, 0], [0, 1], [0, -1],
+    [1, 1], [1, -1], [-1, 1], [-1, -1],
+  ];
+  const radii = AO_RADII.map((r) => Math.max(1, Math.round(r * w)));
+  const taps = dirs.length * radii.length;
+  const occ = new Float32Array(depth.length);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const c = depth[y * w + x];
+      let sum = 0;
+      for (const r of radii) {
+        for (const [dx, dy] of dirs) {
+          const nx = Math.min(w - 1, Math.max(0, x + dx * r));
+          const ny = Math.min(h - 1, Math.max(0, y + dy * r));
+          // Komşu daha YAKIN (depth büyük) ise merkezi kapatır.
+          const diff = depth[ny * w + nx] - c;
+          if (diff > 0) sum += Math.min(1, diff / AO_FALLOFF);
+        }
+      }
+      occ[y * w + x] = sum / taps;
+    }
+  }
+  const smooth = boxBlur(occ, w, h, 1);
+  for (let i = 0; i < smooth.length; i++) {
+    smooth[i] = Math.min(1, Math.max(AO_MIN, 1 - smooth[i] * AO_GAIN));
+  }
+  return smooth;
+}
+
+/**
+ * Oklüzyonu konum/renk grid'iyle BİREBİR aynı remap üzerinden grid'e taşır
+ * (hizalama kuralı: sampleImageGrid ile aynı girdiler). Çıktı N² (0..1).
+ */
+export function sampleAoGrid(
+  depth: Float32Array,
+  depthW: number,
+  depthH: number,
+  opts: ImageSampleOptions = {},
+): Float32Array {
+  const grid = opts.gridSize ?? VOLUME_GRID_SIZE;
+  const out = new Float32Array(grid * grid);
+  const ao = computeAoMap(depth, depthW, depthH);
+  const remap =
+    opts.importanceSampling === false
+      ? null
+      : buildImportanceRemap(depth, depthW, depthH, opts.foregroundMask ?? null);
+  for (let j = 0; j < grid; j++) {
+    const t = (j + 0.5) / grid;
+    const y = remap ? remap.yOf(t) - 0.5 : t * depthH - 0.5;
+    for (let i = 0; i < grid; i++) {
+      const u = (i + 0.5) / grid;
+      const x = remap ? remap.xOf(u) - 0.5 : u * depthW - 0.5;
+      out[j * grid + i] = sampleBilinear(ao, depthW, depthH, x, y);
     }
   }
   return out;
@@ -385,7 +497,7 @@ function sampleBilinearRgb(
 // aynı hesaplama her özne şekline uygulanır.
 // ---------------------------------------------------------------------------
 
-interface BodyGeometry {
+export interface BodyGeometry {
   /** Maske ağırlık merkezi (dünya koordinatı, x) — oval sönüm merkezi. */
   cx: number;
   /** Maske ağırlık merkezi (dünya koordinatı, y). */
@@ -396,7 +508,7 @@ interface BodyGeometry {
   ry: number;
 }
 
-function computeBodyGeometry(
+export function computeBodyGeometry(
   alpha: Float32Array,
   w: number,
   h: number,
@@ -441,24 +553,61 @@ function computeBodyGeometry(
 // transfer yapar; bu mekanikler CPU katmanının işi).
 // ---------------------------------------------------------------------------
 
-interface UvRemap {
+export interface UvRemap {
   /** q ∈ [0,1] → depth sütun koordinatı (0..w−1). */
   xOf(q: number): number;
   /** t ∈ [0,1] (üstten alta) → depth satır koordinatı (0..h−1). */
   yOf(t: number): number;
 }
 
-function buildImportanceRemap(depth: Float32Array, w: number, h: number): UvRemap {
+export function buildImportanceRemap(
+  depth: Float32Array,
+  w: number,
+  h: number,
+  fgMask?: Float32Array | null,
+): UvRemap {
+  // Boyut güvenliği: fgMask depth ile aynı çözünürlükte olmalı (Engine setDepth
+  // resample + dilate eder; burada yalnızca sözleşmeyi denetleriz — sessiz
+  // yanlış sonuç yerine RangeError).
+  if (fgMask && fgMask.length !== w * h) {
+    throw new RangeError(
+      `buildImportanceRemap: fgMask boyutu (${fgMask.length}) depth ile aynı olmalı (${w * h})`,
+    );
+  }
   const smooth = boxBlur(depth, w, h, 2);
+  // Foreground centroid: segmask varsa "center" terimi kadraj merkezine değil
+  // ÖZNENİN kütle merkezine göre hesaplanır. Sabit kadraj-merkezi bükmesi
+  // kenarda duran/çerçeveye dayanan öznenin yoğunluğunu eritiyordu ("çok orta
+  // fokuslu"); maske yoksa eski davranış aynen korunur.
+  let fcx = w / 2;
+  let fcy = h / 2;
+  if (fgMask) {
+    let sx = 0;
+    let sy = 0;
+    let sw = 0;
+    for (let i = 0; i < fgMask.length; i++) {
+      const f = fgMask[i];
+      if (f > 0) {
+        sx += (i % w) * f;
+        sy += ((i / w) | 0) * f;
+        sw += f;
+      }
+    }
+    if (sw > 0) {
+      fcx = sx / sw;
+      fcy = sy / sw;
+    }
+  }
   const im = new Float32Array(w * h);
   for (let i = 0; i < im.length; i++) {
     const x = i % w;
     const y = (i / w) | 0;
-    const dx = x / w - 0.5;
-    const dy = y / h - 0.5;
+    const dx = x / w - fcx / w;
+    const dy = y / h - fcy / h;
     const center = 1 - Math.min(1, Math.sqrt(dx * dx + dy * dy) * 2);
     const contrast = Math.abs(depth[i] - smooth[i]);
-    im[i] = 0.5 * depth[i] + 0.3 * center + 0.2 * contrast;
+    const fg = fgMask ? Math.min(1, Math.max(0, fgMask[i])) : 0;
+    im[i] = 0.5 * depth[i] + 0.3 * center + 0.2 * contrast + FG_IMPORTANCE_WEIGHT * fg;
   }
   const density = boxBlur(im, w, h, 2);
   let sum = 0;
@@ -512,7 +661,9 @@ function invCdf(cdf: Float64Array, q: number): number {
   }
   const prev = lo === 0 ? 0 : cdf[lo - 1];
   const span = cdf[lo] - prev;
-  return span > 0 ? lo + (q - prev) / span : lo;
+  // Son hücrede (q=1) interpolasyon lo+1'e taşar — sözleşme [0, n−1]; grid
+  // koordinatı u = (i+0.5)/N hiçbir zaman tam 1 olmasa da uç değer kelepçeli.
+  return Math.min(n - 1, span > 0 ? lo + (q - prev) / span : lo);
 }
 
 /** Bilinear örnekleme; grid dışı taşmalar kenara kelepçelenir. */

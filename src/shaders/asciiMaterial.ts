@@ -87,6 +87,9 @@ export interface AsciiMaterialUniforms {
    * Engine.setUseTextureColor yazar.
    */
   uUseTextureColor: { value: number };
+  /** Gün A (fog) — global look köprüsünden (Engine.lookUniforms) yazılır. */
+  uFogDensity: { value: number };
+  uFogColor: { value: THREE.Color };
 }
 
 /**
@@ -162,6 +165,7 @@ const VERTEX = /* glsl */ `
   varying float vDepth;
   varying float vSeed;
   varying float vOpacity;
+  varying float vViewDepth;
 
   void main() {
     vec4 pos = texture2D(uPositions, aUv);
@@ -182,6 +186,7 @@ const VERTEX = /* glsl */ `
     vSeed = fract(sin(aUv.x * 12.9898 + aUv.y * 78.233) * 43758.5453);
 
     vec4 mv = modelViewMatrix * vec4(pos.xyz, 1.0);
+    vViewDepth = -mv.z;
 
     // Tohumla boyut saçılması. 1 etrafında simetrik: ortalama boyut sabit kalır,
     // uSizeJitter = 0 iken çarpan tam 1 olur (saçılma kapanır).
@@ -207,11 +212,14 @@ const FRAGMENT = /* glsl */ `
   uniform float uHasImage;
   uniform float uObjectSeparation;
   uniform float uUseTextureColor;
+  uniform float uFogDensity;
+  uniform vec3 uFogColor;
 
   varying vec2 vUv;
   varying float vDepth;
   varying float vSeed;
   varying float vOpacity;
+  varying float vViewDepth;
 
   const float ALPHA_CUTOFF = ${ALPHA_CUTOFF};
 
@@ -259,6 +267,11 @@ const FRAGMENT = /* glsl */ `
     // derinlikle karartılır (×0.4) — parlak duvar büstü yutmasın.
     if (uObjectSeparation < 0.5 && vOpacity < 0.5) col *= 0.4;
 
+    // Gün A (fog): kamera uzaklığıyla üstel sis — uFogDensity = 0 iken
+    // görünüm hiç değişmez. Uzak karakterler arka rengine yığılır.
+    float fogF = 1.0 - exp(-uFogDensity * uFogDensity * vViewDepth * vViewDepth);
+    col = mix(col, uFogColor, fogF);
+
     gl_FragColor = vec4(col, alpha);
   }
 `;
@@ -286,6 +299,9 @@ export function createAsciiMaterial(): AsciiMaterial {
     // değerleri Engine yönetir.
     uObjectSeparation: { value: 0 },
     uUseTextureColor: { value: 1 },
+    // Gün A (fog): kapalı başlar — Engine.lookUniforms her karede işler.
+    uFogDensity: { value: 0 },
+    uFogColor: { value: new THREE.Color(0.02, 0.03, 0.07) },
   };
 
   const material = new THREE.ShaderMaterial({
