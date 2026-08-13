@@ -79,6 +79,8 @@ export interface NeonState {
   uEdgeThreshold: number;
   uGlowRadius: number;
   uGlowIntensity: number;
+  /** @deprecated uGlowIntensity'ye bölündü. Eski kayıtlarda bulunabilir. */
+  uGlow?: number;
   uNeonColor: string;
   uFlickerSpeed: number;
   uFlickerIntensity: number;
@@ -308,7 +310,7 @@ export function applyRenderState(
     num(state.neon.uGlowRadius, n.uGlowRadius);
     // Geriye dönük: uGlow tek başınayken parlaklık çarpanıydı. Yeni anahtar
     // yoksa eskisi okunur, varsa eskisi yok sayılır.
-    num(state.neon.uGlowIntensity ?? (state.neon as { uGlow?: number }).uGlow, n.uGlowIntensity);
+    num(state.neon.uGlowIntensity ?? state.neon.uGlow, n.uGlowIntensity);
     col(state.neon.uNeonColor, n.uNeonColor);
     num(state.neon.uFlickerSpeed, n.uFlickerSpeed);
     num(state.neon.uFlickerIntensity, n.uFlickerIntensity);
