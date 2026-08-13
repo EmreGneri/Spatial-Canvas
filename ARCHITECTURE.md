@@ -1,6 +1,7 @@
 # spatial-canvas · Mimari Sözleşmesi
 
 v0.5 — Gün C (denetim turu). Değişiklikler: kabuk mesh'i normalleri + kabuk kimliğini (`aShell`) kendisi üretir ve DIŞA yönlüdür; renk grid'inin ALPHA kanalı bakılı oklüzyon taşır; neon kenarları depth yerine `uPositions`'tan türetilir; luminance (video) yolu netlik ipucu + zamansal kararlı normalizasyon kazandı; kimlik durumundaki post-pass'ler çizilmez; `reconstruction/volume.ts` kaldırıldı.
+v0.6 — Gün D (CV dönüşümü; Gün 0 sözleşmesi): GaussianBuffer sözleşmesi (gSplatA/B/C), PoseTrack sözleşmesi, intrinsik varsayımı (60° dikey → ParamDef), füzyon çıktısı + keyframeIndex kanalı, `eval-out/report.json` metrik formatı; node graph'a pose + fusion düğümleri, 5. render modu `splat`, `verify-flow.mjs`/`verify-pose.mjs`.
 v0.4 — Gün 6: PNG/WebM export modülü (`src/engine/export.ts`), embed modu (`src/embed.ts`, `<spatial-canvas>` custom element), Vite embed build girişi.
 İki katmanın birbirine güvenli bağlanabilmesi için yazıldı.
 Değişiklik tartışılır, yazılır, imzalanır. Sessiz sapma yok.
@@ -358,6 +359,100 @@ gider, düğüm parametreleri graf params'ında yaşar.
 - **WebM export**: `MediaRecorder` + `canvas.captureStream(60)`. VP9 desteklenirse `video/webm;codecs=vp9`, yoksa VP8/varsayılan. Bit hızı 8 Mbps varsayılan.
 - **Embed modu** (`src/embed.ts`): `<spatial-canvas>` custom element. Aynı bundle, ayrı build girişi (`vite.config.ts` → `rollupOptions.input.embed`). UI mount edilmez; depth modeli yalnızca `src` attribute'u varsa lazy yüklenir (`import('./depth')`). WebGL yoksa statik görsel fallback (`<img>`). `IntersectionObserver` ile görünür olana kadar lazy init.
 - **Embed bundle**: `dist/assets/embed-*.js` (~3.4 kB) — ana uygulama (~402 kB) ile aynı chunk'ları paylaşır, depth modeli ayrı chunk'ta (~522 kB) lazy yüklenir.
+
+## Gün D — CV Dönüşümü: Pose + Splat + Eval (Gün 0 sözleşmesi)
+
+İmza: 2026-08-13, Gün 0. Bu bölüm 7 günlük CV fazının karar çerçevesidir;
+tartışılır, yazılır, imzalanır — sessiz sapma yok. Kapsam ve sınırlar D.8'de.
+
+### D.1 GaussianBuffer Sözleşmesi (gSplat)
+
+Mevcut texture disiplininin birebir aynısı: **384²**, füzyon (sim) yazabilir,
+Engine her karede bind eder, material dokunmaz (uPositions kuralı).
+
+| Texture | Format | İçerik |
+|---|---|---|
+| `gSplatA` | RGBA32F | xyz (dünya) + opaklık (w) |
+| `gSplatB` | RGBA32F | normal.xyz + ölçek (w) |
+| `gSplatC` | RGBA8 | rgb + AO (a) — renk grid'i alpha-AO kuralıyla uyumlu |
+
+- **Yazan:** Emre (veri/sim şeridi — füzyon). **Okuyan:** Zeynep (render
+  şeridi). Tutarsızlıkta yazan taraf hatalıdır.
+- Quaternion'a geçiş kararı `gSplatB`'de verilir (ölçek → quat); geçiş sözleşme
+  değişikliğidir, imzalanmadan yapılmaz.
+
+### D.2 PoseTrack Sözleşmesi
+
+Kayıt: `{ id, R (quat xyzw, sağ el), t (vec3, y-up), timeMs, scale, fovY }` —
+CPU tarafı veri tipi; texture'a yazılmaz, GPU'ya uniform/UBO ile gider.
+
+- **Dünya orijini = ilk keyframe** (identity). Sonraki pozlar ona göre.
+- `scale`: monocular belirsizliğin çözümü — `d_metric ≈ a·d_pred + b`
+  (en küçük kareler), keyframe başına yeniden çözülür; sürüklenme dürüstçe
+  raporlanır (D.8).
+- `Engine.getCameraPose()` (render kamerası) ile KARIŞMAZ — ayrı veri tipi.
+
+### D.3 İntrinsik Belirsizliği
+
+- Telefon FOV'u bilinmiyor → varsayılan **60° dikey**, UI slider → `ParamDef`'e
+  girer (preset'e kaydedilir). Değişim poz zincirini geçersiz kılar (cache yok).
+
+### D.4 Füzyon Çıktısı
+
+- Aynı GaussianBuffer düzeni + ayrı **`keyframeIndex` kanalı** (timeline
+  filtresi: her splat'ın hangi keyframe'den geldiği).
+- Oklüzyon delikleri: **NA sentinel**. Delik doldurma çok-görüntülü füzyonla
+  yapılır; **diffusion/inpainting YASAK** (üretici model kuralı).
+
+### D.5 Metrik Rapor Formatı — `eval-out/report.json`
+
+```json
+{
+  "run": "ad", "date": "ISO", "commit": "hash",
+  "params": { "...": "ablasyon parametreleri" },
+  "results": [{ "metric": "AbsRel", "value": 0.123, "dataset": "nyuv2", "split": "val", "column": "depth" }]
+}
+```
+
+- Kolonlar: `depth | seg | pose | timing`. Depth: AbsRel/RMSE/δ<1.25; seg: IoU;
+  pose: ATE/RPE.
+- Ablasyon kolları (sabit 6): `ao`, `focusBoost`, `letterbox_vs_distort`,
+  `importanceSampling`, `depthSmoothing`, `foregroundStretch`.
+- UI okuyup gösterebilir (metrik paneli). Veri kümesi alımı (NYUv2 alt kümesi
+  / DIODE val) indirmeden önce lisans + boyut teyit edilir.
+
+### D.6 Akış Sözleşmesi (G3)
+
+- `src/engine/vision/flow.ts`: Shi-Tomasi köşe + piramidal Lucas-Kanade,
+  **320×180, 300–500 nokta**; çıktı `{ x, y, u, v, status }`.
+- Zamansal depth: akışla warp edilmiş EMA + ileri-geri tutarlılık oklüzyon
+  maskesi.
+- `verify-flow.mjs`: sentetik kaydırma/döndürmede bilinen akışa karşı hata
+  < eşik.
+
+### D.7 Kesme Sırası (imzalanan)
+
+1. WebGPU sıralama → CPU radix'te kal
+2. Gerçek veri kümesi metrikleri → sentetik ground-truth
+3. Keyframe timeline UI → "tüm keyframe'ler" görünümü
+4. Ölçek hizalama → tek global ölçek
+
+**Asla kesilmez:** eval harness + akış tabanlı depth.
+
+### D.8 Sınır Bildirimi (kapsam)
+
+- Loop closure yok; sürüklenme birikir. Dokusuz duvar/gökyüzü çöker. Rolling
+  shutter pozu bozar. Dinamik sahne (yürüyen insan) kırar.
+- Hedef kapsam: **30–60 sn el kamerası, 8–20 keyframe, statik sahne** → orbit
+  edilebilir tek 3D sahne. Genelleme bu fazın dışında.
+
+### D.9 Entegrasyon
+
+- Node graph'a **`pose`** ve **`fusion`** düğümleri; parametreleri ParamDef'e
+  oturur (graf tek doğruluk kaynağı korunur).
+- 5. render modu **`splat`** → `registerRenderMode`, `SPLAT_PARAMS`.
+- Git: `feat/eval-flow-pose` (Emre) + `feat/splat-render` (Zeynep), akşam
+  `main`'e; AI izi kuralı aynen (ne + neden, insan yazarı).
 
 ## Model ve Runtime
 
