@@ -1,16 +1,46 @@
-import { env, pipeline, RawImage } from '@huggingface/transformers';
+import type { pipeline, RawImage } from '@huggingface/transformers';
 
-// Model weights and the ORT runtime both live locally — no CDN, no network.
-env.allowRemoteModels = false;
-env.allowLocalModels = true; // off by default in the browser build
-env.localModelPath = '/models/';
-// Dev: Vite refuses module imports from /public (500 on `?import`), so point at
-// the onnxruntime-web dist inside node_modules (served through the transform
-// pipeline). Prod: static /ort/ files from public/ are copied into dist.
-env.backends.onnx.wasm!.wasmPaths = import.meta.env.DEV
-  ? '/node_modules/onnxruntime-web/dist/'
-  : '/ort/';
-env.backends.onnx.wasm!.numThreads = 1; // single-thread => no COOP/COEP headers needed
+/**
+ * GÜN D/1 (M6 düzeltmesi) — transformers TEMBEL yüklenir.
+ *
+ * Eskiden bu modül `@huggingface/transformers`'ı statik import ediyor ve
+ * `env` yapılandırmasını import anında çalıştırıyordu. Sonuç: luminance
+ * çekirdeğini kullanan her tüketici (eval harness, verify-eval) hiç
+ * kullanmadığı bir ML kütüphanesini yüklüyordu — "eval harness ASLA
+ * KESİLMEZ" kuralı için gereksiz kırılganlık (kütüphanenin Node tarafındaki
+ * herhangi bir sorunu eval'ı öldürürdü). Model gerçekten istendiğinde
+ * (`loadDepthModel` / `estimateDepth`) yüklenir; `env` ayarları model
+ * yüklenmeden ÖNCE, aynı yerde uygulanır — sıra korunur.
+ *
+ * Tip import'u (`import type`) derlemede silinir, çalışma zamanında modül
+ * çekmez.
+ */
+type Transformers = typeof import('@huggingface/transformers');
+let transformersPromise: Promise<Transformers> | null = null;
+
+function loadTransformers(): Promise<Transformers> {
+  if (!transformersPromise) {
+    transformersPromise = import('@huggingface/transformers').then((tf) => {
+      const { env } = tf;
+      // Model weights and the ORT runtime both live locally — no CDN, no network.
+      env.allowRemoteModels = false;
+      env.allowLocalModels = true; // off by default in the browser build
+      env.localModelPath = '/models/';
+      // Dev: Vite refuses module imports from /public (500 on `?import`), so point
+      // at the onnxruntime-web dist inside node_modules (served through the
+      // transform pipeline). Prod: static /ort/ files from public/ go into dist.
+      // `import.meta.env` Vite'a özgüdür; Node bu modülü import edebilir —
+      // DEV olmayan yol orada da güvenlidir (yalnızca tarayıcıda işlenir).
+      const VITE_DEV = (import.meta as { env?: { DEV?: boolean } }).env?.DEV === true;
+      env.backends.onnx.wasm!.wasmPaths = VITE_DEV
+        ? '/node_modules/onnxruntime-web/dist/'
+        : '/ort/';
+      env.backends.onnx.wasm!.numThreads = 1; // single-thread => no COOP/COEP headers
+      return tf;
+    });
+  }
+  return transformersPromise;
+}
 
 const MODEL = 'onnx-community/depth-anything-v2-base';
 
@@ -76,7 +106,9 @@ let estimator: Awaited<ReturnType<typeof pipeline<'depth-estimation'>>> | null =
 
 export async function loadDepthModel(device: 'wasm' | 'webgpu' = 'wasm') {
   if (estimator) return estimator;
-  estimator = await pipeline('depth-estimation', MODEL, {
+  // env yapılandırması burada, pipeline çağrısından ÖNCE uygulanır.
+  const tf = await loadTransformers();
+  estimator = await tf.pipeline('depth-estimation', MODEL, {
     device,
     dtype: device === 'webgpu' ? 'fp16' : 'q8',
   });
@@ -92,6 +124,7 @@ export async function estimateDepth(
   opts: DepthEstimateOptions = {},
 ): Promise<DepthResult> {
   const model = await loadDepthModel();
+  const { RawImage: RawImageCtor } = await loadTransformers();
   const useLetterbox = (opts.aspect ?? 'letterbox') === 'letterbox';
   const detailStrength = opts.detailStrength ?? DETAIL_STRENGTH_DEFAULT;
   const stretchEnabled = opts.foregroundStretch ?? FOREGROUND_STRETCH_DEFAULT;
@@ -103,12 +136,12 @@ export async function estimateDepth(
   let lumCanvas: HTMLCanvasElement | null = null;
   if (useLetterbox) {
     const lb = letterboxCanvas(source, MODEL_INPUT_SIZE);
-    input = await RawImage.fromCanvas(lb.canvas);
+    input = await RawImageCtor.fromCanvas(lb.canvas);
     rect = lb;
     lumCanvas = lb.canvas;
   } else {
     const src = toCanvas(source);
-    input = await RawImage.fromCanvas(src);
+    input = await RawImageCtor.fromCanvas(src);
     lumCanvas = scaleCanvasTo(src, MODEL_INPUT_SIZE);
   }
 
@@ -412,6 +445,8 @@ function smoothDepthSteps(depth: Float32Array, w: number, h: number) {
   }
 }
 
+// ---------------------------------------------------------------------------
+
 /** Ön plan maskesi: w_fg = smoothstep(0.15, 0.8, D) — detay maskesiyle aynı. */
 function foregroundMask(depth: Float32Array, w: number, h: number): Float32Array {
   const out = new Float32Array(depth.length);
@@ -619,6 +654,21 @@ export function luminanceHeightMap(
   for (let i = 0; i < px.length; i += 4) {
     data[i / 4] = (0.299 * px[i] + 0.587 * px[i + 1] + 0.114 * px[i + 2]) / 255;
   }
+  return heightMapFromLuminance(data, size, height, opts);
+}
+
+/** GÜN D/1 — video depth boru hattının canvas'sız çekirdeği. `lum` in-place
+ *  işlenir (0..1 luminance, satır 0 = üst). `luminanceHeightMap` tarayıcıda
+ *  piksel çıkarıp buraya çağırır; Node (eval harness, verify-eval) doğrudan
+ *  çağırır — iki yol aynı hesabı kullanır, drift yok. */
+export function heightMapFromLuminance(
+  lum: Float32Array,
+  size: number,
+  height: number,
+  opts: LuminanceOptions = {},
+): DepthResult {
+  const data = lum;
+  const n = size * height;
 
   // GÜN 6/C — video 3D iyileştirmeleri (CPU'da, gerçek zamanlı):
   const edgeStrength = opts.edgeStrength ?? 0.35;
@@ -626,6 +676,7 @@ export function luminanceHeightMap(
   const centerRadius = opts.centerRadius ?? 0.35;
   const smoothingRadius = opts.smoothingRadius ?? 1;
   const focusStrength = opts.focusStrength ?? 0.55;
+  const stableRange = opts.stableRange !== false;
 
   // NETLİK İPUCU (Gün C): HAM luminance'ın gradyan enerjisi → geniş yarıçaplı
   // yumuşatma → ortalamaya göre normalizasyon. Net (ön plan) bölge 1'e, flu
@@ -671,7 +722,7 @@ export function luminanceHeightMap(
   }
   // 0..1 sözleşmesi (normalize et — global boost/edge sonrası en/çok kayabilir).
   return {
-    data: normalizeInPlace(data, opts.stableRange !== false),
+    data: normalizeInPlace(data, stableRange),
     width: size,
     height,
   };

@@ -14,7 +14,8 @@
  *   - Ön yüzey z: sampler ile aynı formül ailesi — (d − 0.5)·range + evrensel
  *     elipsoit kavis + kenar dökümü (oval kaide sönümü) + ince kabuk.
  *     Gün B temizlik: depth 3×3 box blur'dan geçirilir (buruşukluk yok) ve
- *     ekstrüzyon depthScale (0.7) ile sönümlenir; kavis ölçeklenmez.
+ *     ekstrüzyon depthScale (0.7) ile sönümlenir; kavis depthScale ile
+ *     ölçeklenmez.
  *   - KAPANMA: front yüzeyi (marching-squares benzeri köşe üçgenlemesi) +
  *     sınır kenarlarına dikey duvar şeridi + arka kapak (EDGE_WALL_Z düzleminde,
  *     front ile aynı topoloji, ters sarım). Her iç kenar iki yüz tarafından
@@ -50,9 +51,9 @@ import {
  */
 export const MESH_GRID_SIZE = 192;
 /**
- * Ön yüzün asla inemeyeceği z: döküm/ince kabuk ön yüzü EDGE_WALL_Z'nin
+ * Ön yüzün asla inemeyeceği z: döküm/ince kabuk ön yüzü duvar düzleminin
  * altına çekerse duvar şeridi ters döner (self-intersection). Duvar her
- * köşede en az 0.02 kalınlıkta kalır.
+ * köşede en az 0.02 kalın kalır.
  */
 export const MESH_MIN_WALL_Z = EDGE_WALL_Z + 0.02;
 
@@ -153,6 +154,9 @@ export function buildShellMesh(
   // Kaide geometrisi (döküm sönümü merkezi) — parçacıklarla aynı hesap.
   const body = computeBodyGeometry(sil.alpha, width, height, halfH);
   const d1 = body ? MESH_BACK_FILL * Math.min(body.rx, body.ry) : 0;
+  const wallZ = EDGE_WALL_Z;
+  const thinShellZ = THIN_SHELL_Z;
+  const minWallZ = MESH_MIN_WALL_Z;
 
   // -- 1. Köşe ızgarası: iç/dış + ön yüzey z --
   const inside = new Uint8Array(S * S);
@@ -210,14 +214,14 @@ export function buildShellMesh(
           const edgeFade = Math.min(u, Math.min(1 - u, Math.min(v, 1 - v))) * 4.0;
           const edgeFactor = Math.min(1.0, edgeFade);
           const fillSmooth = smoothstep(0, 1, fill) * 0.35 * edgeFactor;
-          z += (EDGE_WALL_Z - z) * fillSmooth * round;
+          z += (wallZ - z) * fillSmooth * round;
         }
       }
       // İnce kabuk (Tur 10 karşılığı): en dış siluet köşeleri ön yüzlerinin
       // en az THIN_SHELL_Z arkasına iner.
-      if (dPx <= MESH_THIN_SHELL_PX) z = Math.min(z, zFront - THIN_SHELL_Z);
-      // Duvar güvencesi + z sözleşmesi [-1, +1].
-      z = Math.max(z, MESH_MIN_WALL_Z);
+      if (dPx <= MESH_THIN_SHELL_PX) z = Math.min(z, zFront - thinShellZ);
+      // Duvar güvencesi (ölçekli) + z sözleşmesi [-1, +1].
+      z = Math.max(z, minWallZ);
       inside[c] = 1;
       zF[c] = Math.min(1, Math.max(-1, z));
     }
@@ -254,7 +258,8 @@ export function buildShellMesh(
       positions[o + 2] = z;
       positions[o + 3] = x;
       positions[o + 4] = y;
-      positions[o + 5] = EDGE_WALL_Z;
+      // Arka kapak, duvar düzleminde (EDGE_WALL_Z).
+      positions[o + 5] = wallZ;
       const q = k * 4;
       uvs[q] = u;
       uvs[q + 1] = v;

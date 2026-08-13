@@ -5,6 +5,125 @@ En yeni üstte.
 
 ---
 
+## 2026-08-13 — Gün D/1: CV fazı iskeleti + eval harness (Emre)
+
+Sözleşme: `ARCHITECTURE.md` → "Gün D" maddelerinin kod iskeleti. "Eval
+harness ASLA KESİLMEZ" kuralının ilk somut adımı: `npm run eval` tek satır
+sayı basar, rapor D.5 şemasında `eval-out/report.json`'a yazılır.
+
+- **`src/engine/vision/` (yeni):** `types.ts` — D.2 PoseTrack kaydı
+  (`{ id, R quat xyzw sağ el KAMERA→DÜNYA, t y-up, timeMs, scaleA, scaleB,
+  fovY }`), D.3 intrinsik varsayımı (60° dikey → `ParamDef`'e gidecek), D.6
+  akış noktası, D.5 rapor şeması (EvalReport / MetricColumn) + 7 sabit
+  ablasyon kolu.
+  `metrics.ts` — AbsRel / RMSE / δ<1.25 / IoU / ATE / RPE / meanMs / medianMs;
+  GT = 0 bölgeleri maskeli hesaba alınır; boş küme NaN döner (sessiz 0 değil).
+  `lab.ts` — sentetik lab sahnesi: sol NET ön plan (2px şerit, yüksek gradyan
+  enerjisi) / sağ FLU arka plan (aynı min/max [0.15, 0.85] ve aynı parlaklık
+  ortalaması 0.5, düşük frekans sinüs). Parlaklık vekili iki yarıyı AYIRAMAZ;
+  yalnızca netlik (defocus) ipucu ayırır — focusBoost kolunun kanıt düzeneği.
+- **`src/depth.ts`:** `heightMapFromLuminance` export edildi — video depth
+  borusunun canvas'sız çekirdeği (sobel/box-blur/focus/centerBoost/normalize).
+  `luminanceHeightMap` resimden piksel çıkarıp buraya çağırır; davranış
+  birebir (tarayıcı yolu değişmedi). Node emniyeti: Vite'a özgü
+  `import.meta.env.DEV` ifadesi `VITE_DEV` sabitine alındı (tarayıcıda aynı
+  değer üretir).
+- **`npm run eval` (`scripts/eval.mjs`):** sentetik lab'de YALITILMIŞ kol
+  çalışmaları — üçünde de `smoothingRadius = 1` ortak, kollar tek anahtarda
+  ayrışır: focusOn (focusBoost 0.55) / focusOff (baz) / edgeOn (edgeStrength
+  0.35, bazı focusOff). Raporlar: `report.json` (varsayılan),
+  `report-focusOff.json`, `report-edgeOn.json`; commit hash her raporda.
+  Zamanlama 1 ısınma + 20 tekrarın MEDYANI. Tek satır özet; harness hata
+  durumunda da satır basar (asla kesilmez).
+- **`scripts/verify-eval.mjs` → `npm run verify` zincirine:** metriklerin el
+  hesabıyla birebir eşleşmesi (ATE/RPE dahil), lab determinizmi, uçtan uca
+  eval + ÜÇ raporun D.5 şeması (tam 7 kol, fazladan anahtar yok), kolların
+  ölçülebilirliği ve koşular arası determinizm. focusBoost kanıtı:
+  **AbsRel 0.377 (on) / 0.763 (off), RMSE 0.174 / 0.398, IoU 0.808 / 0.348,
+  δ<1.25 0.570 / 0.063.** edgeStrength kolu: **AbsRel 0.768, RMSE 0.431,
+  δ<1.25 0.313, IoU 0.348** (bazı focusOff) — piksel düzeyinde en büyük fark
+  0.122.
+- `eval-out/` gitignore'da (raporlar üretilmiş çıktıdır).
+
+Bilinçli sınırlar (dürüstlük kayıtları):
+
+- **edgeStrength kolu bu sahnede İYİLEŞTİRMİYOR:** AbsRel 0.768 vs baz 0.763,
+  RMSE 0.431 vs 0.398 (biraz kötü), δ<1.25 0.313 vs 0.063 (belirgin iyi),
+  IoU değişmiyor. Kol ölçülüyor ve sonucu karışık — "işe yarıyor" denmiyor.
+- **δ<1.25 kolları ayırıyor** (0.570 / 0.063) ama mutlak değerler düşük:
+  sentetik GT iki düzeyli (0.85 / 0.30) ve boru hattı çıktısı min/max
+  normalize edildiği için oran metriği ölçek kaymasına duyarlı. Sıralama
+  bilgisi geçerli, mutlak seviye gerçek veri kümesine kadar anlamlandırılmaz.
+- 5/7 ablasyon kolu (ao, letterbox_vs_distort, importanceSampling,
+  depthSmoothing, foregroundStretch) uygulama sırası bekliyor — "uygulanmadı
+  (null)" olarak raporlanır, asılsız sayı üretilmez. Gerçek model + ölçek
+  hizalama Gün 4-5'te; mevcut ölçülebilir kollar: focusBoost + edgeStrength.
+- **`seg` kolonu bu turda segmentasyon modülünü ÖLÇMEZ:** maske, normalize
+  depth'in 0.5 eşiğidir (RMBG yolu çalışmıyor). IoU sayısı bu eşiğin GT ön
+  planla örtüşmesidir.
+- Pose kolonu Gün 1'de raporlanmaz (pose zinciri Gün 3'te gelir); ATE/RPE
+  fonksiyonları hazır ve `verify-eval.mjs`'te bilinen değerlerle testli
+  (Sim(3) geri kazanımı, el hesabı ATE 0.117851 / RPE 0.353553).
+- Zamanlama medyanları kollara göre gerçekten farklı: focusOn 0.92 ms,
+  focusOff 0.37 ms, edgeOn 0.32 ms — focus kolu Sobel + geniş blur eklediği
+  için pahalı. (Önceki tek örnekli ölçüm 10.4 / 1.2 / 0.24 ms diyordu; bu
+  fark JIT ısınmasıydı, boru hattı maliyeti değil.)
+
+### Bağımsız denetim düzeltmeleri (aynı gün, commit'ten önce)
+
+Gün 1 çıktısı dış denetimden geçti; kapatılan maddeler:
+
+- **S1 — `edge` kolu hiçbir şey ölçmüyordu.** `BASE_OPTS.smoothingRadius = 0`
+  iken low-pass girdinin kopyası olur, `edgeStrength · (data − low)` terimi
+  matematiksel olarak sıfırlanır: edgeOn çıktısı focusOff ile piksel piksel
+  AYNIYDI (maks fark 0), rapor yine de sayı basıyordu. Düzeltme: üç kol da
+  `smoothingRadius = 1` ile çalışır (baz dahil), kollar tek anahtarda ayrışır.
+  Yeni fark ölçüldü: maks piksel farkı 0.122, δ<1.25 0.313 vs 0.063.
+- **S2 — şema dışı anahtar.** `report-edgeOn.json` `params.edgeStrength`
+  taşıyordu ama D.5 altı kol tanımlıyordu. Karar: kolu **şemaya aldık (7 kol)**,
+  çünkü harness onu gerçekten ölçüyor — anahtarı silmek ölçülen kolu
+  görünmez yapardı. `verify-eval.mjs`'e yapısal doğrulayıcı eklendi: üç rapor
+  da tam 7 kol taşımalı, fazlası hata; sonuç satırlarında `null` yasak (NaN
+  JSON'da null'a döner, o da "kol uygulanmadı" anlamıyla çakışırdı).
+- **S3 — uydurma referans.** `metrics.ts`'te ATE için "Harris-Quatérin
+  sekansı" diye var olmayan bir kaynak yazılıydı; silindi. ATE/RPE
+  docstring'leri "yönelim" diyordu, oysa ikisi de KONUM (translation) ölçüyor.
+- **S4 — ATE literatür tanımına çıkarıldı.** Eskiden `mean(‖e−g‖)` idi
+  (hizalamasız, ortalama). Artık Sim(3) hizalaması (Horn kapalı form, birim
+  quaternion + Jacobi özçözüm) sonrası RMSE. Monoküler ölçek belirsizliği
+  hizalamanın parçası. Ad değiştirme (ikinci tercih) gerekmedi.
+- **S5 — zamanlama JIT artefaktıydı.** Tek örnek yerine 1 ısınma + 20 tekrar,
+  MEDYAN raporlanıyor; `medianMs` metriği eklendi (`meanMs` duruyor).
+- **S6 — `PoseTrackRecord` sözleşmeyi karşılamıyordu.** `scale` tek terimdi,
+  D.2 ise `a·d + b` diyor: `scaleA` + `scaleB` alanlarına geçildi (tip
+  sözleşmesi değişikliği, D.2 metni tiple birebir eşitlendi).
+- **M1 — quaternion yönü tanımsızdı.** Kayıt artık `kamera→dünya`
+  (`world_from_camera`); aynı cümle `types.ts` ve D.2'de.
+- **M2 — D.1 kanal bütçesi çelişkisi.** "Ölçek → quat" geçişi 4 dolu kanalda
+  imkânsızdı; D.1'e tek tutarlı geçiş senaryosu yazıldı (ölçek `gSplatA.w`,
+  opaklık `gSplatC.a`, AO ayrı texture) ya da geçilmez.
+- **M6 — harness kırılganlığı.** (a) Özet satırı `find(...).value` ile
+  kuruluyordu: eksik metrikte çökerdi. Güvenli arama + `n/a` + `main()`
+  çevresinde try/catch — satır her koşulda basılır. (b) `src/depth.ts`
+  `@huggingface/transformers`'ı statik import ediyordu; eval hiç kullanmadığı
+  ML kütüphanesini yüklüyordu. Import tembelleştirildi (`loadDepthModel` /
+  `estimateDepth` içinde), `env` ayarları pipeline'dan önce aynı yerde kalır.
+- **M7 — ATE/RPE testsizdi** ("hazır ve testli" iddiası yanlıştı). Bilinen
+  girdilerle testler eklendi: aynı yörünge → 0; gt'nin Sim(3) dönüşümü →
+  ~0 (hizalama geri kazanıyor, ölçek 0.5 bulunuyor); el hesabı ATE 0.117851;
+  RPE 0.353553; dejenere girdilerde NaN.
+- **M11 — δ notu düzeltildi.** Önceki metin "δ kol ayrımı vermez" diyordu;
+  denetim sırasında ölçülen değerler 0.297/0.313 ile TERS yöndeydi. S1'den
+  sonra (blur açık) δ artık DOĞRU yönde ve belirgin ayırıyor: 0.570 / 0.063.
+  Not, ölçülen son duruma göre yeniden yazıldı — eski cümle de yeni cümle de
+  aynı sahnenin farklı yapılandırmasına aitti.
+
+**Doğrulama:** `npm run typecheck` ✓ · `npm run verify` ✓ (8 zincir,
+verify-eval dahil) · `npm run eval` ✓ (iki koşu, metrikler birebir aynı) ·
+`npm run build` ✓.
+
+---
+
 ## 2026-08-13 — Gün D: CV dönüşümü — pose + splat + eval fazı, Gün 0 sözleşmesi (Emre)
 
 Karar: 7 günlük CV fazının Gün 0 sözleşmesi imzalandı. Maddeler

@@ -23,7 +23,7 @@ const POINT_VERTEX = /* glsl */ `
   varying float vDepth;
   void main() {
     vec4 pos = texture2D(uPositions, aUv);
-    // z, orijin etrafında ortalı (-RANGE/2 .. +RANGE/2) → renk rampası için 0..1'e geri.
+    // z, orijin etrafında ortalı (−1..+1) → renk rampası 0..1.
     vDepth = pos.z / ${POINTS_DEPTH_RANGE.toFixed(1)} + 0.5;
     vec4 mv = modelViewMatrix * vec4(pos.xyz, 1.0);
     // Kameranın arkasına/üstüne düşen noktalarda -mv.z ~ 0 → dev nokta boyutu.

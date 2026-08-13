@@ -10,4 +10,7 @@ public/ort
 # Graphify outputs — regenerate with /graphify
 graphify-out
 
+# Eval reports — regenerate with `npm run eval` (Gün D/1)
+eval-out
+
 dev-smoke.*

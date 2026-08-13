@@ -174,7 +174,7 @@ const VERTEX = /* glsl */ `
     // birebir eşleşir) — karakter kendi fotoğraf pikselinin rengini alır.
     vUv = aUv;
 
-    // z orijin etrafında ortalı (−RANGE/2 .. +RANGE/2) → karakter seçimi için 0..1.
+    // z orijin etrafında ortalı (−1..+1) → karakter seçimi 0..1.
     vDepth = clamp(pos.z / ${POINTS_DEPTH_RANGE.toFixed(1)} + 0.5, 0.0, 1.0);
 
     // w = parçacık opaklığı (α): 1 ön plan, 0.4 arka plan (Tur 11 — tek

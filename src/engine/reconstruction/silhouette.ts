@@ -6,8 +6,9 @@
  *   1. Eşik: d ≥ SILHOUETTE_BIN_LO → aday. Eşik 0.05'tir — ince el/parmak
  *      yapıları eşiğe takılıp silinmesin diye düşük tutulur; arka plan
  *      gürültüsü ise geometri kurallarıyla elenir. Opsiyonel nesne maskesi
- *      (segmentation.ts: subject-agnostic ön plan) verildiyse adaylık ek
- *      koşula bağlanır: depth eşiği VE maske ≥ 0.5 kesişimi.
+ *      (segmentation.ts: subject-agnostic ön plan) verildiyse adaylık maskeye
+ *      bağlanır: maske < 0.5 asla aday DEĞİLDİR; maske ≥ 0.5 VE depth ≥ eşik
+ *      kesişimi aday yapar — depth eşiği maske geçişini gevşetemez.
  *   2. Morfolojik kapanış (dilate + erode): siluet İÇİNDEKİ delikler ve ince
  *      kırılmalar kapatılır. Kapanışla gelen pikseller "filled" işaretlenir:
  *      derinlik sürekliliği denetiminde köprü görevi görürler (iç delikler
@@ -137,13 +138,19 @@ export function buildSilhouette(
 ): SilhouetteResult {
   const mask = new Float32Array(depth.length);
   for (let i = 0; i < mask.length; i++) {
-    // RMBG maskesi sert 0.5 eşiğiyle kesilir: özne net (≥0.5), arka plan
-    // (RMBG 0.0-0.2) temiz ayrılır. Kenar bandındaki yumuşak değerler
-    // Engine.setDepth'te maskenin depth uzayında DILATE edilmesiyle geri
-    // kazandırılır (eşik burada gevşetilmez — RL): 0.5 altına inmek arka
-    // planı da ön plana sokar, ayırma yok olur.
+    // Aday: depth eşiği (0.05) — ince el/parmak 0.05'in altındaysa bile
+    // siluetten düşebilir (daha da düşük eşik arka planı sızdırır).
+    // Maske verildiyse ayrıca maske ≥ 0.5 şartı aranır (dilate/tüy bandının
+    // "tanımsız" değerleri aday olamaz; bandı geri kazandıran mekanizma
+    // Engine.setDepth'teki MASK_DILATE_RADIUS morfolojisidir).
     mask[i] =
-      depth[i] >= SILHOUETTE_BIN_LO && (!foregroundMask || foregroundMask[i] >= 0.5) ? 1 : 0;
+      !foregroundMask
+        ? depth[i] >= SILHOUETTE_BIN_LO
+          ? 1
+          : 0
+        : foregroundMask[i] >= 0.5 && depth[i] >= SILHOUETTE_BIN_LO
+          ? 1
+          : 0;
   }
   // Kapanışla gelen pikselleri işaretle: gradyan sürekliliği denetiminde
   // köprü olurlar (siluet İÇİNDEKİ koyu delikler bileşeni parçalamaz).
@@ -157,8 +164,8 @@ export function buildSilhouette(
   // SON AND (Tur 9): nesne maskesi güven sınırıdır — morfolojik kapanışın,
   // bileşen birleştirmenin veya satır boşluk dolgusunun dirilttiği hiçbir
   // arka plan pikseli (maske < 0.5) ön plana dönemez. Beyaz duvar saç
-  // arasından sızmaz, perde/çanak oluşmaz. (Kenar kazancının kaynağı dilate
-  // — buraya eşik gevşetme YOK.)
+  // arasından sızmaz, perde/çanak oluşmaz. (Kenar kazancının kaynağı dilate —
+  // buraya eşik gevşetme YOK.)
   if (foregroundMask) {
     for (let i = 0; i < mask.length; i++) {
       if (foregroundMask[i] < 0.5) mask[i] = 0;
@@ -291,6 +298,10 @@ function keepForeground(
   const stack = new Int32Array(n);
   let nextId = 0;
 
+  // Bağlantı: kapanış köprüsü (iç delik dolgusu) VEYA depth gradyan sürekliliği
+  // — birbirine yakın derinlikteki komşular aynı bileşendir; maske yalnızca
+  // selin gezdiği adayları daraltır (yukarıda), bağlantının kendisini
+  // maskelemeye çalışmaz (uzuv/duvar ayrımı gradyan eşiğinin işi).
   const connected = (p: number, q: number) =>
     filled[p] || filled[q] || Math.abs(depth[p] - depth[q]) <= GRADIENT_BREAK;
 

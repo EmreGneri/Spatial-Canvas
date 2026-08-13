@@ -235,14 +235,16 @@ export function sampleVolumePositions(
         continue;
       }
       const d = sampleBilinear(depth, depthWidth, depthHeight, x, y);
+      // Depth terimi: (d − 0.5)·range — z aralığı sabit sözleşme
+      // (POINTS_DEPTH_RANGE = 2, dünya z ∈ [−1, +1]).
       let z = (d - 0.5) * range;
       // Ön plan maskesi: depth arttıkça kavis güçlenir, arka plan düz kalır.
       const wFg = smoothstep(FG_MASK_NEAR, FG_MASK_FAR, d);
       if (curvature > 0) {
         // Z_kavis = α · sqrt(max(0, 1 − R²)) · w_fg. Elipsoit merkezi (0,0)
         // (dünya merkezi), yarı eksenler halfW/halfH; R dünya koordinatında
-        // normalize edilir. EVRENSEL formül: insan varsayımı yoktur, her
-        // özne (nesne, araç, manzara) aynı yüzey kavisleştirmesini alır.
+        // normalize edilir. EVRENSEL formül: insan varsayımı yoktur, her özne
+        // (nesne, araç, manzara) aynı yüzey kavisleştirmesini alır.
         const rx = (u - 0.5) * 2;
         const r2 = rx * rx + ry * ry;
         z += curvature * Math.sqrt(Math.max(0, 1 - r2)) * wFg;

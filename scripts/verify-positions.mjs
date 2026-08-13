@@ -18,20 +18,21 @@ import {
 } from '../src/engine/buffers.ts';
 import { BACKDROP_OPACITY, EDGE_WALL_Z } from '../src/engine/reconstruction/sampler.ts';
 
-const half = POINTS_DEPTH_RANGE / 2;
 const xyz = (data, i, j) => {
   const o = (j * N + i) * 4;
   return { x: data[o], y: data[o + 1], z: data[o + 2], w: data[o + 3] };
 };
 
-// --- 1. düz depth: 0 → TÜM GRİD ARKA PLAN (Tur 11: nokta var), 1 → +half ---
+// --- 1. düz depth: 0 → TÜM GRİD ARKA PLAN (Tur 11: nokta var), 1 → +1 ---
+const half = POINTS_DEPTH_RANGE / 2;
 for (const value of [0, 1]) {
   const tex = createHomeTexture();
   fillPositionsFromDepth(tex, new Float32Array(64 * 64).fill(value), 64, 64);
   const data = tex.image.data;
   if (value === 0) {
     // Tur 11: maske = 0 texel ÖLÜ DEĞİLDİR — arka plan noktası üretilir
-    // (z = −1: d = 0 → (0−0.5)·2 − PIN → tabana kırpılır; w = BACKDROP_OPACITY).
+    // (z = −1: body yok → z = (0−0.5)·range − PIN → tabana kırpılır;
+    // w = BACKDROP_OPACITY).
     for (const [i, j] of [[0, 0], [N - 1, N - 1], [N >> 1, N >> 1]]) {
       assert.equal(xyz(data, i, j).z, -1, 'd=0 → arka plan z = −1 (PIN tabanı)');
       assert.ok(
@@ -40,15 +41,25 @@ for (const value of [0, 1]) {
       );
     }
   } else {
-    assert.equal(xyz(data, N >> 1, N >> 1).z, half, 'dolu merkez → z=+1 olmalı');
+    // Sabit z sözleşmesi (range = 2): merkez (R²≈0) → (1−0.5)·range + kavis
+    // 0.1·sqrt(1−R²)·w_fg ≈ 1 + 0.1 → üst sınıra kırpılır (+1 = half).
+    const z = xyz(data, N >> 1, N >> 1).z;
+    assert.ok(Math.abs(z - half) < 1e-4, `dolu merkez → z = +1 (kavisle sınıra kırpılır, gerçek ${z.toFixed(6)})`);
+    // Çerçeve köşesi: R² ≥ 1 → kavis YOK; kadraj kenarı sınır değil (kutu
+    // duvarı yok — düz yüzey) → sabit +1.
     for (const [i, j] of [[0, 0], [N - 1, N - 1]]) {
-      const z = xyz(data, i, j).z;
-      assert.ok(z > 0.98 && z <= 1, 'çerçeve köşesi → kadraj kenar sönümü (prizma duvarı yok)');
+      assert.ok(Math.abs(xyz(data, i, j).z - half) < 1e-6, 'çerçeve köşesi → z = +1 (kavis yok, kutu yok)');
     }
   }
 }
 
 // --- 2. üst yarısı yakın (1), alt yarısı uzak (0) olan depth ---
+// Sabit z sözleşmesi (range = 2): üst yarı → (1−0.5)·range = 1 + kavis
+// (R² ≈ 0.001 → ≈ 0.0999) → 1.0999 → üst sınıra kırpılır (+1). Üst sınır
+// texeli (y ≈ 0.997): R² ≈ 0.995 → kavis ≈ 0.0072 → 1.0072 → kırpılır (+1;
+// kenar sönümü YOK — düz formül, cadraj kenarı sınır değil). Alt yarı
+// ARKA PLAN: z = (0−0.5)·range − PIN = −1.15 → tabana kırpılır (−1;
+// w = BACKDROP_OPACITY).
 const W = 64;
 const H = 64;
 const depth = new Float32Array(W * H);
@@ -63,9 +74,12 @@ const topInner = xyz(data, N >> 1, N >> 2);
 const bottom = xyz(data, N >> 1, N - 1);
 assert.ok(top.y > 0, 'grid satırı 0 dünyada üstte (y > 0) olmalı');
 assert.ok(bottom.y < 0, 'son grid satırı dünyada altta (y < 0) olmalı');
-assert.ok(top.z > 0.98 && top.z <= 1, 'üst kadraj sınırı → kenar sönümlü (prizma duvarı yok)');
-assert.equal(topInner.z, half, 'görselin ÜST yarısı içi yakın (z = +1) — y-flip ters');
-assert.equal(bottom.z, -1, 'görselin ALT yarısı (arka plan) → z = −1 (d = 0 → PIN tabanı)');
+assert.ok(top.z > 0.98 && top.z <= 1, 'üst kadraj sınırı → düz formül + küçük kavis → sınıra kırpılır (+1, prizma duvarı yok)');
+assert.ok(Math.abs(topInner.z - half) < 1e-4, `görselin ÜST yarısı → z = +1 (kavisle sınıra kırpılır, gerçek ${topInner.z.toFixed(6)}) — y-flip ters`);
+assert.ok(
+  Math.abs(bottom.z + 1) < 1e-6,
+  'görselin ALT yarısı (arka plan) → z = −1 (d = 0 → (0−0.5)·range − PIN → tabana kırpılır)',
+);
 
 // --- 3. w = iki seviyeli opaklık (Tur 11): arka plan → BACKDROP_OPACITY ---
 const wAt = (d, i, j) => d[(j * N + i) * 4 + 3];
