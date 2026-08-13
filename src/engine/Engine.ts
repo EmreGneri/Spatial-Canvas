@@ -212,6 +212,22 @@ export class Engine {
     });
   }
 
+  /**
+   * Zincirin tamamını BİR kez, çağrıldığı anda çizer (simülasyonu ilerletmez).
+   *
+   * PNG export için: renderer `preserveDrawingBuffer` olmadan kurulu, yani
+   * çizim tamponu tarayıcı kareyi kompozit ettikten sonra geçersizdir. Bir
+   * tıklama işleyicisinden `toBlob` çağırmak son karenin ardından gelir ve
+   * boş görüntü verir. Yakalamadan hemen önce, AYNI görevde bunu çağırmak
+   * tamponu tazeler. Alternatif olan `preserveDrawingBuffer: true` her kare
+   * için maliyet getirirdi; bu yalnızca export anında ödenir.
+   */
+  renderFrame() {
+    const uPositions = (this.pointsMaterial as THREE.ShaderMaterial).uniforms?.['uPositions'];
+    if (uPositions) uPositions.value = this.simulation.positionTexture;
+    this.composer.render();
+  }
+
   private tickPasses(time: number) {
     const passes = this.composer.passes as TickablePass[];
     for (const pass of passes) pass.update?.(time);

@@ -4,10 +4,15 @@
  * PNG export: canvas.toBlob — mevcut frame'i indirir.
  * WebM export: MediaRecorder + canvas.captureStream — belirli süre kaydeder.
  *
- * Not: EffectComposer WebGL render target'larına çizdiği için ekran canvas'ı
- * her karede günceldir; toBlob/captureStream doğrudan canvas üzerinden çalışır.
- * preserveDrawingBuffer gerekmez çünkü biz senkron çağrı anında toBlob çalıştırırız
- * (tarayıcı canvas'ın o anki içeriğini kopyalar).
+ * DİKKAT (düzeltildi): renderer `preserveDrawingBuffer` olmadan kurulu, yani
+ * WebGL çizim tamponu tarayıcı kareyi kompozit ettikten SONRA geçersizdir.
+ * "Senkron çağırıyoruz" yetmez — senkronluk tıklamaya göredir, çizime göre
+ * değil; tıklama son kareden sonra gelir ve `toBlob` boş/şeffaf PNG verirdi.
+ * Çözüm: `onBeforeCapture` ile yakalamadan hemen önce, aynı görevde bir kare
+ * çizdirilir (App bunu `engine.renderFrame()` ile bağlar).
+ *
+ * WebM bu sorundan etkilenmez: `captureStream` kareleri kompozisyon anında
+ * alır, tampon geçerliyken.
  */
 
 /**
@@ -17,6 +22,11 @@
 export interface PNGExportOptions {
   /** 0 = orijinal boyut; 1..4 = ölçek (ör. 2 = 2x daha büyük kare). Varsayılan 0. */
   scale?: number;
+  /**
+   * Yakalamadan hemen ÖNCE, aynı görevde çağrılır — bir kare çizdirmek için.
+   * Verilmezse `preserveDrawingBuffer` olmayan bir renderer'da çıktı boş olur.
+   */
+  onBeforeCapture?: () => void;
 }
 
 export async function exportPNG(
@@ -25,6 +35,9 @@ export async function exportPNG(
   opts: PNGExportOptions = {},
 ): Promise<void> {
   const scale = opts.scale ?? 0;
+  // Tamponu tazele. Ölçekli yolda da ŞART: drawImage de aynı geçersiz
+  // tampondan okur, yoksa büyütülmüş kopya da boş çıkar.
+  opts.onBeforeCapture?.();
   if (scale > 1) {
     // Upscale: mevcut frame'i daha büyük canvas'a ölçekle. WebGL buffer'ı
     // önce okumak istemeyiz (sync) — canvas'ı yeniden çizeriz, video/point
