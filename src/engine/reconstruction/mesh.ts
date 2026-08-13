@@ -11,8 +11,12 @@
  *     geçer (xOf/yOf), depth/siluet o noktada bilinear örneklenir — renk
  *     grid'iyle (sampleImageGrid) birebir hizalı: mesh ön yüzeyi parçacık
  *     yüzeyinin AYNISI olur, her köşe kendi fotoğraf pikselinin rengini alır.
- *   - Ön yüzey z: sampler ile aynı formül ailesi — (d − 0.5)·range + evrensel
+ *   - Ön yüzey z: sampler ile aynı formül ailesi — (d − 0.5)·zSpan + evrensel
  *     elipsoit kavis + kenar dökümü (oval kaide sönümü) + ince kabuk.
+ *     zSpan = ANATOMIC_DEPTH_RATIO · 2 · min(rx, ry) (SİLÜET ORANLI uzam,
+ *     siluet yoksa eski sabit `range`); duvar/kabuk/kavis sabitleri
+ *     zUnit = zSpan/2 ile ölçeklenir — arka kapak da wallZ = EDGE_WALL_Z·zUnit
+ *     düzlemindedir (yoksa kabuk kutuya döner).
  *     Gün B temizlik: depth 3×3 box blur'dan geçirilir (buruşukluk yok) ve
  *     ekstrüzyon depthScale (0.7) ile sönümlenir; kavis depthScale ile
  *     ölçeklenmez.
@@ -23,8 +27,9 @@
  *     bunu yönlü kenar sayımıyla doğrular). k=1 / k=2 (diyagonal) hücrelerde
  *     sıfır genişlikli kıvrımlar oluşur — görsel olarak yokturlar, sayım
  *     "kazanılmış/sıfır alan" kenarları görmezden gelir.
- *   - Arka duvar güvencesi: ön yüz hiçbir köşede EDGE_WALL_Z + 0.02 altına
- *     inemez (döküm/z kelepçesi) — duvar şeridi her yerde en az 0.02 kalın.
+ *   - Arka duvar güvencesi: ön yüz hiçbir köşede (EDGE_WALL_Z + 0.02)·zUnit
+ *     altına inemez (döküm/z kelepçesi) — duvar şeridi her yerde en az
+ *     0.02·zUnit kalın.
  *   - YÖN (Gün C): ön yüz +z'den bakınca CCW'dir, yani normalleri DIŞA bakar.
  *     Kapalı + tutarlı yönlü yüzeyde tek yüzün dışa bakması hepsinin dışa
  *     bakması demektir → material `FrontSide` çizebilir (fragment maliyeti
@@ -37,6 +42,7 @@
 
 import { buildSilhouette } from './silhouette.ts';
 import {
+  ANATOMIC_DEPTH_RATIO,
   buildImportanceRemap,
   computeBodyGeometry,
   EDGE_WALL_Z,
@@ -51,9 +57,11 @@ import {
  */
 export const MESH_GRID_SIZE = 192;
 /**
- * Ön yüzün asla inemeyeceği z: döküm/ince kabuk ön yüzü duvar düzleminin
- * altına çekerse duvar şeridi ters döner (self-intersection). Duvar her
- * köşede en az 0.02 kalın kalır.
+ * Ön yüzün asla inemeyeceği z (ÖLÇEKSİZ sözleşme değeri): döküm/ince kabuk ön
+ * yüzü duvar düzleminin altına çekerse duvar şeridi ters döner
+ * (self-intersection). Duvar her köşede en az 0.02 kalın kalır.
+ * Kullanım yerinde zUnit ile ölçeklenir (silüet-oranlı z uzamı) — sabitin
+ * kendisi sözleşme değeri olarak sabittir.
  */
 export const MESH_MIN_WALL_Z = EDGE_WALL_Z + 0.02;
 
@@ -154,9 +162,17 @@ export function buildShellMesh(
   // Kaide geometrisi (döküm sönümü merkezi) — parçacıklarla aynı hesap.
   const body = computeBodyGeometry(sil.alpha, width, height, halfH);
   const d1 = body ? MESH_BACK_FILL * Math.min(body.rx, body.ry) : 0;
-  const wallZ = EDGE_WALL_Z;
-  const thinShellZ = THIN_SHELL_Z;
-  const minWallZ = MESH_MIN_WALL_Z;
+  // Silüet-oranlı z uzamı (sampler.ts ile BİREBİR aynı kural): derinlik uzamı
+  // bulut yüksekliğine değil öznenin kendi genişliğine oranlıdır. `depthScale`
+  // (0.7) buna DOKUNMAZ — zSpan `range`in YERİNE geçer, onun ÜSTÜNE gelmez;
+  // ekstrüzyon sönümü ayrı bir koldur. Duvar/kabuk sabitleri kullanım yerinde
+  // zUnit ile ölçeklenir, aksi halde küçülen yüzeyin arkasında eski uzamda
+  // duran duvar kalır (kabuk yine kutuya döner).
+  const zSpan = body ? ANATOMIC_DEPTH_RATIO * 2 * Math.min(body.rx, body.ry) : range;
+  const zUnit = zSpan / 2;
+  const wallZ = EDGE_WALL_Z * zUnit;
+  const thinShellZ = THIN_SHELL_Z * zUnit;
+  const minWallZ = MESH_MIN_WALL_Z * zUnit;
 
   // -- 1. Köşe ızgarası: iç/dış + ön yüzey z --
   const inside = new Uint8Array(S * S);
@@ -187,13 +203,15 @@ export function buildShellMesh(
       // Depth yumuşatılmış haritadan örneklenir; ekstrüzyon depthScale ile
       // sönümlenir (kavis ölçeklenmez).
       const d = bilinear(smoothed, width, height, xv, yv);
-      let z = (d - 0.5) * range * depthScale;
+      let z = (d - 0.5) * zSpan * depthScale;
       const wFg = smoothstep(MESH_FG_NEAR, MESH_FG_FAR, d);
       if (curvature > 0) {
         const rx = u * 2 - 1;
         const ry = v * 2 - 1;
         const r2 = rx * rx + ry * ry;
-        z += curvature * Math.sqrt(Math.max(0, 1 - r2)) * wFg;
+        // Kavis zUnit ile ölçeklenir (sampler ile aynı), depthScale ile DEĞİL
+        // — Gün B kuralı (kavis ekstrüzyon sönümüne girmez) korunur.
+        z += curvature * zUnit * Math.sqrt(Math.max(0, 1 - r2)) * wFg;
       }
       const zFront = z;
       const dPx = body ? bilinear(sil.dist, width, height, xv, yv) : 0;

@@ -5,6 +5,84 @@ En yeni üstte.
 
 ---
 
+## 2026-08-13 — Anatomik derinlik turu: maske otoritesi + silüet oranlı z + eğim sınırlayıcı
+
+Sözleşme: `ARCHITECTURE.md` → "Koordinat Uzayı" (silüet oranlı z uzamı),
+"Siluet Sözleşmesi" (yeni bölüm), "Kamera / Video Yolu" (eğim sınırlayıcı).
+Dört madde de klasik CV/geometridir — üretici model (diffusion/inpainting)
+YOKTUR.
+
+- **Maske-farkında bağlantı (`silhouette.ts`, `keepForeground`):**
+  `connected(p,q)` koşuluna maske güveni eklendi — iki piksel de
+  `foregroundMask ≥ 0.5` ise bağlantı kurulur. Gerçek bir uzuv (kalkık kol)
+  yüzden öne çıktığı için `|Δd| > GRADIENT_BREAK` (0.15) oluyor, bileşen
+  "severed" sayılıp eleniyordu (kullanıcı fotoğrafında kol + kürk siliniyordu).
+  Duvar reddi korunur: duvarın maskesi düşüktür. Maske yoksa davranış aynı.
+- **Maske otoritedir (`silhouette.ts`, aday koşulu):** maske verildiyse adaylık
+  YALNIZCA `mask ≥ 0.5`; `SILHOUETTE_BIN_LO` (0.05) devre dışı. Maske özneyi
+  doğru bulsa bile derinliği düşük kalan bölge (koyu saç, arkaya giden kol)
+  depth eşiğinde siliniyordu. Sızma koruması yeri değişmedi (SON AND).
+- **Silüet oranlı z uzamı (`sampler.ts` + `mesh.ts`):** yeni export
+  `ANATOMIC_DEPTH_RATIO = 0.7`; `zSpan = 0.7 · 2 · min(rx, ry)`,
+  `zUnit = zSpan/2`, ön plan `z = (d − 0.5)·zSpan + …`. Eskiden uzam sabit
+  `range` (2) idi: derinlik her zaman bulut yüksekliğinin tamamıydı. z
+  uzayındaki tüm sabitler kullanım yerinde `zUnit` ile ölçeklendi
+  (`EDGE_WALL_Z`, `THIN_SHELL_Z`, kavis, `MESH_MIN_WALL_Z`, mesh arka kapak) —
+  sabitlerin kendileri değişmedi. Arka plan dalı (`BACKDROP_Z_PIN`) ve
+  `[−1, +1]` kırpması DEĞİŞMEDİ; `mesh.depthScale` (0.7) ayrı kol olarak kaldı
+  (zSpan `range`in yerine geçer, depthScale'in üstüne değil). `body = null` →
+  eski davranış.
+- **Tek yönlü eğim sınırlayıcı (`depth.ts`):** yeni export `limitDepthSlope` +
+  `MAX_SLOPE_PER_PX = 0.02`. `d[i] = min(d[i], min(4-komşu) + maxStep)`,
+  4 geçiş, TEK YÖNLÜ (çukur öne çekilmez). `estimateDepth`'te en son aşama
+  (detay/stretch/sobel'den SONRA), `mask = null` ile — imza değişmedi.
+  Video/luminance yolu değişmedi.
+
+Ölçümler (hepsi çalıştırılan komutlardan; `assets/thumbnail.jpg` + gerçek
+RMBG + Depth-Anything-V2 boru hattı, ya da adı geçen sentetik girdi):
+
+| Metrik | ÖNCE | SONRA |
+|---|---|---|
+| z uzamı / siluet genişliği (sentetik büst 128²) | 1.4542 | **0.6712** |
+| `buildSilhouette` ön plan pikseli (gerçek foto, maskeli, 518²) | 84.622 (maskenin %95.95'i) | **88.196 (%100.00)** → +3.574 (+%4.22) |
+| `buildSilhouette` ön plan pikseli (maskesiz yol — regresyon kapısı) | 251.724 | 251.724 (AYNI) |
+| `verify-curtain` ön plan noktası (384² grid) | 46.526 | **48.480** (+1.954) |
+| `verify-curtain` nokta/maske kütle merkezi sapması | 0.025 | **0.001** |
+| Eğim sınırlayıcı: >0.02 yukarı-eğim taşıyan piksel (tüm kare) | 10.939 | **5.667** (−%48) |
+| Eğim sınırlayıcı: >0.02 eğim, maske içi (maskeli yol) | 9.573 | **5.249** (−%45) |
+| Eğim sınırlayıcı: değişen piksel (maskesiz yol, 518²) | — | 12.986 (%4.84), maks düşüş 0.6071 |
+
+Bilinçli sınırlar (dürüstlük kayıtları):
+
+- **Maksimum komşu |Δd| DEĞİŞMEDİ (0.5567 → 0.5567).** Sebep yapısaldır: en
+  büyük sıçrama gerçek siluet sınırıdır (özne ↔ uzak arka plan) ve tek yönlü
+  sınırlayıcı yalnızca YÜKSEK tarafı çeker — çektikçe aşınma cephesi bir
+  piksel içeri kayar ve cephede her zaman artık bir basamak kalır. Geçiş
+  sayısı ölçüldü: `passes` 1/2/4/8/16/32 → maks eğim 0.5567/0.5567/0.5567/
+  0.5525/0.3984/0.1580, değişen piksel 10.939/11.892/12.986/15.112/18.834/
+  23.582. Yani daha çok geçiş = daha çok aşınma; 4 geçiş bilinçli bir denge.
+  Sınırlayıcının gerçek etkisi maksimumda değil, YAYGINLIKTA görülür
+  (>0.02 eğim taşıyan piksel yarıya iner).
+- **Maskesiz `estimateDepth` yolu siluet kenarını aşındırır:** maske İÇİ
+  88.196 pikselin 11.683'ü (%13.25) maskesiz sınırlamada değişti; maske içi
+  ortalama derinlik 0.5127 → 0.5015. Bunun tasarım gereği olduğu
+  `limitDepthSlope`'un `mask` parametresiyle kabul edilmiştir —
+  `estimateDepth` segmentasyon maskesini görmez (o `Engine.setDepth`'te
+  üretilir), maskeli çağrı yolu export ile açıktır ama bugün kullanılmıyor.
+- **(a) ölçümündeki "ÖNCE" değeri (1.4542) ALT sınırdır:** eski formülün z'si
+  `[−1, +1]` sözleşmesinde kırpıldığı için gerçek uzam daha büyüktü; kırpma
+  olmasaydı oran daha yüksek çıkardı.
+
+Test güncellemeleri (gevşetme YOK — formül değişti, beklenen değerler yeni
+formülden yeniden hesaplandı, hesaplar test yorumlarında):
+`verify-sampler.mjs` (T2/T3/T6/T7/T10/T16/T21), `verify-positions.mjs`
+(T1/T2), `verify-mesh.mjs` (T3/T5/T6). Sınır testlerinde eşikler
+GEVŞETİLMEDİ, aksine daraltıldı: mesh duvar güvencesi `z ≥ −0.78` →
+`z ≥ −0.26446875` (ölçekli `minWallZ`), sampler sınır bandı `(−0.81, −0.25)`
+→ `(−0.27125, −0.084765625)` (ölçekli duvar hedefi ↔ ölçekli kabuk tavanı).
+
+---
+
 ## 2026-08-13 — Gün D/1: CV fazı iskeleti + eval harness (Emre)
 
 Sözleşme: `ARCHITECTURE.md` → "Gün D" maddelerinin kod iskeleti. "Eval

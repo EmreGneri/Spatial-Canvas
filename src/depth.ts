@@ -180,7 +180,15 @@ export async function estimateDepth(
   if (sobelRelief > 0 && lum) {
     applySobelRelief(normalized, lum, maskFg!, outWidth, outHeight, sobelRelief);
   }
-  return { data: normalized, width: outWidth, height: outHeight };
+  // EĞİM SINIRLAYICI (en son): detay/stretch/sobel aşamalarının tamamı
+  // bittikten SONRA uygulanır — bu aşamalar da yerel sıçrama ekleyebiliyor
+  // (sobel mikro rölyefi tek piksellik sırt bırakır), önce çalıştırılsaydı
+  // sınırlama kendi üstüne yazılırdı. Maske YOK: estimateDepth segmentasyon
+  // maskesini görmez (o Engine.setDepth'te üretilir) — sınırlama tüm kareye
+  // uygulanır; imza değişmez, maskeli çağrı yolu limitDepthSlope export'uyla
+  // açıktır.
+  const limited = limitDepthSlope(normalized, outWidth, outHeight, null);
+  return { data: limited, width: outWidth, height: outHeight };
 }
 
 function toCanvas(source: HTMLCanvasElement | HTMLImageElement): HTMLCanvasElement {
@@ -380,7 +388,8 @@ function smoothstep(e0: number, e1: number, x: number): number {
 // Yüz detay aşamaları (ROI stretch + Sobel mikro kabartma). Depth Anything
 // ön planı dar bir aralığa sıkıştırır; bu iki aşama yüz bölgesindeki mikro
 // derinlik farklarını görünür yapar. Sıra: normalize → detay (λ) → stretch
-// → sobel; böylece Sobel rölyefi stretch'in yeniden dağıtımından etkilenmez.
+// → sobel → eğim sınırlayıcı; böylece Sobel rölyefi stretch'in yeniden
+// dağıtımından etkilenmez, sınırlayıcı da hepsinin sonucunu görür.
 // ---------------------------------------------------------------------------
 
 const FOREGROUND_STRETCH_DEFAULT = true;
@@ -481,6 +490,70 @@ function applyForegroundStretch(depth: Float32Array, mask: Float32Array, w: numb
       depth[i] = depth[i] + (stretched - depth[i]) * m;
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// TEK YÖNLÜ EĞİM SINIRLAYICI (fotoğraf yolu, en son aşama).
+//
+// Model, saç/kafa üstünde komşusundan KOPUK yüksek değerler üretebiliyor
+// (Depth Anything ince yapıda tek piksellik sıçrama bırakır); o kütle 3B'de
+// dışarı fırlıyor. Çözüm klasik: komşularını maxStep'ten fazla aşan piksel
+// geri çekilir. TEK YÖNLÜDÜR — çukur ÖNE çekilmez, yalnızca tepe düşürülür;
+// çift yönlü olsaydı gerçek çukurları (göz, çene altı) doldurup yüzü
+// düzleştirirdi.
+// ---------------------------------------------------------------------------
+
+/** Piksel başına izin verilen maksimum derinlik artışı (0..1 depth birimi). */
+export const MAX_SLOPE_PER_PX = 0.02;
+
+/**
+ * d[i] = min(d[i], min(4-komşu d[j]) + maxStep), `passes` kez tekrarlanır
+ * (her geçiş bir öncekinin ÇIKTISINDAN okur: tek geçişte sınırlama yalnızca
+ * bir piksel yayılır, geniş bir sıçrama kütlesi tepeyi koruyabilirdi).
+ *
+ * `mask` verilirse sınırlama YALNIZCA mask ≥ 0.5 piksellerinde uygulanır ve
+ * yalnızca maske İÇİNDEKİ komşular hesaba katılır: siluet sınırındaki GERÇEK
+ * sıçrama (özne ↔ arka plan) korunur, aksi halde limitleyici öznenin dış
+ * konturunu geçiş başına 1 piksel içeri doğru aşındırırdı.
+ *
+ * Girdiyi değiştirmez; yeni Float32Array döner (0..1 sözleşmesi korunur —
+ * min() yalnızca aşağı çeker, alt sınır komşunun kendi değeridir).
+ */
+export function limitDepthSlope(
+  depth: Float32Array,
+  width: number,
+  height: number,
+  mask: Float32Array | null,
+  maxStep = MAX_SLOPE_PER_PX,
+  passes = 4,
+): Float32Array {
+  let src = Float32Array.from(depth);
+  let dst = new Float32Array(depth.length);
+  for (let p = 0; p < passes; p++) {
+    dst.set(src);
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const i = y * width + x;
+        if (mask && mask[i] < 0.5) continue;
+        let lo = Infinity;
+        if (x > 0 && (!mask || mask[i - 1] >= 0.5) && src[i - 1] < lo) lo = src[i - 1];
+        if (x < width - 1 && (!mask || mask[i + 1] >= 0.5) && src[i + 1] < lo) lo = src[i + 1];
+        if (y > 0 && (!mask || mask[i - width] >= 0.5) && src[i - width] < lo) lo = src[i - width];
+        if (y < height - 1 && (!mask || mask[i + width] >= 0.5) && src[i + width] < lo) {
+          lo = src[i + width];
+        }
+        // Maske içinde 4-komşusu olmayan yalıtık piksel: sınırlanacak referans
+        // yok, olduğu gibi kalır (uydurma taban üretilmez).
+        if (lo === Infinity) continue;
+        const cap = lo + maxStep;
+        if (src[i] > cap) dst[i] = cap;
+      }
+    }
+    const swap = src;
+    src = dst;
+    dst = swap;
+  }
+  return src;
 }
 
 /**

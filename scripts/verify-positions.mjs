@@ -10,7 +10,6 @@
 import assert from 'node:assert/strict';
 import {
   POSITION_TEXTURE_SIZE as N,
-  POINTS_DEPTH_RANGE,
   createHomeTexture,
   createImageColorTexture,
   fillImageColorTexture,
@@ -23,8 +22,8 @@ const xyz = (data, i, j) => {
   return { x: data[o], y: data[o + 1], z: data[o + 2], w: data[o + 3] };
 };
 
-// --- 1. düz depth: 0 → TÜM GRİD ARKA PLAN (Tur 11: nokta var), 1 → +1 ---
-const half = POINTS_DEPTH_RANGE / 2;
+// --- 1. düz depth: 0 → TÜM GRİD ARKA PLAN (Tur 11: nokta var),
+// 1 → silüet oranlı ön plan z'si (artık +1'e kırpılmaz) ---
 for (const value of [0, 1]) {
   const tex = createHomeTexture();
   fillPositionsFromDepth(tex, new Float32Array(64 * 64).fill(value), 64, 64);
@@ -41,25 +40,33 @@ for (const value of [0, 1]) {
       );
     }
   } else {
-    // Sabit z sözleşmesi (range = 2): merkez (R²≈0) → (1−0.5)·range + kavis
-    // 0.1·sqrt(1−R²)·w_fg ≈ 1 + 0.1 → üst sınıra kırpılır (+1 = half).
+    // SİLÜET ORANLI z uzamı (tam kadraj siluet, 64×64 → rx = ry = 0.984375):
+    // zSpan = ANATOMIC_DEPTH_RATIO·2·min(rx,ry) = 0.7·2·0.984375 = 1.378125,
+    // zUnit = 0.6890625. Merkez (R² = 1.3562e−5 → sqrt(1−R²) = 0.99999322,
+    // w_fg(1) = 1): z = 0.5·1.378125 + 0.1·0.6890625·0.99999322
+    //                = 0.6890625 + 0.06890578 = 0.75796828.
+    // Eski sabit range = 2 burada +1'e KIRPIYORDU; artık kırpma yok.
     const z = xyz(data, N >> 1, N >> 1).z;
-    assert.ok(Math.abs(z - half) < 1e-4, `dolu merkez → z = +1 (kavisle sınıra kırpılır, gerçek ${z.toFixed(6)})`);
-    // Çerçeve köşesi: R² ≥ 1 → kavis YOK; kadraj kenarı sınır değil (kutu
-    // duvarı yok — düz yüzey) → sabit +1.
+    assert.ok(Math.abs(z - 0.757968283) < 1e-4, `dolu merkez → z = 0.75796828 (silüet oranlı uzam, gerçek ${z.toFixed(6)})`);
+    // Çerçeve köşesi: R² ≈ 1.9896 ≥ 1 → kavis YOK; kadraj kenarı sınır değil
+    // (kutu duvarı yok — düz yüzey) → z = 0.5·zSpan = 0.6890625.
     for (const [i, j] of [[0, 0], [N - 1, N - 1]]) {
-      assert.ok(Math.abs(xyz(data, i, j).z - half) < 1e-6, 'çerçeve köşesi → z = +1 (kavis yok, kutu yok)');
+      assert.ok(Math.abs(xyz(data, i, j).z - 0.6890625) < 1e-6, 'çerçeve köşesi → z = 0.6890625 (kavis yok, kutu yok)');
     }
   }
 }
 
 // --- 2. üst yarısı yakın (1), alt yarısı uzak (0) olan depth ---
-// Sabit z sözleşmesi (range = 2): üst yarı → (1−0.5)·range = 1 + kavis
-// (R² ≈ 0.001 → ≈ 0.0999) → 1.0999 → üst sınıra kırpılır (+1). Üst sınır
-// texeli (y ≈ 0.997): R² ≈ 0.995 → kavis ≈ 0.0072 → 1.0072 → kırpılır (+1;
-// kenar sönümü YOK — düz formül, cadraj kenarı sınır değil). Alt yarı
-// ARKA PLAN: z = (0−0.5)·range − PIN = −1.15 → tabana kırpılır (−1;
-// w = BACKDROP_OPACITY).
+// SİLÜET ORANLI uzam: siluet yalnızca ÜST yarı → rx = 0.984375, ry = 0.484375
+// → zSpan = 0.7·2·0.484375 = 0.678125, zUnit = 0.3390625.
+//   üst yarı içi (192, 96): 2u−1 = 0.00260417, 2v−1 = 0.49739583 →
+//     R² = 0.24740936 → sqrt(1−R²) = 0.86752558, w_fg(1) = 1 →
+//     z = 0.5·0.678125 + 0.1·0.3390625·0.86752558 = 0.36847684
+//   üst kadraj sınırı (192, 0): 2v−1 = 0.99739583 → R² = 0.99480525 →
+//     sqrt = 0.07207462 → z = 0.3390625 + 0.00244381 = 0.34150629
+//     (kenar sönümü YOK — düz formül, kadraj kenarı sınır değil)
+// Alt yarı ARKA PLAN dalıdır ve ÖLÇEKLENMEZ (duvar sözleşmesi):
+// z = (0−0.5)·range − PIN = −1.15 → tabana kırpılır (−1; w = BACKDROP_OPACITY).
 const W = 64;
 const H = 64;
 const depth = new Float32Array(W * H);
@@ -74,8 +81,8 @@ const topInner = xyz(data, N >> 1, N >> 2);
 const bottom = xyz(data, N >> 1, N - 1);
 assert.ok(top.y > 0, 'grid satırı 0 dünyada üstte (y > 0) olmalı');
 assert.ok(bottom.y < 0, 'son grid satırı dünyada altta (y < 0) olmalı');
-assert.ok(top.z > 0.98 && top.z <= 1, 'üst kadraj sınırı → düz formül + küçük kavis → sınıra kırpılır (+1, prizma duvarı yok)');
-assert.ok(Math.abs(topInner.z - half) < 1e-4, `görselin ÜST yarısı → z = +1 (kavisle sınıra kırpılır, gerçek ${topInner.z.toFixed(6)}) — y-flip ters`);
+assert.ok(Math.abs(top.z - 0.341506285) < 1e-4, `üst kadraj sınırı → düz formül + küçük kavis (z = ${top.z.toFixed(6)}, prizma duvarı yok)`);
+assert.ok(Math.abs(topInner.z - 0.368476843) < 1e-4, `görselin ÜST yarısı → z = 0.36847684 (silüet oranlı uzam, gerçek ${topInner.z.toFixed(6)}) — y-flip ters`);
 assert.ok(
   Math.abs(bottom.z + 1) < 1e-6,
   'görselin ALT yarısı (arka plan) → z = −1 (d = 0 → (0−0.5)·range − PIN → tabana kırpılır)',

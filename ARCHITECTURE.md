@@ -1,6 +1,12 @@
 # spatial-canvas · Mimari Sözleşmesi
 
 v0.5 — Gün C (denetim turu). Değişiklikler: kabuk mesh'i normalleri + kabuk kimliğini (`aShell`) kendisi üretir ve DIŞA yönlüdür; renk grid'inin ALPHA kanalı bakılı oklüzyon taşır; neon kenarları depth yerine `uPositions`'tan türetilir; luminance (video) yolu netlik ipucu + zamansal kararlı normalizasyon kazandı; kimlik durumundaki post-pass'ler çizilmez; `reconstruction/volume.ts` kaldırıldı.
+v0.7 — Anatomik derinlik turu: ön plan z uzamı SİLÜET ORANLIDIR
+(`ANATOMIC_DEPTH_RATIO`, sampler + mesh; z uzayı sabitleri `zUnit` ile
+ölçeklenir, arka plan dalı ve [−1,+1] kırpması değişmedi); nesne maskesi
+siluette OTORİTEDİR (adaylık yalnızca maske) ve bileşen bağlantısında GÜVEN
+kaynağıdır; `depth.ts` fotoğraf yoluna tek yönlü eğim sınırlayıcı
+(`limitDepthSlope`) eklendi.
 v0.6 — Gün D (CV dönüşümü; Gün 0 sözleşmesi): GaussianBuffer sözleşmesi (gSplatA/B/C), PoseTrack sözleşmesi, intrinsik varsayımı (60° dikey → ParamDef), füzyon çıktısı + keyframeIndex kanalı, `eval-out/report.json` metrik formatı; node graph'a pose + fusion düğümleri, 5. render modu `splat`, `verify-flow.mjs`/`verify-pose.mjs`.
 v0.4 — Gün 6: PNG/WebM export modülü (`src/engine/export.ts`), embed modu (`src/embed.ts`, `<spatial-canvas>` custom element), Vite embed build girişi.
 İki katmanın birbirine güvenli bağlanabilmesi için yazıldı.
@@ -43,8 +49,26 @@ Değişiklik tartışılır, yazılır, imzalanır. Sessiz sapma yok.
 - Kamera: perspektif (60°), konum (0, 0, 3.5), hedef orijin. OrbitControls
   (damping açık) kamerayı yönetir — sahiplik Emre.
 - Point cloud dünyası: yükseklik 2 birim (`POINTS_WORLD_HEIGHT`), genişlik
-  `2 · aspect` (depth kaynağının oranından), `z = (d − 0.5) · 2`
-  (`POINTS_DEPTH_RANGE`): d = 0 (uzak) → z = −1, d = 1 (yakın) → z = +1.
+  `2 · aspect` (depth kaynağının oranından). **z ∈ [−1, +1] KIRPMA sözleşmesi
+  değişmedi** (`POINTS_DEPTH_RANGE` = 2 arka plan dalının ve kırpmanın
+  referansıdır), ama ÖN PLAN z uzamı artık sabit değildir:
+  - **SİLÜET ORANLI z uzamı (`ANATOMIC_DEPTH_RATIO` = 0.7, `sampler.ts`):**
+    `zSpan = 0.7 · 2 · min(rx, ry)`, `zUnit = zSpan / 2`, ön plan
+    `z = (d − 0.5) · zSpan + kavis + kenar dökümü`. `rx/ry` siluetin DÜNYA
+    yarı eksenleridir (`computeBodyGeometry`). Sebep: sabit uzamda derinlik
+    HER ZAMAN bulut yüksekliğinin tamamıydı — 25 cm derinliğindeki bir büst
+    boyu kadar derin çiziliyor, kafa üstü anatomik olmayacak kadar dışarı
+    fırlıyordu. Ölçü siluetten okunur, özne-agnostiktir.
+  - **z uzayındaki TÜM sabitler kullanım yerinde `zUnit` ile ölçeklenir:**
+    `EDGE_WALL_Z`, `THIN_SHELL_Z`, elipsoit kavis (`curvature · zUnit · …`),
+    `MESH_MIN_WALL_Z` ve mesh arka kapak düzlemi. Sabitlerin KENDİLERİ
+    sözleşme değeri olarak sabittir. Ölçeklenmezlerse yüzey küçülürken duvar
+    eski uzamda kalır ve kabuk yine kutuya döner.
+  - **ARKA PLAN dalı ölçeklenmez:** `z = (d − 0.5) · range − BACKDROP_Z_PIN`
+    (duvar geride kalsın diye). Siluet yoksa (`body = null`) ön plan da eski
+    davranışa döner (`zSpan = range`).
+  - `mesh.ts`'teki `depthScale` (0.7) ayrı bir koldur: `zSpan`, `range`in
+    YERİNE geçer, `depthScale`in ÜSTÜNE gelmez.
   **z orijin etrafında ortalıdır** — OrbitControls hedefi (0,0,0) bulutun
   merkezine denk gelsin diye; ortalanmazsa yörünge bulutun arka yüzeyi
   etrafında döner. Renk rampası için shader `z / 2 + 0.5` ile 0..1'e döner.
@@ -173,6 +197,24 @@ RenderPass → FXAA → Feedback → ChroAber → Bloom → Grain/Vignette → O
 - Composer hedefi half-float; parçacık pass'leri (Gün 3) full float gerektirirse
   `EffectComposer` render target'ı güncellenir — bu da Zeynep'in kararı.
 
+## Siluet Sözleşmesi (`reconstruction/silhouette.ts`)
+
+Nesne maskesi (`segmentation.ts`, RMBG) verildiğinde:
+
+- **MASKE OTORİTEDİR (adaylık):** aday koşulu YALNIZCA `mask ≥ 0.5`'tir; depth
+  eşiği (`SILHOUETTE_BIN_LO` = 0.05) devre dışıdır. Eskiden kesişim aranıyordu
+  ve maske özneyi doğru bulsa bile derinliği düşük kalan bölge (koyu saç,
+  arkaya giden kol) siliniyordu — depth maskeyi cezalandırıyordu. **Maske
+  yoksa depth eşiği aynen kalır.**
+- **MASKE GÜVENİ (bağlantı):** bileşen selinde `connected(p,q)` artık
+  `filled ∨ |Δd| ≤ GRADIENT_BREAK ∨ (mask[p] ≥ 0.5 ∧ mask[q] ≥ 0.5)`. Gerçek
+  bir uzuv (kalkık kol) yüzden öne çıktığı için `|Δd| > 0.15` oluyor, bileşen
+  "severed" sayılıp eleniyordu. Duvar reddi KORUNUR: duvarın maskesi düşüktür,
+  maske o kapıyı açamaz.
+- **SIZMA KORUMASI YERİ DEĞİŞMEDİ:** güven sınırı hâlâ fonksiyon sonundaki SON
+  AND'dir (`mask < 0.5 → 0`) — morfolojik kapanış, bileşen birleştirme veya
+  satır dolgusu hiçbir arka plan pikselini diriltemez.
+
 ## Kamera / Video Yolu (Gün 2 + Gün 6)
 
 - Gün 1 kararı gereği: statik görsel → Depth-Anything-V2 (model, `src/depth.ts`
@@ -180,6 +222,15 @@ RenderPass → FXAA → Feedback → ChroAber → Bloom → Grain/Vignette → O
   **YOK**, luminance height map (`luminanceHeightMap`).
 - Çıktı aynı `DepthResult` sözleşmesi: 0..1, satır 0 = üst. Engine'de mode
   ayrımı yok — tek `setDepth` girişi.
+- **TEK YÖNLÜ EĞİM SINIRLAYICI (`limitDepthSlope`, yalnızca FOTOĞRAF yolu).**
+  `estimateDepth` boru hattının SON aşamasıdır (normalize → detay → stretch →
+  sobel → **sınırlayıcı**): `d[i] = min(d[i], min(4-komşu d[j]) + MAX_SLOPE_PER_PX)`,
+  `MAX_SLOPE_PER_PX = 0.02`, 4 geçiş. Tek yönlüdür — yalnızca komşularını AŞAN
+  piksel geri çekilir, çukur öne çekilmez (göz/çene çukurları doldurulmaz).
+  Opsiyonel maske verilirse yalnızca `mask ≥ 0.5` piksellerde ve yalnızca maske
+  İÇİNDEKİ komşularla çalışır (siluet sınırındaki gerçek sıçrama korunur);
+  `estimateDepth` segmentasyon maskesini görmediği için `mask = null` ile
+  çağırır. **Video/luminance yolu (`heightMapFromLuminance`) DEĞİŞMEDİ.**
 - **Gün C (video derinliği).** Boru hattı sırası — hepsi CPU'da, kare başına,
   çıkarımsız; havuzlanmış buffer'larla tahsissiz:
   1. luminance (ham),
