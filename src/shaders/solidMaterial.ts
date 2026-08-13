@@ -109,7 +109,7 @@ const VERTEX = /* glsl */ `
     vNormal = normal;
     vViewDir = normalize(cameraPosition - position);
     vViewDepth = -mv.z;
-    // z orijin etrafında ortalı (−RANGE/2 .. +RANGE/2) → rampa için 0..1.
+    // z orijin etrafında ortalı (−1..+1) → rampa için 0..1.
     vDepth = clamp(position.z / ${POINTS_DEPTH_RANGE.toFixed(1)} + 0.5, 0.0, 1.0);
     gl_Position = projectionMatrix * mv;
   }

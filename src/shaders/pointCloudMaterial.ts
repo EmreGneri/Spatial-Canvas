@@ -144,7 +144,7 @@ const VERTEX = /* glsl */ `
   varying float vViewDepth;
 
   /**
-   * Hacmin arka sınırı (z, orijine ortalı −1..+1 uzayında). Parçacıklar ön
+   * Hacmin arka sınırı (z, orijine ortalı ±1 sözleşmesinde). Parçacıklar ön
    * yüzeyleriyle bu düzlem arasına dağıtılır; veri katmanı yalnızca ön yüzey
    * + ince kabuk üretiyor (volume.ts: "KAPALI MESH / SIDE-WALL ÜRETMEZ"),
    * yan duvarlar bu yüzden render tarafında doğuyor.
@@ -159,7 +159,7 @@ const VERTEX = /* glsl */ `
     // birebir eşleşir) — parçacık kendi fotoğraf pikselinin rengini alır.
     vUv = aUv;
 
-    // z orijin etrafında ortalı (−RANGE/2 .. +RANGE/2) → rampa için 0..1'e geri.
+    // z orijin etrafında ortalı (−1..+1) → rampa için 0..1'e geri.
     vDepth = clamp(pos.z / ${POINTS_DEPTH_RANGE.toFixed(1)} + 0.5, 0.0, 1.0);
 
     // w = parçacık opaklığı (α): 1 ön plan, 0.4 arka plan (Tur 11 — tek

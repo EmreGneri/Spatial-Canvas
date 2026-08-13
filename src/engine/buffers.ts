@@ -32,6 +32,11 @@ export function createDepthTexture(
  * denk gelsin diye. Ortalanmazsa yörünge bulutun arka yüzeyi etrafında döner.
  */
 export const POINTS_WORLD_HEIGHT = 2;
+/**
+ * Sampler'ın depthRange sözleşmesi (DEĞİŞTİRME): z = (d − 0.5)·range,
+ * range = 2 → dünya z ∈ [-1, +1]. GPU rampası/duvar sabitleri buna göre
+ * kuruludur (shader'lardaki POINTS_DEPTH_RANGE / BACK_PLANE_Z).
+ */
 export const POINTS_DEPTH_RANGE = 2;
 
 /**

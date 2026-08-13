@@ -157,9 +157,9 @@ const VERTEX = /* glsl */ `
     float gx = (tr + 2.0 * mr + br) - (tl + 2.0 * ml + bl);
     float gy = (tl + 2.0 * tm + tr) - (bl + 2.0 * bm + br);
 
-    // 0.125 normalizasyonu: z, depth'in İKİ KATI aralıkta (−1..+1 karşılık
-    // 0..1) — tam basamakta |g| = 8 olur. Bölen yarıya indirildiği için
-    // uEdgeThreshold'un anlamı ve varsayılanı (0.1) değişmez.
+    // 0.125 normalizasyonu: z ±1 sözleşmesinde tam basamak
+    // (komşu farkı ~1) |g| = 8 verir; 8·0.125 = 1 → uEdgeThreshold'un anlamı
+    // ve varsayılanı (0.1) bu ölçekle korunur.
     float edge = length(vec2(gx, gy)) * 0.125;
     vEdge = clamp(edge, 0.0, 1.0);
 

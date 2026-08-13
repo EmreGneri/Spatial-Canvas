@@ -378,18 +378,31 @@ Engine her karede bind eder, material dokunmaz (uPositions kuralı).
 
 - **Yazan:** Emre (veri/sim şeridi — füzyon). **Okuyan:** Zeynep (render
   şeridi). Tutarsızlıkta yazan taraf hatalıdır.
-- Quaternion'a geçiş kararı `gSplatB`'de verilir (ölçek → quat); geçiş sözleşme
-  değişikliğidir, imzalanmadan yapılmaz.
+- **Quaternion'a geçiş senaryosu (kanal bütçesi).** Bugünkü düzende `gSplatB`
+  dolu: normal.xyz + ölçek(w). Quaternion tek başına 4 kanal ister, yani
+  "ölçek → quat" ancak kanal takasıyla mümkündür. Geçilecekse TEK senaryo
+  şudur: `gSplatB` = quat.xyzw (normal quat'tan türetilir), **ölçek
+  `gSplatA.w`'ye**, **opaklık `gSplatC.a`'ya** taşınır — o zaman `gSplatC`'nin
+  AO kanalı serbest kalmaz, AO ayrı bir texture'a çıkar. Maliyeti budur;
+  geçiş sözleşme değişikliğidir, imzalanmadan yapılmaz. Geçilmezse `gSplatB`
+  normal+ölçek olarak kalır (bugünkü hâl).
 
 ### D.2 PoseTrack Sözleşmesi
 
-Kayıt: `{ id, R (quat xyzw, sağ el), t (vec3, y-up), timeMs, scale, fovY }` —
-CPU tarafı veri tipi; texture'a yazılmaz, GPU'ya uniform/UBO ile gider.
+Kayıt: `{ id, R (quat xyzw, sağ el), t (vec3, y-up), timeMs, scaleA, scaleB,
+fovY }` — CPU tarafı veri tipi; texture'a yazılmaz, GPU'ya uniform/UBO ile
+gider. Tip karşılığı: `src/engine/vision/types.ts` → `PoseTrackRecord`.
 
 - **Dünya orijini = ilk keyframe** (identity). Sonraki pozlar ona göre.
-- `scale`: monocular belirsizliğin çözümü — `d_metric ≈ a·d_pred + b`
-  (en küçük kareler), keyframe başına yeniden çözülür; sürüklenme dürüstçe
-  raporlanır (D.8).
+- **Dönmenin YÖNÜ: kamera→dünya (`world_from_camera`).** Kamera uzayındaki bir
+  nokta dünyaya `p_world = R · p_cam + t` ile gider; `t` kameranın dünya
+  konumudur. Ters yön (`camera_from_world`) gerekiyorsa çağıran eşleniği alır —
+  kayıt asla ters yönü tutmaz. (Konvansiyon yazılmadığında poz zinciri sessizce
+  ters kurulur; Gün 5 buna göre yazılacak.)
+- **Ölçek hizalaması İKİ terimlidir:** `d_metric ≈ scaleA · d_pred + scaleB`
+  (en küçük kareler), keyframe başına yeniden çözülür. Kayıt ikisini birden
+  taşır — yalnızca eğimi saklamak hizalamayı geri kurulamaz yapardı.
+  Sürüklenme dürüstçe raporlanır (D.8).
 - `Engine.getCameraPose()` (render kamerası) ile KARIŞMAZ — ayrı veri tipi.
 
 ### D.3 İntrinsik Belirsizliği
@@ -416,10 +429,31 @@ CPU tarafı veri tipi; texture'a yazılmaz, GPU'ya uniform/UBO ile gider.
 
 - Kolonlar: `depth | seg | pose | timing`. Depth: AbsRel/RMSE/δ<1.25; seg: IoU;
   pose: ATE/RPE.
-- Ablasyon kolları (sabit 6): `ao`, `focusBoost`, `letterbox_vs_distort`,
-  `importanceSampling`, `depthSmoothing`, `foregroundStretch`.
+- **Ablasyon kolları (sabit 7):** `ao`, `focusBoost`, `edgeStrength`,
+  `letterbox_vs_distort`, `importanceSampling`, `depthSmoothing`,
+  `foregroundStretch`. `params` bloğu bu yedi anahtarı TAM olarak taşır:
+  uygulanmayan kol `null`, fazladan anahtar yasak. (`edgeStrength` Gün D/1'de
+  eklendi — harness onu gerçekten ölçüyor; şema dışı anahtar sessiz sapmaydı.)
+- **Bir kol ancak ÖLÇÜLEBİLİYORSA raporlanır.** İki çalışma yalnızca o kolda
+  ayrışmalı (tek değişken) VE en az bir metrikte fark üretmeli. Matematiksel
+  olarak etkisiz kalan bir kol (ör. `edgeStrength`, `smoothingRadius = 0` iken:
+  low-pass girdinin kopyası olur, işaretli detay terimi sıfırlanır)
+  raporlanmaz — `verify-eval.mjs` bunu denetler.
+- **Zamanlama metodolojisi:** `timing` kolonu **medyandır** (1 ısınma turu +
+  20 tekrar). Tek örnekli ortalama JIT derlemesini ölçüyordu (ilk çağrı
+  sonrakilerin ~3 katı, kollar arası 40×'e varan sahte fark).
+- **ATE tanımı:** Sim(3) hizalaması (ölçek + dönme + öteleme, Horn kapalı form)
+  SONRASI konum artıklarının RMSE'si. Monoküler yörünge ölçek belirsiz olduğu
+  için hizalama Sim(3)'tür; hizalamasız fark keyfi dünya çerçevesini hata
+  sayardı. RPE komşu keyframe çiftlerinin ÖTELEME farkıdır (hizalamasız).
+  İkisi de yalnızca konumdur — dönme hatası ayrı metriktir, bu fazda yok.
+- **Harness bağımsızlığı:** eval yolu (`heightMapFromLuminance`) ML
+  kütüphanesine bağlı OLAMAZ. `src/depth.ts` `@huggingface/transformers`'ı
+  tembel yükler (yalnızca `loadDepthModel`/`estimateDepth`) — "eval harness
+  asla kesilmez" kuralı model yığınının çalışmasına bağlanamaz.
 - UI okuyup gösterebilir (metrik paneli). Veri kümesi alımı (NYUv2 alt kümesi
-  / DIODE val) indirmeden önce lisans + boyut teyit edilir.
+  / DIODE val) indirmeden önce lisans + boyut teyit edilir; D.7 gereği gerçek
+  veri kümesi metrikleri sentetik GT'den SONRA gelir.
 
 ### D.6 Akış Sözleşmesi (G3)
 
