@@ -11,7 +11,7 @@
     "typecheck": "tsc --noEmit",
     "fetch:assets": "node scripts/fetch-assets.mjs",
     "eval": "node scripts/eval.mjs",
-    "verify": "node scripts/verify-positions.mjs && node scripts/verify-depth.mjs && node scripts/verify-preset.mjs && node scripts/verify-sampler.mjs && node scripts/verify-seg.mjs && node scripts/verify-curtain.mjs && node scripts/verify-mesh.mjs && node scripts/verify-eval.mjs && node scripts/verify-flow.mjs && node scripts/verify-temporal.mjs && node scripts/verify-depth-mask.mjs"
+    "verify": "node scripts/verify-positions.mjs && node scripts/verify-depth.mjs && node scripts/verify-preset.mjs && node scripts/verify-sampler.mjs && node scripts/verify-seg.mjs && node scripts/verify-curtain.mjs && node scripts/verify-mesh.mjs && node scripts/verify-splat.mjs && node scripts/verify-trajectory.mjs && node scripts/verify-eval.mjs && node scripts/verify-flow.mjs && node scripts/verify-temporal.mjs && node scripts/verify-depth-mask.mjs"
   },
   "dependencies": {
     "@huggingface/transformers": "^4.2.0",

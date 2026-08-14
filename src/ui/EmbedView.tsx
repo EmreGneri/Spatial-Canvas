@@ -4,6 +4,7 @@ import { createPointCloudMaterial, POINTS_PARAMS } from '../shaders/pointCloudMa
 import { createAsciiMaterial, ASCII_PARAMS } from '../shaders/asciiMaterial';
 import { createNeonWireMaterial, NEON_PARAMS } from '../shaders/neonWireMaterial';
 import { createSolidMaterial, SOLID_PARAMS } from '../shaders/solidMaterial';
+import { createSplatMaterial, SPLAT_PARAMS } from '../shaders/splatMaterial';
 import { applyRenderState, type RenderState } from '../shaders/renderPreset';
 import { EMBED_CHROME_CSS, SIGNATURE_TEXT } from './embedChrome';
 import type { RenderMode } from './ModeSelector';
@@ -54,11 +55,15 @@ export function EmbedView({
       // Gün B: dördüncü mod. Kabuk yalnızca fotoğrafta kurulur; kabuk yokken
       // Engine solid material'ı takmaz, son sağlam material'da kalır.
       solid: createSolidMaterial(),
+      // Gün D: 5. mod. Kendi çizim nesnesi vardır; GaussianBuffer boşken
+      // Engine görünürlüğü kapatır ve nokta bulutunda kalınır.
+      splat: createSplatMaterial(),
     };
     engine.registerRenderMode('points', materials.points, POINTS_PARAMS);
     engine.registerRenderMode('ascii', materials.ascii, ASCII_PARAMS);
     engine.registerRenderMode('neon', materials.neon, NEON_PARAMS);
     engine.registerRenderMode('solid', materials.solid, SOLID_PARAMS);
+    engine.registerRenderMode('splat', materials.splat, SPLAT_PARAMS);
     engine.setPointsMaterial(materials[mode]);
 
     if (preset) {

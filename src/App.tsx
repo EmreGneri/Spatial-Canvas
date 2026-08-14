@@ -7,6 +7,7 @@ import { createPointCloudMaterial, POINTS_PARAMS } from './shaders/pointCloudMat
 import { createAsciiMaterial, ASCII_PARAMS } from './shaders/asciiMaterial';
 import { createNeonWireMaterial, NEON_PARAMS } from './shaders/neonWireMaterial';
 import { createSolidMaterial, SOLID_PARAMS } from './shaders/solidMaterial';
+import { createSplatMaterial, SPLAT_PARAMS } from './shaders/splatMaterial';
 import { ModeSelector, type RenderMode } from './ui/ModeSelector';
 import { NodeGraphEditor } from './ui/NodeGraphEditor';
 import {
@@ -53,6 +54,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
       ascii: createAsciiMaterial(),
       neon: createNeonWireMaterial(),
       solid: createSolidMaterial(),
+      splat: createSplatMaterial(),
     }),
     [],
   );
@@ -92,6 +94,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
     engine.registerRenderMode('ascii', materials.ascii, ASCII_PARAMS);
     engine.registerRenderMode('neon', materials.neon, NEON_PARAMS);
     engine.registerRenderMode('solid', materials.solid, SOLID_PARAMS);
+    engine.registerRenderMode('splat', materials.splat, SPLAT_PARAMS);
     engine.setPointsMaterial(materials.points);
     const textureType = engine.simTextureLabel;
     setLog((prev) => [
@@ -126,6 +129,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
       materials.ascii.dispose();
       materials.neon.dispose();
       materials.solid.dispose(); // düzeltme: solid material sızdırılıyordu
+      materials.splat.dispose();
       setEngine(null);
     };
   }, [materials]);
