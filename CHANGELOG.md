@@ -65,13 +65,45 @@ Bilinçli sınırlar (dürüstlük kayıtları):
   olarak sunulmuyor — rasterizer'ın veri yolu testidir. Füzyon geldiğinde
   yalnızca doldurucu değişir (`Engine.setGaussians`), material ve sıralama
   aynen kalır.
-- **TARAYICIDA GÖRSEL DOĞRULAMA YAPILAMADI.** Bu makinede 5173 portunu
-  BAŞKA bir Spatial-Canvas kopyası tutuyor
-  (`C:\Users\zeynep\Desktop\PORTFOLIO STUFF\Spatial-Canvas-main\...`);
-  dev sunucusu ona bağlanıyor. Gün 1/2'nin "ekranda anizotropik splat" ve
-  "147k'da kabul edilebilir FPS" ölçütleri bu yüzden HENÜZ ÖLÇÜLMEDİ.
-  Sıralama, kovaryans girdisi ve veri sözleşmeleri CPU tarafında test
-  edilmiştir; GPU tarafı test EDİLMEMİŞTİR.
+- **GPU tarafında otomatik regresyon TESTİ YOK.** Aşağıdaki GPU ölçümleri
+  tarayıcıda elle (`gl.readPixels`) alınmıştır; GLSL'i Node'dan koşturan bir
+  harness yok, yani özvektör hatasının benzeri yeniden girerse `npm run verify`
+  YAKALAMAZ. Ölçüm yordamı ARCHITECTURE.md · D.1b'de yazılıdır.
+
+### GPU doğrulaması (tarayıcıda ölçüldü) + bu turda bulunan hata
+
+Dev sunucusu doğru depoya bağlandıktan sonra Gün 1/2 kabul ölçütleri
+ölçüldü ve **gerçek bir shader hatası bulundu**:
+
+- **HATA — elips 90° dönük çiziliyordu.** Σ₂ köşegen olduğunda (`b ≈ 0`)
+  büyük özvektör formülü `(b, l₁−a)` 0/0'a düşüyor; köşegen dalda koşulsuz
+  `vec2(1,0)` seçiliyordu. Σ₂ merkezdeki ve eksen hizalı HER splat'ta
+  köşegendir — yani bu dal istisna değil kuraldı. Sonuç: kısalmanın MİKTARI
+  doğru (cos θ), EKSENİ yanlıştı. Normal Y ekseni etrafında eğilen bir splat
+  yatay yerine dikey sıkışıyordu. Düzeltme: `a >= d ? (1,0) : (0,1)`.
+- **Düzeltme sonrası ölçüm** (tek splat, `gl.readPixels` ile ayak izi bbox'ı):
+
+  | θ | 0° | 30° | 45° | 60° | 75° |
+  |---|---|---|---|---|---|
+  | ölçülen genişlik/yükseklik (normal Y ekseninde eğik) | 1.000 | 0.865 | 0.712 | 0.500 | 0.269 |
+  | cos θ (beklenen) | 1.000 | 0.866 | 0.707 | 0.500 | 0.259 |
+
+  Normal X ekseni etrafında eğikken kısalma DİKEY eksene geçiyor
+  (h/w = 0.712 @45°, 0.269 @75°) — yönelim hem büyüklük hem eksen olarak
+  doğru. Gün 1'in "kamera dönünce elipsler doğru yöneliyor" ölçütü **karşılandı**.
+- **Kare maliyeti** (147.456 splat, senkron `renderFrame` + `gl.finish`,
+  kamera her karede dönüyor → sıralama kapısı her karede tetikleniyor, EN KÖTÜ
+  hâl): 640×420 → **3.7 ms** · 1280×720 → **3.5 ms** · 1920×1080 → **3.4 ms**;
+  bunun 2.7-2.9 ms'i CPU sıralaması. Maliyet çözünürlükten neredeyse bağımsız:
+  yük **fill-rate değil CPU sıralama** sınırlı. Referans: `points` modu aynı
+  sahnede 0.40 ms. Gün 2'nin "147k splat, kabul edilebilir FPS" ölçütü
+  **karşılandı** (canlı döngüde yeniden sıralama kapısı bu 2.7 ms'i her karede
+  ödemez).
+- **Ölçüm koşulları (dürüstlük):** bu sayılar bir GPU'da, senkron çizim
+  ölçümüdür; vsync'li canlı döngü değildir ve `gl.finish()` sürücü kuyruğunu
+  boşaltarak en kötü hâli ölçer. "Yanıp sönme (popping) yok" iddiası
+  ÖLÇÜLMEDİ — o göz kararıdır ve sıralamanın doğruluğu CPU testinde
+  kanıtlanmıştır (permütasyon bütünlüğü + artan derinlik).
 
 ---
 

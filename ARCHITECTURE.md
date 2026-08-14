@@ -754,10 +754,30 @@ burası yalnızca okur.
 - **Yeniden sıralama kapısı:** sıra her karede değil, görüş yönü 2°'den fazla
   dönünce kurulur — 147k'lık attribute yüklemesi (590 kB) her kareye
   ödenmez.
+- **ÖZVEKTÖR SEÇİMİNDE KÖŞEGEN DALI (hata geçmişi — tekrar etmesin):** Σ₂
+  köşegen olduğunda (`b ≈ 0`) büyük özvektör formülü `(b, l₁−a)` 0/0'a düşer.
+  O dalda eksen, büyük özdeğerin hangi köşegen girdiye ait olduğuna bakılarak
+  seçilmelidir (`a ≥ d ? (1,0) : (0,1)`). Koşulsuz `(1,0)` seçmek elipsi 90°
+  DÖNÜK çizer; kısalma MİKTARI doğru göründüğü için hata testlerden ve gözden
+  kolayca kaçar. Σ₂ merkezdeki ve eksen hizalı HER splat'ta köşegendir, yani
+  bu dal istisna değil KURALDIR.
 - **Ölçüm (2026-08-14, bu makine, 147.456 splat, medyan/11):** radix
   **2.93 ms**, kova **1.84 ms**. Kova yaklaşıklığı: ardışık ters çift
   %48.87, en büyük derinlik ihlali 0.00175 dünya birimi (kova genişliği
   sınırı içinde).
+- **GPU doğrulaması (2026-08-14, tarayıcıda, `gl.readPixels` ile ölçüldü):**
+  tek splat, normal Y ekseni etrafında eğik → ekran ayak izi YATAY kısalır,
+  ölçülen genişlik/yükseklik 1.000 / 0.865 / 0.712 / 0.500 / 0.269
+  (θ = 0/30/45/60/75°) ve karşılık gelen cos θ = 1 / 0.866 / 0.707 / 0.500 /
+  0.259 — piksel hassasiyetinde uyuşuyor. Normal X ekseni etrafında eğikken
+  kısalma DİKEY eksene geçiyor (h/w = 0.712 @45°, 0.269 @75°): yönelim hem
+  büyüklük hem eksen olarak doğru.
+- **Kare maliyeti (aynı koşu, 147.456 splat, senkron `renderFrame` + `finish`,
+  kamera her karede dönüyor — yani sıralama kapısı HER karede tetikleniyor,
+  en kötü hâl):** 640×420 → 3.7 ms · 1280×720 → 3.5 ms · 1920×1080 → 3.4 ms;
+  bunun 2.7-2.9 ms'i CPU sıralamasıdır. Maliyet çözünürlükten neredeyse
+  BAĞIMSIZ: bu yük fill-rate değil **CPU sıralama** sınırlıdır. Referans:
+  `points` modu aynı sahnede 0.40 ms.
 
 ### D.6b Sentetik yörünge üreteci (Zeynep — Gün 4)
 
