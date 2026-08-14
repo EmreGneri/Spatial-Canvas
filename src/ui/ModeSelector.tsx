@@ -4,6 +4,7 @@ import type { PointCloudMaterial } from '../shaders/pointCloudMaterial';
 import type { AsciiMaterial } from '../shaders/asciiMaterial';
 import type { NeonWireMaterial } from '../shaders/neonWireMaterial';
 import type { SolidMaterial } from '../shaders/solidMaterial';
+import type * as THREE from 'three';
 
 /**
  * Render modu seçici. Sahiplik: Zeynep.
@@ -15,13 +16,15 @@ import type { SolidMaterial } from '../shaders/solidMaterial';
  * material konum alamaz (ARCHITECTURE.md · Point Cloud Sözleşmesi).
  */
 
-export type RenderMode = 'points' | 'ascii' | 'neon' | 'solid';
+export type RenderMode = 'points' | 'ascii' | 'neon' | 'solid' | 'splat';
 
 export interface RenderModeMaterials {
   points: PointCloudMaterial;
   ascii: AsciiMaterial;
   neon: NeonWireMaterial;
   solid: SolidMaterial;
+  /** 5. mod (Gün D): instanced Gauss splat — kendi çizim nesnesi vardır. */
+  splat: THREE.ShaderMaterial;
 }
 
 const MODES: { id: RenderMode; label: string }[] = [
@@ -29,6 +32,7 @@ const MODES: { id: RenderMode; label: string }[] = [
   { id: 'ascii', label: 'ASCII' },
   { id: 'neon', label: 'Neon' },
   { id: 'solid', label: 'Solid' },
+  { id: 'splat', label: 'Splat' },
 ];
 
 const rowStyle: CSSProperties = {

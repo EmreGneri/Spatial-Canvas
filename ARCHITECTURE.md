@@ -718,6 +718,59 @@ gider. Tip karşılığı: `src/engine/vision/types.ts` → `PoseTrackRecord`.
 - Hedef kapsam: **30–60 sn el kamerası, 8–20 keyframe, statik sahne** → orbit
   edilebilir tek 3D sahne. Genelleme bu fazın dışında.
 
+### D.1b GaussianBuffer'ın RENDER tarafı (Zeynep — Gün 1-4)
+
+D.1 sözleşmesinin tüketici ucu. **Yazan taraf değişmedi** (füzyon → Emre);
+burası yalnızca okur.
+
+- **Texture'ları Engine bind eder, material ASLA atama yapmaz** — `uPositions`
+  kuralının birebir aynısı. Material uniform'ları: `uSplatA`/`uSplatB`/
+  `uSplatC` + `uSplatGrid`.
+- **`flipY = false`** (buffers.ts'teki görüntü texture'larının aksine):
+  GaussianBuffer bir görüntü değildir, texel (i,j) bir SPLAT indeksidir.
+  y-flip politikası (v=1 → görselin üstü) yalnızca görüntü türevli
+  texture'lar içindir; burada flip açık olsaydı index → uv çevrimi sessizce
+  dikey aynalanırdı.
+- **Çizim nesnesi AYRI**: `splat` modu nokta bulutunun material takası
+  DEĞİLDİR (`src/engine/splats.ts` → instanced quad, `aCorner` +
+  `aSplatIndex`). `setPointsMaterial('splat')` takas yapmaz; yalnızca mod adı
+  ve görünürlük güncellenir — `solid` modunun graceful-fallback deseniyle
+  aynı. GaussianBuffer boşsa nokta bulutunda kalınır.
+- **Rasterizasyon (EWA):** Σ₃ = R·diag(s², s², (s·ε)²)·Rᵀ (surfel, normal
+  ekseni `SPLAT_FLATTEN` = 0.1 kadar yassı) → görüş uzayı → perspektif
+  Jacobian ile Σ₂ → özvektörler ekran elipsinin eksenleri. Σ₂ köşegenine
+  0.3 px² eklenir (screen-space prefilter): piksel altına inen splat
+  tekilleşip kaybolmaz. `uViewport` **drawing buffer** ölçeğindedir (DPR
+  dahil) — CSS pikseli verilirse elipsler yarı boyutta çizilir ve yüzey
+  delinir.
+- **Blend + sıra:** `depthWrite = false`, `depthTest = true`, premultiplied
+  "over". Sıra CPU'da kurulur (`src/shaders/splatSort.ts`) ve `aSplatIndex`
+  olarak yüklenir — splat verisi ASLA yeniden dizilmez, yalnızca çizim
+  indeksi sıralanır. `depthWrite` açık olsaydı sıralama hiçbir işe yaramazdı.
+- **İki sıralama yolu (D.7/1 kararının kodu — WebGPU compute YOK):**
+  `radix` (16 bit anahtar, 2 geçiş LSD, TAM sıralama, varsayılan) ve
+  `bucket` (tek geçiş histogram, YAKLAŞIK). Kova yolunun sözleşmesi: bir
+  derinlik ihlali asla KOVA GENİŞLİĞİNİ aşamaz (`verify-splat.mjs` ölçer).
+- **Yeniden sıralama kapısı:** sıra her karede değil, görüş yönü 2°'den fazla
+  dönünce kurulur — 147k'lık attribute yüklemesi (590 kB) her kareye
+  ödenmez.
+- **Ölçüm (2026-08-14, bu makine, 147.456 splat, medyan/11):** radix
+  **2.93 ms**, kova **1.84 ms**. Kova yaklaşıklığı: ardışık ters çift
+  %48.87, en büyük derinlik ihlali 0.00175 dünya birimi (kova genişliği
+  sınırı içinde).
+
+### D.6b Sentetik yörünge üreteci (Zeynep — Gün 4)
+
+`src/engine/vision/trajectory.ts` — Gün 5 poz çözücüsünün doğruluk verisi.
+Poz zinciri **kamera→dünya** (D.2) yönündedir ve `toFirstKeyframeOrigin`
+zinciri ilk keyframe'e çerçeveler (D.2: dünya orijini = ilk keyframe).
+Yörünge saf daire DEĞİLDİR (dikey salınım eklenir) ve sahne düzlemsel
+DEĞİLDİR — ikisi de essential matrix için dejenere yapılandırmalardır.
+`projectScene` pinhole izdüşüm + görünürlük + deterministik gauss gürültüsü
+üretir; kamera arkası nokta NaN + `visible = 0` taşır (sessiz yanlış
+izdüşüm yok). Görüntü RENDER EDİLMEZ: çözücünün girdisi nokta eşleşmeleridir.
+Kanıt: `scripts/verify-trajectory.mjs`.
+
 ### D.9 Entegrasyon
 
 - Node graph'a **`pose`** ve **`fusion`** düğümleri; parametreleri ParamDef'e

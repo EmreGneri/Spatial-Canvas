@@ -5,6 +5,76 @@ En yeni üstte.
 
 ---
 
+## 2026-08-14 — Gün D/1-4 (render şeridi, Zeynep): splat rasterizer + 5. mod + yörünge üreteci
+
+Sözleşme: `ARCHITECTURE.md` → yeni **D.1b** (GaussianBuffer'ın render tarafı)
+ve **D.6b** (sentetik yörünge üreteci). D.1/D.2/D.7 sözleşmeleri DEĞİŞMEDİ —
+bu tur onların tüketici ucunu yazdı.
+
+- **Gün 1 — splat spike** (`src/shaders/splatFixture.ts`,
+  `src/shaders/splatMaterial.ts`): instanced quad + yönlü elips fragment.
+  Spike verisi küre kabuğudur (normaller dışa bakar): yönelim yanlış
+  kurulursa siluet kenarındaki splat ince çizgiye dönmez, hata gözle
+  görülür. `gl_PointSize` BİLEREK kullanılmadı — nokta her zaman ekrana
+  paraleldir, anizotropi taşıyamaz ve sürücü üst sınırında kırpılır.
+- **Gün 2 — gerçek rasterizer**: kovaryans normal + ölçekten kurulur
+  (Σ₃ = R·diag(s², s², (s·ε)²)·Rᵀ), perspektif Jacobian ile Σ₂'ye indirilir
+  (EWA), özvektörler ekran elipsinin eksenleridir. Σ₂ köşegenine 0.3 px²
+  prefilter: piksel altına inen splat tekilleşip kaybolmaz. Blend
+  premultiplied "over", `depthWrite = false`. CPU derinlik sıralaması
+  (`src/shaders/splatSort.ts`) — splat verisi yeniden dizilmez, yalnızca
+  çizim indeksi sıralanır.
+- **Gün 3 — 5. render modu** (`splat`): `registerRenderMode` +
+  `SPLAT_PARAMS` (6 kol) + ModeSelector/EmbedView kaydı. Splat AYRI çizim
+  nesnesidir (`src/engine/splats.ts`); `setPointsMaterial('splat')` material
+  takası YAPMAZ — points geometrisinde `aCorner`/`aSplatIndex` yok, takılsaydı
+  kırık render olurdu (solid modunun fallback deseninin aynısı). Mevcut dört
+  mod dokunulmadı.
+- **Gün 4 — sıralama performansı + yörünge üreteci**: iki sıralama yolu
+  (`radix` tam / `bucket` yaklaşık) + yeniden sıralama kapısı (görüş yönü
+  2°'den az döndüyse sıra kurulmaz). `src/engine/vision/trajectory.ts` —
+  Emre'nin Gün 5 poz testi için bilinen yörünge + sahne + pinhole izdüşüm.
+- **Testler** (`npm run verify` zincirine eklendi): `verify-splat.mjs`,
+  `verify-trajectory.mjs`.
+
+Ölçümler (çalıştırılan komutlardan, bu makine):
+
+| Metrik | Değer |
+|---|---|
+| radix sıralama, 147.456 splat (medyan/11) | **2.93 ms** |
+| kova sıralama, aynı girdi | **1.84 ms** |
+| kova yaklaşıklığı: ardışık ters çift | 24.434/50.000 (%48.87) |
+| kova: en büyük derinlik ihlali | 0.00175 dünya birimi (kova genişliği sınırında) |
+| izdüşüm gürültüsü doğrulaması (σ = 1.5 px istendi) | ortalama sapma 1.886 px, Rayleigh beklentisi 1.880 |
+
+Bilinçli sınırlar (dürüstlük kayıtları):
+
+- **WebGPU compute sıralama YAPILMADI.** Repo WebGL2/`WebGLRenderer` üzerinde
+  koşuyor, compute shader yok; ARCHITECTURE.md D.7 kesme sırasının 1. maddesi
+  zaten "WebGPU sıralama → CPU sıralamada kal" diyor. İki CPU yolu ölçüldü ve
+  ikisi de kare bütçesine sığıyor.
+- **Kova yolu ardışık çiftlerin yarısını ters sıralıyor (%48.87).** Bu sayı
+  tek başına korkutucu görünür ama anlamlı olan ihlalin BÜYÜKLÜĞÜDÜR:
+  0.00175 dünya birimi, tipik splat yarıçapının kat kat altında. Yine de
+  varsayılan `radix`tir — kova yalnızca ölçülmüş bir alternatiftir,
+  "yeterince iyi" diye pazarlanmıyor.
+- **GaussianBuffer'ı bugün FÜZYON DOLDURMUYOR** (Gün 7'de gelecek). Geçici
+  köprü (`fillGaussiansFromPointCloud`) mevcut nokta bulutundan geçerli bir
+  buffer türetir: normal komşu texel farkından, ölçek grid adımından. Bu
+  gerçek çok-görüntü çıktısı DEĞİLDİR ve "3D Gaussian Splatting eğitimi"
+  olarak sunulmuyor — rasterizer'ın veri yolu testidir. Füzyon geldiğinde
+  yalnızca doldurucu değişir (`Engine.setGaussians`), material ve sıralama
+  aynen kalır.
+- **TARAYICIDA GÖRSEL DOĞRULAMA YAPILAMADI.** Bu makinede 5173 portunu
+  BAŞKA bir Spatial-Canvas kopyası tutuyor
+  (`C:\Users\zeynep\Desktop\PORTFOLIO STUFF\Spatial-Canvas-main\...`);
+  dev sunucusu ona bağlanıyor. Gün 1/2'nin "ekranda anizotropik splat" ve
+  "147k'da kabul edilebilir FPS" ölçütleri bu yüzden HENÜZ ÖLÇÜLMEDİ.
+  Sıralama, kovaryans girdisi ve veri sözleşmeleri CPU tarafında test
+  edilmiştir; GPU tarafı test EDİLMEMİŞTİR.
+
+---
+
 ## 2026-08-14 — Gün E: gövde/ayna fotoğraflarında düz 3B + topaklı maske (bulgu 1-2)
 
 Sözleşme: `ARCHITECTURE.md` → "Derinlik Son-İşleme Maskesi (`depth.ts`, Gün E —

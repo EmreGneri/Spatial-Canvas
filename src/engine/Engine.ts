@@ -13,6 +13,9 @@ import {
   POSITION_TEXTURE_SIZE,
 } from './buffers';
 import { createPointsCloud } from './points';
+import { SplatObject, fillGaussiansFromPointCloud, uploadGaussianData } from './splats';
+import type { GaussianBufferData } from '../shaders/splatFixture';
+import type { SplatSortMode } from '../shaders/splatSort';
 import { createSimulation, type SimulationUniforms } from './simulation';
 import { createGrainPass, type GrainPass, type GrainPassUniforms } from '../shaders/grainPass';
 import {
@@ -195,6 +198,19 @@ export class Engine {
   private lastNonSolidMaterial: THREE.Material | null = null;
 
   /**
+   * GÜN D/render şeridi — 5. render modu 'splat'. Nesne YALNIZCA mod
+   * kaydedilince (registerRenderMode('splat', …)) kurulur: splat kaydedilmemiş
+   * bir kurulumda (embed) üç 384² texture + 147k instance boşuna ayrılmasın.
+   */
+  private splatObject: SplatObject | null = null;
+  /** CPU sıralama yolu (radix = tam, bucket = yaklaşık). SPLAT_PARAMS dışı kol. */
+  private splatSortModeName: SplatSortMode = 'radix';
+  /** Sıralama kapısı: bu opaklığın altındaki splat hiç çizilmez. */
+  private splatMinOpacity = 0.02;
+  /** Viewport (px) — splat Jacobian'ının piksel ölçeği. resize yazar. */
+  private viewportPx = new THREE.Vector2(1, 1);
+
+  /**
    * GÃœN 6 (opt): otomatik DPR dÃ¼ÅŸÃ¼rme. FPS sÃ¼rdÃ¼rÃ¼lebilir eÅŸiÄŸin (30) altÄ±na
    * dÃ¼ÅŸerse drawing buffer 384â†’256'ya iner (karede 2.25x daha az piksel);
    * tekrar 45+ olursa geri yÃ¼kselir. Histerezis: sÄ±k sÄ±k salÄ±nÄ±m yapmaz.
@@ -293,6 +309,19 @@ export class Engine {
       if (uPositions) uPositions.value = this.simulation.positionTexture;
       this.pushLookUniforms();
       this.controls.update();
+      // SPLAT: alpha blend sırası CPU'da kurulur. controls.update()'ten SONRA
+      // (kamera matrisi güncel) ve composer.render()'dan ÖNCE olmalı — bir kare
+      // gecikmiş sıra, dönüş sırasında görünür popping demektir.
+      if (this.splatObject?.mesh.visible) {
+        this.camera.updateMatrixWorld();
+        this.splatObject.update(
+          this.camera,
+          this.splatSortModeName,
+          this.splatMinOpacity,
+          this.viewportPx,
+          this.splatObject.mesh.material as THREE.Material,
+        );
+      }
       this.tickPasses(time / 1000);
       this.composer.render();
       this.countFps();
@@ -373,7 +402,17 @@ setPointsMaterial(material: THREE.Material) {
         break;
       }
     }
-    if (name !== 'solid') this.lastNonSolidMaterial = material;
+    if (name !== 'solid' && name !== 'splat') this.lastNonSolidMaterial = material;
+    if (name === 'splat') {
+      // SPLAT nokta bulutunun material'ı DEĞİLDİR: kendi instanced quad
+      // geometrisi var (aCorner/aSplatIndex), points geometrisinde yok.
+      // Takas YAPILMAZ — yalnızca mod adı ve görünürlük güncellenir; bulut
+      // arkada son sağlam material'ıyla durur (buffer boşsa ona düşülür).
+      this.renderModeName = 'splat';
+      this.splatObject?.bindTextures(material);
+      this.syncRenderVisibility();
+      return;
+    }
     if (name === 'solid' && !this.solidReady) {
       // FotoÄŸraf yok â†’ kabuk yok. Solid material'Ä± nokta bulutuna takmak
       // uv/normal attribute eksikliÄŸinden kÄ±rÄ±k render eder; material takasÄ±
@@ -443,7 +482,12 @@ setPointsMaterial(material: THREE.Material) {
   /** GÃœN B: solid mod aktif + kabuk hazÄ±rsa bulut gizlenir, mesh gÃ¶rÃ¼nÃ¼r. */
   private syncRenderVisibility() {
     const solidActive = this.renderModeName === 'solid';
-    this.points.visible = !(solidActive && this.solidReady);
+    // 'splat' aktif + GaussianBuffer dolu → nokta bulutu gizlenir, splat
+    // nesnesi görünür. Buffer boşsa (fotoğraf yüklenmemiş) nokta bulutunda
+    // kalınır — solid modunun graceful fallback'iyle aynı desen.
+    const splatActive = this.renderModeName === 'splat' && (this.splatObject?.ready ?? false);
+    this.splatObject?.setVisible(splatActive);
+    this.points.visible = !(solidActive && this.solidReady) && !splatActive;
     if (this.solidMesh) {
       this.solidMesh.visible = solidActive && this.solidReady;
       // Mesh ilk kurulumda o andaki material'a baÄŸlanÄ±r; fotoÄŸraf points
@@ -558,6 +602,78 @@ releasePhoto() {
   registerRenderMode(name: string, material: THREE.Material, params: ParamDef[]) {
     this.renderModes.set(name, { material, params });
     if (this.pointsMaterial === material) this.renderModeName = name;
+    // 'splat' AYRI BİR ÇİZİM NESNESİDİR (instanced quad), nokta bulutunun
+    // material takası değil: points geometrisinde aCorner/aSplatIndex yoktur.
+    // Nesne mod kaydedilince kurulur; GaussianBuffer o anda boştur ve ilk
+    // setDepth/setPhoto onu doldurur (refreshGaussians).
+    if (name === 'splat' && !this.splatObject) {
+      this.splatObject = new SplatObject(material, POSITION_TEXTURE_SIZE);
+      this.splatObject.bindTextures(material);
+      this.scene.add(this.splatObject.mesh);
+      this.refreshGaussians();
+      this.syncRenderVisibility();
+    }
+  }
+
+  /**
+   * GaussianBuffer'ı MEVCUT nokta bulutundan tazeler (geçici köprü — Gün 7
+   * füzyonu bunun yerine geçecek, sözleşme aynı kalacak). setDepth ve setPhoto
+   * sonrasında çağrılır: splat modu fotoğrafla birlikte güncel kalsın.
+   */
+  private refreshGaussians() {
+    if (!this.splatObject) return;
+    // Depth yoksa home texture sıfırdır: doldurulursa 147k splat orijinde
+    // üst üste yığılır ve `splatAvailable` YALAN söyler (mod seçilebilir
+    // görünür, ekranda tek leke çıkar). Veri gelene kadar buffer boş kalır,
+    // Engine nokta bulutunda tutar (solid modunun fallback deseni).
+    if (!this.currentDepthTexture) return;
+    const count = fillGaussiansFromPointCloud(
+      this.splatObject.textures,
+      this.homeTexture.image.data as Float32Array,
+      this.imageColorTexture ? (this.imageColorTexture.image.data as Uint8Array) : null,
+      POSITION_TEXTURE_SIZE,
+    );
+    this.splatObject.syncFromTextures(count);
+    this.syncRenderVisibility();
+  }
+
+  /**
+   * D.1 sözleşmesinin ASIL girişi: füzyon (Gün 7) ürettiği GaussianBuffer'ı
+   * buradan verir. Köprü doldurucusunun aksine normal/ölçek gerçek çok-görüntü
+   * çıktısıdır; render tarafında hiçbir şey değişmez.
+   */
+  setGaussians(data: GaussianBufferData | null) {
+    if (!this.splatObject) return;
+    if (!data) {
+      this.splatObject.syncFromTextures(0);
+      this.syncRenderVisibility();
+      return;
+    }
+    uploadGaussianData(this.splatObject.textures, data);
+    this.splatObject.syncFromTextures(data.count);
+    this.syncRenderVisibility();
+  }
+
+  /** Splat modu çizilebilir mi (GaussianBuffer dolu)? UI bunu söyler. */
+  get splatAvailable(): boolean {
+    return this.splatObject?.ready ?? false;
+  }
+
+  /** CPU sıralama yolu — renderer düğümünün params.sortMode'u sürer. */
+  get splatSortMode(): SplatSortMode {
+    return this.splatSortModeName;
+  }
+
+  setSplatSortMode(mode: SplatSortMode) {
+    this.splatSortModeName = mode;
+  }
+
+  /** Son sıralamanın süresi (ms) + çizilen splat sayısı — ölçüm paneli okur. */
+  get splatStats(): { sortMs: number; visible: number } {
+    return {
+      sortMs: this.splatObject?.lastSortMs ?? 0,
+      visible: this.splatObject?.visibleCount ?? 0,
+    };
   }
 
   /** Aktif render modunun adÄ± ('points' | 'ascii'). */
@@ -798,6 +914,10 @@ data,
       this.simulation.seedFrom(this.homeTexture);
       this.seeded = true;
     }
+    // SPLAT köprüsü: GaussianBuffer home + renk grid'inden türer, ikisi de
+    // yukarıda tazelendi. Splat modu kayıtlı değilse (splatObject null) bu
+    // çağrı bedavadır.
+    this.refreshGaussians();
   }
 
 /** Renderers read the normalized R32F depth map through this contract. */
@@ -859,6 +979,8 @@ depth,
     // Ortak uniform'larÄ± tÃ¼m render modlarÄ±na iÅŸle (gelecekte takÄ±lacak
     // material'lar iÃ§in setPointsMaterial aynÄ± ÅŸeyi yapar).
     this.pushSharedUniformsAll();
+    // Splat köprüsü: renk grid'i (gSplatC kaynağı) az önce doldu.
+    this.refreshGaussians();
   }
 
   /** Konum texture'Ä± â€” artÄ±k simÃ¼lasyonun ping-pong RT texture'Ä±. */
@@ -978,6 +1100,9 @@ depth,
     this.composer.setSize(width, height);
     // Grain piksel Ã¶lÃ§eÄŸi drawing buffer'Ä± izler (DPR dahil).
     this.renderer.getDrawingBufferSize(this.grainPass.uniforms.uResolution.value);
+    // Splat Jacobian'ı da DRAWING BUFFER ölçeğinde çalışır: CSS pikseli
+    // verilirse DPR > 1'de elipsler yarı boyutta çizilir (yüzey delinir).
+    this.renderer.getDrawingBufferSize(this.viewportPx);
   }
 
   dispose() {
@@ -1005,6 +1130,7 @@ depth,
     this.videoTexture?.dispose();
 this.simulation.dispose();
     this.points.geometry.dispose();
+    this.splatObject?.dispose();
     this.solidMesh?.geometry.dispose();
     if (this.solidMesh) this.scene.remove(this.solidMesh);
     // KayÄ±tlÄ± material'lar Ã§aÄŸÄ±ranÄ±n malÄ± (App useMemo ile Ã¼retir ve bÄ±rakÄ±r);
