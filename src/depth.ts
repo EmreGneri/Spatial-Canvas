@@ -1,4 +1,7 @@
 import type { pipeline, RawImage } from '@huggingface/transformers';
+// Saf CPU yeniden örnekleme (silhouette.ts hiçbir şey import etmez — model
+// yığınına bağımlılık YOK, eval harness bağımsızlığı korunur).
+import { resampleBilinear } from './engine/reconstruction/silhouette.ts';
 
 /**
  * GÜN D/1 (M6 düzeltmesi) — transformers TEMBEL yüklenir.
@@ -100,6 +103,25 @@ export type DepthEstimateOptions = {
    * kapalı. Varsayılan açık.
    */
   depthSmoothing?: boolean;
+  /**
+   * GÜN E (bulgu 1) — RMBG ÖZNE MASKESİ (segmentation.ts çıktısı, 0..1).
+   *
+   * Verilirse stretch / sobel / eğim sınırlayıcı aşamaları depth-TÜREVLİ sahte
+   * ön plan maskesi (`smoothstep(0.15, 0.8, D)`) yerine BUNU kullanır. Sebep
+   * (ölçüldü, 2026-08-14): yüz yakın planında iki maske örtüşür, ama gövde /
+   * ayna selfie karesinde YAKIN ZEMİN de yüksek D taşıdığı için sahte maskeye
+   * giriyor — `applyForegroundStretch`'in min/max taraması zeminin aralığını
+   * kapsıyor ve özne SIKIŞIK kalıyor (stretch fiilen etkisiz: özne derinlik
+   * aralığı 0.116 → 0.117). Gerçek maskeyle aynı sahnede 0.116 → 0.850 (×7.26).
+   *
+   * Maske depth çıktısıyla aynı görsel alanı kapsar (her ikisi de letterbox
+   * karesinin İÇ kırpımı) ama çözünürlüğü farklıdır (1024 vs 518) — burada
+   * depth boyutuna yeniden örneklenir.
+   *
+   * VERİLMEZSE davranış AYNEN eskisi gibidir (depth-türevli maske + maskesiz
+   * eğim sınırlayıcı): kamera/video yolu ve mevcut testler etkilenmez.
+   */
+  subjectMask?: { data: Float32Array; width: number; height: number };
 };
 
 let estimator: Awaited<ReturnType<typeof pipeline<'depth-estimation'>>> | null = null;
@@ -164,16 +186,38 @@ export async function estimateDepth(
     outHeight = rect.h;
   }
 
+  // GÜN E (bulgu 1): özne maskesi verildiyse depth uzayına örnekle. Boyutlar
+  // zaten eşitse kopya çıkarılmaz (gereksiz tahsis yok).
+  const subject = opts.subjectMask
+    ? opts.subjectMask.width === outWidth && opts.subjectMask.height === outHeight
+      ? opts.subjectMask.data
+      : resampleBilinear(
+          opts.subjectMask.data,
+          opts.subjectMask.width,
+          opts.subjectMask.height,
+          outWidth,
+          outHeight,
+        )
+    : null;
+
   const normalized = normalizeDepth(data, opts.percentile ?? 1);
+  // GÜN E (bulgu 11) — ÖZNE KIRPMA ÇIKARIMI + FREKANS BİRLEŞTİRME.
+  if (subject) {
+    await mergeSubjectDetail(normalized, subject, outWidth, outHeight, source, model, RawImageCtor);
+  }
   if (smoothingEnabled) {
     smoothDepthSteps(normalized, outWidth, outHeight);
   }
   if (detailStrength > 0 && lum) {
     applyDetail(normalized, lum, outWidth, outHeight, detailStrength);
   }
-  // Yüz detay aşamaları aynı ön plan maskesiyle çalışır (smoothstep(0.15, 0.8, D)).
+  // Yüz detay aşamaları ön plan maskesiyle çalışır. GÜN E (bulgu 1): RMBG özne
+  // maskesi varsa OTORİTE ODUR; yoksa eski depth-türevli maskeye düşülür
+  // (smoothstep(0.15, 0.8, D)) — kamera/video yolu ve maskesiz çağrılar aynen.
   const maskFg =
-    stretchEnabled || sobelRelief > 0 ? foregroundMask(normalized, outWidth, outHeight) : null;
+    stretchEnabled || sobelRelief > 0
+      ? (subject ?? foregroundMask(normalized, outWidth, outHeight))
+      : null;
   if (stretchEnabled) {
     applyForegroundStretch(normalized, maskFg!, outWidth, outHeight);
   }
@@ -183,12 +227,181 @@ export async function estimateDepth(
   // EĞİM SINIRLAYICI (en son): detay/stretch/sobel aşamalarının tamamı
   // bittikten SONRA uygulanır — bu aşamalar da yerel sıçrama ekleyebiliyor
   // (sobel mikro rölyefi tek piksellik sırt bırakır), önce çalıştırılsaydı
-  // sınırlama kendi üstüne yazılırdı. Maske YOK: estimateDepth segmentasyon
-  // maskesini görmez (o Engine.setDepth'te üretilir) — sınırlama tüm kareye
-  // uygulanır; imza değişmez, maskeli çağrı yolu limitDepthSlope export'uyla
-  // açıktır.
-  const limited = limitDepthSlope(normalized, outWidth, outHeight, null);
+  // sınırlama kendi üstüne yazılırdı.
+  //
+  // GÜN E (bulgu 1): özne maskesi varsa sınırlama İKİ AYRI BÖLGEDE koşar —
+  // önce maske içi (yalnızca maske içi komşularla), sonra maske dışı (yalnızca
+  // dış komşularla). 0.5 eşiği iki bölgeyi tam bölüştürür: hiçbir piksel iki
+  // kez sınırlanmaz, hiçbiri atlanmaz. Sebep (ölçüldü): tek maskesiz geçişte
+  // özne↔arka plan sıçraması "aşırı eğim" sayılıyor ve öznenin 4 piksellik dış
+  // halkası arka plan seviyesine çekiliyordu (ortalama 0.750 derinlik kaybı,
+  // maks 0.780) — siluet kenarı 3B'de arkaya çöküyordu. Bölgeli koşuda kayıp 0,
+  // arka plan sıçramaları ise sınırlanmaya DEVAM eder (koruma kaybolmaz).
+  // Maske yoksa eski tek geçişli maskesiz davranış aynen korunur.
+  let limited: Float32Array;
+  if (subject) {
+    const inside = limitDepthSlope(normalized, outWidth, outHeight, subject);
+    const outside = new Float32Array(subject.length);
+    for (let i = 0; i < subject.length; i++) outside[i] = subject[i] >= 0.5 ? 0 : 1;
+    limited = limitDepthSlope(inside, outWidth, outHeight, outside);
+  } else {
+    limited = limitDepthSlope(normalized, outWidth, outHeight, null);
+  }
   return { data: limited, width: outWidth, height: outHeight };
+}
+
+/** Kırpma çıkarımının atlandığı eşik: özne bbox'ı karenin bu kadarını zaten
+ *  kaplıyorsa kırpmak modele yeni çözünürlük vermez (ölçüm: Karina ×1.00). */
+const CROP_SKIP_AREA = 0.75;
+
+/**
+ * GÜN E (bulgu 11) — ÖZNE KIRPMA ÇIKARIMI + FREKANS BİRLEŞTİRME.
+ *
+ * Sorun: model tüm kareyi 518²'ye sıkıştırıp görür. Özne karenin küçük bir
+ * parçasıysa (özüm.jpg: %28) gövde modele ~200 px genişlikte gider ve modelin
+ * gövdenin KENDİ yüzey rölyefini çözecek çözünürlüğü olmaz — sahne sıralaması
+ * doğru, yüzey düz çıkar. zSpan'i büyütmek bunu düzeltmez (düz levhayı kalın
+ * düz levha yapar); eksik olan bilgi geri kazanılmalıdır.
+ *
+ * Ölçüm (2026-08-14, maske içi p25-p75): tam kare → özne kırpması
+ *   özüm.jpg     0.120 → 0.259  (×2.17)
+ *   ayna selfie  0.177 → 0.192  (×1.09 — maske kapıyı içerdiği için bbox
+ *                                 zaten tüm kare, kırpacak yer yok)
+ *   KARINA       0.291 → 0.291  (×1.00 — özne kareyi zaten dolduruyor)
+ *
+ * ANATOMİ NEDEN BOZULMAZ — İŞ BÖLÜMÜ:
+ *   ŞEKİL  ← kırpma çıkarımı (modelin yakından gördüğü yüzey yapısı)
+ *   GENLİK ← anatomik yol: `applyForegroundStretch` + sampler `zSpan`
+ * Kırpma çıktısı yalnızca DOĞRUSAL olarak (min/max eşleme) global'in maske içi
+ * bandına oturtulur; şekli birebir korur, toplam kalınlığa karar VERMEZ.
+ * Toplam kalınlık eskisi gibi siluet genişliğinden türer → anatomi sabit.
+ *
+ * En küçük kareler hizalaması (`a·c + b`) BİLEREK KULLANILMADI: kırpmayı düz
+ * global derinliğe uydurduğu için zengin rölyefi geri küçültüyordu — ölçümde
+ * kazanç ×1.00'e düşüyordu, yani düzeltme kendi kendini siliyordu. Tek
+ * görüntüden rölyefin GENLİĞİ zaten bilinemez; bilinebilen ŞEKİLDİR.
+ *
+ * Literatür: bu, tek-görüntü derinlikte "çok çözünürlüklü birleştirme"nin
+ * (Boosting Monocular Depth Estimation, CVPR 2021) sadeleştirilmiş hâlidir —
+ * düşük çözünürlük global tutarlılık, yüksek çözünürlük detay verir.
+ * ÜRETİCİ MODEL YOK: aynı derinlik modeli ikinci kez, daha yakından çağrılır.
+ */
+async function mergeSubjectDetail(
+  depth: Float32Array,
+  mask: Float32Array,
+  w: number,
+  h: number,
+  source: HTMLCanvasElement | HTMLImageElement,
+  model: Awaited<ReturnType<typeof loadDepthModel>>,
+  RawImageCtor: typeof RawImage,
+): Promise<void> {
+  // 1. Özne bbox'ı (depth uzayında) + küçük pay.
+  let x0 = w;
+  let x1 = -1;
+  let y0 = h;
+  let y1 = -1;
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      if (mask[y * w + x] < 0.5) continue;
+      if (x < x0) x0 = x;
+      if (x > x1) x1 = x;
+      if (y < y0) y0 = y;
+      if (y > y1) y1 = y;
+    }
+  }
+  if (x1 < x0 || y1 < y0) return; // maske boş
+  const pad = 8;
+  x0 = Math.max(0, x0 - pad);
+  y0 = Math.max(0, y0 - pad);
+  x1 = Math.min(w - 1, x1 + pad);
+  y1 = Math.min(h - 1, y1 + pad);
+  const bw = x1 - x0 + 1;
+  const bh = y1 - y0 + 1;
+  if ((bw * bh) / (w * h) >= CROP_SKIP_AREA) return; // kırpmanın kazancı yok
+
+  // 2. Kaynak görüntüde karşılık gelen dikdörtgeni kırp. Depth haritası
+  //    letterbox'ın İÇ kırpımıdır → kaynakla aynı en-boy, saf ölçek farkı.
+  const src = toCanvas(source);
+  const sx = src.width / w;
+  const sy = src.height / h;
+  const cx = Math.max(0, Math.round(x0 * sx));
+  const cy = Math.max(0, Math.round(y0 * sy));
+  const cw = Math.min(src.width - cx, Math.max(1, Math.round(bw * sx)));
+  const ch = Math.min(src.height - cy, Math.max(1, Math.round(bh * sy)));
+  const cut = document.createElement('canvas');
+  cut.width = cw;
+  cut.height = ch;
+  cut.getContext('2d', { willReadFrequently: true })!.drawImage(src, cx, cy, cw, ch, 0, 0, cw, ch);
+
+  // 3. Aynı letterbox yolundan ikinci çıkarım.
+  const lb = letterboxCanvas(cut, MODEL_INPUT_SIZE);
+  const out = await model(await RawImageCtor.fromCanvas(lb.canvas));
+  const [ch2, cw2] = out.predicted_depth.dims.slice(-2) as [number, number];
+  const cropDepth = normalizeDepth(
+    cropDepth2(out.predicted_depth.data as Float32Array, cw2, lb),
+    1,
+  );
+  // 4. Kırpma çıktısını bbox ızgarasına ölçekle.
+  const c = resampleBilinear(cropDepth, lb.w, lb.h, bw, bh);
+  void ch2;
+
+  // 5. BANT HİZASI (min/max eşleme — DOĞRUSAL, şekli birebir korur).
+  //
+  // En küçük kareler hizalaması BİLEREK KULLANILMADI: `a·c + b`'yi düz global
+  // derinliğe uydurmak, kırpmanın zengin rölyefini geri KÜÇÜLTÜR — ölçümde
+  // kazanç ×1.00'e düşüyordu (yani düzeltme kendi kendini siliyordu).
+  // Tek görüntüden rölyefin GENLİĞİ zaten bilinemez; bilinebilen ŞEKİLDİR.
+  // Bu yüzden iş bölümü:
+  //   ŞEKİL   ← kırpma çıkarımı (modelin yakından gördüğü yüzey yapısı)
+  //   GENLİK  ← anatomik yol: applyForegroundStretch + sampler zSpan
+  // Burada yalnızca kırpma çıktısı global'in maske içi bandına DOĞRUSAL
+  // oturtulur; stretch sonradan bandı zaten yeniden dağıtır.
+  let cMin = Infinity;
+  let cMax = -Infinity;
+  let gMin = Infinity;
+  let gMax = -Infinity;
+  let n = 0;
+  for (let j = 0; j < bh; j++) {
+    for (let i = 0; i < bw; i++) {
+      const gi = (y0 + j) * w + (x0 + i);
+      if (mask[gi] < 0.5) continue;
+      const cv = c[j * bw + i];
+      const dv = depth[gi];
+      if (cv < cMin) cMin = cv;
+      if (cv > cMax) cMax = cv;
+      if (dv < gMin) gMin = dv;
+      if (dv > gMax) gMax = dv;
+      n++;
+    }
+  }
+  if (n < 32 || !(cMax - cMin > 1e-4) || !(gMax - gMin > 1e-4)) return;
+  const scale = (gMax - gMin) / (cMax - cMin);
+
+  // 6. Maske içinde kırpma şeklini yaz (maske ile yumuşak harman).
+  for (let j = 0; j < bh; j++) {
+    for (let i = 0; i < bw; i++) {
+      const gi = (y0 + j) * w + (x0 + i);
+      const m = Math.min(1, Math.max(0, mask[gi]));
+      if (m <= 0.001) continue;
+      const v = gMin + (c[j * bw + i] - cMin) * scale;
+      depth[gi] = Math.min(1, Math.max(0, depth[gi] + (v - depth[gi]) * m));
+    }
+  }
+}
+
+/** Letterbox karesinden iç dikdörtgeni kopyalar (cropDepth ile aynı iş, ayrı
+ *  ad — cropDepth üstteki akışta kullanılıyor, imza karışmasın). */
+function cropDepth2(
+  data: Float32Array,
+  square: number,
+  rect: { x: number; y: number; w: number; h: number },
+): Float32Array {
+  const out = new Float32Array(rect.w * rect.h);
+  for (let j = 0; j < rect.h; j++) {
+    const s = (j + rect.y) * square + rect.x;
+    out.set(data.subarray(s, s + rect.w), j * rect.w);
+  }
+  return out;
 }
 
 function toCanvas(source: HTMLCanvasElement | HTMLImageElement): HTMLCanvasElement {
@@ -399,6 +612,14 @@ const STRETCH_LO = 0.1;
 const STRETCH_HI = 0.95;
 /** Yumuşatma eşiği: ön plan maskesi bu değerin ALTINDAYSa stretch kapsamı dışı. */
 const STRETCH_MASK_LO = 0.1;
+/**
+ * GÜN E (bulgu 8) — stretch aralık taramasında histogram kırpma yüzdesi (her
+ * iki uçtan). Ölçümle seçildi; gerekçe ve tarama tablosu
+ * `applyForegroundStretch` docstring'inde. `normalizeDepth` sahne geneli için
+ * %1 kullanır — maske içi kuyruk (sızan duvar + uç uzuvlar) çok daha ağır
+ * olduğundan burada daha geniş kırpma gerekir.
+ */
+const STRETCH_TRIM_PCT = 10;
 
 const DEPTH_SMOOTHING_DEFAULT = true;
 const SMOOTH_RADIUS = 1;
@@ -413,7 +634,7 @@ const SMOOTH_SIGMA_R = 0.02;
  * kabartmanın yüksek frekanslı yüz detayları ezilmez. In-place, 0..1
  * sözleşmesinde kalır.
  */
-function smoothDepthSteps(depth: Float32Array, w: number, h: number) {
+export function smoothDepthSteps(depth: Float32Array, w: number, h: number) {
   const weights: { d: number; g: number }[] = [];
   for (let dx = -SMOOTH_RADIUS; dx <= SMOOTH_RADIUS; dx++) {
     weights.push({ d: dx, g: Math.exp(-(dx * dx) / (2 * SMOOTH_SIGMA_S * SMOOTH_SIGMA_S)) });
@@ -457,7 +678,7 @@ function smoothDepthSteps(depth: Float32Array, w: number, h: number) {
 // ---------------------------------------------------------------------------
 
 /** Ön plan maskesi: w_fg = smoothstep(0.15, 0.8, D) — detay maskesiyle aynı. */
-function foregroundMask(depth: Float32Array, w: number, h: number): Float32Array {
+export function foregroundMask(depth: Float32Array, w: number, h: number): Float32Array {
   const out = new Float32Array(depth.length);
   for (let i = 0; i < depth.length; i++) {
     out[i] = smoothstep(DETAIL_MASK_NEAR, DETAIL_MASK_FAR, depth[i]);
@@ -466,27 +687,90 @@ function foregroundMask(depth: Float32Array, w: number, h: number): Float32Array
 }
 
 /**
- * Ön plan derinliğini [STRETCH_LO, STRETCH_HI]'e yeniden dağıtır. Min/max
- * taraması yalnızca M ≥ 0.10 maskesi içinde yapılır (arka plan siluet artığı
- * hesaba katılmaz); maskeli bölge tek ton ise dokunulmaz. Uygulamada maske
- * ile yumuşak harman: maske = 1 tam genişletilir, maske = 0 hiç dokunulmaz —
- * sınırda bıçak kesimi oluşmaz.
+ * Ön plan derinliğini [STRETCH_LO, STRETCH_HI]'e yeniden dağıtır. Tarama
+ * yalnızca M ≥ 0.10 maskesi içinde yapılır; maskeli bölge tek ton ise
+ * dokunulmaz. Maske ile yumuşak harman: maske = 1 tam genişletilir, maske = 0
+ * hiç dokunulmaz — sınırda bıçak kesimi oluşmaz.
+ *
+ * GÜN E (bulgu 8) — ARALIK HAM MIN/MAX DEĞİL, YÜZDELİK KIRPMALIDIR.
+ *
+ * Ham min/max, maskenin UÇLARINA kilitlenir: RMBG maskesine sızan arka plan
+ * yapısı (duvar paneli, kapı kasası, zemin) ve öznenin tek tük en yakın/en
+ * uzak pikselleri aralığı ele geçirir. Sonuç: özne kütlesi bir bantta
+ * SIKIŞIK kalır ve 3B'de ince levha gibi görünür (kullanıcı: "hiç derinlik
+ * yok"). Ölçüm (gerçek fotoğraflar, 2026-08-14):
+ *
+ *   özüm.jpg → maske tek bileşen (%99.5, yani duvar kirlenmesi YOK) ama
+ *              öznenin p25-p75'i yalnızca 0.135 iken min-max 0.844. Ham
+ *              min/max ile stretch kazancı ≈ ×1.0 — ETKİSİZ.
+ *   karina   → p25-p75 0.372 (özne kadrajı doldurduğu için dağılım geniş)
+ *              → eski yolda da çalışıyordu; sorun bu yüzden yalnızca
+ *              gövde/ayna karelerinde görünüyordu.
+ *
+ * ÖLÇÜM UYARISI (bu hata bir kez yapıldı): etkiyi "toplam z aralığı" ile
+ * ölçmek YANILTIR — o değer min/max'a bağlı olduğu için her koşulda doygun
+ * görünür. Doğru metrik öznenin KÜTLE yayılımıdır (z p10-p90). Kırpma
+ * taraması (nokta bulutu z p10-p90):
+ *
+ *   pct:        0      5      10     20
+ *   özüm      0.357  0.549  0.686  0.725
+ *   karina    0.824  0.995  1.164  1.222
+ *
+ * `STRETCH_TRIM_PCT` = 10 ölçülen dizinin dizindeki dirsektir: özüm +%92,
+ * karina +%41. `normalizeDepth` aynı tekniği (256 kovalı histogram, sıralama
+ * yok) sahne geneli için %1 ile kullanır; maske içi kuyruk çok daha ağır
+ * olduğu için burada daha geniş kırpma gerekir.
+ *
+ * Kırpma dışında kalan pikseller hedef banda KELEPÇELENİR (en yakın el / en
+ * uzak omuz doyar) — 0..1 ve STRETCH_HI sözleşmeleri korunur. `pct` = 0 eski
+ * ham min/max davranışına döner (kaçış kapısı, testler kullanır).
  */
-function applyForegroundStretch(depth: Float32Array, mask: Float32Array, w: number, h: number) {
+export function applyForegroundStretch(
+  depth: Float32Array,
+  mask: Float32Array,
+  w: number,
+  h: number,
+  pct = STRETCH_TRIM_PCT,
+) {
   let mn = Infinity;
   let mx = -Infinity;
+  let count = 0;
   for (let i = 0; i < depth.length; i++) {
     if (mask[i] >= STRETCH_MASK_LO) {
       if (depth[i] < mn) mn = depth[i];
       if (depth[i] > mx) mx = depth[i];
+      count++;
     }
   }
-  const span = mx - mn;
+  if (count === 0) return;
+  const rawSpan = mx - mn;
+  let lo = mn;
+  let hi = mx;
+  if (pct > 0 && rawSpan > 1e-4) {
+    const bins = new Float64Array(256);
+    for (let i = 0; i < depth.length; i++) {
+      if (mask[i] < STRETCH_MASK_LO) continue;
+      bins[Math.min(255, Math.max(0, Math.floor(((depth[i] - mn) / rawSpan) * 256)))]++;
+    }
+    const limit = (count * pct) / 100;
+    let acc = 0;
+    for (let i = 0; i < 256 && acc < limit; i++) {
+      acc += bins[i];
+      lo = mn + (i / 256) * rawSpan;
+    }
+    acc = 0;
+    for (let i = 255; i >= 0 && acc < limit; i--) {
+      acc += bins[i];
+      hi = mn + ((i + 1) / 256) * rawSpan;
+    }
+  }
+  const span = hi - lo;
   if (!(span > 1e-4)) return; // ön plan tek ton → genişletilecek bir şey yok
   for (let i = 0; i < depth.length; i++) {
     const m = mask[i];
     if (m > 0.001) {
-      const stretched = STRETCH_LO + (STRETCH_HI - STRETCH_LO) * ((depth[i] - mn) / span);
+      const t = Math.min(1, Math.max(0, (depth[i] - lo) / span));
+      const stretched = STRETCH_LO + (STRETCH_HI - STRETCH_LO) * t;
       depth[i] = depth[i] + (stretched - depth[i]) * m;
     }
   }

@@ -8,8 +8,9 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { absRel, alignSim3, ate, delta125, iou, meanMs, medianMs, rmse, rpe } from '../src/engine/vision/metrics.ts';
-import { makeSyntheticLab } from '../src/engine/vision/lab.ts';
+import { absRel, alignSim3, ate, delta125, foregroundPointShare, iou, meanMs, medianMs, rmse, rpe } from '../src/engine/vision/metrics.ts';
+import { makeSmallSubjectLab, makeSyntheticLab } from '../src/engine/vision/lab.ts';
+import { applyForegroundStretch, foregroundMask, smoothDepthSteps } from '../src/depth.ts';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -60,6 +61,63 @@ assert.ok(Number.isNaN(rpe([[0, 0, 0]], [[0, 0, 0]])), 'RPE tek öğe → NaN');
 // (f) tüm est noktaları aynı (ölçek tanımsız) → çökmez, sonlu sayı döner
 assert.ok(Number.isFinite(ate([[1, 1, 1], [1, 1, 1]], [[0, 0, 0], [2, 0, 0]])), 'ATE dejenere ölçek → sonlu');
 
+// --- 1c. GÜN 2: smoothDepthSteps BİLATERAL yön davranışı (8×8 elle kurulu) ---
+// Ortam 0.5; TEK gürültülü piksel 0.53 — |ΔD| = 0.03 ≈ σ_r → yumuşatma komşulara
+// YAKLAŞTIRIR. 0.8'lik GERÇEK sıçrama (|ΔD| ≫ σ_r = 0.02) KORUNUR: çerçeve
+// kenarları yumuşatma tarafından yenmez.
+{
+  const W = 8, H = 8;
+  const noisy = new Float32Array(W * H).fill(0.5);
+  noisy[3 * W + 3] = 0.53; // gürültülü piksel
+  noisy[3 * W + 5] = 0.8;  // gerçek kenar
+  const before = noisy[3 * W + 3];
+  smoothDepthSteps(noisy, W, H);
+  const after = noisy[3 * W + 3];
+  assert.ok(
+    Math.abs(after - 0.5) < Math.abs(before - 0.5),
+    `smooth: gürültü komşulara yaklaşır (${Math.abs(after - 0.5).toFixed(4)} < ${Math.abs(before - 0.5).toFixed(4)})`,
+  );
+  assert.ok(Math.abs(noisy[3 * W + 5] - 0.8) < 1e-6, 'smooth: gerçek sıçrama korunur (σ_r ≪ |ΔD|)');
+}
+
+// --- 1d. GÜN 2: foregroundMask + applyForegroundStretch (span açılımı) ---
+// Ön plan [0.6, 0.7] bandı (maske smoothstep(0.15, 0.8, ·) ile < 1 — yumuşak
+// harman) + arka plan 0.3. Girdi span'ı açılır; üst uç [0.1, 0.95] hedefine
+// yaklaşır (maske 1 olsaydı tam 0.95 — harman bıçak kesimi önler). Tek ton
+// ön plan dokunulmaz.
+{
+  const W = 8, H = 8;
+  const d = new Float32Array(W * H).fill(0.3);
+  d[3 * W + 4] = 0.6;
+  d[3 * W + 5] = 0.65;
+  d[3 * W + 6] = 0.68;
+  d[3 * W + 7] = 0.7;
+  const mask = foregroundMask(d, W, H);
+  assert.ok(mask[3 * W + 7] > 0.5, 'fg mask: ön plan (0.7) maske eşiğini aşar');
+  assert.ok(mask[3 * W + 0] < 1, 'fg mask: arka plan (0.3) tam 1 değil');
+  applyForegroundStretch(d, mask, W, H);
+  assert.ok(d[3 * W + 7] > 0.92, 'stretch: üst uç [0.1, 0.95] hedefine açılır');
+  assert.ok(d[3 * W + 5] > 0.75, 'stretch: alt uç da açılır (aralık genişler)');
+  let mn = Infinity, mx = -Infinity;
+  for (const v of d) {
+    if (v < mn) mn = v;
+    if (v > mx) mx = v;
+  }
+  assert.ok(mx - mn > 0.6, `stretch: span genişler (${(mx - mn).toFixed(3)} > 0.4 girdi)`);
+  const flat = new Float32Array(W * H).fill(0.6);
+  applyForegroundStretch(flat, foregroundMask(flat, W, H), W, H);
+  assert.ok(Math.abs(flat[0] - 0.6) < 1e-6, 'stretch: tek ton ön plan dokunulmaz (span yok)');
+}
+
+// --- 1e. GÜN 2: foregroundPointShare el hesabı ---
+const psFg = new Float32Array([0, 0, 0, 1, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3]);
+assert.equal(foregroundPointShare(psFg), 1, 'pointShare: tümü ön plan → 1');
+const psBg = new Float32Array([0, 0, 0, 0.4, 1, 1, 1, 0.4]);
+assert.equal(foregroundPointShare(psBg), 0, 'pointShare: BACKDROP_OPACITY (0.4) → 0');
+const psMix = new Float32Array([0, 0, 0, 1, 1, 1, 1, 0.4, 2, 2, 2, 0.7000001, 3, 3, 3, 0.69]);
+assert.equal(foregroundPointShare(psMix), 0.5, 'pointShare: 1 ön plan; eşik 0.7 (Float32: 0.7000001 dahil, 0.69 hariç)');
+assert.ok(Number.isNaN(foregroundPointShare(new Float32Array(0))), 'pointShare boş → NaN');
+
 // --- 2. lab determinizmi ---
 const a = makeSyntheticLab();
 const b = makeSyntheticLab(128, 128);
@@ -75,6 +133,19 @@ const sagParlak = a.gtFg.filter((v, i) => i % a.width >= a.width / 2);
 assert.equal(solParlak.filter((v) => v === 1).length, n / 2, 'sol yarı ön plan');
 assert.equal(sagParlak.filter((v) => v === 0).length, n / 2, 'sağ yarı arka plan');
 
+// --- 2b. GÜN 2: küçük özne sahnesi determinizmi + kompakt geometri ---
+const s1 = makeSmallSubjectLab();
+const s2 = makeSmallSubjectLab(128, 128);
+assert.equal(s1.gtDepth.length, s2.gtDepth.length, 'küçük özne: aynı boyut');
+let smallFg = 0;
+for (let i = 0; i < s1.gtDepth.length; i++) {
+  assert.equal(s1.luminance[i], s2.luminance[i], `küçük özne luminance deterministik @${i}`);
+  assert.equal(s1.gtDepth[i], s2.gtDepth[i], `küçük özne gtDepth deterministik @${i}`);
+  if (s1.gtFg[i] === 1) smallFg++;
+}
+// Daire r=30 → alan ≈ %17 (±%1): "belirgin küçük özne" hedefi %15-20 içinde.
+assert.ok(smallFg > 0.15 * s1.gtDepth.length && smallFg < 0.2 * s1.gtDepth.length, `küçük özne alan %15-20 (${((100 * smallFg) / s1.gtDepth.length).toFixed(1)}%)`);
+
 // --- 3. uçtan uca eval çalışması + şema + kol davranışı ---
 const r = spawnSync(process.execPath, ['scripts/eval.mjs'], { cwd: ROOT, encoding: 'utf8' });
 assert.equal(r.status, 0, `eval.mjs çıkış kodu 0 (stderr: ${r.stderr})`);
@@ -82,7 +153,7 @@ assert.match(r.stdout, /^synthetic-lab [0-9a-f]{7,9}: /, 'tek satır özet');
 
 // D.5 YAPISAL DOĞRULAYICI — TS tipleri çalışma zamanında hiçbir şeyi
 // zorlamaz (üretici düz JS'tir), o yüzden şema burada elle denetlenir ve
-// ÜRETİLEN ÜÇ RAPORUN HEPSİ bu kapıdan geçer (eksik/fazla anahtar = hata).
+// ÜRETİLEN TÜM RAPORLAR bu kapıdan geçer (eksik/fazla anahtar = hata).
 const ABLATION_ARMS = [
   'ao',
   'focusBoost',
@@ -123,9 +194,25 @@ function validateReport(rpt, label) {
 const report = JSON.parse(readFileSync(join(ROOT, 'eval-out', 'report.json'), 'utf8'));
 const focusOff = JSON.parse(readFileSync(join(ROOT, 'eval-out', 'report-focusOff.json'), 'utf8'));
 const edgeOn = JSON.parse(readFileSync(join(ROOT, 'eval-out', 'report-edgeOn.json'), 'utf8'));
-validateReport(report, 'report.json');
-validateReport(focusOff, 'report-focusOff.json');
-validateReport(edgeOn, 'report-edgeOn.json');
+const smoothOn = JSON.parse(readFileSync(join(ROOT, 'eval-out', 'report-smoothOn.json'), 'utf8'));
+const smoothOff = JSON.parse(readFileSync(join(ROOT, 'eval-out', 'report-smoothOff.json'), 'utf8'));
+const stretchOn = JSON.parse(readFileSync(join(ROOT, 'eval-out', 'report-stretchOn.json'), 'utf8'));
+const stretchOff = JSON.parse(readFileSync(join(ROOT, 'eval-out', 'report-stretchOff.json'), 'utf8'));
+const importanceOn = JSON.parse(readFileSync(join(ROOT, 'eval-out', 'report-importanceOn.json'), 'utf8'));
+const importanceOff = JSON.parse(readFileSync(join(ROOT, 'eval-out', 'report-importanceOff.json'), 'utf8'));
+for (const [name, rpt] of [
+  ['report.json', report],
+  ['report-focusOff.json', focusOff],
+  ['report-edgeOn.json', edgeOn],
+  ['report-smoothOn.json', smoothOn],
+  ['report-smoothOff.json', smoothOff],
+  ['report-stretchOn.json', stretchOn],
+  ['report-stretchOff.json', stretchOff],
+  ['report-importanceOn.json', importanceOn],
+  ['report-importanceOff.json', importanceOff],
+]) {
+  validateReport(rpt, name);
+}
 assert.equal(typeof report.params.focusBoost, 'number', 'şema: params.focusBoost sayı');
 for (const key of ['ao', 'letterbox_vs_distort', 'importanceSampling', 'depthSmoothing', 'foregroundStretch']) {
   assert.equal(report.params[key], null, `şema: ${key} uygulanmadı (null)`);
@@ -156,6 +243,28 @@ const edgeDiffers =
   get(edgeOn, 'delta1.25') !== get(focusOff, 'delta1.25');
 assert.ok(edgeDiffers, 'edge kolu ölçülebilir fark üretir (inert kol raporlanmaz)');
 
+// --- 4b. GÜN 2 kolları: çalışmalar GERÇEKTEN ölçülebilir fark üretiyor mu ---
+// Kıyas bazları: smoothOff (gürültülü, işlemsiz), stretchOff (sıkıştırılmış,
+// işlemsiz), importanceOff — her ikili YALNIZCA ilgili kolda ayrışır (D.5 tek
+// değişken); en az bir metrik farklı olmalı, aksi halde kol yine ölçmüyordur.
+const diff = (r1, r2, metrics) =>
+  metrics.some((m) => r1.results.some((x) => x.metric === m) && get(r1, m) !== get(r2, m));
+assert.equal(smoothOn.params.depthSmoothing, 1, 'smooth kolu: depthSmoothing uygulandı');
+assert.equal(smoothOff.params.depthSmoothing, 0, 'smooth kapalı kol: depthSmoothing 0');
+assert.equal(smoothOn.params.foregroundStretch, null, 'smooth kolu: stretch ile ayrışmaz');
+assert.ok(diff(smoothOn, smoothOff, ['AbsRel', 'RMSE', 'delta1.25']), 'smooth kolu ölçülebilir fark üretir');
+assert.ok(get(smoothOn, 'RMSE') < get(smoothOff, 'RMSE'), 'smooth: gürültü eritme RMSE iyileştirir');
+assert.equal(stretchOn.params.foregroundStretch, 1, 'stretch kolu: foregroundStretch uygulandı');
+assert.equal(stretchOff.params.foregroundStretch, 0, 'stretch kapalı kol: foregroundStretch 0');
+assert.ok(diff(stretchOn, stretchOff, ['AbsRel', 'RMSE', 'delta1.25']), 'stretch kolu ölçülebilir fark üretir');
+assert.equal(importanceOn.params.importanceSampling, 1, 'importance kolu: uygulandı');
+assert.equal(importanceOff.params.importanceSampling, 0, 'importance kapalı kol: 0');
+assert.ok(diff(importanceOn, importanceOff, ['foregroundPointShare']), 'importance kolu ölçülebilir fark üretir');
+assert.ok(
+  get(importanceOn, 'foregroundPointShare') > get(importanceOff, 'foregroundPointShare'),
+  'importance: ön plan payı açıkken yüksek (kompakt özneye yığılma)',
+);
+
 // --- 5. harness determinizmi: iki koşu, aynı metrikler (timing hariç) ---
 const r2 = spawnSync(process.execPath, ['scripts/eval.mjs'], { cwd: ROOT, encoding: 'utf8' });
 assert.equal(r2.status, 0, 'ikinci eval koşusu çıkış kodu 0');
@@ -163,5 +272,58 @@ const rerun = JSON.parse(readFileSync(join(ROOT, 'eval-out', 'report.json'), 'ut
 for (const metric of ['AbsRel', 'RMSE', 'delta1.25', 'IoU']) {
   assert.equal(get(rerun, metric), get(report, metric), `determinizm: ${metric} iki koşuda aynı`);
 }
+// GÜN 2 kolları da iki koşuda deterministik (timing hariç — OS/JIT varyansı
+// metrik değildir, zamanlama koşuya göre oynamaya izinlidir).
+for (const [name, rpt] of [
+  ['report-smoothOn.json', smoothOn],
+  ['report-smoothOff.json', smoothOff],
+  ['report-stretchOn.json', stretchOn],
+  ['report-stretchOff.json', stretchOff],
+  ['report-importanceOn.json', importanceOn],
+  ['report-importanceOff.json', importanceOff],
+]) {
+  const rr = JSON.parse(readFileSync(join(ROOT, 'eval-out', name), 'utf8'));
+  for (const row of rpt.results) {
+    if (row.metric === 'medianMs') continue;
+    const hit = rr.results.find((x) => x.metric === row.metric && x.split === row.split);
+    assert.ok(hit, `${name}: ${row.metric}/${row.split} ikinci koşuda var`);
+    assert.equal(hit.value, row.value, `determinizm: ${name} ${row.metric}/${row.split}`);
+  }
+}
 
-console.log('OK (eval harness: metrics + ATE/RPE, lab determinism, 3 rapor D.5 şeması, focusBoost + edgeStrength kolları, koşular arası determinizm)');
+// --- GÜN E (M9): PİKSEL METRİKLERİNDE UZUNLUK EŞİTLİĞİ ---
+//
+// Eskiden bu dört metrik `pred.length` üzerinde dönüp `gt[i]` okuyordu: diziler
+// farklı uzunluktaysa `gt[i]` undefined olur, `undefined > 0` ve
+// `undefined >= 0.5` false döner — eksik GT SESSİZCE "geçersiz piksel" ya da
+// "arka plan" sayılır ve fonksiyon hata fırlatmadan SAYI üretirdi. `ate`/`rpe`
+// bu denetimi zaten yapıyordu; piksel metrikleri yapmıyordu (tutarsızlık).
+// Sözleşme: uzunluk eşit değilse NaN — D.5 "sonuç satırında NaN YASAK" kuralı
+// gereği rapor doğrulaması patlar, yani hata SESLİ olur.
+{
+  const short = new Float32Array([1, 2]);
+  const long = new Float32Array([1, 2, 3, 4]);
+  for (const [name, fn] of [
+    ['absRel', absRel],
+    ['rmse', rmse],
+    ['delta125', delta125],
+    ['iou', iou],
+  ]) {
+    assert.ok(Number.isNaN(fn(short, long)), `${name}: kısa pred / uzun gt NaN dönmeli`);
+    assert.ok(Number.isNaN(fn(long, short)), `${name}: uzun pred / kısa gt NaN dönmeli`);
+  }
+  // Eşit uzunlukta davranış DEĞİŞMEDİ (regresyon nöbetçisi — 1. bölümdeki el
+  // hesabı değerleriyle aynı diziler).
+  assert.equal(absRel(p, g), 0.5);
+  assert.ok(Number.isFinite(rmse(p, g)) && Number.isFinite(delta125(p, g)));
+  const mA = new Float32Array([1, 1, 0, 0]);
+  const mB = new Float32Array([1, 0, 0, 0]);
+  assert.equal(iou(mA, mB), 0.5);
+  // Boş kesişim/birleşim hâlâ NaN (eski sözleşme korunur — uzunluk denetimi
+  // bunu gölgelememeli).
+  const z = new Float32Array([0, 0]);
+  assert.ok(Number.isNaN(iou(z, z)));
+  console.log('[M9] uzunluk eşitliği: absRel/rmse/delta125/iou farklı uzunlukta NaN döndürüyor ✓');
+}
+
+console.log('OK (eval harness: metrics + ATE/RPE + M9 uzunluk denetimi, lab determinism, 9 rapor D.5 şeması, focusBoost + edgeStrength + smooth/stretch/importance kolları, koşular arası determinizm)');

@@ -214,6 +214,162 @@ Nesne maskesi (`segmentation.ts`, RMBG) verildiğinde:
 - **SIZMA KORUMASI YERİ DEĞİŞMEDİ:** güven sınırı hâlâ fonksiyon sonundaki SON
   AND'dir (`mask < 0.5 → 0`) — morfolojik kapanış, bileşen birleştirme veya
   satır dolgusu hiçbir arka plan pikselini diriltemez.
+- **DİLASYON TEK YERDE (Gün E, bulgu 2).** Maske dilate + tüy işlemi YALNIZCA
+  `segmentation.ts` içinde, maskenin KENDİ çözünürlüğünde (1024²) ve
+  `MASK_DILATE_RADIUS` = 4 px ile uygulanır. `Engine.setDepth` maskeyi depth
+  boyutuna yalnızca **resample eder, ikinci kez dilate ETMEZ.** Eskiden orada
+  `round(MASK_DILATE_RADIUS × maskWidth/width)` = 8 px'lik ikinci bir geçiş
+  vardı: (a) iki aşama birbirinden habersizdi, etkileri çarpışıyordu; (b) ölçek
+  çarpanı ters yöndeydi — 1024 → 518 küçültmesini telafi etmek yarıçapı BÖLMEYİ
+  gerektirir (4/1.98 ≈ 2), çarpmayı değil. Ölçüm (2026-08-14): ham özne alanına
+  göre çift dilasyon **+%23.9**, tek dilasyon **+%6.2**; 14 px'lik kol–gövde
+  boşluğu çift dilasyonda tamamen doluyordu (topaklaşma), tek dilasyonda açık
+  kalıyor. `scripts/verify-curtain.mjs` bu ikinci geçişi hiç çalıştırmıyordu —
+  üretim yolu ile tek gerçek-fotoğraf testi ayrışmıştı; artık aynı hesap.
+
+## Derinlik Son-İşleme Maskesi (`depth.ts`, Gün E — bulgu 1)
+
+`estimateDepth`'in stretch / sobel / eğim sınırlayıcı aşamaları hangi "ön plan"
+tanımını kullanır:
+
+- **RMBG özne maskesi OTORİTEDİR.** `estimateDepth(source, { subjectMask })`
+  verildiğinde üç aşama da bu maskeyi kullanır; maske depth çıktısına
+  `resampleBilinear` ile ölçeklenir (1024 vs 518 — ikisi de letterbox karesinin
+  iç kırpımı, aynı görsel alan).
+- **Maske verilmezse eski davranış AYNEN korunur:** depth-türevli sahte maske
+  (`smoothstep(0.15, 0.8, D)`) + maskesiz eğim sınırlayıcı. Kamera/video yolu ve
+  maskesiz çağrılar bit-bit aynıdır (regresyon testi: `after_check` ölçümü).
+- **Çağrı sırası sözleşmesi:** `App.tsx` fotoğraf yolunda `segmentForeground`
+  ARTIK `estimateDepth`'ten ÖNCE koşar. Segmentasyon butonu sonradan açılırsa
+  depth maskeyle YENİDEN çıkarılır (önbellekteki depth maske-kördür).
+- **Gerekçe (ölçüldü, 2026-08-14).** Sahte maske yüz yakın planında gerçek
+  maskeyle örtüşür, ama gövde / ayna selfie karesinde YAKIN ZEMİN de yüksek D
+  taşıdığı için maskeye giriyor: `applyForegroundStretch`'in min/max taraması
+  zemini kapsıyor ve özne sıkışık kalıyordu (özne derinlik aralığı 0.116 →
+  0.117, yani stretch fiilen etkisiz). Gerçek maskeyle aynı sahnede 0.116 →
+  0.850. Özne İÇ bölgesinde tam zincir sonrası rölyef std'si **0.0307 → 0.2105
+  (×6.86)**.
+- **Eğim sınırlayıcı BÖLGE-AYRIK koşar.** Maske varken önce maske içi (yalnız
+  iç komşularla), sonra maske dışı (yalnız dış komşularla) sınırlanır; 0.5
+  eşiği iki bölgeyi tam bölüştürür (hiçbir piksel iki kez sınırlanmaz, hiçbiri
+  atlanmaz). Tek maskesiz geçişte özne↔arka plan sıçraması "aşırı eğim"
+  sayılıyor ve öznenin 4 piksellik dış halkası arka plan seviyesine çekiliyordu
+  (ortalama **0.750** derinlik kaybı, maks 0.780) — siluet kenarı 3B'de arkaya
+  çöküyordu. Arka plan sıçramalarının sınırlanması KAYBOLMAZ.
+- **EĞİM TAVANI KARARI (Gün E, bulgu 6 — KAPANDI, `MAX_SLOPE_PER_PX`
+  DEĞİŞTİRİLMEDİ).** Bulgu 1 sonrası şüphe: stretch gerçekten çalıştığı için
+  öznenin İÇ eğimleri büyüyor (gövde sahnesinde kazanç ×7.30) ve 0.02 tavanına
+  takılıyor — sınırlayıcı kazanılan rölyefi geri alıyor mu? **Ölçüm: hayır.**
+  - Rölyef maliyeti: sentetik gövde sahnesinde tavanlı 0.2105 vs tavansız
+    0.2104 (**%−0.07**); gerçek büst fotoğrafında 0.2044 vs 0.2012 (**%−1.63**,
+    yani tavanlı olan daha yüksek). İki bağımsız sahnede de kayıp YOK.
+  - Koruma sürüyor: stretch sonrası aykırı sivrilme (3×3, komşusundan 0.10
+    kopuk tepe) tavansız 0.4951, tavanlı 0.0309 — **×16 bastırma**.
+  - Tavan çok sayıda pikseli hafifçe kırpar (gövde sahnesinde ~15.9k px × 0.030)
+    ama bu rölyefe yansımaz; kazanç-ölçekli tavan (0.02 × stretch kazancı)
+    denendi: kırpılan piksel 15897 → 32 düşüyor, rölyef std AYNI kalıyor
+    (0.2105), buna karşılık sivrilme bastırması 0.0309 → 0.0928'e zayıflıyor.
+    Yani ölçekleme, ölçülebilir bir kazanç vermeden korumayı gevşetirdi.
+  - **Karar:** tavan sabit 0.02 kalır. Kırpılan piksel sayısı tek başına kusur
+    göstergesi DEĞİLDİR — karar rölyef ölçümüne dayanır.
+    `verify-depth-mask.mjs` [6] bloğu bunu kilitler: rölyef maliyeti %5'i
+    aşarsa ya da sivrilme bastırması ×4'ün altına düşerse test patlar.
+
+### Test kapsamı (Gün E, bulgu 3)
+
+- `scripts/verify-depth-mask.mjs` (zincirin 11. script'i, model YÜKLEMEZ):
+  kontrollü SENTETİK sahnelerde yönlü iddiaları kilitler — gövde rölyef kazancı
+  ×6.86 (eşik ×4), sahte maske sızması %77 → %0, bölge-ayrık sınırlayıcıda
+  kenar aşınması tam 0, maske alan şişmesi +%6.2 (eşik %10) ve kol–gövde
+  boşluğunun açık kalması, zSpan ölçek tutarlılığı, determinizm.
+- `scripts/verify-curtain.mjs`: GERÇEK fotoğrafta aynı metrikleri raporlar ve
+  kök nedenin orada da bulunduğunu doğrular. **Yönlü assert YOKTUR** — asset
+  bir büsttür, yani bulgu 1'in zaten çalışan vakası; ayrıca std iki yol
+  arasında karşılaştırılabilir değildir (maske-kör yol std'yi kenar çökmesi ve
+  derinlikle korele stretch kazancı üzerinden yapay şişirir). Kendi
+  gövde/ayna fotoğrafını ölçmek için: `node scripts/verify-curtain.mjs <yol>`.
+- **Bilinen boşluk:** repoda gövde/ayna fotoğrafı YOK (üretici model yasak,
+  lisanslı görsel indirilmedi) — gerçek dünyada doğrulama kullanıcının kendi
+  karesiyle yapılır.
+
+## Stretch Aralığı (`depth.ts`, Gün E — bulgu 8)
+
+`applyForegroundStretch` aralığı **ham min/max DEĞİL, %`STRETCH_TRIM_PCT`
+(= 10) histogram kırpmalıdır** (her iki uçtan, 256 kova, sıralama yok).
+
+Ham min/max maskenin uçlarına kilitlenir — sızan duvar/kapı, en yakın el, en
+uzak omuz — ve özne KÜTLESİ sıkışık kalır; 3B'de ince levha görünür. Ölçüm
+(gerçek fotoğraflar): özüm.jpg maskesi tek bileşen (%99.5, duvar kirlenmesi
+YOK) ama öznenin p25-p75'i 0.135 iken min-max 0.844 → ham min/max ile stretch
+kazancı ≈ ×1.0, yani etkisiz.
+
+**ÖLÇÜM TUZAĞI (bir kez düşüldü, kayda geçiyor):** etkiyi *toplam z aralığı*
+ile ölçmek YANILTIR — min/max her koşulda doyduğu için kırpma hiç işe
+yaramıyormuş gibi görünür ve doğru düzeltme yanlışlıkla geri alınır. Doğru
+metrik öznenin **kütle yayılımıdır** (p10-p90).
+
+Nokta bulutu z p10-p90 (gerçek fotoğraflar, 2026-08-14):
+
+| Foto | kırpmasız | kırpma %10 |
+|---|---|---|
+| özüm.jpg | 0.357 | **0.686** (+%92) |
+| ayna selfie | 0.644 | **0.801** (+%24) |
+| AESPA-KARINA-5 | 0.824 | **1.164** (+%41) |
+
+Kırpma dışında kalan pikseller hedef banda KELEPÇELENİR (en yakın el doyar);
+0..1 ve `STRETCH_HI` sözleşmeleri korunur. `pct = 0` eski ham min/max
+davranışına döner (testlerin kullandığı kaçış kapısı).
+`verify-depth-mask.mjs` [7] bloğu kilitler.
+
+## Dejenere Maske Koruması (`App.tsx`, Gün E — bulgu 9)
+
+RMBG bazı karelerde **her pikseli ön plan** döndürüyor (ölçüldü: ayna
+selfie'sinde ortalama-ton dolgusuyla %100). Böyle bir maske hiçbir şey ayırmaz
+ama ZARAR verir: stretch aralığı sahnenin tamamına açılır (özne bandı yine
+sıkışır) ve siluet AND'i arka planı elemez. Boş maske koruması zaten vardı;
+artık **ön plan oranı > %92 olan maske de atlanır** ve depth maskesiz koşar.
+Eşik gerekçesi: gerçek bir özne kadrajı doldursa bile RMBG kenarlarda 0
+bırakır; %92 üstü pratikte "model pes etti" demektir.
+
+## zSpan Sözleşmesi (`sampler.ts`, Gün E — bulgu 4)
+
+```
+zSpan = ANATOMIC_DEPTH_RATIO · 2 · min(rx, ry) / min(halfW, halfH)
+```
+
+**KADRAJ YÖNÜ DERİNLİĞİ DEĞİŞTİRMEZ.** Dünya uzayında y hep ±`halfH`, x ise
+±`halfW = (w/h)·halfH`'tir; yani DİKEY kadrajda dünya genişliği 1'in altına
+iner (özüm.jpg 0.751, ayna selfie 0.562) ve siluetin `rx`'i bu daralmış ölçekte
+ölçülür. Bölen olmadan `min(rx, ry)` kadraja göre FARKLI FİZİKSEL EKSENİ seçer
+(yatay karede yükseklik, dikeyde genişlik) ve aynı özne yalnızca kadraj yönü
+yüzünden daha sığ çizilirdi. Yarı eksen artık kadrajın KISA kenarı biriminde
+ölçülür: yatay kadrajda bölen 1'dir (davranış aynen korunur), dikeyde daralma
+geri alınır.
+
+`ANATOMIC_DEPTH_RATIO` DEĞİŞMEDİ — düzeltilen şey anatomi değil, kadraj yönünün
+derinliğe sızmasıdır (yön bir sahne özelliği değildir).
+
+**Ölçüm (gerçek fotoğraflar, `assets/`, 2026-08-14)** — son nokta bulutu ön plan
+z aralığı (stretch zaten doyduğu için pratikte zSpan'a eşittir):
+
+| Foto | oran | önce | sonra |
+|---|---|---|---|
+| AESPA-KARINA-5.webp | 1.50 (yatay) | 1.342 | **1.342** (değişmez) |
+| özüm.jpg | 0.75 (dikey) | 0.550 | **0.732** (+%33) |
+| ayna selfie | 0.56 (dikey) | 0.513 | **0.913** (+%78) |
+
+`verify-depth-mask.mjs` [5] bloğu kilitler: aynı özne dört kadraj oranında
+(yatay 1.50 / kare / dikey 0.75 / dikey 0.56) **aynı zSpan** üretmeli (Δ < 0.01,
+ölçülen 0.552–0.558), eski bölensiz formülün kadraja duyarlı olduğu
+(×1.78 sapma) senaryo nöbetçisi olarak doğrulanır, ve özne ×1.5 büyüyünce
+zSpan ×1.5 olmalı (ölçek tutarlılığı korunur).
+
+**Denetim geçmişi (dürüstlük kaydı):** bu madde iki kez YANLIŞ kapatıldı.
+İlkinde "gövde 3.5× sığlaşıyor" gerekçesi yanlış çerçevelenmişti; ikincisinde
+varsayılan antropometriye bakılıp "formül doğru" denmişti. İkisi de gerçek
+çıktı ölçülmeden verilmiş kararlardı. Doğru teşhis ancak gerçek fotoğraflar
+(`assets/`) uçtan uca ölçülünce çıktı: son z aralığı ≈ zSpan, yani stretch
+değil zSpan darboğaz.
 
 ## Kamera / Video Yolu (Gün 2 + Gün 6)
 
@@ -506,14 +662,45 @@ gider. Tip karşılığı: `src/engine/vision/types.ts` → `PoseTrackRecord`.
   / DIODE val) indirmeden önce lisans + boyut teyit edilir; D.7 gereği gerçek
   veri kümesi metrikleri sentetik GT'den SONRA gelir.
 
-### D.6 Akış Sözleşmesi (G3)
+- **Gün 2 — bilinçli null kollar:** `ao` ve `letterbox_vs_distort` hiçbir
+  çalışmada doldurulmaz, ikisi de `null` raporlanır. `ao`: AO, komşu
+  yüzeylerin bloklama eğrisini örnekler; bu fazdaki sahnelerde (sentetik lab,
+  küçük özne) ölçülebilir bir fark üretmiyor ve "AO 0/açık" ikilisi null
+  değil, asılsız sayı olurdu — sayı ile kol doldurmak D.5'te YASAK.
+  `letterbox_vs_distort`: SFU beslemesini iki yoldan (letterbox kırpma vs
+  serbest oran distorsiyonu) karşılaştıracak kol; şema sürüm 1'de FOV
+  sözleşmesi (60° dikey) her ikisini de örtüştüğü için kol bu fazda tanımsız —
+  gerçek video girdi kümesiyle (letterbox çalışmaları) doldurulacak.
+- **Gün 2 — yeni ölçülen kollar:** `depthSmoothing` (bilateral adım
+  yumuşatması), `foregroundStretch` (ön plan min/max açılımı) ve
+  `importanceSampling` artık ayrı rapor dosyalarında ölçülür
+  (`report-smoothOn/Off.json`, `report-stretchOn/Off.json`,
+  `report-importanceOn/Off.json`). Kolların OFF ikilisi 0 değerli, DIĞER
+  kollar sabit null'dur; yalnızca ilgili anahtar 1 ya da 0 olur — raporlarda
+  "işlem yok" kolları `medianMs = 0` ile işaretlenir (ölçülecek işlem yok;
+  D.5 timing metodolojisi yalnızca ON kollarına uygulanır).
+
+### D.6 Akış Sözleşmesi (G3 + G4)
 
 - `src/engine/vision/flow.ts`: Shi-Tomasi köşe + piramidal Lucas-Kanade,
-  **320×180, 300–500 nokta**; çıktı `{ x, y, u, v, status }`.
+  **320×180, 300–500 nokta**; çıktı `{ x, y, u, v, status }`. (G3, kilitli.)
 - Zamansal depth: akışla warp edilmiş EMA + ileri-geri tutarlılık oklüzyon
-  maskesi.
+  maskesi (G4, `src/engine/vision/temporal.ts`).
 - `verify-flow.mjs`: sentetik kaydırma/döndürmede bilinen akışa karşı hata
   < eşik.
+- Optik akış (`flow.ts`): kenar bandı (~±28 px, piramit×pencere) büyük
+  hareketlerde status=0 döner — belgeli LK sınırı, düzeltme değil.
+- **Zamansal derinlik (`temporal.ts`, G4):** seyrek akış NN ile yoğunlaştırılır
+  (IDW ölçümde 55× kötü: 3.2 px vs 0.058 px max hata); oklüzyon = ileri-geri
+  round-trip ≤ 0.1 px VE NN mesafesi ≤ 28 px (yoksa ham derinlik aynen geçer);
+  EMA **α=0.3**. Sabitlerin tamamı 2026-08-14 ölçümlerinden. **Kazandığı
+  bölge:** yumuşak (düşük-frekanslı) derinlik haritaları — medyan RMSE
+  0.0229 vs naif EMA 0.0250 vs ham 0.0308 (N=6, salınımlı ≤2.2 px kayma +
+  korelasyonlu gürültü). **Bilinen sınır (belgeli, bug değil):** sert kenar
+  (lab gtDepth) sahnelerinde bilinear warp 2-4 px kenar bandı üretir ve EMA'nın
+  gürültü kazancını yutar (0.0343 vs 0.0318) — kenar-korumalı warp backlog'ta.
+  `verify-temporal.mjs`: 5 grup + adversarial belgeleme (assert'siz).
+- `verify` zinciri 10 script (G4'te verify-temporal eklendi).
 
 ### D.7 Kesme Sırası (imzalanan)
 

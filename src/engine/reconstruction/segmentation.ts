@@ -33,7 +33,7 @@ import {
   RawImage,
   SegformerForSemanticSegmentation,
 } from '@huggingface/transformers';
-import { dilateAndFeatherMask } from './silhouette.ts';
+import { dilateAndFeatherMask, keepLargestComponent } from './silhouette.ts';
 
 // Model ağırlıkları ve ORT runtime yerel — CDN yok, ağ yok (depth.ts ile aynı
 // sözleşme). Değerler idempotent: depth.ts önce çalışsa bile aynı sonuç.
@@ -104,7 +104,9 @@ export async function segmentForeground(
   }
   // TUR 10: sert kesim yerine dilate + feather — yüz/el kenarı delikleri
   // güven marjıyla kapanır; perde koruması (AND eşiği) değişmez.
-  const mask = dilateAndFeatherMask(raw, lb.w, lb.h);
+  // GÜN E (bulgu 12): önce kopuk parçaları düşür (özneye bitişik OLMAYAN RMBG
+  // hataları — kapı kasası, zemin), sonra dilate + tüy.
+  const mask = dilateAndFeatherMask(keepLargestComponent(raw, lb.w, lb.h), lb.w, lb.h);
   return { mask, width: lb.w, height: lb.h };
 }
 
