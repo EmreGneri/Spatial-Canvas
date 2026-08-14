@@ -198,8 +198,18 @@ const SPLAT_VERTEX = /* glsl */ `
     float disc = sqrt(max(tr * tr * 0.25 - det, 0.0));
     float l1 = tr * 0.5 + disc;
     float l2 = max(tr * 0.5 - disc, 0.1);
-    // Büyük özvektör: (b, l1 - a) — b ≈ 0 iken eksen hizalıdır.
-    vec2 e1 = normalize(abs(b) > 1e-6 ? vec2(b, l1 - a) : vec2(1.0, 0.0));
+    // Büyük özvektör: (b, l1 - a). b ≈ 0 iken matris ZATEN köşegendir ve bu
+    // formül 0/0'a düşer — o dalda eksen, BÜYÜK özdeğerin hangi köşegen
+    // girdiye ait olduğuna bakılarak seçilir.
+    // (Hata geçmişi: köşegen dalda koşulsuz vec2(1,0) seçiliyordu. Σ₂ köşegen
+    // olduğunda — merkezdeki ya da eksen hizalı HER splat — büyük yarıçap
+    // yanlış eksene yazılıyordu: elips 90° dönük çiziliyor, normal Y ekseni
+    // etrafında eğildiğinde YATAY yerine DİKEY sıkışıyordu. Ölçüm: 0/30/45/60/
+    // 75° için h/w = 1.000/0.865/0.712/0.500/0.269 — kısalma miktarı doğru
+    // (cos θ), ekseni yanlıştı.)
+    vec2 e1 = abs(b) > 1e-6
+      ? normalize(vec2(b, l1 - a))
+      : (a >= d ? vec2(1.0, 0.0) : vec2(0.0, 1.0));
     vec2 e2 = vec2(-e1.y, e1.x);
     float r1 = min(${SPLAT_CUTOFF_SIGMA.toFixed(1)} * sqrt(l1), uMaxScreenRadius);
     float r2 = min(${SPLAT_CUTOFF_SIGMA.toFixed(1)} * sqrt(l2), uMaxScreenRadius);
