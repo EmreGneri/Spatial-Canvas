@@ -178,33 +178,44 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
       await loadDepthModel();
       say(`model yüklendi            ${Math.round(performance.now() - t0)} ms`);
 
-      const t1 = performance.now();
-      const depth = await estimateDepth(source);
-      say(`çıkarım                  ${Math.round(performance.now() - t1)} ms  (${depth.width}x${depth.height})`);
-
       // Nesne/arka plan ayırma (RMBG): fotoğraflarda OTOMATİK — Gün B temizlik
       // kararı: solid mesh silüeti maskeyle kesilir (arka plan büstü yastığa
       // çevirir), parçacıklar da arka planı atar. Maske depth ile aynı görsel
       // alanı kapsar (letterbox + kırpım) ama boyutu farklıdır; Engine maskeyi
       // depth boyutuna örnekler ve siluete AND eder. Başarısızlıkta maske
       // olmadan devam (silüet depth eşiğine düşer) — hoparlörden say edilir.
+      //
+      // GÜN E (bulgu 1): RMBG artık depth'ten ÖNCE koşar. Sebep: estimateDepth
+      // stretch/sobel/eğim aşamalarını bu maskeyle çalıştırıyor; maske-kör
+      // koştuğunda gövde/ayna karesinde yakın zemin "ön plan" sayılıyor ve
+      // özne düz kalıyordu (ölçüm: özne derinlik aralığı 0.116 → 0.117 vs
+      // gerçek maskeyle 0.850). Maske üretilemezse depth eskisi gibi maskesiz
+      // koşar — bu yol AYNEN korunur.
       let mask: Float32Array | undefined;
       let maskW = 0;
       let maskH = 0;
       lastPhotoRef.current = source;
-      lastDepthRef.current = { data: depth.data, width: depth.width, height: depth.height };
       maskLoadedRef.current = false;
       const t2 = performance.now();
       try {
         const seg = await segmentForeground(source);
         // Güvenlik: boş maske (sentetik/soyut görsel) kullanılmaz — AND tüm
         // silueti sıfırlar, mesh null'a düşer, parçacıklar ölür.
-        let hasFg = false;
+        // GÜN E (bulgu 9): boş maske kadar TÜM KAREYİ kaplayan maske de
+        // kullanılamaz. RMBG bazı karelerde (ölçüldü: ayna selfie'si) "her
+        // piksel ön plan" döndürüyor — o maske hiçbir şey ayırmaz ama ZARAR
+        // verir: stretch aralığı sahnenin tamamına açılır (özne bandı yine
+        // sıkışır) ve siluet AND'i arka planı elemez. Eşik %92: gerçek bir
+        // özne kadrajı tamamen doldursa bile RMBG kenarlarda 0 bırakır;
+        // %92 üstü pratikte "model pes etti" demektir.
+        let fgCount = 0;
         for (let q = 0; q < seg.mask.length; q++) {
-          if (seg.mask[q] >= 0.5) {
-            hasFg = true;
-            break;
-          }
+          if (seg.mask[q] >= 0.5) fgCount++;
+        }
+        const fgRatio = fgCount / seg.mask.length;
+        const hasFg = fgCount > 0 && fgRatio <= 0.92;
+        if (fgCount > 0 && !hasFg) {
+          say(`nesne ayırma: RMBG kareyi tümüyle ön plan saydı (%${(100 * fgRatio).toFixed(0)}) — maske atlandı`);
         }
         if (hasFg) {
           mask = seg.mask;
@@ -224,6 +235,19 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
         setSegment(false);
         engineRef.current!.setObjectSeparation(false);
       }
+
+      // Depth ARTIK maskeyi görüyor (GÜN E, bulgu 1).
+      const t1 = performance.now();
+      const depth = await estimateDepth(
+        source,
+        mask ? { subjectMask: { data: mask, width: maskW, height: maskH } } : {},
+      );
+      say(
+        `çıkarım                  ${Math.round(performance.now() - t1)} ms  (${depth.width}x${depth.height})` +
+          (mask ? ' · özne maskesi kullanıldı' : ' · maskesiz'),
+      );
+      lastDepthRef.current = { data: depth.data, width: depth.width, height: depth.height };
+
       // TUR 11: fotoğrafın kendisi de parçacık renklerine bağlanır (görev 1 —
       // varsayılan mavi rampa yerine orijinal RGB). Kamera/video yolu bu
       // çağrıyı yapmaz → shader'lar derinlik rampasına düşer.
@@ -334,7 +358,13 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
       const t2 = performance.now();
       const seg = await segmentForeground(lastPhotoRef.current);
       say(`nesne ayırma (RMBG)      ${Math.round(performance.now() - t2)} ms  (${seg.width}x${seg.height})`);
-      const d = lastDepthRef.current;
+      // GÜN E (bulgu 1): önbellekteki depth MASKE-KÖR hesaplandı (buton o an
+      // kapalıydı). Maske geldiğine göre depth yeniden çıkarılır — yoksa bu
+      // yolda stretch/eğim aşamaları düzeltmeden yararlanamazdı.
+      const d = await estimateDepth(lastPhotoRef.current, {
+        subjectMask: { data: seg.mask, width: seg.width, height: seg.height },
+      });
+      lastDepthRef.current = { data: d.data, width: d.width, height: d.height };
       engineRef.current!.setDepth(d.data, d.width, d.height, seg.mask, seg.width, seg.height);
       if (maskOverlayOnRef.current) drawMaskOverlay();
       maskLoadedRef.current = true;

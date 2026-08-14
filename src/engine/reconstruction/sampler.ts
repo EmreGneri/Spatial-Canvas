@@ -230,7 +230,31 @@ export function sampleVolumePositions(
   // yerinde bununla ölçeklenir; ölçeklenmezlerse kabuk yine kutuya döner
   // (yüzey küçülür, duvar/kabuk eski uzamda kalır). Sabitlerin KENDİLERİ
   // değişmez — sözleşme değerleri oldukları gibi durur.
-  const zSpan = body ? ANATOMIC_DEPTH_RATIO * 2 * Math.min(body.rx, body.ry) : range;
+  // GÜN E (bulgu 4, YENİDEN AÇILDI VE DÜZELTİLDİ) — KADRAJ ORANI ARTEFAKTI.
+  //
+  // Dünya uzayında y hep ±halfH, x ise ±halfW = (w/h)·halfH'tir. Yani DİKEY
+  // fotoğrafta dünya genişliği 1'in ALTINA iner (özüm.jpg 0.751, ayna selfie
+  // 0.562) ve siluetin rx'i bu daralmış ölçekte ölçülür. Sonuç: aynı özne,
+  // yalnızca kadraj yönü yüzünden daha SIĞ çiziliyordu.
+  //
+  // Ölçüm (gerçek fotoğraflar, 2026-08-14) — son nokta bulutu z aralığı
+  // pratikte zSpan'a eşit çıkıyor (stretch zaten doyuyor):
+  //   karina (yatay 1.50)  rx 1.499 / ry 0.997 → zSpan 1.396 · z aralığı 1.342
+  //   özüm   (dikey 0.75)  rx 0.454 / ry 0.653 → zSpan 0.635 · z aralığı 0.550
+  //   ayna   (dikey 0.56)  rx 0.384 / ry 0.894 → zSpan 0.538 · z aralığı 0.513
+  // min(rx, ry) üstelik kadraja göre FARKLI FİZİKSEL EKSENİ seçiyordu:
+  // karina'da yükseklik (rx > ry), dikey karelerde genişlik.
+  //
+  // Düzeltme: özne yarı ekseni, kadrajın KISA kenarı biriminde ölçülür
+  // (min(halfW, halfH)'e bölünür). Yatay kadrajda halfH = min olduğu için
+  // davranış AYNEN korunur (bölen 1); dikey kadrajda daralma geri alınır.
+  // ANATOMIC_DEPTH_RATIO'ya dokunulmaz — düzeltilen şey anatomi değil, kadraj
+  // yönünün derinliğe sızmasıdır (yön bir sahne özelliği değildir).
+  const halfWWorld = (depthWidth / depthHeight) * halfH;
+  const frameShortHalf = Math.min(halfWWorld, halfH);
+  const zSpan = body
+    ? (ANATOMIC_DEPTH_RATIO * 2 * Math.min(body.rx, body.ry)) / frameShortHalf
+    : range;
   const zUnit = zSpan / 2;
 
   for (let j = 0; j < grid; j++) {
@@ -643,7 +667,22 @@ export function buildImportanceRemap(
     const center = 1 - Math.min(1, Math.sqrt(dx * dx + dy * dy) * 2);
     const contrast = Math.abs(depth[i] - smooth[i]);
     const fg = fgMask ? Math.min(1, Math.max(0, fgMask[i])) : 0;
-    im[i] = 0.5 * depth[i] + 0.3 * center + 0.2 * contrast + FG_IMPORTANCE_WEIGHT * fg;
+    // GÜN E (bulgu 10) — MASKE VARKEN `depth` TERİMİ KULLANILMAZ.
+    //
+    // Bu remap AYRILABİLİRDİR: X ve Y için ayrı 1B CDF kurulur (sütun/satır
+    // toplamları). `depth` terimi öznenin İÇİNDEKİ yakın/uzak farkını sütun
+    // yoğunluğuna çevirir; öznenin uzak kalan yarısının sütunları düşük
+    // yoğunluk alır ve CDF örnekleri oradan ÇEKER — o bölge nokta bulutunda
+    // DELİK olur. Eskiden zararsızdı çünkü maske içi derinlik neredeyse
+    // sabitti (özüm.jpg'de p25-p75 = 0.135); bulgu 8 stretch'i gerçekten
+    // çalıştırınca aralık ~6× açıldı ve terim baskın hâle geldi (kullanıcı
+    // raporu: Karina'nın eli ve yüzünün sağ yarısı nesne ayırma AÇIKKEN
+    // kayboluyor — maske KUSURSUZ olmasına rağmen).
+    //
+    // `depth` teriminin amacı maske YOKKEN "yakın olan önemlidir" vekiliydi;
+    // maske varken bu işi `fg` terimi zaten yapar. Maskesiz yol AYNEN korunur.
+    const near = fgMask ? 0 : 0.5 * depth[i];
+    im[i] = near + 0.3 * center + 0.2 * contrast + FG_IMPORTANCE_WEIGHT * fg;
   }
   const density = boxBlur(im, w, h, 2);
   let sum = 0;

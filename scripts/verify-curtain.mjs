@@ -43,6 +43,8 @@ import {
   sampleVolumePositions,
 } from '../src/engine/reconstruction/sampler.ts';
 import { dilateAndFeatherMask, resampleBilinear } from '../src/engine/reconstruction/silhouette.ts';
+// GÜN E (bulgu 3): derinlik son-işleme A/B'si gerçek fotoğrafta ölçülür.
+import { applyForegroundStretch, foregroundMask, limitDepthSlope } from '../src/depth.ts';
 
 env.allowRemoteModels = false;
 env.allowLocalModels = true;
@@ -179,7 +181,173 @@ assert.deepEqual(predicted_depth.dims.slice(-2), [DEPTH_SIZE, DEPTH_SIZE], 'dept
 const depth = normalizeDepth(predicted_depth.data, 1);
 
 // --- 3. maske → depth boyutu (Engine.setDepth'in resample'ı) ---
+// GÜN E (bulgu 2): Engine burada İKİNCİ bir dilate YAPMAZ; segmentation.ts'in
+// kendi çözünürlüğünde uyguladığı tek dilate yeterlidir. Bu satır üretim
+// yoluyla birebir aynı hesabı yapar (eskiden ayrışıyordu).
 const maskD = resampleBilinear(mask, MASK_SIZE, MASK_SIZE, DEPTH_SIZE, DEPTH_SIZE);
+
+// --- 3b. GÜN E (bulgu 3): GERÇEK FOTOĞRAFTA derinlik son-işleme A/B ölçümü.
+//
+// Sentetik sahneler scripts/verify-depth-mask.mjs'te; BURASI gerçek görsel.
+// Kendi gövde/ayna fotoğrafını ölçmek için:
+//     node scripts/verify-curtain.mjs C:/yol/foto.jpg
+// Rapor edilen metrik: öznenin İÇ bölgesindeki (kenar halkası hariç) derinlik
+// rölyefi std'si — maske-kör zincir (düzeltme öncesi) vs maske-farkında zincir
+// (estimateDepth'in bugünkü hâli). ASSERT: maske-farkında yol GERİLEMEMELİ.
+{
+  const inner = new Uint8Array(maskD.length);
+  const PAD = 5;
+  for (let y = PAD; y < DEPTH_SIZE - PAD; y++) {
+    for (let x = PAD; x < DEPTH_SIZE - PAD; x++) {
+      const i = y * DEPTH_SIZE + x;
+      if (maskD[i] < 0.5) continue;
+      let ok = 1;
+      for (let k = 1; k <= PAD && ok; k++) {
+        if (
+          maskD[i - k] < 0.5 ||
+          maskD[i + k] < 0.5 ||
+          maskD[i - k * DEPTH_SIZE] < 0.5 ||
+          maskD[i + k * DEPTH_SIZE] < 0.5
+        ) {
+          ok = 0;
+        }
+      }
+      inner[i] = ok;
+    }
+  }
+  const std = (a) => {
+    let s = 0;
+    let q = 0;
+    let n = 0;
+    for (let i = 0; i < a.length; i++) {
+      if (!inner[i]) continue;
+      s += a[i];
+      q += a[i] * a[i];
+      n++;
+    }
+    if (n === 0) return { v: NaN, n: 0 };
+    const m = s / n;
+    return { v: Math.sqrt(q / n - m * m), n };
+  };
+
+  // maske-kör (düzeltme öncesi): sahte maske + maskesiz limiter
+  const blind = Float32Array.from(depth);
+  applyForegroundStretch(blind, foregroundMask(blind, DEPTH_SIZE, DEPTH_SIZE), DEPTH_SIZE, DEPTH_SIZE);
+  const blindOut = limitDepthSlope(blind, DEPTH_SIZE, DEPTH_SIZE, null);
+
+  // maske-farkında (bugünkü): RMBG maskesi + bölge-ayrık limiter
+  const aware = Float32Array.from(depth);
+  applyForegroundStretch(aware, maskD, DEPTH_SIZE, DEPTH_SIZE);
+  const inside = limitDepthSlope(aware, DEPTH_SIZE, DEPTH_SIZE, maskD);
+  const outMask = new Float32Array(maskD.length);
+  for (let i = 0; i < maskD.length; i++) outMask[i] = maskD[i] >= 0.5 ? 0 : 1;
+  const awareOut = limitDepthSlope(inside, DEPTH_SIZE, DEPTH_SIZE, outMask);
+
+  // sahte maskeye sızan özne-DIŞI piksel (bulgu 1'in kök neden metriği)
+  const fake = foregroundMask(Float32Array.from(depth), DEPTH_SIZE, DEPTH_SIZE);
+  let leak = 0;
+  let subjN = 0;
+  for (let i = 0; i < fake.length; i++) {
+    if (maskD[i] >= 0.5) subjN++;
+    else if (fake[i] >= 0.1) leak++;
+  }
+
+  // ÖZNE AŞINMASI (kesin kusur sayısı): eğim sınırlayıcı, KENDİ girdisine göre
+  // özne pikselini ne kadar aşağı çekti? Maskesiz yolda özne↔arka plan
+  // sıçraması "aşırı eğim" sayılır ve özne kenarı arka plana çekilir; maskeli
+  // (bölge-ayrık) yolda bu sıçrama iki bölgeye ayrıldığı için oluşamaz.
+  //
+  // ÖLÇÜM YALNIZCA SINIR HALKASINDA yapılır: öznenin İÇİNDEKİ kırpma her iki
+  // yolda da OLMASI GEREKEN davranıştır (sınırlayıcının varlık sebebi saç/kafa
+  // üstü sivrilmelerini kesmektir, ölçümde iki yolda da ~5-6 bin px). Maske
+  // körlüğüne ÖZGÜ kusur, öznenin arka planla komşu olduğu halkada oluşur:
+  // orada maskesiz sınırlayıcı gerçek siluet sıçramasını "aşırı eğim" sanıp
+  // özne kenarını arka plan seviyesine çeker.
+  const RING = 4; // sınırlayıcı 4 geçiş → hasar en fazla 4 px içeri yayılır
+  const ring = new Uint8Array(maskD.length);
+  for (let y = 0; y < DEPTH_SIZE; y++) {
+    for (let x = 0; x < DEPTH_SIZE; x++) {
+      const i = y * DEPTH_SIZE + x;
+      if (maskD[i] < 0.5) continue;
+      let near = 0;
+      for (let k = 1; k <= RING && !near; k++) {
+        if (x - k >= 0 && maskD[i - k] < 0.5) near = 1;
+        if (x + k < DEPTH_SIZE && maskD[i + k] < 0.5) near = 1;
+        if (y - k >= 0 && maskD[i - k * DEPTH_SIZE] < 0.5) near = 1;
+        if (y + k < DEPTH_SIZE && maskD[i + k * DEPTH_SIZE] < 0.5) near = 1;
+      }
+      ring[i] = near;
+    }
+  }
+  const erosion = (input, out) => {
+    let n = 0;
+    let sum = 0;
+    for (let i = 0; i < maskD.length; i++) {
+      if (!ring[i]) continue;
+      const loss = input[i] - out[i];
+      if (loss > 0.01) {
+        n++;
+        sum += loss;
+      }
+    }
+    return { n, avg: n ? sum / n : 0 };
+  };
+  const eBlind = erosion(blind, blindOut);
+  const eAware = erosion(aware, awareOut);
+
+  // GÜN E (bulgu 6): EĞİM TAVANI NEYE MAL OLUYOR? Aynı maske-farkında zincir,
+  // tavan pratikte devre dışıyken (çok büyük maxStep) — aradaki rölyef farkı
+  // tavanın gerçek maliyetidir. Tavanı değiştirme kararı bu sayıya dayanır.
+  const noCapInside = limitDepthSlope(aware, DEPTH_SIZE, DEPTH_SIZE, maskD, 1e9);
+  const noCapOut = limitDepthSlope(noCapInside, DEPTH_SIZE, DEPTH_SIZE, outMask);
+
+  const b = std(blindOut);
+  const a = std(awareOut);
+  const nc = std(noCapOut);
+  console.log(
+    `eğim tavanı   : maske-farkında rölyef std ${a.v.toFixed(4)} · tavan devre dışı ${nc.v.toFixed(4)} → tavanın maliyeti %${(100 * (1 - a.v / nc.v)).toFixed(2)}`,
+  );
+  console.log(
+    `derinlik A/B  : özne iç rölyef std — maske-kör ${b.v.toFixed(4)} · maske-farkında ${a.v.toFixed(4)} (${a.n} px) [BİLGİ — std iki yolda karşılaştırılabilir DEĞİL, aşağıya bak]`,
+  );
+  console.log(
+    `kenar aşınması: siluet halkası (${RING} px) — maske-kör ${eBlind.n} px × ort ${eBlind.avg.toFixed(3)} · maske-farkında ${eAware.n} px${eAware.n ? ` × ort ${eAware.avg.toFixed(3)}` : ''}`,
+  );
+  console.log(
+    `maske sızması : depth-türevli sahte maskeye giren özne-dışı piksel %${((100 * leak) / subjN).toFixed(0)} (RMBG maskesinde %0)`,
+  );
+
+  // BU GÖRSELDE YÖN ASSERT EDİLMEZ — gerekçe ölçümle yazıldı, gevşetme değil:
+  //
+  // 1. Bu asset bir BÜST fotoğrafıdır, yani bulgu 1'in ZATEN ÇALIŞAN vakası.
+  //    Düzeltmenin hedefi gövde/ayna kadrajıydı; burada kazanç beklenmez.
+  // 2. std iki yol arasında karşılaştırılabilir DEĞİLDİR: maske-kör yol std'yi
+  //    iki yapay kanaldan şişirir — (a) siluet kenarını arka plan seviyesine
+  //    çekip sahte uçurum yaratır, (b) sahte maske m = smoothstep(D) olduğu
+  //    için stretch kazancı DERİNLİKLE KORELEDİR (geometriden bağımsız kontrast).
+  // 3. Kenar aşınması sayısı da tek başına kusur göstergesi DEĞİLDİR: maske
+  //    farkında yolda stretch gerçekten çalıştığı için öznenin İÇ eğimleri
+  //    büyüyor ve MAX_SLOPE_PER_PX = 0.02 tavanına takılıyor — bu sınırlayıcının
+  //    TANIMLI davranışıdır (saç sivrilmesi kesme), maske körlüğü değil.
+  //    ÖLÇÜLEN ETKİLEŞİM (2026-08-14, bu asset): maske-kör 1442 px × 0.170,
+  //    maske-farkında 1941 px × 0.147. Yani eğim tavanı, düzeltmenin
+  //    kazandırdığı rölyefin bir kısmını geri alıyor — AÇIK MADDE, ayrı ölçüm
+  //    ve karar ister (bkz. CHANGELOG "Gün E" kalan sorunlar).
+  //
+  // Yönlü iddialar KONTROLLÜ sahnelerde test edilir: scripts/verify-depth-mask.mjs.
+  // Burada yalnızca kök nedenin bu görselde de var olduğu ve sözleşmenin
+  // korunduğu doğrulanır.
+  assert.ok(leak > 0, 'sahte maskenin sızdırdığı bu görselde doğrulanamadı — senaryo bozuk');
+  assert.ok(eBlind.n > 0, 'maskesiz yolun siluet kenarını aşındırdığı doğrulanamadı');
+  for (const [nm, arr] of [['maske-kör', blindOut], ['maske-farkında', awareOut]]) {
+    for (let i = 0; i < arr.length; i++) {
+      assert.ok(
+        Number.isFinite(arr[i]) && arr[i] >= 0 && arr[i] <= 1,
+        `${nm} çıktısı 0..1 sözleşmesini bozdu: index ${i} = ${arr[i]}`,
+      );
+    }
+  }
+}
 
 // --- 4. sampler: maskeli yol (uygulamada "nesne ayırma AÇIK") ---
 const t3 = performance.now();

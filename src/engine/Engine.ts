@@ -42,11 +42,7 @@ import { SIM_PARAMS } from './simulation';
 import { GRAIN_PARAMS } from '../shaders/grainPass';
 import { applyParams, collectParams, type ParamDef, type ParamValues } from './params';
 import { activeNodes, createDefaultGraph, topologicalOrder, validateGraph, type Graph } from './graph';
-import {
-  dilateAndFeatherMask,
-  MASK_DILATE_RADIUS,
-  resampleBilinear,
-} from './reconstruction/silhouette.ts';
+import { resampleBilinear } from './reconstruction/silhouette.ts';
 import { buildShellMesh, type ShellMeshData } from './reconstruction/mesh.ts';
 import type { CameraPose, MediaType } from './preset';
 
@@ -726,17 +722,29 @@ if (entry && entry.material !== this.pointsMaterial) {
         maskWidth === width && maskHeight === height
           ? foregroundMask
           : resampleBilinear(foregroundMask, maskWidth, maskHeight, width, height);
-      // Kenar gÃ¼vencesi: bilinear Ã¶lÃ§ekleme siluet kenarÄ±ndaki yumuÅŸak deÄŸerleri
-      // (< 0.5) Ã¼retir; buildSilhouette'teki sert AND bu bandÄ± keserdi (Ã¶nceki
-      // hata: "sadece orta seÃ§iliyor"). EÅŸiÄŸi gevÅŸetmeden (arka plan da sÄ±zardÄ±)
-      // maske depth uzayÄ±nda HAFÄ°F dilate edilir â€” dar morf: kenar +1px geri
-      // kazanÄ±lÄ±r, uzak arka plan (RMBG 0.0-0.1) hÃ¢lÃ¢ temiz kalÄ±r.
-mask = dilateAndFeatherMask(
-        mask,
-        width,
-        height,
-        Math.round(MASK_DILATE_RADIUS * Math.max(1, maskWidth / width)),
-      );
+      // GÃœN E (bulgu 2): Ä°KÄ°NCÄ° DÄ°LASYON KALDIRILDI.
+      //
+      // Maske burada bir kez daha dilate ediliyordu: yarÄ±Ã§ap
+      // round(MASK_DILATE_RADIUS Ã— maskWidth/width) = round(4 Ã— 1024/518) = 8 px
+      // (depth uzayÄ±nda). Ama segmentation.ts maskeyi KENDÄ° Ã§Ã¶zÃ¼nÃ¼rlÃ¼ÄŸÃ¼nde
+      // (1024Â²) zaten 4 px dilate + tÃ¼y uygulayarak dÃ¶ndÃ¼rÃ¼yor
+      // (segmentation.ts, dilateAndFeatherMask Ã§aÄŸrÄ±sÄ±) â€” iki aÅŸama birbirinden
+      // habersizdi ve etkileri Ã‡ARPIÅžIYORDU.
+      //
+      // ÃœstÃ¼ne, Ã¶lÃ§ek Ã§arpanÄ± TERS yÃ¶ndeydi: 1024 â†’ 518 kÃ¼Ã§Ã¼ltmenin yumuÅŸattÄ±ÄŸÄ±
+      // bandÄ± telafi etmek iÃ§in yarÄ±Ã§apÄ±n Ã–LÃ‡EÄžE BÃ–LÃœNMESÄ° gerekirdi (4/1.98 â‰ˆ 2),
+      // Ã‡ARPILMASI deÄŸil (4Ã—1.98 = 8).
+      //
+      // Ã–lÃ§Ã¼m (2026-08-14, gerÃ§ek fonksiyonlar, kolâ€“gÃ¶vde boÅŸluklu sentetik Ã¶zne):
+      // ham alana gÃ¶re Ã§ift dilasyon +%23.9, yalnÄ±z bu ikinci geÃ§iÅŸ +%19.7,
+      // yalnÄ±z segmentation'daki geÃ§iÅŸ +%6.2. 14 px'lik kolâ€“gÃ¶vde boÅŸluÄŸu Ã§ift
+      // dilasyonda tamamen doluyordu (topaklaÅŸma).
+      //
+      // Bilinear kÃ¼Ã§Ã¼ltme 0.5 izÃ§izgisini yarÄ±m hedef pikselden fazla kaydÄ±rmaz;
+      // segmentation'daki 4 px (â‰ˆ 2 px depth uzayÄ±nda) bunu zaten fazlasÄ±yla
+      // karÅŸÄ±lar. AyrÄ±ca scripts/verify-curtain.mjs (tek gerÃ§ek fotoÄŸraf testi)
+      // bu ikinci geÃ§iÅŸi HÄ°Ã‡ Ã§alÄ±ÅŸtÄ±rmÄ±yordu â€” Ã¼retim yolu ile test edilen yol
+      // ayrÄ±ÅŸmÄ±ÅŸtÄ±; kaldÄ±rÄ±nca ikisi birebir aynÄ± hesabÄ± yapÄ±yor.
     }
     // GÃ¼n B: renk grid'inin remap'i konum grid'ininkiyle birebir aynÄ± olmalÄ±
     // (mask-aware); setPhoto sonradan gelirse buraya yazÄ±lan maske kullanÄ±lÄ±r.

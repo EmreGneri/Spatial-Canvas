@@ -107,6 +107,48 @@ export const MASK_FEATHER_RADIUS = 2;
  * verir — bilinear küçültmenin yumuşattığı band genişliği ölçekle büyür;
  * sabit 4px ince uzuvları yine kaybettirirdi ("sadece orta").
  */
+/**
+ * GÜN E (bulgu 12) — maskeyi EN BÜYÜK bağlı bileşene indirger (4-komşu, eşik
+ * 0.5). RMBG bazı karelerde özneye bitişik OLMAYAN arka plan yapılarını da ön
+ * plan sayıyor (ayna selfie'sinde kapı kasası/zemin); bunlar öznenin bbox'ını
+ * kadrajın tamamına şişirdiği için özne-kırpma çıkarımı (depth.ts) devreye
+ * giremiyordu. Bitişik olan kirlenme (özneye yapışık duvar) bu adımla
+ * TEMİZLENMEZ — o siluet katmanının işi; burada yalnızca kopuk parçalar düşer.
+ * Özne tek parça olduğunda çıktı değişmez.
+ */
+export function keepLargestComponent(mask: Float32Array, w: number, h: number): Float32Array {
+  const n = w * h;
+  const id = new Int32Array(n).fill(-1);
+  const stack = new Int32Array(n);
+  const sizes: number[] = [];
+  let next = 0;
+  for (let s = 0; s < n; s++) {
+    if (mask[s] < 0.5 || id[s] >= 0) continue;
+    let sp = 0;
+    stack[sp++] = s;
+    id[s] = next;
+    let size = 0;
+    while (sp > 0) {
+      const p = stack[--sp];
+      size++;
+      const x = p % w;
+      const y = (p / w) | 0;
+      if (x > 0 && mask[p - 1] >= 0.5 && id[p - 1] < 0) { id[p - 1] = next; stack[sp++] = p - 1; }
+      if (x < w - 1 && mask[p + 1] >= 0.5 && id[p + 1] < 0) { id[p + 1] = next; stack[sp++] = p + 1; }
+      if (y > 0 && mask[p - w] >= 0.5 && id[p - w] < 0) { id[p - w] = next; stack[sp++] = p - w; }
+      if (y < h - 1 && mask[p + w] >= 0.5 && id[p + w] < 0) { id[p + w] = next; stack[sp++] = p + w; }
+    }
+    sizes.push(size);
+    next++;
+  }
+  if (next <= 1) return mask; // tek parça (ya da boş) — kopya bile çıkarma
+  let big = 0;
+  for (let i = 1; i < next; i++) if (sizes[i] > sizes[big]) big = i;
+  const out = new Float32Array(n);
+  for (let i = 0; i < n; i++) out[i] = id[i] === big ? mask[i] : 0;
+  return out;
+}
+
 export function dilateAndFeatherMask(
   mask: Float32Array,
   w: number,

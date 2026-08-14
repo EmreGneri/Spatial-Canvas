@@ -3,8 +3,27 @@
 // Her fonksiyon GT geçersiz (0 / NaN) bölgeleri atlar — sesli hata yerine
 // maskeli hesap (sessiz sapma yok: maskeli hesap kasıtlı ve raporlanır).
 
+/**
+ * GÜN E (M9) — UZUNLUK EŞİTLİĞİ DENETİMİ (piksel metrikleri).
+ *
+ * Bu dosyadaki piksel metrikleri `pred.length` üzerinde dönüp `gt[i]` okur.
+ * Diziler farklı uzunluktaysa `gt[i]` `undefined` olur; `undefined > 0` ve
+ * `undefined >= 0.5` ikisi de `false` döndüğü için eksik GT SESSİZCE
+ * "geçersiz piksel" (absRel/rmse/delta125) ya da "arka plan" (iou) sayılıyordu:
+ * hata fırlamıyor, sayı üretiliyordu — sessiz sapma. `ate`/`rpe` bu denetimi
+ * zaten yapıyordu, piksel metrikleri yapmıyordu (tutarsızlık).
+ *
+ * Karar: `ate`/`rpe` ile AYNI sözleşme — uzunluk eşit değilse `NaN`. NaN
+ * gürültüsüz kalmaz: D.5 "sonuç satırında NaN YASAK" kuralı gereği
+ * `verify-eval.mjs` rapor doğrulaması patlar, yani hata sesli olur.
+ */
+function lengthMismatch(pred: Float32Array, gt: Float32Array): boolean {
+  return pred.length !== gt.length;
+}
+
 /** Sıralı abs relatif hata. GT = 0 olan pikseller hesaplama dışı. */
 export function absRel(pred: Float32Array, gt: Float32Array): number {
+  if (lengthMismatch(pred, gt)) return NaN;
   let sum = 0;
   let cnt = 0;
   for (let i = 0; i < pred.length; i++) {
@@ -19,6 +38,7 @@ export function absRel(pred: Float32Array, gt: Float32Array): number {
 
 /** Kök ortalama kare hatası (metre cinsinden). GT = 0 bölgeleri atlanır. */
 export function rmse(pred: Float32Array, gt: Float32Array): number {
+  if (lengthMismatch(pred, gt)) return NaN;
   let sum = 0;
   let cnt = 0;
   for (let i = 0; i < pred.length; i++) {
@@ -34,6 +54,7 @@ export function rmse(pred: Float32Array, gt: Float32Array): number {
 
 /** δ < 1.25 oranı — tahminin GT'nin 1.25 katı içinde kaldığı piksel oranı. */
 export function delta125(pred: Float32Array, gt: Float32Array): number {
+  if (lengthMismatch(pred, gt)) return NaN;
   let ok = 0;
   let cnt = 0;
   for (let i = 0; i < pred.length; i++) {
@@ -48,6 +69,7 @@ export function delta125(pred: Float32Array, gt: Float32Array): number {
 
 /** İkili maskeler üzerinde IoU (seg). Her iki maskede 0 olan bölgeler etkisiz. */
 export function iou(predMask: Float32Array, gtMask: Float32Array, threshold = 0.5): number {
+  if (lengthMismatch(predMask, gtMask)) return NaN;
   let inter = 0;
   let union = 0;
   for (let i = 0; i < predMask.length; i++) {
@@ -274,4 +296,20 @@ export function medianMs(samples: number[]): number {
   const sorted = [...samples].sort((a, b) => a - b);
   const mid = sorted.length >> 1;
   return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
+/**
+ * Örneklenen noktaların ön plan PAYI (column: 'seg'): w ≥ 0.7 taşıyan
+ * noktaların toplam noktalara oranı. `positions` 4 kanallı (x, y, z, w)
+ * Float32Array — w = ön plan olasılığı (1 ön plan, BACKDROP_OPACITY ≈ 0.4
+ * arka plan). Boş girdi → NaN (sessiz 0 değil; ölçülemeyen satır yazılmaz).
+ */
+export function foregroundPointShare(positions: Float32Array): number {
+  const count = positions.length / 4;
+  if (!(count > 0)) return NaN;
+  let fg = 0;
+  for (let i = 3; i < positions.length; i += 4) {
+    if (positions[i] >= 0.7) fg++;
+  }
+  return fg / count;
 }

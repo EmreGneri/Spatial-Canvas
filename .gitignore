@@ -14,3 +14,10 @@ graphify-out
 eval-out
 
 dev-smoke.*
+
+# Gün E test fotoğrafları — kişisel/telifli, repo geçmişine girmez
+assets/*.jpg
+assets/*.jpeg
+assets/*.webp
+assets/*.png
+!assets/thumbnail.jpg
