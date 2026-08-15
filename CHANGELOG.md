@@ -3,6 +3,205 @@
 Sözleşmeye dokunan her değişiklik buraya yazılır (`ARCHITECTURE.md` kuralı: sessiz sapma yok).
 En yeni üstte.
 
+> **ZEYNEP'E UYARI (Gün 7 kablosu — çakışma alanı):** `src/App.tsx`
+> değiştirildi: yeni import (`engine/vision/videoPipe`), `fuseVideoToSplat`
+> handler'ı ve üst buton satırına `video → 3B` butonu (kamera butonunun
+> yanı). Bu dosyada AYNI ANDA çalışıyorsan önce en güncel hali çek
+> (merge/pull), sonra kendi değişikliklerini uygula. `Engine.ts`, `splats.ts`
+> ve material dosyalarına DOKUNULMADI — sendeki splat render şeridi aynen
+> duruyor.
+
+---
+
+## 2026-08-14 — Gün 6 (Emre): ölçek hizalama + keyframe zinciri
+
+Sözleşme: `ARCHITECTURE.md` → yeni "D.11 Ölçek Hizalama + Keyframe Zinciri
+(Emre — Gün 6)".
+
+Plan: "Triangüle seyrek noktalarla `d_metric ≈ a·d_pred + b` en küçük
+kareler; keyframe seçimi (parallaks + takip kalitesi eşiği). Bitti sayılır:
+30 sn'lik gerçek klipten 8-15 keyframe + tutarlı ölçekli pozlar çıkıyor."
+
+**Yeni dosya:** `src/engine/vision/scale.ts` — `triangulateWorldPoint` (Gün
+5'in göreceli `triangulateDepths`'i üzerine, MUTLAK D.2 poz çiftine
+genelleştirilmiş), `fitScaleAlignment` (kapalı-form en küçük kareler,
+`d_metric≈scaleA·d_pred+scaleB`), `alignKeyframeScale` (üçgenleme+hizalamayı
+birleştiren üst fonksiyon), `selectKeyframes` (akış tabanlı, referans-
+güncellemeli parallaks/izleme eşiği). `scripts/verify-scale.mjs` (zincirin
+14. script'i, model YÜKLEMEZ).
+
+**Sonuç:**
+
+| Test | Sonuç |
+|---|---|
+| Üçgenleme (gerçek poz, tek nokta / 200 nokta RMS) | 6.24e-8 / 1.78e-7 dünya birimi |
+| Üçgenleme (Gün 5'in tahmin ettiği zincirle) | 100/100 cheirality |
+| Ölçek uydurma (sentetik a=2.7,b=-0.4) | â=2.6995, b̂=-0.4012 |
+| Keyframe seçimi (60 kare, 150° yay) | 8 keyframe (D.8 hedefi 8-20 içinde) |
+
+**Teşhis sırasında yapılıp düzeltilen bir hata (aynı desen, ikinci kez):**
+İlk test taslağı üçgenleme için `toFirstKeyframeOrigin`'in MUTLAK (yeniden
+çerçevelenmiş) pozlarını, sahne noktaları içinse HAM (`generateOrbitTrajectory`)
+koordinatlarını kullanıyordu — iki farklı çerçeve karışınca üçgenleme hatası
+2.91 dünya birimine çıktı. Bu, `verify-pose.mjs`'te bir tur önce bulunup
+düzeltilen TAM AYNI hata deseniydi (bkz. Gün 5 girişi) — bu kez üçgenleme
+testinde tekrarlandı. Düzeltme: üçgenleme HAM pozlarla yapılır (sahneyle aynı
+çerçeve); yalnızca CHEIRALITY SAYISI (mutlak XYZ değil) kontrol eden bloklarda
+karışık çerçeve zararsızdır (`triangulateWorldPoint` yalnızca GÖRECELİ pozu
+kullanır, ortak rijit dönüşümden etkilenmez — gerekçe D.11'de).
+
+**Bilinen sınır:** gerçek video/derinlik-modeli ile uçtan uca test EDİLMEDİ
+— yalnızca sentetik yörünge + sentetik-bozulmuş "d_pred" ile (D.7 kesme
+sırası madde 2 ile aynı gerekçe). Arayüz gerçek entegrasyonu kabul edecek
+biçimde tasarlandı, ek sözleşme değişikliği gerekmiyor.
+
+Doğrulama: `tsc --noEmit` ✓, `npm run verify` (14 script) ✓, `npm run build`
+✓, commit/staging YOK.
+
+---
+
+## 2026-08-14 — Gün 5 (Emre): poz çözücü — essential matrix + RANSAC + ayrıştırma + cheirality
+
+Sözleşme: `ARCHITECTURE.md` → yeni "D.10 Poz Çözücü (Emre — Gün 5)".
+
+Plan: "Essential matrix (normalize 8-nokta) + RANSAC + R,t ayrıştırma +
+cheirality kontrolü. `verify-pose.mjs`: Zeynep'in ürettiği sentetik yörünge
+üzerinde bilinen poza karşı hata. Bitti sayılır: sentetikte rotasyon hatası
+< 1-2°." Zeynep'in Gün 4 öğleden sonrası teslim ettiği `trajectory.ts`
+(D.6b) doğruluk verisi olarak kullanıldı.
+
+**Yeni dosyalar:** `src/engine/vision/linalg.ts` (genel simetrik N×N Jacobi
+özçözücü + 3×3 SVD — essential matrix hem 9×9 hem 3×3 özayrışım istediği
+için tek yerde), `src/engine/vision/pose.ts` (8-nokta, RANSAC, ayrıştırma,
+cheirality, `chainPoseTrack`), `scripts/verify-pose.mjs` (zincirin 13.
+script'i, model YÜKLEMEZ).
+
+**Sonuç (D.7 ölçütü — adım başına rotasyon hatası):**
+
+| Test | Hata |
+|---|---|
+| İzole çift, gürültüsüz | 0.00000° |
+| 12-keyframe zincir, adım hatası (0.4px gürültü) | medyan 0.121° · maks 0.292° |
+| %30 kaba aykırı değerle (RANSAC) | 0.183° |
+
+Biriken (mutlak, ilk keyframe'e göre) zincir hatası GATE EDİLMEDİ — D.8
+"loop closure yok, sürüklenme birikir" diyor, bu beklenen davranış.
+
+**Bu turda 5 gerçek hata bulunup düzeltildi** (tam gerekçe ve ölçüm
+`ARCHITECTURE.md` D.10'da): `svd3`'ün üçüncü tekil vektörü koşulsuz çapraz
+çarpımla dolduruluyordu (genel matriste yanlış SVD); eşik mutlak değil σ₀'a
+BAĞIL olmalıydı (essential matrix SVD'sinde `det(U)≈0` sessiz çöküşü);
+rütbe-2 kısıtı denormalize edilmeden ÖNCE uygulanıyordu (Hartley T ortogonal
+değil, tekil değerleri bozuyordu); **kök neden** — satır kurulumu (x,y,1)
+sözleşmesi kullanıyordu ama kamera ışını bu projede z=-1 (kamera −z'ye
+bakar), sonuçta E tek bileşenin işareti ters bir sözleşmeye aitti (saf yatay
+dönmede tesadüfen ~0° hata veriyordu, bu ÇÜRÜTÜCÜ kanıt sanılmıştı; gerçek
+düzlemsel-olmayan hareket 2-3°'ye düşüyordu); ve kök neden bulunmadan önce bu
+hatayı telafi eden yanlış bir "R'yi ters al" hack'i (saf yatay dönmede
+tesadüfen doğruydu, genel harekette yeni hata katıyordu) — kök neden
+düzeltilince kaldırıldı. Test tarafında da bir hata vardı:
+`toFirstKeyframeOrigin`'in MUTLAK pozu ile `recoverPose`'un İKİLİ GÖRECELİ
+çıktısı yanlış yönde karşılaştırılıyordu (~80° sahte hata).
+
+Doğrulama: `tsc --noEmit` ✓, `npm run verify` (13 script) ✓, `npm run build`
+✓, commit/staging YOK.
+
+---
+
+## 2026-08-14 — Gün 7: füzyon + entegrasyon — D.4/D.9 (Emre)
+
+Sözleşme: `ARCHITECTURE.md` → D.4 (keyframeIndex CPU kanalı) + D.9 (Gün 7
+durumu). Girdilerin tamamı önceki günlerin teslimleri: flow (Gün 3) + poz
+(Gün 5) + ölçek/keyframe (Gün 6) + Zeynep'in yörünge üreteci + `setGaussians`
+kapısı. Matematik saf klasik CV, Math.random YOK — determinizm testte kanıtlı.
+
+- **`src/engine/vision/fusion.ts`:** keyframe bulutlarını dünya çerçevesinde
+  birleştirip GaussianBuffer'ı (D.1) doldurur.
+  - `fuseKeyframes`: sesli girdiyle seyrek splat üretimi — her splat:
+    d_pred (yoğun model çıktısı, pozitifse) → ölçek hizalamasından s →
+    `p_world = R·(s·v) + t` (pinhole z=-1, D.2 yön) → a: xyz+opaklık=1,
+    b: normal=görüş yönü + ölçek=s·pikselDünyaBoyutu·adım, c: rgb+AO=1,
+    keyframeIndex (D.4). Konum NEGATİFSE cheirality — sesli atla.
+  - Ölçek: TÜM keyframe çiftlerinin üçgenlemeleri TEK havuza
+    (`triangulateWorldPoint`), `fitScaleAlignment` — tek çift yerine tüm
+    çiftlerin ortak en küçük karesi (gürbüz). `scale: null` = hizalama yok
+    (d_pred varyanssız) — dürüst kayıt, sessiz ölçek üretilmez.
+  - `fuseVideoFrames`: video köprüsü — yoğun depth/rgb haritaları + flow
+    eşleşmeleri + grid örneklemesi (sampleStep). **Canlı App bağlantısı
+    YAPILMADI** (kapsam kararı: sentetik kanıt + köprü; UI entegrasyonu
+    backlog — D.9'da kayıtlı).
+- **D.4 kanalı:** `GaussianBufferData.keyframeIndex` (Uint16Array) +
+  `createGaussianBufferData` (splatFixture.ts). GPU'ya GİTMEZ — material,
+  sıralama, splats.ts dokunulmadı; timeline filtresi CPU'da okur.
+- **`scripts/verify-fusion.mjs` — 5 grup (gerçek sayılar):**
+  - uçtan uca: 12 kare → 6 keyframe (0,2,5,7,10,11); model bozması
+    a=2.7/b=−0.4 ile **scaleA=0.3691 (beklenen 1/2.7=0.3704)**, **scaleB=
+    0.1567 (beklenen 0.1481)**; 3583/3583 aday piksel splat.
+  - splat→GT konum RMS **3.14e-3** dünya birimi; alignSim3 sonrası **ATE
+    2.99e-3** (D.5 metrics.ate).
+  - buffer sözleşmesi: kanal boyutları 4·count / 1·count, keyframeIndex
+    aralık içi, NaN yok.
+  - köprü: 115200 splat (step=4 → 160×120×6), renk taşıma ✓, matches
+    boşken **scale=null** (dürüstlük kolu).
+  - determinizm: iki koşu BİREBİR aynı; timing medyan **1.8 ms**.
+- **TEST HATA GEÇMİŞİ (tekrar etmesin):** Gün 5/6'nın çerçeve-karıştırma
+  dersinin YENİ varyantını yaptım — `poses` dizisini keyframe SIRASINDA
+  kurup keyIdx'i orijinal kare indeksi sandım (poses[2] = kare 5'in pozu);
+  ölçek 0.203'e saptı, yakalayıp düzelttim (poses orijinal uzunlukta).
+  Köprüde aynı hatayı depth/rgb dizilerinde de yaptım. Ayrıca float32
+  depolama: `Float32Array`'de 0.4 literal'ı 0.4000000059… olur, `===` ile
+  karşılaştırılamaz — fiziksel doğruluk (1e-3) kullanıldı (test gevşetme
+  değil).
+- **Dürüstlük kaydı:** çıktı ekranda GÖRÜNMEZ — `setGaussians`'a bağlanmadı
+  (App.tsx'e dokunulmadı). Splat modu Zeynep'in geçici köprüsüyle beslenmeye
+  devam eder; gerçek füzyon verisi, video yolu entegrasyonu bitince oraya
+  girer. Bu karar planda açıkça alındı (sentetik kanıt + köprü).
+
+**Doğrulama:** `npm run typecheck` ✓ · `npm run verify` ✓ (16 zincir,
+verify-fusion dahil) · `npm run build` ✓.
+
+---
+
+## 2026-08-14 — Gün 7 KABLO (App bağlantısı, Emre): "şimdi bağla" kararı
+
+D.9'da "backlog" diye kaydedilen App bağlantısı kullanıcı kararıyla TAKILDI.
+Bir satır değil, veri akışının altısı birden kuruldu:
+
+- **`src/engine/vision/videoPipe.ts` (YENİ):** köprünün canlı ucu.
+  - `captureKeyframes`: rVFC kare kimliğiyle, zaman kapılı (250ms) 8 keyframe,
+    256×192 (video 640×480'nin 4:3'ü), TEK canvas reuse (allocation az),
+    timeout'ta elinde olanla döner (donuk videoda dürüst sonuç). rVFC yoksa
+    66ms interval fallback.
+  - `buildFusionScene`: ardışık kareler `computeOpticalFlow` (300 köşe) →
+    izlenebilir izler `PointMatch` → `chainPoseTrack` (8-nokta + RANSAC +
+    cheirality, ilk kare orijini) → `fuseVideoFrames` (step=4 → 64×48×KF
+    aday; d_pred = luminance; ÖLÇEK ÜÇGENLEMEDEN) → kamera uyumu.
+  - `fitBufferToCamera`: ağırlık merkezi → orijin, maks köşegen → 2;
+    konum ve b.w AYNI çarpanla (iç tutarlılık); kaynağın KOPYASINI ölçekler.
+- **`App.tsx`:** `video → 3B` butonu — youtube davranışı yok, TEK dokunuş:
+  yakala (2 sn) → build → `Engine.setGaussians` → `setCameraPose`
+  (0, 0.35, 2.2 / orijin) → splat modu + log raporu (splat sayısı, ölçek,
+  eşleşme, ms).
+- **Dürüstlük kayıtları (videoPipe docstring — 1-3):** video yolunda yoğun
+  derinlik luminance'tır (model video yolunda ÇALIŞMAZ — App tasarımı),
+  ÖLÇEK/ŞEKİL fiziği üçgenlemeden gelir (luminance'tan değil); fit sunum
+  ölçeğidir (ölçüm ölçeği değil). Kısıt: splat kalitesi = luminance kalitesi.
+- **`scripts/verify-videopipe.mjs`:** saf zincir testi (capture DOM'a bağlı —
+  localhost'ta elle). 11 kontrol: fit (merkez, köşegen, b.w orantısı, kaynak
+  dokunulmazlığı, boş buffer), durağan kareler (scale=null — d_pred ölçeği,
+  dürüstlük kolu), hareketli kareler (flow >100 iz, splat üretimi, keyframe
+  sözleşmesi). Sentetik kayma testinde ölçek hizalaması da çözüldü
+  (a=1.144, b=7.775).
+- **HATA GEÇMİŞİ (tekrar etmesin):** (a) `fitBufferToCamera` çarpanı
+  `2/√maxSq` idi — köşegen 4 oluyordu (docstring "köşegen → 2" ile tutarsız);
+  `1/√maxSq` yapıldı + test yakaladı. (b) İlk sentetik test deseni TEK YÖNLÜ
+  şeritlerdi (dikey çizgi) — Shi-Tomasi köşeleri kenar sayar, flow 0 iz
+  döndü; 2B gri + renk dokulu 8px hücrelere geçildi. Test verisi hatası,
+  üretim kodu hatası değil.
+
+**Doğrulama:** `npm run typecheck` ✓ · `npm run verify` ✓ (17 zincir,
+verify-videopipe dahil) · `npm run build` ✓.
+
 ---
 
 ## 2026-08-14 — Gün D/1-4 (render şeridi, Zeynep): splat rasterizer + 5. mod + yörünge üreteci

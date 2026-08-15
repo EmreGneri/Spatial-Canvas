@@ -21,11 +21,18 @@
  *   b: normal.xyz (birim) + ölçek (dünya yarıçapı)
  *   c: rgb + AO (0..1)
  * Texture'a taşıma `engine/splats.ts` işidir — bu tip GPU bilmez.
+ *
+ * D.4 — `keyframeIndex` (Gün 7): splat başına kaynak keyframe sırası
+ * (timeline filtresi için). GPU'ya GİTMEZ — material/sıralama bundan
+ * habersizdir; timeline filtreleme CPU tarafında okur (render tarafı
+ * dokunulmadı — Zeynep onayı beklenmeden, D.4 sözleşmesi imzalı).
  */
 export interface GaussianBufferData {
   a: Float32Array;
   b: Float32Array;
   c: Float32Array;
+  /** D.4 — splat başına kaynak keyframe id (0..keyframeCount-1). */
+  keyframeIndex: Uint16Array;
   count: number;
 }
 
@@ -34,6 +41,7 @@ export function createGaussianBufferData(count: number): GaussianBufferData {
     a: new Float32Array(count * 4),
     b: new Float32Array(count * 4),
     c: new Float32Array(count * 4),
+    keyframeIndex: new Uint16Array(count),
     count,
   };
 }
