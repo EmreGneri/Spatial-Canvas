@@ -620,7 +620,10 @@ gider. Tip karşılığı: `src/engine/vision/types.ts` → `PoseTrackRecord`.
 ### D.4 Füzyon Çıktısı
 
 - Aynı GaussianBuffer düzeni + ayrı **`keyframeIndex` kanalı** (timeline
-  filtresi: her splat'ın hangi keyframe'den geldiği).
+  filtresi: her splat'ın hangi keyframe'den geldiği). **Gün 7:** kanal
+  `GaussianBufferData.keyframeIndex` (Uint16Array) olarak CPU tarafında
+  yaşar; **GPU'ya gitmez** — material/sıralama bundan habersizdir (shader'a
+  dokunulmadı), timeline filtresi CPU'da okur.
 - Oklüzyon delikleri: **NA sentinel**. Delik doldurma çok-görüntülü füzyonla
   yapılır; **diffusion/inpainting YASAK** (üretici model kuralı).
 
@@ -791,6 +794,140 @@ DEĞİLDİR — ikisi de essential matrix için dejenere yapılandırmalardır.
 izdüşüm yok). Görüntü RENDER EDİLMEZ: çözücünün girdisi nokta eşleşmeleridir.
 Kanıt: `scripts/verify-trajectory.mjs`.
 
+### D.10 Poz Çözücü (Emre — Gün 5, `src/engine/vision/pose.ts` + `linalg.ts`)
+
+Essential matrix (normalize 8-nokta) + RANSAC + SVD ayrıştırma (4 aday) +
+cheirality (üçgenleme oylaması) → D.2 `PoseTrackRecord[]` zinciri.
+`src/engine/vision/linalg.ts`: genel simetrik N×N Jacobi özçözücü (döngüsel
+döndürmeler) + 3×3 SVD (bunun üzerine kurulu) — `metrics.ts`teki
+`largestEigenvector4` yalnızca 4×4'e özeldi (Horn Sim(3)), essential matrix
+hem 9×9 (8-nokta null uzayı) hem 3×3 (E'nin SVD'si) özayrışım istediği için
+genel çözücü buraya, tek yere yazıldı.
+
+- **Girdi eşleşmeye kayıtsız:** `PointMatch = {x1,y1,x2,y2}` piksel çiftleri.
+  Gerçek boru hattında `flow.ts`'in izlediği köşeler olur; bu modül kaynağı
+  bilmez.
+- **`recoverPose`/`decomposeEssential` çıktısı İKİLİ GÖRECELİ dönmedir:**
+  `X_camB = R · X_camA + t` (kamera `i` → kamera `i+1`). D.2'nin MUTLAK
+  `PoseTrackRecord.R` alanıyla (kamera→dünya, ilk keyframe=kimlik)
+  KARIŞTIRILMAZ — `chainPoseTrack` ikisi arasındaki zincirleme dönüşümü
+  yapar (aşağıda).
+- **Ölçek Gün 6'ya bırakılır:** essential matrix `t`'yi yalnızca YÖN olarak
+  verir (|t|=1). `scaleA=1, scaleB=0` (kimlik varsayımı) — D.7 başarı ölçütü
+  yalnızca ROTASYONDUR, bu fazda öteleme büyüklüğüne karar VERİLMEZ.
+- **D.7 doğrulaması** (`scripts/verify-pose.mjs`, Zeynep'in `trajectory.ts`
+  üretecine karşı, model YÜKLEMEZ): izole çift 0.00000° (gürültüsüz),
+  12-keyframe zincirde ADIM hatası medyan 0.121° / maks 0.292° (D.7 eşiği
+  <1-2°'yi geçer), %30 kaba aykırı değerle 0.183°. **Biriken (mutlak) zincir
+  hatası GATE EDİLMEZ** — D.8 zaten "loop closure yok, sürüklenme birikir"
+  diyor; adım hatası (ardışık keyframe'lerin GÖRECELİ dönmesi) doğru ölçüttür.
+
+**HATA GEÇMİŞİ (dürüstlük kaydı — bu turda 5 gerçek hata bulundu ve
+düzeltildi, sırayla):**
+
+1. `svd3`'ün üçüncü tekil vektörü (`U₂`) KOŞULSUZ çapraz çarpımla
+   dolduruluyordu ("σ₂≈0 varsayımıyla"). Ham (rütbe-2 kısıtından önceki)
+   essential matrix adayında σ₂ genelde sıfır DEĞİLDİR — o dalda `M·V₂/σ₂`
+   formülü kullanılmalı. Sabit 3×3 test matrisinde çapraz çarpım TAM TERS
+   işaretli `U₂` üretti → `det(U)` etkilenmedi ama genel SVD reconstrüksiyonu
+   bozuktu.
+2. Aynı fonksiyonda eşik MUTLAK 1e-9'du. σ₀ büyükken (essential matrix'te
+   tipik ~4) rütbe-2 kısıtlı bir E'nin σ₂'si tam sıfır olmayıp ~1e-8
+   mertebesinde kalabiliyordu — bu, `M·V₂/σ₂` bölmesi için yetersiz
+   hassasiyette (pay da aynı mertebede küçük): bölüm kayan nokta gürültüsüne
+   düşüyor, `U`'nun üçüncü sütunu sıfıra yakın çıkıyor, `det(U)≈0` (ortogonal
+   DEĞİL) oluyordu. Eşik artık σ₀'a BAĞIL.
+3. Rütbe-2/eşit-tekil-değer (essential matrix'e özgü σ₁=σ₂) kısıtlaması ÖNCE
+   Hartley-normalize uzayında uygulanıp SONRA denormalize ediliyordu. Hartley
+   T'si benzerlik dönüşümüdür (ötelemeli) — homojen 3×3 olarak ORTOGONAL
+   DEĞİLDİR; tekil DEĞERLER yalnızca ortogonal dönüşümler altında korunur.
+   Sıra: ÖNCE denormalize, SONRA kısıtla (kısıt yalnızca gerçek kalibre
+   uzayda anlamlıdır).
+4. **KÖK NEDEN (asıl hata).** Satır kurulumu standart (x,y,1) izdüşümsel-
+   düzlem sözleşmesini kullanır (Hartley T'nin alt satırı [0,0,1] — doğru,
+   dokunulmadı). Ama bu projenin kamera ışını **z=-1**'dir (`pixelToRay`,
+   kamera −z'ye bakar): gerçek homojen ışın (xn,yn,-1)'dir, (xn,yn,1) DEĞİL.
+   Satırlar örtük biçimde (xn,yn,1) kullandığından çıkan E TEK bileşenin (z)
+   işareti ters bir sözleşmeye aitti — genel (düzlemsel olmayan) hareket
+   geometrisinde bu basit bir ölçek/genel işaret çevirmesine İNDİRGENMEZ.
+   Saf yatay (Y-ekseni) dönmede z-işareti tesadüfen fark etmiyormuş GİBİ
+   göründü (rotasyon hatası ~0°, dikey öteleme sıfır olduğu için dejenere özel
+   hâl) — bu ÇÜRÜTÜCÜ kanıt sanılıp önce YANLIŞ bir "ters R" düzeltmesi
+   yapıldı (aşağıda 5. madde); gerçek (düzlemsel olmayan, dikey bileşenli)
+   12-keyframe yörüngede aynı kod adım başına 2-3°'ye düşüyordu — z-işareti
+   orada telafi olmuyordu. Düzeltme kapalı formda `fixHomogeneousZSign`:
+   satır açılımından türetilir, yalnızca üçüncü SATIR/SÜTUNUN köşe-dışı dört
+   girdisi (row-major indeks 2,5,6,7) işaret değiştirir. Doğrulandı:
+   düzeltilmiş E, yörünge verisinden BAĞIMSIZ kurulan `Etrue=[t]ₓR` ile
+   ×1e-6 hassasiyette eşleşti.
+5. Madde 4 keşfedilmeden ÖNCE, o zamanki (yanlış) E'yi telafi etmek için
+   `decomposeEssential`'da `U·W·Vᵀ`'nin sonucu TERS ALINIYORDU (yanlışlıkla
+   "standart kütüphane kamera2→kamera1 veriyor" sanılmıştı). Bu, saf yatay
+   dönme test senaryosunda TESADÜFEN doğru sonucu veriyordu (ölçülen: 0.00°)
+   ama genel harekette YENİ bir hataya yol açıyordu. Kök neden (madde 4)
+   düzeltildikten sonra standart ders kitabı formülü (Hartley & Zisserman
+   §9.6.2) DOĞRUDAN doğru sonucu verdi — ters alma KALDIRILDI.
+
+Ayrıca test tarafında (kod değil, ölçüm hedefi) bir hata: `verify-pose.mjs`
+başlangıçta `recoverPose`'un İKİLİ GÖRECELİ çıktısını `toFirstKeyframeOrigin`
+çıktısının MUTLAK `p.R`'siyle DOĞRUDAN karşılaştırıyordu — 2 keyframe'de
+`gt[1].R` sayısal olarak `Rrel`'in TERSİDİR, bu yüzden doğru kod bile ~80°
+"hata" gösteriyordu. Düzeltme: `trueRelativeRotation(rawA, rawB)` yardımcı
+fonksiyonu `RBᵀ·RA`'yı HAM pozlardan doğrudan kurar.
+
+### D.11 Ölçek Hizalama + Keyframe Zinciri (Emre — Gün 6, `src/engine/vision/scale.ts`)
+
+Üç parça: (1) MUTLAK D.2 poz çiftinden dünya noktası üçgenleme (Gün 5'in
+göreceli `triangulateDepths`'i üzerine kurulu — `X_camB=Rrel·X_camA+trel`
+`chainPoseTrack` ile AYNI türetme), (2) `d_metric ≈ scaleA·d_pred + scaleB`
+kapalı-form en küçük kareler (D.2), (3) akış tabanlı keyframe seçimi
+(parallaks + izleme kalitesi eşiği, D.8 hedefi 8-20 keyframe).
+
+- **`triangulateWorldPoint`** yalnızca GÖRECELİ pozu (`Rrel,trel`) kullanır —
+  bu, iki mutlak pozun ORTAK bir rijit dönüşümle taşınmasından ETKİLENMEZ
+  (Rrel/trel türetimi de ortak dönüşüm altında değişmez). Yani `chainPoseTrack`
+  çıktısı (ilk-keyframe-orijinli çerçeve) ile başka bir çerçevedeki pozlar
+  CHEIRALITY/DERİNLİK amacıyla karışık kullanılabilir; yalnızca MUTLAK dünya
+  konumu (`tri.point`) istendiğinde pozların TUTARLI bir çerçevede olması
+  gerekir (test kanıtı: `verify-scale.mjs` [2] notu).
+- **`fitScaleAlignment`** derinlik MODELİNDEN bağımsızdır (D.5 "harness
+  bağımsızlığı" kuralının aynısı) — `getPredictedDepth` çağıranın sağladığı
+  bir fonksiyondur, model yükü bu modülde YOKTUR.
+- **`selectKeyframes`** referansı HER yeni keyframe'de günceller (ona kayar);
+  güncellenmeseydi parallaks asla düşmez, ilk eşikten sonra HER kare keyframe
+  olurdu. Son kare her zaman keyframe'dir (D.8: eşik video sonunda
+  tetiklenmemiş olabilir, sessizce dışarıda bırakılmaz).
+- **Ölçek Gün 5'ten devralınan kısıtla uyumludur:** `d_metric` (üçgenlenen
+  derinlik) pose zincirinin KENDİ tutarlı ama keyfi ölçeğindedir — mutlak
+  metre DEĞİLDİR (essential matrix `t`'yi yön olarak verir). Bu fazda "metrik"
+  sözcüğü D.2'nin `scaleA/scaleB` alanlarının DOLDURULMASI anlamına gelir,
+  gerçek dünya metresine kalibrasyon bu fazın kapsamı dışıdır (D.8).
+
+**Doğrulama** (`scripts/verify-scale.mjs`, zincirin 14. script'i, model
+YÜKLEMEZ, Zeynep'in `trajectory.ts`'ine karşı):
+
+| Test | Sonuç |
+|---|---|
+| Üçgenleme (gerçek poz, gürültüsüz, tek nokta) | 6.24e-8 dünya birimi hata |
+| Üçgenleme (gerçek poz, 200 nokta RMS) | 1.78e-7 dünya birimi |
+| Üçgenleme (Gün 5'in TAHMİN ettiği poz zinciriyle) | 100/100 cheirality |
+| Ölçek uydurma (sentetik a=2.7,b=-0.4 + gürültü) | â=2.6995, b̂=-0.4012 |
+| Ölçek uydurma (dejenere: sabit d_pred) | `null` (sessiz yanlış sayı YOK) |
+| Uçtan uca (üçgenleme→hizalama zinciri) | beklenen â/b̂'den <%5 sapma |
+| Keyframe seçimi (60 kare, 150° yay) | 8 keyframe (D.8 hedefi: 8-20) |
+| Determinizm | birebir |
+
+**Bilinen sınır (dürüstçe bildirilir, D.8 ile aynı ruhta):** bu modül gerçek
+video/derinlik-modeli entegrasyonuyla UÇTAN UCA test EDİLMEDİ — Gün 6'nın
+plan metni "30 sn'lik gerçek klip"ten bahsediyor, burada doğrulama SENTETİK
+yörünge + sentetik-bozulmuş "d_pred" ile yapıldı (projenin D.7 kesme
+sırasının 2. maddesiyle aynı gerekçe: "gerçek veri kümesi metrikleri →
+sentetik ground-truth, sentetik de savunulabilir sayıdır"). Gerçek video
+entegrasyonu (Gün 7'nin "füzyon" adımı) bu modülü `flow.ts`'in izlediği
+noktalarla ve `depth.ts`'in gerçek çıktısıyla besleyecek — arayüz
+(`PointMatch`, `getPredictedDepth`) bunu KABUL EDECEK biçimde tasarlandı,
+ayrıca bir sözleşme değişikliği gerekmez.
+
 ### D.9 Entegrasyon
 
 - Node graph'a **`pose`** ve **`fusion`** düğümleri; parametreleri ParamDef'e
@@ -798,6 +935,20 @@ Kanıt: `scripts/verify-trajectory.mjs`.
 - 5. render modu **`splat`** → `registerRenderMode`, `SPLAT_PARAMS`.
 - Git: `feat/eval-flow-pose` (Emre) + `feat/splat-render` (Zeynep), akşam
   `main`'e; AI izi kuralı aynen (ne + neden, insan yazarı).
+- **Gün 7 (durum):** `src/engine/vision/fusion.ts` — keyframe bulutlarını
+  dünya çerçevesinde birleştirip GaussianBuffer'ı doldurur (`fuseKeyframes`:
+  seyrek splat pikseli + flow eşleşmeleri + yoğun d_pred → ölçek hizalaması
+  → dünya splat'ları + keyframeIndex; `fuseVideoFrames`: video köprüsü —
+  yoğun depth/rgb haritalarını alır). Sentetik yörüngede doğrulandı
+  (verify-fusion.mjs: ölçek 0.3691 vs 1/2.7, konum RMS 3.14e-3, ATE 2.99e-3).
+- **Gün 7 KABLOSU (kullanıcı kararı: "şimdi bağla"):** `src/engine/vision/
+  videoPipe.ts` köprünün CANLI ucudur — `captureKeyframes` (rVFC, zaman
+  kapılı 8 kare, 256×192) + `buildFusionScene` (flow → chainPoseTrack →
+  fuseVideoFrames → `fitBufferToCamera` kamera uyumu) + App.tsx `video → 3B`
+  butonu → `Engine.setGaussians` → splat modu. Dürüstlük kayıtları:
+  video yolunda yoğun derinlik = luminance (model yalnız tek fotoğrafta),
+  şekil fiziği üçgenlemeden (öz/ölçek gerçektir), fit kopya üzerinde sunum
+  ölçeğidir (kaynak buffer bozulmaz). verify-videopipe.mjs ile ölçüldü.
 
 ## Model ve Runtime
 

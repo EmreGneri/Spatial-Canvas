@@ -22,6 +22,7 @@ import {
   toPreset,
 } from './engine/preset';
 import { exportPNG, exportWebM } from './engine/export';
+import { buildFusionScene, captureKeyframes } from './engine/vision/videoPipe';
 
 /**
  * Video/kamera luminance yolunda temporal smoothing katsayısı (kalite kararı):
@@ -534,6 +535,52 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
     }
   }
 
+  /**
+   * GÜN 7 KABLOSU: canlı video/kamera → tek dünya sahnesi → splat modu.
+   * Akış: keyframe yakala (256×192, zaman kapılı 8 kare) → flow (Shi-Tomasi +
+   * LK) → chainPoseTrack (8-nokta + RANSAC + cheirality) → fuseVideoFrames
+   * (ölçek üçgenlemeden) → kamera görüşüne sığdır → Engine.setGaussians →
+   * splat moduna geç. DÜRÜSTLÜK: yoğun derinlik = luminance (model video
+   * yolunda çalışmaz — App tasarımı); şekil fiziği gerçektir (üçgenleme),
+   * d_pred yalnız splat yerleşim marjıdır (videoPipe docstring, kayıt 1-3).
+   */
+  async function fuseVideoToSplat() {
+    const video = videoRef.current;
+    const engine = engineRef.current;
+    if (!video || !engine) {
+      say('video → 3B: önce video yükle veya kamerayı aç');
+      return;
+    }
+    setBusy(true);
+    try {
+      const t0 = performance.now();
+      say(`video → 3B: keyframe yakalanıyor (${(video.currentTime || 0).toFixed(1)}s)...`);
+      const frames = await captureKeyframes(video);
+      if (frames.length < 2) {
+        say(`video → 3B: keyframe yetersiz (${frames.length}) — video oynuyor mu?`);
+        return;
+      }
+      say(`video → 3B: ${frames.length} keyframe · eşleştirme + poz + füzyon...`);
+      const scene = buildFusionScene(frames);
+      if (scene.data.count === 0) {
+        say('video → 3B: splat üretilemedi (luminance/video durağan mı?)');
+        return;
+      }
+      engine.setGaussians(scene.data);
+      engine.setCameraPose({ position: [0, 0.35, 2.2], target: [0, 0, 0] });
+      if (mode !== 'splat') changeMode('splat');
+      say(
+        `video → 3B: ${scene.data.count.toLocaleString('tr-TR')} splat · ` +
+          (scene.scale ? `ölçek a=${scene.scale.scaleA.toFixed(3)} b=${scene.scale.scaleB.toFixed(3)}` : 'ölçek yok (üçgenleme yetersiz — d_pred ölçeği)') +
+          ` · ${scene.stats.flowMatches} eşleşme · ${Math.round(performance.now() - t0)} ms`,
+      );
+    } catch (err) {
+      say(`video → 3B HATA: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <div style={{ padding: 24, display: 'grid', gap: 16, justifyItems: 'start' }}>
       <h1 style={{ font: 'inherit', fontSize: 18, margin: 0 }}>spatial-canvas · Gün A — ACES + bloom + FXAA + sis (global look)</h1>
@@ -564,6 +611,13 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
         />
         <button disabled={busy} onClick={toggleCamera}>
           {cameraOn ? 'kamerayı kapat' : 'kamera'}
+        </button>
+        <button
+          disabled={busy}
+          onClick={fuseVideoToSplat}
+          title="videodan keyframe yakala → flow + poz + füzyon → 3B splat sahnesi (Gün 7 kablosu)"
+        >
+          video → 3B
         </button>
         <button disabled={busy} onClick={toggleSegment} style={segment ? { background: '#2a3', color: '#fff', border: '1px solid #2a3' } : undefined}>
           nesne ayırma: {segment ? 'AÇIK' : 'kapalı'}
