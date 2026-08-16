@@ -62,8 +62,11 @@ function buildMatches(frameA, frameB) {
 
   const rec = recoverPose(matches, { width: W, height: H, fovY: raw[0].fovY });
   assert.ok(rec, 'recoverPose null döndü');
-  console.log(`[1] içerdekiler: ${rec.inlierCount}/${matches.length} · cheirality oyu: ${rec.cheiralityVotes}`);
-  assert.ok(rec.inlierCount >= matches.length * 0.9, 'gürültüsüz sahnede içerdeki oranı düşük');
+  console.log(`[1] içerdekiler: ${rec.inlierSayisi}/${matches.length} · cheirality oyu: ${rec.cheiralityVotes}`);
+  assert.ok(rec.inlierSayisi >= matches.length * 0.9, 'gürültüsüz sahnede içerdeki oranı düşük');
+  assert.equal(rec.kaynak, 'essential', 'başarılı çözüm kaynağı essential');
+  assert.equal(rec.dejenere, false, 'başarılı çözüm dejenere değil');
+  assert.ok(Math.abs(rec.inlierOrani - rec.inlierSayisi / matches.length) < 1e-9, 'inlierOrani tutarlı');
 
   const qTrue = trueRelativeRotation(raw[0], raw[1]);
   const err = quatAngleDeg(matrixToQuat(rec.R), qTrue);
@@ -156,14 +159,15 @@ function buildMatches(frameA, frameB) {
 
   const rec = recoverPose(corrupted, { width: W, height: H, fovY: raw[0].fovY }, { iterations: 500, pixelThreshold: 1.5, seed: 0xc0ffee });
   assert.ok(rec, 'RANSAC aykırı değerlerle null döndü');
-  console.log(`[3] içerdekiler: ${rec.inlierCount}/${corrupted.length} (beklenen ~${corrupted.length - outlierCount})`);
+  console.log(`[3] içerdekiler: ${rec.inlierSayisi}/${corrupted.length} (beklenen ~${corrupted.length - outlierCount})`);
+  assert.equal(rec.kaynak, 'essential', 'RANSAC başarısı essential kaynağıdır');
   // İçerdeki sayısı gerçek inlier sayısına yakın olmalı (aykırıların çoğu
   // elenmeli) — rastgele aykırı üretimi tesadüfen gerçek epipolar çizgiye
   // yakın düşebilir (kabul edilir eşik: gerçek inlier sayısının %95'i).
   const expectedInliers = corrupted.length - outlierCount;
   assert.ok(
-    rec.inlierCount >= expectedInliers * 0.95,
-    `RANSAC beklenenden az içerdeki buldu: ${rec.inlierCount} (beklenen ~${expectedInliers})`,
+    rec.inlierSayisi >= expectedInliers * 0.95,
+    `RANSAC beklenenden az içerdeki buldu: ${rec.inlierSayisi} (beklenen ~${expectedInliers})`,
   );
 
   const qTrue = trueRelativeRotation(raw[0], raw[1]);
@@ -257,6 +261,60 @@ function buildMatches(frameA, frameB) {
   );
   assert.ok(matches.length >= 30, 'yeterli eşleşme yok — senaryo bozuk');
   assert.ok(rec === null, 'sıfır baz hattında (saf dönme) recoverPose çöp poz döndürmemeli — null olmalı');
+}
+
+// ---------------------------------------------------------------------------
+// 8. KAYNAK ETİKETLERİ (E1.2 sözleşmesi) — chainPoseTrack her kaydın pozunun
+//    NEREDEN geldiğini işaretler: essential çözüm, donme-fallback (cheirality
+//    0 — dejenere) ya da basarisiz (<8 eşleşme).
+// ---------------------------------------------------------------------------
+{
+  const K = { width: W, height: H, fovY: (60 * Math.PI) / 180 };
+
+  // (a) sağlıklı zincir → tümü essential, dejenere false
+  {
+    const raw = generateOrbitTrajectory({ count: 4, arc: (60 * Math.PI) / 180 });
+    const scene = generatePointCloudScene(400, 1, 0x51ce4e);
+    const frames = projectScene(raw, scene, W, H, 0);
+    const fm = [];
+    for (let i = 0; i < frames.length - 1; i++) fm.push(buildMatches(frames[i], frames[i + 1]));
+    const est = chainPoseTrack(fm, K, raw.map((p) => p.timeMs));
+    est.forEach((p, i) => {
+      assert.equal(p.kaynak, 'essential', `kayıt ${i}: sağlıklı zincir essential olmalı`);
+      assert.equal(p.dejenere, false, `kayıt ${i}: dejenere false`);
+    });
+    console.log('[8a] sağlıklı zincir: tüm kaynaklar essential ✓');
+  }
+
+  // (b) boş eşleşme çifti → basarisiz (dejenere DEĞİL)
+  {
+    const raw = generateOrbitTrajectory({ count: 3, arc: (45 * Math.PI) / 180 });
+    const scene = generatePointCloudScene(300, 1, 0x51ce4e);
+    const frames = projectScene(raw, scene, W, H, 0);
+    const fm = [buildMatches(frames[0], frames[1]), []];
+    const est = chainPoseTrack(fm, K, raw.map((p) => p.timeMs));
+    assert.equal(est[2].kaynak, 'basarisiz', 'boş eşleşmeli çift basarisiz olmalı');
+    assert.equal(est[2].dejenere, false, 'yetersiz eşleşme dejenere sayılmaz');
+    console.log('[8b] boş çift: basarisiz ✓');
+  }
+
+  // (c) saf dönme (sıfır baz hattı) → donme-fallback + dejenere true
+  {
+    const yaw = (a) => [0, Math.sin(a / 2), 0, Math.cos(a / 2)];
+    const rawRot = [
+      { id: 0, R: [0, 0, 0, 1], t: [0, 0, 0], timeMs: 0, scaleA: 1, scaleB: 0, fovY: K.fovY },
+      { id: 1, R: yaw(0.5), t: [0, 0, 0], timeMs: 33, scaleA: 1, scaleB: 0, fovY: K.fovY },
+      { id: 2, R: yaw(1.0), t: [0, 0, 0], timeMs: 66, scaleA: 1, scaleB: 0, fovY: K.fovY },
+    ];
+    const scene = generatePointCloudScene(600, 1, 0x51ce4e);
+    const frames = projectScene(rawRot, scene, W, H, 0);
+    const fm = [buildMatches(frames[0], frames[1]), buildMatches(frames[1], frames[2])];
+    const est = chainPoseTrack(fm, K, rawRot.map((p) => p.timeMs));
+    assert.equal(est[1].kaynak, 'donme-fallback', 'sıfır baz hattı donme-fallback olmalı');
+    assert.equal(est[1].dejenere, true, 'cheirality 0 = dejenere');
+    assert.equal(est[2].kaynak, 'donme-fallback', 'ikinci saf dönme de fallback');
+    console.log('[8c] saf dönme: donme-fallback + dejenere ✓');
+  }
 }
 
 console.log('OK poz çözücü — essential matrix + RANSAC + ayrıştırma + cheirality (Gün 5)');

@@ -26,7 +26,7 @@
  */
 
 import { cross3, jacobiEigenSymmetric, mat3Mul, mat3Transpose, mat3Vec, matrixToQuat, mulberry32, svd3 } from './linalg.ts';
-import type { PoseTrackRecord } from './types.ts';
+import type { PoseKaynak, PoseResult, PoseTrackRecord } from './types.ts';
 
 export interface PointMatch {
   x1: number;
@@ -313,20 +313,14 @@ export function triangulateDepths(
   return { s1, s2 };
 }
 
-export interface RecoverPoseResult {
-  R: number[];
-  t: [number, number, number];
-  inlierCount: number;
-  inlierMask: Uint8Array;
-  cheiralityVotes: number;
-}
-
-/** RANSAC → essential → 4 aday → cheirality oylamasıyla TEK (R,t) seçimi. */
+/** RANSAC → essential → 4 aday → cheirality oylamasıyla TEK (R,t) seçimi.
+ *  E1.2 sözleşmesi: başarıda `PoseResult` (kaynak 'essential', dejenere false),
+ *  başarısızlıkta (yetersiz eşleşme / cheirality 0) NULL — F2 davranışı korunur. */
 export function recoverPose(
   matches: PointMatch[],
   K: CameraIntrinsicsSimple,
   opts: RansacOptions = {},
-): RecoverPoseResult | null {
+): PoseResult | null {
   const ransac = ransacEssential(matches, K, opts);
   if (!ransac) return null;
   const { E, inlierMask } = ransac;
@@ -359,7 +353,16 @@ export function recoverPose(
   // (video yolunun donmuş kareleri bu yoldan bozuk poz üretiyordu).
   // Çağıran (chainPoseTrack.fillOnFailure) null'u dürüstçe işler.
   if (bestVotes <= 0) return null;
-  return { R: best.R, t: best.t, inlierCount, inlierMask, cheiralityVotes: bestVotes };
+  return {
+    R: new Float32Array(best.R),
+    t: new Float32Array(best.t),
+    kaynak: 'essential',
+    dejenere: false,
+    inlierSayisi: inlierCount,
+    inlierOrani: matches.length > 0 ? inlierCount / matches.length : 0,
+    cheiralityVotes: bestVotes,
+    inlierMask,
+  };
 }
 
 export interface ChainOptions extends RansacOptions {
@@ -400,7 +403,17 @@ export function chainPoseTrack(
   const fillOnFailure = opts.fillOnFailure ?? true;
 
   const out: PoseTrackRecord[] = [
-    { id: 0, R: [0, 0, 0, 1], t: [0, 0, 0], timeMs: frameTimesMs[0], scaleA: 1, scaleB: 0, fovY: K.fovY },
+    {
+      id: 0,
+      R: [0, 0, 0, 1],
+      t: [0, 0, 0],
+      timeMs: frameTimesMs[0],
+      scaleA: 1,
+      scaleB: 0,
+      fovY: K.fovY,
+      kaynak: 'essential', // E1.2: identity taban — naif 'essential' (D6'da rafine)
+      dejenere: false,
+    },
   ];
 
   let RA = [1, 0, 0, 0, 1, 0, 0, 0, 1]; // 3×3 satır-öncelikli, birim
@@ -409,19 +422,42 @@ export function chainPoseTrack(
   for (let i = 0; i < frameMatches.length; i++) {
     const rec = recoverPose(frameMatches[i], K, opts);
     if (!rec) {
+      // E1.2 kaynak etiketi: <8 eşleşme = 'basarisiz' (dejenere DEĞİL);
+      // eşleşme var ama poz çözülemedi = cheirality 0 = 'donme-fallback' (dejenere).
+      const kaynak: PoseKaynak = frameMatches[i].length < 8 ? 'basarisiz' : 'donme-fallback';
       if (!fillOnFailure) continue;
       // Zincir kopmasın: önceki pozu tekrarla (dürüst — id/timeMs ilerler,
       // R/t ilerlemez; verify-pose.mjs bu karede rotasyon hatasını da rapor
       // eder, gizlenmez).
-      out.push({ id: i + 1, R: matrixToQuat(RA), t: tA, timeMs: frameTimesMs[i + 1], scaleA: 1, scaleB: 0, fovY: K.fovY });
+      out.push({
+        id: i + 1,
+        R: matrixToQuat(RA),
+        t: tA,
+        timeMs: frameTimesMs[i + 1],
+        scaleA: 1,
+        scaleB: 0,
+        fovY: K.fovY,
+        kaynak,
+        dejenere: kaynak === 'donme-fallback',
+      });
       continue;
     }
-    const Rrel = rec.R;
-    const trel = rec.t;
+    const Rrel = Array.from(rec.R);
+    const trel: [number, number, number] = [rec.t[0], rec.t[1], rec.t[2]];
     const RB = mat3Mul(RA, mat3Transpose(Rrel));
     const RBtrel = mat3Vec(RB, trel);
     const tB: [number, number, number] = [tA[0] - RBtrel[0], tA[1] - RBtrel[1], tA[2] - RBtrel[2]];
-    out.push({ id: i + 1, R: matrixToQuat(RB), t: tB, timeMs: frameTimesMs[i + 1], scaleA: 1, scaleB: 0, fovY: K.fovY });
+    out.push({
+      id: i + 1,
+      R: matrixToQuat(RB),
+      t: tB,
+      timeMs: frameTimesMs[i + 1],
+      scaleA: 1,
+      scaleB: 0,
+      fovY: K.fovY,
+      kaynak: 'essential',
+      dejenere: false,
+    });
     RA = RB;
     tA = tB;
   }

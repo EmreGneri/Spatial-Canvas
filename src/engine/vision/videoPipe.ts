@@ -28,7 +28,7 @@
 
 import type { GaussianBufferData } from '../../shaders/splatFixture.ts';
 import { createGaussianBufferData } from '../../shaders/splatFixture.ts';
-import type { PoseTrackRecord, FlowPoint } from './types.ts';
+import type { CaptureDiagnostics, PoseKaynak, PoseTrackRecord, FlowPoint, ScaleVerdict } from './types.ts';
 import type { PointMatch } from './pose.ts';
 import { chainPoseTrack } from './pose.ts';
 import type { KeyframeMatch } from './fusion.ts';
@@ -155,6 +155,17 @@ export interface FusionSceneResult {
     flowMatches: number;
     poseFails: number;
   };
+  /** E1.2 — yakalama teşhisi (D6 gate/değerlendirme paneli okur). */
+  diagnostics: CaptureDiagnostics;
+}
+
+/**
+ * E1.2 — DepthProvider sözleşmesinin (types.ts) bugünkü SENKRON uygulaması:
+ * d_pred = luminance ("parlaklık = yükseklik", kayıt 1). D5'te MiDaS bağlanınca
+ * bu, asenkron provider sözleşmesini uygulayan bir sarmalayıcının içine girer.
+ */
+export function luminanceDepthProvider(frame: KeyframeFrame): Float32Array {
+  return frame.lum;
 }
 
 /**
@@ -192,7 +203,7 @@ export function buildFusionScene(frames: KeyframeFrame[], fovY: number = VIDEO_F
 
   const res = fuseVideoFrames({
     poses,
-    depth: frames.map((f) => f.lum),
+    depth: frames.map(luminanceDepthProvider),
     rgb: frames.map((f) => f.rgb),
     matches: kmatches,
     width: w,
@@ -201,11 +212,45 @@ export function buildFusionScene(frames: KeyframeFrame[], fovY: number = VIDEO_F
     sampleStep: 4,
   });
 
+  // E1.2 — CaptureDiagnostics (naif doldurma; D6'da gate'lere bağlanır).
+  const dagilim: Record<PoseKaynak, number> = { essential: 0, 'donme-fallback': 0, basarisiz: 0 };
+  for (let i = 1; i < poses.length; i++) dagilim[poses[i].kaynak!] += 1;
+  const ciftSayisi = Math.max(1, poses.length - 1);
+  const eslesmeSayilari = frameMatches.map((m) => m.length).sort((a, b) => a - b);
+  const medyanEslesme = eslesmeSayilari.length ? eslesmeSayilari[Math.floor(eslesmeSayilari.length / 2)] : 0;
+  const paralaks: number[] = [];
+  for (const m of frameMatches) {
+    for (const p of m) paralaks.push(Math.hypot(p.x2 - p.x1, p.y2 - p.y1));
+  }
+  paralaks.sort((a, b) => a - b);
+  const medyanParallaksPx = paralaks.length ? paralaks[Math.floor(paralaks.length / 2)] : 0;
+  let bazToplam = 0;
+  let bazN = 0;
+  for (let i = 1; i < poses.length; i++) {
+    if (poses[i].kaynak === 'essential') {
+      bazToplam += Math.hypot(poses[i].t[0], poses[i].t[1], poses[i].t[2]);
+      bazN++;
+    }
+  }
+  const olcek: ScaleVerdict = res.scale
+    ? { durum: 'gecerli', a: res.scale.scaleA, b: res.scale.scaleB, rmse: 0, guven: 1 }
+    : { durum: 'gecersiz', sebep: 'ucgenleme-yetersiz' };
+
   return {
     data: fitBufferToCamera(res.data),
     scale: res.scale,
     poses,
     stats: { keyframes: frames.length, flowMatches: matched, poseFails: fails },
+    diagnostics: {
+      keyframeSayisi: frames.length,
+      medyanEslesme,
+      pozBasariOrani: ciftSayisi > 0 ? dagilim.essential / ciftSayisi : 0,
+      pozKaynakDagilimi: dagilim,
+      medyanParallaksPx,
+      bazUzunlugu: bazN > 0 ? bazToplam / bazN : 0,
+      olcek,
+      teshis: 'iyi',
+    },
   };
 }
 

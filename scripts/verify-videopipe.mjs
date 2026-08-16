@@ -137,5 +137,38 @@ function uniformFrame(v) {
   console.log(`  bilgi: ${s2.stats.flowMatches} eşleşme · ${s2.data.count} splat · ölçek ${s2.scale ? `a=${s2.scale.scaleA.toFixed(3)} b=${s2.scale.scaleB.toFixed(3)}` : 'yok'}`);
 }
 
+// ── buildFusionScene: CaptureDiagnostics (E1.2 sözleşmesi) ──────────────────
+{
+  const u = uniformFrame(0.5);
+  const stat = [0, 1, 2, 3].map((i) => ({ timeMs: i * 250, lum: u.lum, rgb: u.rgb }));
+  const s = buildFusionScene(stat);
+  const d = s.diagnostics;
+  check('diagnostics: CaptureDiagnostics var', !!d);
+  check('diagnostics: keyframeSayisi', d.keyframeSayisi === 4);
+  check('diagnostics: medyanEslesme 0 (durağan)', d.medyanEslesme === 0);
+  check('diagnostics: pozBasariOrani 0', d.pozBasariOrani === 0);
+  check('diagnostics: pozKaynakDagilimi.basarisiz = 3', d.pozKaynakDagilimi.basarisiz === 3);
+  check('diagnostics: pozKaynakDagilimi.essential = 0', d.pozKaynakDagilimi.essential === 0);
+  check(
+    'diagnostics: ölçek gecersiz + sebep ucgenleme-yetersiz',
+    d.olcek && d.olcek.durum === 'gecersiz' && d.olcek.sebep === 'ucgenleme-yetersiz',
+  );
+  check('diagnostics: teshis iyi (naif)', d.teshis === 'iyi');
+  check('diagnostics: bazUzunlugu 0', d.bazUzunlugu === 0);
+  check('diagnostics: medyanParallaksPx 0', d.medyanParallaksPx === 0);
+
+  const mov = [0, 6, 12, 18].map((sh, i) => ({ timeMs: i * 250, ...synthFrame(sh) }));
+  const s2 = buildFusionScene(mov);
+  const d2 = s2.diagnostics;
+  check('diagnostics (hareketli): pozBasariOrani > 0', d2.pozBasariOrani > 0);
+  check('diagnostics (hareketli): essential > 0', d2.pozKaynakDagilimi.essential > 0);
+  check('diagnostics (hareketli): medyanParallaksPx > 0', d2.medyanParallaksPx > 0);
+  check(
+    'diagnostics (hareketli): ölçek sözleşmesi (gecerli|gecersiz)',
+    d2.olcek && (d2.olcek.durum === 'gecerli' || d2.olcek.durum === 'gecersiz'),
+  );
+  check('diagnostics: topK dağılımı 3 çifte toplanır', Object.values(d2.pozKaynakDagilimi).reduce((a, b) => a + b, 0) === 3);
+}
+
 console.log(failures === 0 ? 'OK video boru hattı kablosu (Gün 7, App bağlantısı)' : `${failures} HATA`);
 process.exit(failures === 0 ? 0 : 1);
