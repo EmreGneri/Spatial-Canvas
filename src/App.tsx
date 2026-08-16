@@ -8,6 +8,7 @@ import { createAsciiMaterial, ASCII_PARAMS } from './shaders/asciiMaterial';
 import { createNeonWireMaterial, NEON_PARAMS } from './shaders/neonWireMaterial';
 import { createSolidMaterial, SOLID_PARAMS } from './shaders/solidMaterial';
 import { createSplatMaterial, SPLAT_PARAMS } from './shaders/splatMaterial';
+import { createCrystalMaterial, CRYSTAL_PARAMS } from './shaders/crystalMaterial';
 import { ModeSelector, type RenderMode } from './ui/ModeSelector';
 import { CapturePanel } from './ui/CapturePanel';
 import { MetricsPanel } from './ui/MetricsPanel';
@@ -58,6 +59,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
       neon: createNeonWireMaterial(),
       solid: createSolidMaterial(),
       splat: createSplatMaterial(),
+      crystal: createCrystalMaterial(),
     }),
     [],
   );
@@ -98,6 +100,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
     engine.registerRenderMode('neon', materials.neon, NEON_PARAMS);
     engine.registerRenderMode('solid', materials.solid, SOLID_PARAMS);
     engine.registerRenderMode('splat', materials.splat, SPLAT_PARAMS);
+    engine.registerRenderMode('crystal', materials.crystal, CRYSTAL_PARAMS);
     engine.setPointsMaterial(materials.points);
     const textureType = engine.simTextureLabel;
     setLog((prev) => [
@@ -133,6 +136,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
       materials.neon.dispose();
       materials.solid.dispose(); // düzeltme: solid material sızdırılıyordu
       materials.splat.dispose();
+      materials.crystal.dispose();
       setEngine(null);
     };
   }, [materials]);
@@ -744,6 +748,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
           neon={materials.neon}
           solid={materials.solid}
           splat={materials.splat}
+          crystal={materials.crystal}
           setMode={changeMode}
           mode={mode}
         />

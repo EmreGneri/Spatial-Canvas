@@ -3,6 +3,7 @@ import type { AsciiMaterial } from './asciiMaterial';
 import type { NeonWireMaterial } from './neonWireMaterial';
 import type { SolidMaterial } from './solidMaterial';
 import type { SplatMaterial } from './splatMaterial';
+import type { CrystalMaterial } from './crystalMaterial';
 import type { FeedbackPassUniforms } from './feedbackPass';
 import type { ChromaticPassUniforms } from './chromaticPass';
 import type { GrainPassUniforms } from './grainPass';
@@ -108,6 +109,21 @@ export interface SplatState {
   uAoStrength: number;
 }
 
+/** Gün 2 — crystal modu preset grubu (diğer modlarla aynı şema). */
+export interface CrystalState {
+  uNormalKaynak: number;
+  uFacetScale: number;
+  uFresnelStrength: number;
+  uFresnelPower: number;
+  uSpecStrength: number;
+  uSpecPower: number;
+  uTintColor: string;
+  uDensity: number;
+  uSparkleAmount: number;
+  uRefractStrength: number;
+  uDispersion: number;
+}
+
 export interface FeedbackState {
   uFeedbackAmount: number;
   uZoom: number;
@@ -140,6 +156,8 @@ export interface RenderState {
   /** Gün 8 — opsiyonel: eski kayıtlarda (v1 öncesi) yoktur; yoksa splat
    *  uniform'ları dokunulmadan kalır (uAoStrength deseni). */
   splat?: SplatState;
+  /** Gün 2 — opsiyonel: eski kayıtlarda yoktur; yoksa crystal dokunulmaz. */
+  crystal?: CrystalState;
   feedback: FeedbackState;
   chromatic: ChromaticState;
   grain: GrainState;
@@ -160,6 +178,7 @@ export interface RenderTargets {
   solid: SolidMaterial;
   grain: GrainPassUniforms;
   splat?: SplatMaterial;
+  crystal?: CrystalMaterial;
   feedback?: FeedbackPassUniforms;
   chromatic?: ChromaticPassUniforms;
   /** Mod değişimi Engine'den geçer (setPointsMaterial); çağıran bağlar. */
@@ -254,6 +273,21 @@ export function serializeRenderState(targets: RenderTargets): RenderState {
           uAoStrength: targets.splat.uniforms.uAoStrength.value,
         }
       : { ...SPLAT_OFF },
+    crystal: targets.crystal
+      ? {
+          uNormalKaynak: targets.crystal.uniforms.uNormalKaynak.value,
+          uFacetScale: targets.crystal.uniforms.uFacetScale.value,
+          uFresnelStrength: targets.crystal.uniforms.uFresnelStrength.value,
+          uFresnelPower: targets.crystal.uniforms.uFresnelPower.value,
+          uSpecStrength: targets.crystal.uniforms.uSpecStrength.value,
+          uSpecPower: targets.crystal.uniforms.uSpecPower.value,
+          uTintColor: `#${targets.crystal.uniforms.uTintColor.value.getHexString()}`,
+          uDensity: targets.crystal.uniforms.uDensity.value,
+          uSparkleAmount: targets.crystal.uniforms.uSparkleAmount.value,
+          uRefractStrength: targets.crystal.uniforms.uRefractStrength.value,
+          uDispersion: targets.crystal.uniforms.uDispersion.value,
+        }
+      : undefined,
     feedback: f
       ? {
           uFeedbackAmount: f.uFeedbackAmount.value,
@@ -363,6 +397,25 @@ export function applyRenderState(
     col(state.solid.uWallColor, s.uWallColor);
     num(state.solid.uAoStrength, s.uAoStrength);
     num(state.solid.uSpecular, s.uSpecular);
+  }
+
+  if (state.crystal) {
+    const cr = targets.crystal;
+    if (cr) {
+      num(state.crystal.uNormalKaynak, cr.uniforms.uNormalKaynak);
+      num(state.crystal.uFacetScale, cr.uniforms.uFacetScale);
+      num(state.crystal.uFresnelStrength, cr.uniforms.uFresnelStrength);
+      num(state.crystal.uFresnelPower, cr.uniforms.uFresnelPower);
+      num(state.crystal.uSpecStrength, cr.uniforms.uSpecStrength);
+      num(state.crystal.uSpecPower, cr.uniforms.uSpecPower);
+      col(state.crystal.uTintColor, cr.uniforms.uTintColor);
+      num(state.crystal.uDensity, cr.uniforms.uDensity);
+      num(state.crystal.uSparkleAmount, cr.uniforms.uSparkleAmount);
+      num(state.crystal.uRefractStrength, cr.uniforms.uRefractStrength);
+      num(state.crystal.uDispersion, cr.uniforms.uDispersion);
+    } else {
+      warnings.push("crystal material kurulu değil — preset'in crystal ayarları uygulanmadı");
+    }
   }
 
   if (state.splat) {

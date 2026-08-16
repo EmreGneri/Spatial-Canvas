@@ -385,6 +385,16 @@ const exposure = this.look.uExposure.value;
   private tickPasses(time: number) {
     const passes = this.composer.passes as TickablePass[];
     for (const pass of passes) pass.update?.(time);
+    // MATERIAL ZAMANI (Gün 1 — neon rAF kaldırıldı): `uTime` taşıyan her
+    // kayıtlı material'a AYNI saati işle. Eskiden neon kendi rAF'ını
+    // sürüyordu; iki ayrı zaman kaynağı sekme arka plandan dönünce ayrışıyor
+    // ve mod kapalıyken bile tikliyordu. Tek kaynak: bu kanca.
+    for (const entry of this.renderModes.values()) {
+      const u = (entry.material as THREE.ShaderMaterial).uniforms as
+        | Record<string, THREE.IUniform>
+        | undefined;
+      if (u?.['uTime']) u['uTime'].value = time;
+    }
   }
 
   /**
@@ -411,7 +421,7 @@ setPointsMaterial(material: THREE.Material) {
         break;
       }
     }
-    if (name !== 'solid' && name !== 'splat') this.lastNonSolidMaterial = material;
+    if (!Engine.usesShellMesh(name) && name !== 'splat') this.lastNonSolidMaterial = material;
     if (name === 'splat') {
       // SPLAT nokta bulutunun material'ı DEĞİLDİR: kendi instanced quad
       // geometrisi var (aCorner/aSplatIndex), points geometrisinde yok.
@@ -422,11 +432,11 @@ setPointsMaterial(material: THREE.Material) {
       this.syncRenderVisibility();
       return;
     }
-    if (name === 'solid' && !this.solidReady) {
+    if (Engine.usesShellMesh(name) && !this.solidReady) {
       // FotoÄŸraf yok â†’ kabuk yok. Solid material'Ä± nokta bulutuna takmak
       // uv/normal attribute eksikliÄŸinden kÄ±rÄ±k render eder; material takasÄ±
       // YAPILMAZ, son saÄŸlam material'da kalÄ±nÄ±r (kabuk kurulunca uygulanÄ±r).
-      this.renderModeName = 'solid';
+      if (name) this.renderModeName = name;
       this.syncRenderVisibility();
       return;
     }
@@ -473,8 +483,8 @@ setPointsMaterial(material: THREE.Material) {
     // GÃœN B: solid seÃ§iliyken kabuk HAZIR olunca material'Ä± uygula (bekleyen
     // fallback kapanÄ±r); kabuk bÄ±rakÄ±lÄ±nca (releasePhoto) son saÄŸlam
     // material'a geri dÃ¶n â€” solid shader nokta bulutunda kÄ±rÄ±k render eder.
-    if (this.renderModeName === 'solid') {
-      const solidMaterial = this.renderModes.get('solid')?.material;
+    if (Engine.usesShellMesh(this.renderModeName)) {
+      const solidMaterial = this.renderModes.get(this.renderModeName)?.material;
       const fallback = this.lastNonSolidMaterial ?? this.renderModes.get('points')?.material;
       if (this.solidReady && solidMaterial && this.pointsMaterial !== solidMaterial) {
         this.pointsMaterial = solidMaterial;
@@ -488,9 +498,19 @@ setPointsMaterial(material: THREE.Material) {
     this.syncRenderVisibility();
   }
 
+  /**
+   * KABUK MESH'İ KULLANAN MODLAR: 'solid' ve (Gün 2'den beri) 'crystal'.
+   * İkisi de gerçek 2-manifold yüzeye + `normal`/`uv` attribute'larına ihtiyaç
+   * duyar; nokta bulutu geometrisinde bunlar YOKTUR (aUv grid'i taşır).
+   * Kabuk yoksa material takılmaz — graceful fallback deseni ikisinde de aynı.
+   */
+  private static usesShellMesh(name: string | null): boolean {
+    return name === 'solid' || name === 'crystal';
+  }
+
   /** GÃœN B: solid mod aktif + kabuk hazÄ±rsa bulut gizlenir, mesh gÃ¶rÃ¼nÃ¼r. */
   private syncRenderVisibility() {
-    const solidActive = this.renderModeName === 'solid';
+    const solidActive = Engine.usesShellMesh(this.renderModeName);
     // 'splat' aktif + GaussianBuffer dolu → nokta bulutu gizlenir, splat
     // nesnesi görünür. Buffer boşsa (fotoğraf yüklenmemiş) nokta bulutunda
     // kalınır — solid modunun graceful fallback'iyle aynı desen.
@@ -533,6 +553,18 @@ setPointsMaterial(material: THREE.Material) {
     const image = this.videoTexture ?? this.imageColorTexture;
     u['uImageTexture'].value = image;
     u['uHasImage'].value = image ? 1 : 0;
+    // GÜN 2 (Z2.2) — SAHNE RENGİ: crystal'ın Gün 5 kırılması için arkadaki
+    // görüntü bir texture'da olmalı. Cevap: EVET, sahne EffectComposer'ın
+    // renderTarget1/2 ping-pong'una yazılıyor (doğrudan ekrana değil).
+    //
+    // KRİTİK: crystal RenderPass sırasında ÇİZİLİYOR, yani o an composer'ın
+    // WRITE buffer'ına yazıyor. Aynı buffer'ı okumak geri besleme döngüsüdür
+    // (tanımsız davranış). Bu yüzden READ buffer bağlanır — içeriği BİR
+    // ÖNCEKİ karenin çıktısıdır. Kırılma için bir kare gecikme görünmez;
+    // ekstra sahne geçişi ya da yeni RT gerektirmez.
+    if (u['uSceneColor']) {
+      u['uSceneColor'].value = this.composer.readBuffer.texture;
+    }
     if (u['uObjectSeparation']) {
       u['uObjectSeparation'].value = this.objectSeparation ? 1 : 0;
     }
@@ -1173,8 +1205,14 @@ depth,
     this.controls.dispose();
     // Post-pass devre dÄ±ÅŸÄ±yken composer'da deÄŸildir; composer.dispose() onu
     // gÃ¶rmez, GPU kaynaÄŸÄ± bÄ±rakÄ±lmaz. Tek seferlik kurum gereÄŸi iki yol da.
-    if (this.composer.passes.indexOf(this.grainPass) === -1) this.grainPass.dispose();
-    this.composer.dispose(); // pass'lerin render target'larÄ± â€” yoksa remount'ta GPU sÄ±zÄ±ntÄ±sÄ±
+    // GRAIN DISPOSE (düzeltildi): koşul TERSTİ — grain yalnızca composer'da
+    // DEĞİLKEN dispose ediliyordu, yani normal durumda (zincirde) hiç
+    // bırakılmıyordu. `EffectComposer.dispose()` yalnızca renderTarget1/2 ve
+    // copyPass'i bırakır, PASS'LERE DOKUNMAZ (three.js kaynağı) — dolayısıyla
+    // "composer onu görür" varsayımı yanlıştı ve her remount'ta grain'in
+    // render target'ı sızıyordu. Grain Engine'in malıdır: koşulsuz bırakılır.
+    this.grainPass.dispose();
+    this.composer.dispose(); // composer'ın KENDİ RT'leri (pass'ler dahil değil)
     // Feedback kendi ping-pong RT'lerini + quad'larÄ±nÄ± taÅŸÄ±r (composer'Ä±n
     // iki RT'si bunlar deÄŸildir) â€” elle bÄ±rakÄ±lÄ±r. Chromatic de ShaderPass
     // material'Ä±nÄ± kendine Ã¶zel dispose eder.

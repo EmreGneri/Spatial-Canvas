@@ -329,19 +329,15 @@ export function createNeonWireMaterial(): NeonWireMaterial {
 
   const neon = material as NeonWireMaterial;
 
-  // ZAMAN KAYNAĞI. Engine yalnızca pass'lere update(time) geçiyor
-  // (Engine.tickPasses → composer.passes); material'lara zaman ulaşmıyor ve
-  // sahnede tek yazdığı şey uPositions. Titreşimin ilerlemesi için uTime'ı
-  // material kendi sürüyor. Kaynak: sayfa açılışına göre geçen saniye.
-  if (typeof requestAnimationFrame === 'function') {
-    const started = performance.now();
-    let frame = requestAnimationFrame(function tick() {
-      uniforms.uTime.value = (performance.now() - started) / 1000;
-      frame = requestAnimationFrame(tick);
-    });
-    // Material bırakılınca döngü de durmalı, yoksa sayfa boyunca sürer.
-    neon.addEventListener('dispose', () => cancelAnimationFrame(frame));
-  }
-
+  // ZAMAN KAYNAĞI (düzeltildi): material ARTIK KENDİ requestAnimationFrame'ini
+  // SÜRMEZ. Eskiden burada bir rAF döngüsü vardı; üç sorunu vardı:
+  //   1. Mod kapalıyken bile tikliyordu (neon seçili değilken boşa iş).
+  //   2. İkinci bir zaman kaynağıydı — pass'ler Engine saatinden, material
+  //      kendi `performance.now()`undan besleniyordu; sekme arka plandan
+  //      dönünce ikisi ayrışıyordu.
+  //   3. Sayfa görünmezken rAF durduğu için zaman "donuyor", geri gelince
+  //      sıçrıyordu.
+  // Artık `uTime`'ı ENGINE yazar (Engine.tickPasses, uPositions ile aynı
+  // sözleşme: değeri Engine sürer, material yalnızca tanımlar).
   return neon;
 }
