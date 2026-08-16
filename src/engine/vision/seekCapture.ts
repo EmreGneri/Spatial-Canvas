@@ -1,4 +1,5 @@
 import { KEYFRAME_HEIGHT, KEYFRAME_WIDTH, type KeyframeFrame } from './videoPipe.ts';
+import { computeOpticalFlow } from './flow.ts';
 
 /**
  * ARAMA (SEEK) TABANLI KEYFRAME YAKALAMA — render şeridi (Zeynep, Gün 6).
@@ -96,31 +97,138 @@ export const DEFAULT_GAP_SEC = 0.125;
  * aralıkla `maxFrames` nokta üretir. Pencere dar kalırsa aralık pencereye
  * sıkışır (klip dışına seek etmektense örtüşme artar).
  */
-export function keyframeTimes(duration: number, opts: SeekCaptureOptions = {}): number[] {
-  const maxFrames = Math.max(2, opts.maxFrames ?? 8);
-  const startFrac = opts.startFrac ?? 0.05;
-  const endFrac = opts.endFrac ?? 0.95;
-  const gapSec = opts.gapSec ?? DEFAULT_GAP_SEC;
-  const t0 = startFrac * duration;
-  const t1 = endFrac * duration;
-  // Klip oranı ARTIK yayılımı belirlemiyor; yalnızca üst sınırı veriyor.
-  const span = Math.min(t1 - t0, gapSec * (maxFrames - 1));
-  const out: number[] = [];
-  for (let i = 0; i < maxFrames; i++) out.push(t0 + (span * i) / (maxFrames - 1));
-  return out;
+/**
+ * Çift başına HEDEF parallaks (px, 384×288 ızgarasında).
+ *
+ * Ölçüldü (2026-08-16, NYC klibi): 15.02 px → 260 eşleşme, 12.41 px →
+ * 64 eşleşme, 33.86 px → 59 eşleşme. Üstü LK izleme küresini zorlar,
+ * altı üçgenlemeyi gürültüye boğar.
+ */
+export const PARALLAX_TARGET_PX = 15;
+
+/** Kabul bandı [alt, üst] — hedefin etrafında aramayı erken bitirir. */
+export const PARALLAX_BAND_PX: readonly [number, number] = [8, 28];
+
+/** Bir zaman çiftinin medyan parallaksını (px) ölçen işlev. */
+export type ParallaxMeasure = (tA: number, tB: number) => Promise<number>;
+
+export interface SelectOptions extends SeekCaptureOptions {
+  /** Aramanın başlayacağı saniye (varsayılan: startFrac × süre). */
+  startSec?: number;
+  /** İlk aralık tahmini (sn) — ölçümle hızla düzeltilir. */
+  initialGapSec?: number;
+  /** Keyframe başına ölçüm tavanı (her ölçüm bir seek + flow). */
+  maxProbesPerFrame?: number;
+  /** Toplam tarama tavanı (sn) — hareketsiz klipte sonsuz aramayı keser. */
+  maxSpanSec?: number;
 }
 
 /**
- * Videoyu `maxFrames` eşit zaman noktasında örnekler.
+ * PARALLAKS GÜDÜMLÜ keyframe zamanı seçimi — politika SAF, ölçüm enjekte.
  *
- * Kare çizimi TEK canvas üzerinde yapılır (kare başına yalnız `getImageData`
- * + dönüşüm ayrılır). Bir seek zaman aşımına uğrarsa O KARE ATLANIR ve
- * yakalama devam eder — tek bozuk zaman noktası tüm çekimi düşürmez; kaç kare
- * gerçekten geldiği çağırana döner (sessizce eksik veri üretilmez).
+ * NEDEN sabit aralık yetmiyor: iki kısıt ters yönde çekiyor. Ardışık çiftin
+ * İZLENEBİLMESİ küçük aralık ister; zincirin 3B YAPI üretmesi uzun toplam
+ * taban ister. Sabit aralık birini seçmek zorunda kalıyor — 0.125 sn poz
+ * başarısını verdi (0 hata) ama 8 kare yalnızca 0.875 sn'ye (≈1.2 m) yayıldı
+ * ve sahne tek düz panoya çöktü. Parallaksa göre seçmek ikisini birden
+ * sağlar: yavaş kamerada aralık uzar (taban büyür), hızlıda kısalır
+ * (izlenebilirlik korunur).
+ *
+ * ARAMA: her adımda tahmini aralıkla bir aday ölçülür; parallaks banda
+ * düşerse kabul, düşmezse aralık ORANLA düzeltilir (p ≈ hız·dt varsayımı —
+ * hız kısa aralıkta yaklaşık sabit). Kare başına en fazla
+ * `maxProbesPerFrame` ölçüm yapılır; her ölçüm gerçek yolda bir seek +
+ * optik akış demek, sınırsız arama pahalıdır. Tavana gelinirse SON aday
+ * kabul edilir — kare düşürmek zinciri kısaltırdı.
+ *
+ * BİTİŞ: klip sonu ya da `maxSpanSec` aşılırsa eldeki zamanlar döner
+ * (hareketsiz kamerada parallaks hiç birikmez; sonsuz arama yerine kısa
+ * zincir + ölçek kapısının dürüst reddi).
+ */
+export async function selectKeyframeTimes(
+  duration: number,
+  measure: ParallaxMeasure,
+  opts: SelectOptions = {},
+): Promise<number[]> {
+  const maxFrames = Math.max(2, opts.maxFrames ?? 8);
+  const startSec = opts.startSec ?? (opts.startFrac ?? 0.05) * duration;
+  const endSec = (opts.endFrac ?? 0.95) * duration;
+  const maxProbes = Math.max(1, opts.maxProbesPerFrame ?? 3);
+  const maxSpan = opts.maxSpanSec ?? 30;
+  const [bandAlt, bandUst] = PARALLAX_BAND_PX;
+
+  const times = [startSec];
+  let gapGuess = opts.initialGapSec ?? opts.gapSec ?? DEFAULT_GAP_SEC;
+
+  while (times.length < maxFrames) {
+    const from = times[times.length - 1];
+    const sinir = Math.min(endSec, startSec + maxSpan);
+    if (from >= sinir) break;
+
+    let kabul: number | null = null;
+    // Bütçe biterse SON aday değil EN İYİ aday alınır. Keskin hız
+    // değişiminde (gerçek klipte t≈20'de 10×) son deneme bandın çok üstünde
+    // kalabiliyor; bandı AŞMAK aşağıda kalmaktan kötüdür (LK izleyemez, çift
+    // tamamen düşer), bu yüzden tercih sırası: (1) banda sığan en büyük
+    // parallaks, (2) hiçbiri sığmıyorsa en küçük taşma.
+    let enIyi: { t: number; p: number } | null = null;
+    const dahaIyi = (a: { t: number; p: number }, b: { t: number; p: number }) => {
+      const aOk = a.p <= bandUst;
+      const bOk = b.p <= bandUst;
+      if (aOk !== bOk) return aOk ? a : b;
+      return aOk ? (a.p >= b.p ? a : b) : a.p <= b.p ? a : b;
+    };
+
+    for (let probe = 0; probe < maxProbes; probe++) {
+      const aday = Math.min(sinir, from + gapGuess);
+      if (aday <= from) break;
+      const p = await measure(from, aday);
+      const kayit = { t: aday, p };
+      enIyi = enIyi ? dahaIyi(enIyi, kayit) : kayit;
+      if (p >= bandAlt && p <= bandUst) {
+        kabul = aday;
+        break;
+      }
+      // p ≈ hız·dt → hedefe götüren dt = dt·(hedef/p). p=0 (hareketsiz)
+      // durumunda oran patlar; tavanla sınırla ki tarama ilerlesin.
+      const oran = p > 0 ? PARALLAX_TARGET_PX / p : 4;
+      gapGuess = Math.max(1e-3, gapGuess * Math.min(4, Math.max(0.25, oran)));
+      // Aday zaten sınırdaysa daha ileri gidilemez — onu kabul et.
+      if (aday >= sinir) {
+        kabul = aday;
+        break;
+      }
+    }
+
+    const secilen = kabul ?? enIyi?.t ?? null;
+    if (secilen === null || secilen <= from) break;
+    times.push(secilen);
+  }
+
+  return times;
+}
+
+/**
+ * Parallaks ÖLÇÜMÜ için kullanılan köşe bütçesi. Üretim akışından (800) çok
+ * daha düşük: burada eşleşmelerin kimliği değil MEDYAN BÜYÜKLÜĞÜ gerekiyor
+ * ve o istatistik birkaç yüz izle de kararlı. Ölçüm keyframe başına
+ * 1-3 kez koşuyor; tam bütçe boşuna zaman yakardı.
+ */
+const PROBE_CORNERS = 150;
+
+/**
+ * Videoyu PARALLAKSA göre örnekler (E5.3 — önceki sabit-aralık yolu yerine).
+ *
+ * Kare çizimi TEK canvas üzerinde yapılır. Sonda seçilen zamanlar için
+ * YENİDEN SEEK YAPILMAZ: her ölçüm sırasında çekilen kare önbelleğe alınır,
+ * seçim bitince oradan toplanır (seek + decode iki kez ödenmez).
+ *
+ * Bir seek zaman aşımına uğrarsa o aday parallaks 0 sayılır — seçici aralığı
+ * büyütüp ilerler; tek bozuk zaman noktası çekimi düşürmez.
  */
 export async function captureKeyframesBySeek(
   video: HTMLVideoElement,
-  opts: SeekCaptureOptions = {},
+  opts: SelectOptions = {},
 ): Promise<KeyframeFrame[]> {
   const seekTimeoutMs = opts.seekTimeoutMs ?? 4000;
 
@@ -138,29 +246,59 @@ export async function captureKeyframesBySeek(
   canvas.height = h;
   const ctx = canvas.getContext('2d', { willReadFrequently: true })!;
 
-  const times = keyframeTimes(duration, opts);
-  const out: KeyframeFrame[] = [];
+  const onbellek = new Map<number, KeyframeFrame>();
+  const grab = async (t: number): Promise<KeyframeFrame | null> => {
+    const hit = onbellek.get(t);
+    if (hit) return hit;
+    if (!(await seekTo(video, t, seekTimeoutMs))) return null;
+    const frame = drawFrame(ctx, video, w, h);
+    onbellek.set(t, frame);
+    return frame;
+  };
 
+  const measure: ParallaxMeasure = async (tA, tB) => {
+    const a = await grab(tA);
+    const b = await grab(tB);
+    if (!a || !b) return 0; // seek gelmedi — seçici aralığı büyütüp ilerlesin
+    const pts = computeOpticalFlow(a.lum, b.lum, w, h, { maxCorners: PROBE_CORNERS });
+    const mags: number[] = [];
+    for (const p of pts) if (p.status === 1) mags.push(Math.hypot(p.u, p.v));
+    if (mags.length === 0) return 0;
+    mags.sort((x, y) => x - y);
+    return mags[mags.length >> 1];
+  };
+
+  const times = await selectKeyframeTimes(duration, measure, opts);
+  const out: KeyframeFrame[] = [];
   for (const t of times) {
-    const ok = await seekTo(video, t, seekTimeoutMs);
-    if (!ok) continue; // bu zaman noktası gelmedi — atla, çekimi düşürme
-    ctx.drawImage(video, 0, 0, w, h);
-    const px = ctx.getImageData(0, 0, w, h).data;
-    const lum = new Float32Array(w * h);
-    const rgb = new Float32Array(w * h * 3);
-    for (let p = 0, k = 0, c = 0; p < px.length; p += 4, k++, c += 3) {
-      const r = px[p] / 255;
-      const g = px[p + 1] / 255;
-      const b = px[p + 2] / 255;
-      // videoPipe ile aynı luminance katsayıları (Rec.601).
-      lum[k] = 0.299 * r + 0.587 * g + 0.114 * b;
-      rgb[c] = r;
-      rgb[c + 1] = g;
-      rgb[c + 2] = b;
-    }
-    out.push({ timeMs: video.currentTime * 1000, lum, rgb });
+    const f = await grab(t);
+    if (f) out.push(f);
   }
   return out;
+}
+
+/** Videonun o anki karesini keyframe ızgarasına çizip sayısallaştırır. */
+function drawFrame(
+  ctx: CanvasRenderingContext2D,
+  video: HTMLVideoElement,
+  w: number,
+  h: number,
+): KeyframeFrame {
+  ctx.drawImage(video, 0, 0, w, h);
+  const px = ctx.getImageData(0, 0, w, h).data;
+  const lum = new Float32Array(w * h);
+  const rgb = new Float32Array(w * h * 3);
+  for (let p = 0, k = 0, c = 0; p < px.length; p += 4, k++, c += 3) {
+    const r = px[p] / 255;
+    const g = px[p + 1] / 255;
+    const b = px[p + 2] / 255;
+    // videoPipe ile aynı luminance katsayıları (Rec.601).
+    lum[k] = 0.299 * r + 0.587 * g + 0.114 * b;
+    rgb[c] = r;
+    rgb[c + 1] = g;
+    rgb[c + 2] = b;
+  }
+  return { timeMs: video.currentTime * 1000, lum, rgb };
 }
 
 /** `currentTime` atar ve `seeked`'i bekler. Zaman aşımında false döner. */
