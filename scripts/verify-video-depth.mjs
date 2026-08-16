@@ -13,7 +13,7 @@ import { register } from 'node:module';
 register('./ts-extension-loader.mjs', import.meta.url);
 
 const { alignDepthChain } = await import('../src/engine/vision/temporal.ts');
-const { disparityToDistance } = await import('../src/engine/vision/depthProvider.ts');
+const { fitScaleAlignment } = await import('../src/engine/vision/scale.ts');
 
 const W = 32;
 const H = 24;
@@ -136,33 +136,67 @@ const medianOf = (d) => {
 }
 
 // ---------------------------------------------------------------------------
-// 5. DİSPARİTE → MESAFE. estimateDepth "0 = uzak, 1 = yakın" DİSPARİTE verir;
-//    füzyon d_pred'i MESAFE gibi kullanır (scale.ts pozitif eğim bekler).
-//    Dönüşüm monoton ARTAN olmalı — yoksa affine uydurma ters işaretle
-//    "çözer" ve guven 0'a düşer (sessiz kalite kaybı).
+// 5. UZAY SEÇİMİ (E5.4) — hizalama TERS DERİNLİK uzayında yapılmalı.
+//
+//    Depth Anything affine-değişmez DİSPARİTE üretir: 1/z = a·d + b. Aynı
+//    veriyi MESAFE uzayında (z ≈ a·d + b) uydurmak yapısal olarak yanlıştır
+//    ve gerçek klipte MiDaS'ın parlaklıktan ayırt edilememesine yol açtı.
+//    Bu test iki uzayı AYNI sentetik veride yan yana ölçer.
 // ---------------------------------------------------------------------------
 {
-  // Yakın (0.9) → uzak (0.05) giden disparite dizisi.
-  const disp = new Float32Array([0.9, 0.7, 0.5, 0.3, 0.1, 0.05]);
-  const dist = disparityToDistance(disp);
-  assert.ok(dist.every(Number.isFinite), 'mesafe alanında NaN/Infinity olmamalı');
-  for (let i = 1; i < dist.length; i++) {
-    assert.ok(dist[i] > dist[i - 1], `mesafe monoton artmalı @${i}: ${dist[i - 1]} → ${dist[i]}`);
+  // Gerçek sahne: z ∈ [2, 60] dünya birimi. Disparite = 1/z (ölçek+kayma ile
+  // affine-değişmez hâle getirildi — modelin ürettiği şey tam olarak bu).
+  const A = 3.2;
+  const B = 0.15;
+  const tersUzay = [];
+  const mesafeUzay = [];
+  for (let i = 0; i < 400; i++) {
+    const z = 2 + (58 * i) / 399;
+    const disp = (1 / z - B) / A; // modelin göreceği normalize disparite
+    tersUzay.push({ dPred: disp, dMetric: 1 / z });
+    mesafeUzay.push({ dPred: disp, dMetric: z });
   }
-  assert.ok(Math.max(...dist) <= 1 + 1e-6, 'çıktı [0,1] aralığına ölçeklenmeli');
+
+  const ters = fitScaleAlignment(tersUzay);
+  const mesafe = fitScaleAlignment(mesafeUzay);
+  assert.ok(ters, 'ters derinlik uydurması çözülmeli');
+  assert.ok(mesafe, 'karşılaştırma uydurması da çözülmeli (kalitesi kötü olacak)');
+
+  // KARŞILAŞTIRMA ÖLÇÜSÜ: rmse/|a| iki uzayı ayırt ETMİYOR (mesafe uzayında
+  // eğim büyük olduğu için oran küçük görünüyor: 0.023). Anlamlı ölçü, geri
+  // kazanılan z'nin BAĞIL hatası — sahne geometrisi doğrudan bundan çıkıyor.
+  const bagilHata = (tahmin) => {
+    let en = 0;
+    for (let i = 0; i < 400; i++) {
+      const z = 2 + (58 * i) / 399;
+      const disp = (1 / z - B) / A;
+      const h = Math.abs(tahmin(disp) - z) / z;
+      if (h > en) en = h;
+    }
+    return en;
+  };
+  const tersHata = bagilHata((d) => 1 / (ters.scaleA * d + ters.scaleB));
+  const mesafeHata = bagilHata((d) => mesafe.scaleA * d + mesafe.scaleB);
   console.log(
-    `[5] disparite→mesafe monoton artan, en yakın ${dist[0].toFixed(3)} → en uzak ${dist[dist.length - 1].toFixed(3)} ✓`,
+    `[5] uzay seçimi — z'nin en büyük bağıl hatası: ters derinlik %${(tersHata * 100).toExponential(1)} · mesafe uzayı %${(mesafeHata * 100).toFixed(1)}`,
+  );
+  // Ters uzayda ilişki TAM affine → uydurma birebir çözmeli.
+  assert.ok(Math.abs(ters.scaleA - A) / A < 1e-6, `a yanlış: ${ters.scaleA} (gerçek ${A})`);
+  assert.ok(Math.abs(ters.scaleB - B) < 1e-9, `b yanlış: ${ters.scaleB} (gerçek ${B})`);
+  assert.ok(tersHata < 1e-9, `ters uzay tam çözmeli, hata ${tersHata}`);
+  // Mesafe uzayı yapısal olarak uyamaz — bu testin ASIL iddiası bu.
+  assert.ok(
+    mesafeHata > 0.5,
+    `mesafe uzayı beklenenden iyi uydu (%${(mesafeHata * 100).toFixed(1)}) — model varsayımı gözden geçir`,
   );
 
-  // Sıfır disparite (gökyüzü) patlamamalı — alt yüzdelik kırpması devrede.
-  const withSky = new Float32Array([0, 0, 0.5, 0.9]);
-  const skyDist = disparityToDistance(withSky);
-  assert.ok(skyDist.every(Number.isFinite), 'sıfır disparite sonsuza gitmemeli');
-  console.log('[5] sıfır disparite (gökyüzü) sonlu kalıyor ✓');
-
-  // Kenar durum: boş girdi ve tek eleman.
-  assert.equal(disparityToDistance(new Float32Array(0)).length, 0, 'boş girdi');
-  assert.ok(Number.isFinite(disparityToDistance(new Float32Array([0.4]))[0]), 'tek eleman');
+  // Yerleştirme: z = 1/(a·d + b) gerçek z'yi geri vermeli.
+  for (const d of [0.05, 0.3, 0.9]) {
+    const z = 1 / (ters.scaleA * d + ters.scaleB);
+    const beklenen = 1 / (A * d + B);
+    assert.ok(Math.abs(z - beklenen) / beklenen < 1e-6, `yerleştirme hatası d=${d}`);
+  }
+  console.log('[5] z = 1/(a·disparite + b) yerleştirmesi gerçek derinliği veriyor ✓');
 }
 
-console.log('OK video derinliği — zamansal affine hizalama + disparite dönüşümü (E5.1)');
+console.log('OK video derinliği — zamansal hizalama + ters derinlik uzayı (E5.1/E5.4)');

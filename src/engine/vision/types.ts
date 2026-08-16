@@ -115,10 +115,14 @@ export interface VisionFrame {
 // eklemek sözleşme bozmaz, ama kaldırmak/tiplendirmeyi değiştirmek bozar.
 // ────────────────────────────────────────────────────────────────────────────
 
-/** Derinlik sağlayıcı sözleşmesi: keyframe karesinden yoğun derinlik
- *  (Float32Array, satır 0 = üst) dönen ASENKRON işlev. D5'te MiDaS bağlanır;
- *  bugün video yolu `luminanceDepthProvider` (senkron) varsayılanını kullanır —
- *  D5 onu bu sözleşmeye saran asenkron bir provider ile değiştirir. */
+/** Derinlik sağlayıcı sözleşmesi: keyframe karesinden yoğun alan
+ *  (Float32Array, satır 0 = üst) dönen ASENKRON işlev.
+ *
+ *  BİRİM (E5.4 — netleştirildi): dönen değer DİSPARİTEDİR, mesafe değil —
+ *  BÜYÜK = YAKIN, 0 = uzak, [0,1] normalize. `estimateDepth` zaten bunu
+ *  üretir; füzyon da uydurmayı ters derinlik uzayında (1/z = a·d + b) yapar.
+ *  Mesafe döndürmek sahneyi ters çevirir. Luminance yedeği parlaklığı
+ *  disparite VEKİLİ sayar ("parlak = yakın") — kaba ama aynı yönde. */
 export type DepthProvider = (frame: {
   timeMs: number;
   lum: Float32Array;
