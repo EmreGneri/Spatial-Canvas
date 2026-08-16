@@ -201,10 +201,15 @@ for (const [name, base] of [
 // yakalayamaz (ölçülen: uyumsuz bölgede round-trip 0.029 px — medyanla aynı),
 // coverage (NN mesafesi > 28 → 38-56 px) yakalar. stabilize çıktısı o bölgede
 // HAM derinliği korumalı (warp edilmiş bozuk veriye değil).
-const ZX0 = 130;
-const ZX1 = 190;
-const ZY0 = 60;
-const ZY1 = 120;
+// E2.1 FİXTÜR GÜNCELLEMESİ: köşe yoğunluğu 500→800 + grid yayılımı +
+// minDistance 7→5 ile bölge DIŞINDAKİ izlenen köşeler 15 px marja yaklaştı →
+// 15×15 çekirdeğin 19 pikseli coverRadius(28) içine düştü (ölçüldü: 19/225).
+// Bölge 100×100'e büyütüldü → çekirdek marjı 42 px > 28: çekirdek yine TAM
+// güvensiz (sözleşme: bölge bozuk verisini warp korumasın).
+const ZX0 = 110;
+const ZX1 = 210;
+const ZY0 = 40;
+const ZY1 = 140;
 const cell = 8;
 const PAN_R = 3.2;
 const PAN_S = -1.7;
@@ -224,10 +229,10 @@ for (let y = ZY0; y < ZY1; y++) {
   }
 }
 const stBad = stabilizeDepth(GT_DEPTH, rawBad, fwdBad, bwdBad, W, H);
-const C0 = ZX0 + 15;
-const C1 = ZX0 + 30;
-const D0 = ZY0 + 15;
-const D1 = ZY0 + 30;
+const C0 = ZX0 + 42;
+const C1 = ZX0 + 57;
+const D0 = ZY0 + 42;
+const D1 = ZY0 + 57;
 let coreOccl = 0;
 let coreErr = 0;
 for (let y = D0; y < D1; y++) {
