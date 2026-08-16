@@ -109,8 +109,29 @@ export const PARALLAX_TARGET_PX = 15;
 /** Kabul bandı [alt, üst] — hedefin etrafında aramayı erken bitirir. */
 export const PARALLAX_BAND_PX: readonly [number, number] = [8, 28];
 
-/** Bir zaman çiftinin medyan parallaksını (px) ölçen işlev. */
-export type ParallaxMeasure = (tA: number, tB: number) => Promise<number>;
+/**
+ * İzlemenin "çalıştı" sayılması için gereken en düşük iz oranı.
+ *
+ * Bu eşik olmadan seçici çöker: aralık LK küresini aşınca eşleşme sayısı
+ * sıfıra iner ve medyan parallaks 0 döner — "hareket yok" ile "izleyemedim"
+ * AYNI sayıya benzer. İlk sürümde ikisi ayrılmadığı için gerçek klipte
+ * kaçak geri besleme oluştu: büyük aralık → 0 eşleşme → aralığı büyüt →
+ * daha da az eşleşme (istenen 8 kare yerine 4, 3532 yerine 11 eşleşme).
+ */
+export const TRACK_RATIO_MIN = 0.12;
+
+/** Aralık tavanı (sn) — bunun ötesinde LK zaten izleyemez, aramak boşuna. */
+const MAX_GAP_SEC = 4;
+
+export interface ParallaxSample {
+  /** Medyan |akış| (px). İzleme çöktüyse anlamsızdır. */
+  parallaksPx: number;
+  /** İzlenebilen köşe oranı (0..1) — ölçümün GEÇERLİ olup olmadığını söyler. */
+  izlemeOrani: number;
+}
+
+/** Bir zaman çiftinin parallaksını ve izleme sağlığını ölçen işlev. */
+export type ParallaxMeasure = (tA: number, tB: number) => Promise<ParallaxSample>;
 
 export interface SelectOptions extends SeekCaptureOptions {
   /** Aramanın başlayacağı saniye (varsayılan: startFrac × süre). */
@@ -171,30 +192,42 @@ export async function selectKeyframeTimes(
     // kalabiliyor; bandı AŞMAK aşağıda kalmaktan kötüdür (LK izleyemez, çift
     // tamamen düşer), bu yüzden tercih sırası: (1) banda sığan en büyük
     // parallaks, (2) hiçbiri sığmıyorsa en küçük taşma.
-    let enIyi: { t: number; p: number } | null = null;
-    const dahaIyi = (a: { t: number; p: number }, b: { t: number; p: number }) => {
-      const aOk = a.p <= bandUst;
-      const bOk = b.p <= bandUst;
-      if (aOk !== bOk) return aOk ? a : b;
-      return aOk ? (a.p >= b.p ? a : b) : a.p <= b.p ? a : b;
-    };
-
+    // Sıralama: (1) izlemesi sağlam VE banda sığan en büyük parallaks,
+    // (2) izlemesi sağlam ama bandın altında kalan en büyük, (3) hiçbiri
+    // yoksa izlemesi çökük olanlardan en KISA aralıklı olan (en az kötü).
+    let enIyi: { t: number; skor: number } | null = null;
     for (let probe = 0; probe < maxProbes; probe++) {
       const aday = Math.min(sinir, from + gapGuess);
       if (aday <= from) break;
-      const p = await measure(from, aday);
-      const kayit = { t: aday, p };
-      enIyi = enIyi ? dahaIyi(enIyi, kayit) : kayit;
-      if (p >= bandAlt && p <= bandUst) {
+      const { parallaksPx: p, izlemeOrani } = await measure(from, aday);
+      const izlenebilir = izlemeOrani >= TRACK_RATIO_MIN;
+      // Skor: izlenebilir adaylar her zaman öncelikli; onların içinde banda
+      // yakınlık, çöküklerin içinde kısa aralık kazanır.
+      const skor = izlenebilir ? 1000 - Math.abs(p - PARALLAX_TARGET_PX) : -(aday - from);
+      if (!enIyi || skor > enIyi.skor) enIyi = { t: aday, skor };
+
+      if (izlenebilir && p >= bandAlt && p <= bandUst) {
         kabul = aday;
         break;
       }
-      // p ≈ hız·dt → hedefe götüren dt = dt·(hedef/p). p=0 (hareketsiz)
-      // durumunda oran patlar; tavanla sınırla ki tarama ilerlesin.
-      const oran = p > 0 ? PARALLAX_TARGET_PX / p : 4;
-      gapGuess = Math.max(1e-3, gapGuess * Math.min(4, Math.max(0.25, oran)));
+
+      // ARALIK DÜZELTMESİ — iki farklı durum, iki farklı tepki:
+      //  • izleme ÇÖKÜK: parallaks okunamıyor, tek bildiğimiz aralığın
+      //    fazla büyük olduğu. Kesin küçült (0.35). "p = 0 → büyüt"
+      //    yorumu tam da bu noktada kaçağa yol açıyordu.
+      //  • izleme SAĞLAM: p ≈ hız·dt varsayımıyla oranla düzelt.
+      let carpan: number;
+      if (!izlenebilir) {
+        carpan = 0.35;
+      } else if (p > 0) {
+        carpan = Math.min(4, Math.max(0.25, PARALLAX_TARGET_PX / p));
+      } else {
+        carpan = 4; // gerçekten hareketsiz (izleme sağlam, yer değiştirme yok)
+      }
+      gapGuess = Math.min(MAX_GAP_SEC, Math.max(1e-3, gapGuess * carpan));
+
       // Aday zaten sınırdaysa daha ileri gidilemez — onu kabul et.
-      if (aday >= sinir) {
+      if (aday >= sinir && izlenebilir) {
         kabul = aday;
         break;
       }
@@ -259,13 +292,19 @@ export async function captureKeyframesBySeek(
   const measure: ParallaxMeasure = async (tA, tB) => {
     const a = await grab(tA);
     const b = await grab(tB);
-    if (!a || !b) return 0; // seek gelmedi — seçici aralığı büyütüp ilerlesin
+    // Seek gelmedi: parallaks BİLİNMİYOR. İzleme oranını 1 verip "hareket
+    // yok" demek seçiciyi yanlış yöne iter; 0 parallaks + SAĞLAM oran
+    // raporlanır ki aralık büyüsün ve bir sonraki zaman noktası denensin.
+    if (!a || !b) return { parallaksPx: 0, izlemeOrani: 1 };
     const pts = computeOpticalFlow(a.lum, b.lum, w, h, { maxCorners: PROBE_CORNERS });
     const mags: number[] = [];
     for (const p of pts) if (p.status === 1) mags.push(Math.hypot(p.u, p.v));
-    if (mags.length === 0) return 0;
+    // İzleme oranı DENENEN köşe sayısına göre — köşe bulunamadıysa (dokusuz
+    // kare) oran 0'dır ve bu da geçerli bir "ölçemedim" sinyalidir.
+    const izlemeOrani = pts.length > 0 ? mags.length / pts.length : 0;
+    if (mags.length === 0) return { parallaksPx: 0, izlemeOrani };
     mags.sort((x, y) => x - y);
-    return mags[mags.length >> 1];
+    return { parallaksPx: mags[mags.length >> 1], izlemeOrani };
   };
 
   const times = await selectKeyframeTimes(duration, measure, opts);
