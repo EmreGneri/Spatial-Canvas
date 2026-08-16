@@ -22,6 +22,7 @@ import {
 import { selectKeyframes } from '../src/engine/vision/scale.ts';
 import { fuseKeyframes, fuseVideoFrames } from '../src/engine/vision/fusion.ts';
 import { alignSim3, applySim3, ate, medianMs } from '../src/engine/vision/metrics.ts';
+import { pixelToRay } from '../src/engine/vision/pose.ts';
 
 const W = 640;
 const H = 480;
@@ -260,6 +261,42 @@ const fusionArgs = {
     times.push(performance.now() - t0);
   }
   console.log(`[5] fuseKeyframes medyan ${medianMs(times).toFixed(1)} ms (10 koşu, ${splatPixels.length} aday piksel)`);
+}
+
+// ---------------------------------------------------------------------------
+// 6. SPLAT NORMALİ DÜNYA ÇERÇEVESİNDE — B.xyz'i dünya normali sayan
+//    splatMaterial için kamera-ışını v, keyframe pozu R ile dünyaya taşınır
+//    (fusion.ts:148-150). Rotasyonlu keyframe'de normalize(R·v) olmalıdır;
+//    çıplak v yalnızca keyframe 0'da (identity) doğrudur — bunu yalnızca
+//    ROTASYONLU keyframe'ler yakalar.
+// ---------------------------------------------------------------------------
+{
+  const { data } = fuseKeyframes(fusionArgs);
+  const kRot = kf.find((k) => k !== 0); // identity olmayan keyframe
+  assert.ok(kRot !== undefined, 'rotasyonlu keyframe yok — senaryo bozuk');
+  const R = quatToMatrix3(raw[kRot].R);
+  let checked = 0;
+  let maxDev = 0;
+  for (let i = 0; i < data.count; i++) {
+    if (data.keyframeIndex[i] !== kRot) continue;
+    const sp = splatPixels[i];
+    const v = pixelToRay(sp.x, sp.y, K);
+    const vl = Math.hypot(v[0], v[1], v[2]) || 1;
+    const ex = [
+      (R[0] * v[0] + R[1] * v[1] + R[2] * v[2]) / vl,
+      (R[3] * v[0] + R[4] * v[1] + R[5] * v[2]) / vl,
+      (R[6] * v[0] + R[7] * v[1] + R[8] * v[2]) / vl,
+    ];
+    const o = i * 4;
+    const dev = Math.hypot(data.b[o] - ex[0], data.b[o + 1] - ex[1], data.b[o + 2] - ex[2]);
+    if (dev > maxDev) maxDev = dev;
+    checked++;
+  }
+  console.log(
+    `[6] splat normali dünya çerçevesinde (keyframe ${kRot}, ${checked} splat): maks sapma ${maxDev.toExponential(2)}`,
+  );
+  assert.ok(checked >= 100, `rotasyonlu keyframe'de yeterli splat yok: ${checked}`);
+  assert.ok(maxDev < 1e-4, `splat normali kamera çerçevesinde kaldı: maks sapma ${maxDev}`);
 }
 
 console.log('OK füzyon + entegrasyon (Gün 7)');

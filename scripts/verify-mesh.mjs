@@ -11,6 +11,8 @@ import {
   MESH_MIN_WALL_Z,
 } from '../src/engine/reconstruction/mesh.ts';
 import { EDGE_WALL_Z } from '../src/engine/reconstruction/sampler.ts';
+import { buildSilhouette } from '../src/engine/reconstruction/silhouette.ts';
+import { ANATOMIC_DEPTH_RATIO, computeBodyGeometry } from '../src/engine/reconstruction/sampler.ts';
 
 const N = MESH_GRID_SIZE;
 const W = 64;
@@ -260,5 +262,37 @@ assert.equal(JSON.stringify(again.positions), JSON.stringify(masked.positions), 
 assert.equal(JSON.stringify(again.uvs), JSON.stringify(masked.uvs), 'deterministik uvs');
 assert.equal(JSON.stringify(again.normals), JSON.stringify(masked.normals), 'deterministik normals');
 assert.equal(JSON.stringify(again.indices), JSON.stringify(masked.indices), 'deterministik indices');
+
+// --- 8. KADRAJ DEĞİŞMEZLİĞİ (Gün E bulgu 4) — DİKEY kadrajda kabuğun z
+// uzamı sampler.ts ile AYNI formülle genişlemeli:
+//   zSpan = ANATOMIC_DEPTH_RATIO · 2 · min(rx, ry) / frameShortHalf
+// frameShortHalf = min(halfW, halfH) — dünya genişliği (w/h)·halfH'tir, yani
+// dikey kadrajda 1'in altına iner ve bölensiz formül özneyi SIĞ çiziyordu
+// (mesh.ts:171, sampler.ts:255-257'nin birebir aynası — solid mod parçacık
+// yüzeyinden ayrılıyordu). Kare/yatay kadrajda bölen 1'dir → davranış aynen. ---
+{
+  const PW = 32;
+  const PH = 64; // dikey 0.5
+  const halfH = 1; // DEFAULT_WORLD_HEIGHT / 2 (grup 3'ün sabitleriyle tutarlı)
+  const portraitDepth = new Float32Array(PW * PH).fill(0.6);
+  const sil = buildSilhouette(portraitDepth, PW, PH, null);
+  const body = computeBodyGeometry(sil.alpha, PW, PH, halfH);
+  assert.ok(body, 'dikey siluet boş — senaryo bozuk');
+  const fsh = Math.min((PW / PH) * halfH, halfH);
+  const zSpanExp = (ANATOMIC_DEPTH_RATIO * 2 * Math.min(body.rx, body.ry)) / fsh;
+  const portrait = buildShellMesh(portraitDepth, PW, PH, {
+    curvature: 0,
+    importanceSampling: false,
+    gridSize: 32,
+  }) ?? assert.fail('portrait null');
+  const zMid = zAt(portrait, 0, 0); // dünya merkezi köşesi (i = j = N/2)
+  assert.ok(typeof zMid === 'number', 'merkez köşe bulunamadı — senaryo bozuk');
+  // kavis 0 → z = (0.6 − 0.5)·zSpan·depthScale(0.7) → zSpan = z / 0.07
+  console.log(`[8] dikey kadraj zSpan: mesh ${(zMid / 0.07).toFixed(4)} vs sampler formülü ${zSpanExp.toFixed(4)} (frameShortHalf ${fsh})`);
+  assert.ok(
+    Math.abs(zMid - 0.1 * zSpanExp * 0.7) < 1e-4,
+    `dikey kadrajda kabuk zSpan sampler'dan sapıyor: mesh ${(zMid / 0.07).toFixed(4)}, beklenen ${zSpanExp.toFixed(4)}`,
+  );
+}
 
 console.log('OK · kapalı kabuk mesh (köşe ızgarası + front/back + duvar şeridi, su geçirmezlik, DIŞA yönlü sarım, dikey hiza, köşe normalleri + shell, z/uv sözleşmesi, maske + remap hizası, determinizm)');

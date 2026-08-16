@@ -15,6 +15,7 @@
 import assert from 'node:assert/strict';
 import {
   applyForegroundStretch,
+  applySobelRelief,
   foregroundMask,
   limitDepthSlope,
   MAX_SLOPE_PER_PX,
@@ -486,6 +487,32 @@ function maskAware(scene) {
   for (let i = 0; i < a.length && same; i++) if (a[i] !== b[i]) same = false;
   console.log(`[8] determinizm: ${same ? 'birebir' : 'FARKLI'}`);
   assert.ok(same, 'maske-farkında zincir determinist değil');
+}
+
+// ---------------------------------------------------------------------------
+// 9. SÖZLEŞME — applySobelRelief 0..1'i BOZAMAZ (depth.ts:857-859: rölyef
+//    kırpmasız ekleniyordu, 1.0'a kadar gerilmiş depth'in üstüne kenar
+//    sırtları biniyor ve contract'ı aşıyordu; sonraki kademe — limitDepthSlope
+//    — yalnızca AŞAĞI çeker, üst sınırı garanti etmez).
+// ---------------------------------------------------------------------------
+{
+  const d = new Float32Array(W * H).fill(0.5);
+  const lum = new Float32Array(W * H);
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) lum[y * W + x] = x < W / 2 ? 0 : 1; // sert kenar → sobel mag ~4
+  }
+  const mask = new Float32Array(W * H).fill(1);
+  const out = Float32Array.from(d);
+  applySobelRelief(out, lum, mask, W, H, 0.35);
+  let maxV = 0;
+  let edgeN = 0;
+  for (let i = 0; i < out.length; i++) {
+    if (out[i] > maxV) maxV = out[i];
+    if (out[i] > 0.5) edgeN++;
+  }
+  console.log(`[9] sobel rölyef sonrası maks depth: ${maxV.toFixed(4)} (kenar üstü piksel ${edgeN}, mag tavanlı — kırpma aktif)`);
+  assert.ok(edgeN > 0, 'rölyef hiçbir piksele dokunmadı — senaryo bozuk');
+  assert.ok(maxV <= 1 + 1e-6, `rölyef 0..1 sözleşmesini bozdu: maks ${maxV.toFixed(4)}`);
 }
 
 console.log('OK derinlik maskesi + zSpan + eğim tavanı (Gün E — bulgu 3, 4, 6)');
