@@ -204,6 +204,69 @@ verify-videopipe dahil) · `npm run build` ✓.
 
 ---
 
+## 2026-08-14 — Gün D/5-7 (render şeridi, Zeynep): poz görselleştirme, capture akışı, metrik paneli
+
+Sözleşme: `ARCHITECTURE.md` → yeni **D.2b** (poz görselleştirme + D.4 timeline).
+D.1/D.2/D.4/D.5 sözleşmeleri DEĞİŞMEDİ — bu tur tüketici uçlarını yazdı.
+
+- **Gün 5 — keyframe/yörünge görselleştirme** (`src/shaders/trajectoryOverlay.ts`):
+  poz zincirinden kamera frustum'ları + yörünge çizgisi + seçili keyframe
+  vurgusu. Frustum, kayıt yönüyle (kamera→dünya) kurulur; tersini almak
+  frustum'ları aynalardı ve hiçbir sayı patlamazdı — `verify-overlay.mjs`
+  bunu geometrik olarak denetler (7 test).
+- **Gün 5-6 — D.4 timeline filtresi** (`filterOrderByKeyframe`): seçili
+  keyframe'in splat'ları. Sıralanmış diziyi yerinde sıkıştırır, arkadan öne
+  sırasını korur; `keyframeIndex` GPU'ya gitmez.
+- **Gün 6 — capture akışı** (`src/ui/CapturePanel.tsx`): video seç →
+  keyframe yakala → akış+poz+füzyon → 3B harita → timeline. Aşamalar AYRI
+  raporlanır (hangi adım yavaş/patladı belli olsun); keyframe, akış eşleşmesi,
+  **başarısız poz** ve ölçek hizalaması (a, b, **rmse**) her koşuda gösterilir.
+  Ölçek çözülemezse "metrik DEĞİL" yazar.
+- **Gün 7 — metrik paneli** (`src/ui/MetricsPanel.tsx`): `eval-out/report.json`
+  (D.5) okunur; dev sunucusunda otomatik, olmazsa elle yükleme. Uygulanmamış
+  ablasyon kolları `uygulanmadı` yazar — `0` yazmak asılsız sayı üretmek olurdu.
+- **Türetilen normal tabanı** (`NORMAL_MIN_NZ`, `splats.ts` köprüsü).
+
+Ölçümler (tarayıcıda, `gl.readPixels` / senkron `renderFrame`):
+
+| Metrik | Değer |
+|---|---|
+| overlay: 8 keyframe → frustum köşesi / yörünge noktası | 128 / 8 (8×8×2 = 128 ✓) |
+| overlay pikselleri: kapalı → açık | 0 → 293 teal; seçim → +169 amber |
+| capture zinciri (6 sentetik keyframe) | 779 akış eşleşmesi · 0 poz hatası · 18.432 splat · 386 ms |
+| timeline bölümlemesi | 6 × 3.072 = 18.432 = toplam (kayıp/çoğalma yok) |
+| türetilen normal: `\|n_z\| < 0.35` oranı | %15.87 → **%0** (min `\|n_z\|` = 0.380) |
+| points vs splat kare maliyeti (aynı sahne, kamera sabit) | 0.3 ms vs 0.4 ms |
+
+Bilinçli sınırlar (dürüstlük kayıtları):
+
+- **"Delik oranı" ölçütüm GEÇERSİZ çıktı — iki denemem de işe yaramadı ve
+  geri alındı/yeniden çerçevelendi.** Splat yüzeyinde satır-taramasıyla %9.68
+  "delik" ölçtüm ve iki hipotez denedim: (1) grazing normaller — normal tabanı
+  eklendi, grazing %15.87→%0 oldu, delik oranı **değişmedi** (9.68 → 9.68);
+  (2) önem remap'i yüzünden düzensiz aralık — splat başına yarıçap türettim,
+  ölçtüm ki türetilen yarıçapın min/maks/ortalaması **aynı** (0.0026), çünkü
+  remap parçacığın DÜNYA konumunu bükmüyor (grid sözleşmesi) — bu değişiklik
+  **geri alındı**. Gerçek sebep büyük olasılıkla metriğin kendisi: eşik üstü
+  piksel sayıyorum, splat'lar nokta sprite'larından küçük ve sönük olduğu için
+  arka plan pikselleri eşiğin altında kalıp "delik" sayılıyor. **Ölçüt
+  yeniden tasarlanmadan "splat yüzeyi delikli" DENMEZ.** Normal tabanı yine de
+  korundu: kendi başına savunulabilir (dejenere şerit üretmiyor), ama delik
+  iddiasının kanıtı DEĞİLDİR.
+- **Gün 7'nin "60 sn demo videosu" ve yan yana karşılaştırma STİLLERİ
+  ÜRETİLMEDİ.** Tarayıcı paneli görüntülenmediği için ekran görüntüsü
+  alınamıyor (rAF duruyor, kare kompozit edilmiyor); ölçümler `gl.readPixels`
+  ile alındı. Panel açıldığında stiller alınabilir.
+- **Capture akışı GERÇEK video dosyasıyla uçtan uca denenmedi** — elimde test
+  videosu yok. Füzyon zinciri sentetik keyframe dizisiyle tarayıcıda
+  çalıştırıldı (yukarıdaki 18.432 splat); video ÇÖZME adımı (`captureKeyframes`,
+  rVFC) yalnızca Emre'nin `verify-videopipe.mjs`'i kadar test edilmiştir.
+- **CapturePanel'in timeline'ı React state'ine bağlıdır:** Engine'e panel
+  DIŞINDAN poz yüklenirse (konsol/preset) timeline yeniden çizilmez. Gerçek
+  akışta capture sonucu `setState` tetiklediği için sorun değil.
+
+---
+
 ## 2026-08-14 — Gün D/1-4 (render şeridi, Zeynep): splat rasterizer + 5. mod + yörünge üreteci
 
 Sözleşme: `ARCHITECTURE.md` → yeni **D.1b** (GaussianBuffer'ın render tarafı)

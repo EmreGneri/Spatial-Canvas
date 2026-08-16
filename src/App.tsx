@@ -9,6 +9,8 @@ import { createNeonWireMaterial, NEON_PARAMS } from './shaders/neonWireMaterial'
 import { createSolidMaterial, SOLID_PARAMS } from './shaders/solidMaterial';
 import { createSplatMaterial, SPLAT_PARAMS } from './shaders/splatMaterial';
 import { ModeSelector, type RenderMode } from './ui/ModeSelector';
+import { CapturePanel } from './ui/CapturePanel';
+import { MetricsPanel } from './ui/MetricsPanel';
 import { NodeGraphEditor } from './ui/NodeGraphEditor';
 import {
   applyPreset,
@@ -706,6 +708,19 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
       </div>
       {engine && <ModeSelector engine={engine} materials={materials} mode={mode} onChange={changeMode} />}
       {engine && <NodeGraphEditor engine={engine} graphTick={graphTick} onRenderModeChange={changeMode} />}
+      {/* GÜN 6-7 (render şeridi): capture akışı + metrik paneli. İkisi de
+          kendi durumunu tutar; Engine'e yalnızca imzalı API'den yazarlar
+          (setGaussians / setPoseTrack / setSelectedKeyframe). */}
+      {engine && (
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-start' }}>
+          <div style={{ minWidth: 260, flex: '1 1 260px' }}>
+            <CapturePanel engine={engine} setMode={changeMode} onLog={say} />
+          </div>
+          <div style={{ minWidth: 260, flex: '1 1 260px' }}>
+            <MetricsPanel />
+          </div>
+        </div>
+      )}
       {engine && <PresetControls engine={engine} say={say} onGraphChanged={() => setGraphTick((t) => t + 1)} />}
       {engine && <ForceControls engine={engine} />}
       <pre style={{ margin: 0, color: '#8ab', whiteSpace: 'pre-wrap' }}>{log.join('\n')}</pre>
