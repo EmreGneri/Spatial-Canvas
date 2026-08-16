@@ -575,7 +575,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
         return;
       }
       say(`video → 3B: ${frames.length} keyframe · eşleştirme + poz + füzyon...`);
-      const scene = buildFusionScene(frames);
+      const scene = await buildFusionScene(frames);
       if (scene.data.count === 0) {
         say('video → 3B: splat üretilemedi (luminance/video durağan mı?)');
         return;

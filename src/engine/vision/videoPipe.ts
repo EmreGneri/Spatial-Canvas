@@ -28,7 +28,7 @@
 
 import type { GaussianBufferData } from '../../shaders/splatFixture.ts';
 import { createGaussianBufferData } from '../../shaders/splatFixture.ts';
-import type { CaptureDiagnostics, PoseKaynak, PoseTrackRecord, FlowPoint, ScaleVerdict } from './types.ts';
+import type { CaptureDiagnostics, DepthProvider, PoseKaynak, PoseTrackRecord, FlowPoint, ScaleVerdict } from './types.ts';
 import type { PointMatch } from './pose.ts';
 import { chainPoseTrack } from './pose.ts';
 import type { KeyframeMatch } from './fusion.ts';
@@ -169,89 +169,119 @@ export function luminanceDepthProvider(frame: KeyframeFrame): Float32Array {
 }
 
 /**
+ * E1.3 — TEK-ÇALIŞMA KİLİDİ. Eşzamanlı ikinci koşu reddedilir (iki füzyon
+ * yarışı çifte setGaussians/flicker üretir); koşu bitince — başarı ya da
+ * hata — kilit serbest kalır (try/finally). D5'te asenkron MiDaS provider'ı
+ * koşuyu uzatınca bu kilit gerçek koruma olur; bugün de kötüye kullanımı
+ * yakalar.
+ */
+let pipelineCalisiyor = false;
+
+export interface BuildSceneOptions {
+  /** E1.2 sözleşmesi — verilirse luminance yerine bu provider'dan derinlik
+   *  alınır (D5: MiDaS). Varsayılan: luminanceDepthProvider. */
+  depthProvider?: DepthProvider;
+}
+
+/**
  * Yakalanan karelerden tek dünya sahnesini kurar: ardışık karelerde
  * `computeOpticalFlow` (Shi-Tomasi + piramidal LK, deterministik) → izlenebilir
  * izler `PointMatch` olur → `chainPoseTrack` (8-nokta + RANSAC + cheirality,
  * ilk keyframe orijini) → `fuseVideoFrames` (grid örneklemesi step=4 →
  * 64×48×KF aday splat; d_pred = luminance; ölçek üçgenlemeden).
  */
-export function buildFusionScene(frames: KeyframeFrame[], fovY: number = VIDEO_FOV_Y): FusionSceneResult {
-  const w = KEYFRAME_WIDTH;
-  const h = KEYFRAME_HEIGHT;
-  const K = { width: w, height: h, fovY };
+export async function buildFusionScene(
+  frames: KeyframeFrame[],
+  fovY: number = VIDEO_FOV_Y,
+  opts: BuildSceneOptions = {},
+): Promise<FusionSceneResult> {
+  if (pipelineCalisiyor) {
+    throw new Error('buildFusionScene: zaten calisiyor (tek-run kilidi)');
+  }
+  pipelineCalisiyor = true;
+  try {
+    const w = KEYFRAME_WIDTH;
+    const h = KEYFRAME_HEIGHT;
+    const K = { width: w, height: h, fovY };
 
-  const frameMatches: PointMatch[][] = [];
-  const kmatches: KeyframeMatch[] = [];
-  let matched = 0;
-  for (let i = 0; i + 1 < frames.length; i++) {
-    const iz: FlowPoint[] = computeOpticalFlow(frames[i].lum, frames[i + 1].lum, w, h, {
-      maxCorners: 300,
+    const frameMatches: PointMatch[][] = [];
+    const kmatches: KeyframeMatch[] = [];
+    let matched = 0;
+    for (let i = 0; i + 1 < frames.length; i++) {
+      const iz: FlowPoint[] = computeOpticalFlow(frames[i].lum, frames[i + 1].lum, w, h, {
+        maxCorners: 300,
+      });
+      const pts: PointMatch[] = [];
+      for (const p of iz) {
+        if (p.status !== 1) continue;
+        pts.push({ x1: p.x, y1: p.y, x2: p.x + p.u, y2: p.y + p.v });
+      }
+      frameMatches.push(pts);
+      kmatches.push({ a: i, b: i + 1, matches: pts });
+      matched += pts.length;
+    }
+
+    const times = frames.map((f) => f.timeMs);
+    const poses = chainPoseTrack(frameMatches, K, times);
+    const fails = poses.length - 1 - frameMatches.filter((m) => m.length >= 8).length;
+
+    const depthProvider = opts.depthProvider ?? ((f: KeyframeFrame) => Promise.resolve(luminanceDepthProvider(f)));
+    const depth = await Promise.all(frames.map(depthProvider));
+
+    const res = fuseVideoFrames({
+      poses,
+      depth,
+      rgb: frames.map((f) => f.rgb),
+      matches: kmatches,
+      width: w,
+      height: h,
+      fovY,
+      sampleStep: 4,
     });
-    const pts: PointMatch[] = [];
-    for (const p of iz) {
-      if (p.status !== 1) continue;
-      pts.push({ x1: p.x, y1: p.y, x2: p.x + p.u, y2: p.y + p.v });
+
+    // E1.2 — CaptureDiagnostics (naif doldurma; D6'da gate'lere bağlanır).
+    const dagilim: Record<PoseKaynak, number> = { essential: 0, 'donme-fallback': 0, basarisiz: 0 };
+    for (let i = 1; i < poses.length; i++) dagilim[poses[i].kaynak!] += 1;
+    const ciftSayisi = Math.max(1, poses.length - 1);
+    const eslesmeSayilari = frameMatches.map((m) => m.length).sort((a, b) => a - b);
+    const medyanEslesme = eslesmeSayilari.length ? eslesmeSayilari[Math.floor(eslesmeSayilari.length / 2)] : 0;
+    const paralaks: number[] = [];
+    for (const m of frameMatches) {
+      for (const p of m) paralaks.push(Math.hypot(p.x2 - p.x1, p.y2 - p.y1));
     }
-    frameMatches.push(pts);
-    kmatches.push({ a: i, b: i + 1, matches: pts });
-    matched += pts.length;
-  }
-
-  const times = frames.map((f) => f.timeMs);
-  const poses = chainPoseTrack(frameMatches, K, times);
-  const fails = poses.length - 1 - frameMatches.filter((m) => m.length >= 8).length;
-
-  const res = fuseVideoFrames({
-    poses,
-    depth: frames.map(luminanceDepthProvider),
-    rgb: frames.map((f) => f.rgb),
-    matches: kmatches,
-    width: w,
-    height: h,
-    fovY,
-    sampleStep: 4,
-  });
-
-  // E1.2 — CaptureDiagnostics (naif doldurma; D6'da gate'lere bağlanır).
-  const dagilim: Record<PoseKaynak, number> = { essential: 0, 'donme-fallback': 0, basarisiz: 0 };
-  for (let i = 1; i < poses.length; i++) dagilim[poses[i].kaynak!] += 1;
-  const ciftSayisi = Math.max(1, poses.length - 1);
-  const eslesmeSayilari = frameMatches.map((m) => m.length).sort((a, b) => a - b);
-  const medyanEslesme = eslesmeSayilari.length ? eslesmeSayilari[Math.floor(eslesmeSayilari.length / 2)] : 0;
-  const paralaks: number[] = [];
-  for (const m of frameMatches) {
-    for (const p of m) paralaks.push(Math.hypot(p.x2 - p.x1, p.y2 - p.y1));
-  }
-  paralaks.sort((a, b) => a - b);
-  const medyanParallaksPx = paralaks.length ? paralaks[Math.floor(paralaks.length / 2)] : 0;
-  let bazToplam = 0;
-  let bazN = 0;
-  for (let i = 1; i < poses.length; i++) {
-    if (poses[i].kaynak === 'essential') {
-      bazToplam += Math.hypot(poses[i].t[0], poses[i].t[1], poses[i].t[2]);
-      bazN++;
+    paralaks.sort((a, b) => a - b);
+    const medyanParallaksPx = paralaks.length ? paralaks[Math.floor(paralaks.length / 2)] : 0;
+    let bazToplam = 0;
+    let bazN = 0;
+    for (let i = 1; i < poses.length; i++) {
+      if (poses[i].kaynak === 'essential') {
+        bazToplam += Math.hypot(poses[i].t[0], poses[i].t[1], poses[i].t[2]);
+        bazN++;
+      }
     }
-  }
-  const olcek: ScaleVerdict = res.scale
-    ? { durum: 'gecerli', a: res.scale.scaleA, b: res.scale.scaleB, rmse: 0, guven: 1 }
-    : { durum: 'gecersiz', sebep: 'ucgenleme-yetersiz' };
+    const olcek: ScaleVerdict = res.scale
+      ? { durum: 'gecerli', a: res.scale.scaleA, b: res.scale.scaleB, rmse: 0, guven: 1 }
+      : { durum: 'gecersiz', sebep: 'ucgenleme-yetersiz' };
 
-  return {
-    data: fitBufferToCamera(res.data),
-    scale: res.scale,
-    poses,
-    stats: { keyframes: frames.length, flowMatches: matched, poseFails: fails },
-    diagnostics: {
-      keyframeSayisi: frames.length,
-      medyanEslesme,
-      pozBasariOrani: ciftSayisi > 0 ? dagilim.essential / ciftSayisi : 0,
-      pozKaynakDagilimi: dagilim,
-      medyanParallaksPx,
-      bazUzunlugu: bazN > 0 ? bazToplam / bazN : 0,
-      olcek,
-      teshis: 'iyi',
-    },
-  };
+    return {
+      data: fitBufferToCamera(res.data),
+      scale: res.scale,
+      poses,
+      stats: { keyframes: frames.length, flowMatches: matched, poseFails: fails },
+      diagnostics: {
+        keyframeSayisi: frames.length,
+        medyanEslesme,
+        pozBasariOrani: ciftSayisi > 0 ? dagilim.essential / ciftSayisi : 0,
+        pozKaynakDagilimi: dagilim,
+        medyanParallaksPx,
+        bazUzunlugu: bazN > 0 ? bazToplam / bazN : 0,
+        olcek,
+        teshis: 'iyi',
+      },
+    };
+  } finally {
+    pipelineCalisiyor = false;
+  }
 }
 
 /**
