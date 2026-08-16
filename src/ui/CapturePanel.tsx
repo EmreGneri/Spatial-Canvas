@@ -176,7 +176,9 @@ export function CapturePanel({
         // Senkron ve ağır: bir kare bekleyip UI'ın "solving" durumunu
         // boyamasına izin ver, yoksa kullanıcı donmuş sanır.
         await new Promise((r) => requestAnimationFrame(() => r(null)));
-        const scene = buildFusionScene(frames, VIDEO_FOV_Y);
+        // E1.3 (Emre): buildFusionScene artık asenkron (DepthProvider sözleşmesi
+        // + tek-çalışma kilidi) — tek gerekli await dokunuşu, kalanı aynen.
+        const scene = await buildFusionScene(frames, VIDEO_FOV_Y);
 
         engine.setGaussians(scene.data);
         engine.setPoseTrack(scene.poses);

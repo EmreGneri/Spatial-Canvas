@@ -121,7 +121,7 @@ function uniformFrame(v) {
 {
   const u = uniformFrame(0.5);
   const stat = [0, 1, 2, 3].map((i) => ({ timeMs: i * 250, lum: u.lum, rgb: u.rgb }));
-  const s1 = buildFusionScene(stat);
+  const s1 = await buildFusionScene(stat);
   check('durağan: splat üretilir (d_pred ölçeği)', s1.data.count > 0);
   check('durağan: ölçek yok (scale null)', s1.scale === null);
   check('durağan: pozlar kimlik zinciri olarak döner', s1.poses.length === 4 && s1.stats.poseFails >= 0);
@@ -130,7 +130,7 @@ function uniformFrame(v) {
 // ── buildFusionScene: hareketli (kayma) kareler ─────────────────────────────
 {
   const mov = [0, 6, 12, 18].map((sh, i) => ({ timeMs: i * 250, ...synthFrame(sh) }));
-  const s2 = buildFusionScene(mov);
+  const s2 = await buildFusionScene(mov);
   check('hareketli: flow izleri bulundu', s2.stats.flowMatches > 100);
   check('hareketli: splat üretildi', s2.data.count > 0);
   check('hareketli: buffer sözleşmesi (keyframeIndex aralık içi)', s2.data.keyframeIndex[s2.data.count - 1] < mov.length);
@@ -141,7 +141,7 @@ function uniformFrame(v) {
 {
   const u = uniformFrame(0.5);
   const stat = [0, 1, 2, 3].map((i) => ({ timeMs: i * 250, lum: u.lum, rgb: u.rgb }));
-  const s = buildFusionScene(stat);
+  const s = await buildFusionScene(stat);
   const d = s.diagnostics;
   check('diagnostics: CaptureDiagnostics var', !!d);
   check('diagnostics: keyframeSayisi', d.keyframeSayisi === 4);
@@ -158,7 +158,7 @@ function uniformFrame(v) {
   check('diagnostics: medyanParallaksPx 0', d.medyanParallaksPx === 0);
 
   const mov = [0, 6, 12, 18].map((sh, i) => ({ timeMs: i * 250, ...synthFrame(sh) }));
-  const s2 = buildFusionScene(mov);
+  const s2 = await buildFusionScene(mov);
   const d2 = s2.diagnostics;
   check('diagnostics (hareketli): pozBasariOrani > 0', d2.pozBasariOrani > 0);
   check('diagnostics (hareketli): essential > 0', d2.pozKaynakDagilimi.essential > 0);
