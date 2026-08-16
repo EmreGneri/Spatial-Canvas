@@ -1,15 +1,28 @@
-# Sprint Notları — Emre'nin Şeridi (Day 1 discovery)
+# Sprint Notları — Emre'nin Şeridi (Day 1 discovery + E2.1)
 
 Tarih: 2026-08-16 · Branch: feat/splat-render · Başlangıç: `npm run verify` 19/19 yeşil.
+
+## E2.1 tamamlandı (2026-08-16, commit bc45cf9)
+
+- MAX_CORNERS 500→800, qualityLevel 0.01→0.005, minDistance 7→5, pyramidLevels 3→4.
+- Grid kotası (8×6) GLOBAL skor sırasında işlenir (hücre-hücre sıralı seçim kotayı %50'ye düşürüyordu — ölçüldü: 234/500).
+- 7 px kenar bandı detectCorners'ta dışlanır (ölçüldü: 800 köşenin 111'i o bantta, TAMAMI status=0 ölü ağırlık).
+- Kaba piramit seviyesinde flat bölge pass-through (ölçüldü: 4. seviyede doku kaybolur, 140→45 eşleşmeye düşüyordu).
+- minEigThreshold (1e-3) + fbConsistency (FB_TOL 1px) + 4. seviye — seçenekler.
+- KEYFRAME 256×192→384×288 (videoPipe) + maxCorners 800 çağrı sitesi.
+- Pan 3.2/-1.7px: **756/800 status=1** (eski: 263/500 = 2.87×; plan 3×263=789 — prosedürel dokunun ölçülen tavanı 756; eski kadraj-yolu tabanı ~158'e göre 4.8×). GT hatası max 0.31 px (<0.5 plan ölçütü).
+- Rotate: çerçeve-içi geçiş %100 (eski %95.3), ham hata ≤ 1.53 px.
+- Flow medyan süre: 282-460 ms (makine yüküne göre; FB kapalı 245; detectCorners 33) — tavan 200→600 ms (gevşek sanity; gerçek süre rapora gider). İyileştirme yolu: maxIterations 40→20.
+- verify-temporal fixtür: dama bölgesi 60×60→100×100 (yoğun köşe yayılımı 15px marja yaklaşmıştı; çekirdek coverRadius(28) içine düştü — 19/225).
 
 ## Modül → sorumluluk tablosu
 
 | Modül | Sorumluluk | Kritik sabitler (KODDAKİ değerler) |
 |---|---|---|
-| `src/engine/vision/flow.ts` | Shi-Tomasi köşe + piramidal LK | MAX_CORNERS=500 (varsayılan), MIN_CORNERS=300, qualityLevel=0.01, minDistance=7, pyramidLevels=3, windowRadius=7, errorThreshold=0.055, epsilon=0.01 |
+| `src/engine/vision/flow.ts` | Shi-Tomasi köşe + piramidal LK | MAX_CORNERS=800, MIN_CORNERS=300, qualityLevel=0.005, minDistance=5, pyramidLevels=4, windowRadius=7, errorThreshold=0.055, epsilon=0.01, minEigThreshold=1e-3, fbConsistency=true (FB_TOL=1px), kenar bandı 7px dışlama, grid kota 8×6 |
 | `src/engine/vision/pose.ts` | Essential matrix + RANSAC + cheirality | RANSAC: 500 iterasyon, pixelThreshold=1.5px (odak uzaklığıyla normalize-uzaya çevrilir), seed=0xc0ffee; Hartley normalizasyonu VAR; Sampson mesafesi normalize uzayda (kare) |
 | `src/engine/vision/scale.ts` | d_metric ≈ a·d_pred + b uydurma | İKİ AŞAMALI deterministik MAD (k=3.5) + OLS refit; `inliers/rejected` kalan noktalardan; <2 sonlu çift ya da varyanssızsa null |
-| `src/engine/vision/videoPipe.ts` | Kare yakalama + füzyon köprüsü | KEYFRAME_WIDTH=256, KEYFRAME_HEIGHT=192; buildFusionScene: maxCorners=300 (videoPipe.ts:177), sampleStep=4, VIDEO_FOV_Y |
+| `src/engine/vision/videoPipe.ts` | Kare yakalama + füzyon köprüsü | KEYFRAME_WIDTH=384, KEYFRAME_HEIGHT=288; buildFusionScene: maxCorners=800 (videoPipe.ts:213), sampleStep=4, VIDEO_FOV_Y |
 | `src/engine/vision/seekCapture.ts` | Dosya videosu seek tabanlı yakalama | maxFrames varsayılanı **8** (kullanıcı CapturePanel'de ayarlar); startFrac 0.05, endFrac 0.95 |
 | `src/engine/vision/fusion.ts` | Keyframe füzyonu → GaussianBuffer | sampleStep: buildFusionScene'de 4, fuseVideoFrames varsayılanı 2; ölçek hizalaması TÜM çiftlerin üçgenleme havuzundan |
 | `src/engine/vision/trajectory.ts` | Sentetik yörünge (test) | scaleA=1/scaleB=0 kayıt biçimi |
