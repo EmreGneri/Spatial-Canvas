@@ -353,6 +353,12 @@ export function recoverPose(
 
   let inlierCount = 0;
   for (let i = 0; i < inlierMask.length; i++) inlierCount += inlierMask[i];
+  // Cheirality oyu 0 = dört adayın HİÇBİRİ geometrik olarak geçerli değil
+  // (dejenere hareket: saf dönme / sıfır baz hattı / düzlemsel sahne) —
+  // candidates[0]'ı "kötünün iyisi" diye zincire bağlamak çöp poz yayar
+  // (video yolunun donmuş kareleri bu yoldan bozuk poz üretiyordu).
+  // Çağıran (chainPoseTrack.fillOnFailure) null'u dürüstçe işler.
+  if (bestVotes <= 0) return null;
   return { R: best.R, t: best.t, inlierCount, inlierMask, cheiralityVotes: bestVotes };
 }
 

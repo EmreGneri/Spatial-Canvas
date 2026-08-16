@@ -168,7 +168,14 @@ export function buildShellMesh(
   // ekstrüzyon sönümü ayrı bir koldur. Duvar/kabuk sabitleri kullanım yerinde
   // zUnit ile ölçeklenir, aksi halde küçülen yüzeyin arkasında eski uzamda
   // duran duvar kalır (kabuk yine kutuya döner).
-  const zSpan = body ? ANATOMIC_DEPTH_RATIO * 2 * Math.min(body.rx, body.ry) : range;
+  // Gün E (bulgu 4) düzeltmesi (sampler.ts:255-257 ile aynı): dünya uzayında
+  // y hep ±halfH, x ise ±(w/h)·halfH — dikey kadrajda dünya genişliği 1'in
+  // ALTINA iner ve siluetin rx'i bu daralmış ölçekte ölçülür. Bölensiz formül
+  // aynı özneyi yalnızca kadraj yönü yüzünden SIĞ çiziyordu; yarı eksen,
+  // kadrajın KISA kenarı biriminde ölçülür (yatay/karede bölen 1 — davranış
+  // aynen korunur).
+  const frameShortHalf = Math.min(halfW, halfH);
+  const zSpan = body ? (ANATOMIC_DEPTH_RATIO * 2 * Math.min(body.rx, body.ry)) / frameShortHalf : range;
   const zUnit = zSpan / 2;
   const wallZ = EDGE_WALL_Z * zUnit;
   const thinShellZ = THIN_SHELL_Z * zUnit;

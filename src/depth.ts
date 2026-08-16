@@ -842,10 +842,11 @@ export function limitDepthSlope(
 
 /**
  * Z_disp = β · √(Gx² + Gy²) · Mask_fg. 3×3 Sobel luminance gradyanları,
- * kenarlar kelepçeli (clamp-to-edge); sonuç depth'e eklenir (0..1 sözleşmesi
- * arayan kademede kırpılır).
+ * kenarlar kelepçeli (clamp-to-edge); sonuç depth'e eklenir ve 0..1 sözleşmesi
+ * BURADA korunur (ekleme sonrası kırpma — bu aşama zincirin son ekleyen
+ * aşamasıdır; sonraki kademe yalnızca aşağı çeker, üst sınırı garanti etmez).
  */
-function applySobelRelief(
+export function applySobelRelief(
   depth: Float32Array,
   lum: Float32Array,
   mask: Float32Array,
@@ -855,7 +856,7 @@ function applySobelRelief(
 ) {
   const mag = sobelMagnitude(lum, w, h);
   for (let i = 0; i < depth.length; i++) {
-    depth[i] += beta * mag[i] * mask[i];
+    depth[i] = Math.min(1, depth[i] + beta * mag[i] * mask[i]);
   }
 }
 

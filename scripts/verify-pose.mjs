@@ -234,4 +234,29 @@ function buildMatches(frameA, frameB) {
   console.log('[6] 4 aday da geçerli dönme (det=+1) ve birim öteleme ✓');
 }
 
+// ---------------------------------------------------------------------------
+// 7. SIFIR BAZ HATTI (saf dönme) — cheirality oyu 0 olan aday POZ DEĞİLDİR:
+//    recoverPose null döndürmeli. Eskiden candidates[0] (geometrik olarak
+//    geçersiz R,t) sessizce zincire bağlanıyordu (pose.ts:340-356); video
+//    yolunun donmuş/durağan kareleri bu yoldan çöp poz üretiyordu.
+// ---------------------------------------------------------------------------
+{
+  const FOV = (60 * Math.PI) / 180;
+  const yaw = (a) => [0, Math.sin(a / 2), 0, Math.cos(a / 2)]; // y ekseni etrafında
+  const rawRot = [
+    { id: 0, R: [0, 0, 0, 1], t: [0, 0, 0], timeMs: 0, scaleA: 1, scaleB: 0, fovY: FOV },
+    { id: 1, R: yaw(0.7), t: [0, 0, 0], timeMs: 33, scaleA: 1, scaleB: 0, fovY: FOV },
+  ];
+  const scene = generatePointCloudScene(600, 1, 0x51ce4e);
+  const frames = projectScene(rawRot, scene, W, H, 0);
+  const matches = buildMatches(frames[0], frames[1]);
+  const K = { width: W, height: H, fovY: FOV };
+  const rec = recoverPose(matches, K);
+  console.log(
+    `[7] sıfır baz hattı: ${matches.length} eşleşme · recoverPose ${rec ? `DÖNDÜ (cheirality oyu ${rec.cheiralityVotes}/${matches.length})` : 'null ✓'}`,
+  );
+  assert.ok(matches.length >= 30, 'yeterli eşleşme yok — senaryo bozuk');
+  assert.ok(rec === null, 'sıfır baz hattında (saf dönme) recoverPose çöp poz döndürmemeli — null olmalı');
+}
+
 console.log('OK poz çözücü — essential matrix + RANSAC + ayrıştırma + cheirality (Gün 5)');

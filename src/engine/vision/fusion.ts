@@ -92,10 +92,12 @@ export interface FusionResult {
  *   1. d = getDepthAt → s = scaleA·d + scaleB (ölçek yoksa d'nin kendisi).
  *      s ≤ 0 ya da sonlu değilse piksel ATILIR (kamera arkası — cheirality).
  *   2. X_world = R·(s·v) + t — v = pixelToRay (pinhole, z=-1).
- *   3. normal = v (birim, görüş yönü) — nokta bulutu düzensizdir, komşu farkı
- *      geçerli bir yüzey normali VERMEZ (köprünün grid tabanlı normali burada
- *      kullanılamaz; splat yüzeye değil kameraya dönük çizilir — rasterizer'ın
- *      veri yolu, gerçek normal füzyon olgunlaşınca gelir).
+ *   3. normal = R·v (birim, DÜNYA çerçevesinde görüş yönü) — nokta bulutu
+ *      düzensizdir, komşu farkı geçerli bir yüzey normali VERMEZ (köprünün
+ *      grid tabanlı normali burada kullanılamaz; splat yüzeye değil kameraya
+ *      dönük çizilir — rasterizer'ın veri yolu, gerçek normal füzyon
+ *      olgunlaşınca gelir). splatMaterial B.xyz'i DÜNYA normali sayar,
+ *      bu yüzden v poza göre döndürülür.
  *   4. ölçek = s·pikselDünyaBoyutu·sampleStep — komşu splat'a değer (delik
  *      bırakmaz, üst üste binme sıralama kapısının işi).
  *   5. renk = getColorAt; opaklık = 1, AO = 1 (nokta bulutu oklüzyonsuz).
@@ -145,9 +147,16 @@ export function fuseKeyframes(input: FusionInput): FusionResult {
     out.a[o + 1] = R[3] * s * v[0] + R[4] * s * v[1] + R[5] * s * v[2] + pose.t[1];
     out.a[o + 2] = R[6] * s * v[0] + R[7] * s * v[1] + R[8] * s * v[2] + pose.t[2];
     out.a[o + 3] = 1; // nokta bulutu: tam görünür
-    out.b[o] = v[0] / vl;
-    out.b[o + 1] = v[1] / vl;
-    out.b[o + 2] = v[2] / vl;
+    // normal = dünyaya taşınmış görüş yönü R·v (birim). Splat B.xyz'i DÜNYA
+    // normali sayar (splatMaterial: vNormalW, basisFromNormal, uLightDir) —
+    // çıplak v yalnızca keyframe 0'da (identity R) dünya çerçevesidir;
+    // rotasyonlu keyframe'lerde elips ekseni/ışık yönü çarpılıyordu.
+    // Nokta bulutu düzensizdir, komşu farkı geçerli bir yüzey normali vermez;
+    // splat yüzeye değil kameraya dönük çizilir (rasterizer'ın veri yolu,
+    // gerçek normal füzyon olgunlaşınca gelir). R ortonormal → |R·v| = |v|.
+    out.b[o] = (R[0] * v[0] + R[1] * v[1] + R[2] * v[2]) / vl;
+    out.b[o + 1] = (R[3] * v[0] + R[4] * v[1] + R[5] * v[2]) / vl;
+    out.b[o + 2] = (R[6] * v[0] + R[7] * v[1] + R[8] * v[2]) / vl;
     out.b[o + 3] = s * pxWorld * sampleStep;
     out.c[o] = col[0];
     out.c[o + 1] = col[1];
