@@ -21,29 +21,53 @@ import { resampleBilinear } from './engine/reconstruction/silhouette.ts';
 type Transformers = typeof import('@huggingface/transformers');
 let transformersPromise: Promise<Transformers> | null = null;
 
-function loadTransformers(): Promise<Transformers> {
-  if (!transformersPromise) {
-    transformersPromise = import('@huggingface/transformers').then((tf) => {
-      const { env } = tf;
-      // Model weights and the ORT runtime both live locally — no CDN, no network.
-      env.allowRemoteModels = false;
-      env.allowLocalModels = true; // off by default in the browser build
-      env.localModelPath = '/models/';
-      // Dev: Vite refuses module imports from /public (500 on `?import`), so point
-      // at the onnxruntime-web dist inside node_modules (served through the
-      // transform pipeline). Prod: static /ort/ files from public/ go into dist.
-      // `import.meta.env` Vite'a özgüdür; Node bu modülü import edebilir —
-      // DEV olmayan yol orada da güvenlidir (yalnızca tarayıcıda işlenir).
-      const VITE_DEV = (import.meta as { env?: { DEV?: boolean } }).env?.DEV === true;
-      env.backends.onnx.wasm!.wasmPaths = VITE_DEV
-        ? '/node_modules/onnxruntime-web/dist/'
-        : '/ort/';
-      env.backends.onnx.wasm!.numThreads = 1; // single-thread => no COOP/COEP headers
-      return tf;
-    });
-  }
-  return transformersPromise;
+/**
+ * E1.4 — reddi cache'lemeyen tek-seferlik yükleyici.
+ *
+ * Sorun: yükleyici promise'i reddedildiğinde ESKİ kod onu modül seviyesinde
+ * KALICI cache'liyordu — tek seferlik ağ/modül hatası oturumu sonsuza dek
+ * bozuyordu (her sonraki çağrı aynı reddedilmiş promise'i alıyordu). Ayrıca
+ * eşzamanlı iki çağrı iki pipeline() edinimi yarıştırıyordu (webgpu cihaz
+ * kilidi çift edinilir).
+ *
+ * Sözleşme: (a) ilk çağrı reddederse cache DÜŞER — sonraki çağrı yeniden
+ * dener; (b) başarı sonrası cache kalıcıdır; (c) eşzamanlı çağrılar TEK
+ * yüklemeye birleşir. try/finally'nin "hata sonrası serbest bırakma"
+ * güvencesinin aynısını daha az kodla verir (catch'te cache düşürme).
+ */
+export function onceRetry<T>(loader: () => Promise<T>): () => Promise<T> {
+  let cached: Promise<T> | null = null;
+  return () => {
+    if (!cached) {
+      cached = loader().catch((err) => {
+        cached = null;
+        throw err;
+      });
+    }
+    return cached;
+  };
 }
+
+const loadTransformers = onceRetry<Transformers>(() =>
+  import('@huggingface/transformers').then((tf) => {
+    const { env } = tf;
+    // Model weights and the ORT runtime both live locally — no CDN, no network.
+    env.allowRemoteModels = false;
+    env.allowLocalModels = true; // off by default in the browser build
+    env.localModelPath = '/models/';
+    // Dev: Vite refuses module imports from /public (500 on `?import`), so point
+    // at the onnxruntime-web dist inside node_modules (served through the
+    // transform pipeline). Prod: static /ort/ files from public/ go into dist.
+    // `import.meta.env` Vite'a özgüdür; Node bu modülü import edebilir —
+    // DEV olmayan yol orada da güvenlidir (yalnızca tarayıcıda işlenir).
+    const VITE_DEV = (import.meta as { env?: { DEV?: boolean } }).env?.DEV === true;
+    env.backends.onnx.wasm!.wasmPaths = VITE_DEV
+      ? '/node_modules/onnxruntime-web/dist/'
+      : '/ort/';
+    env.backends.onnx.wasm!.numThreads = 1; // single-thread => no COOP/COEP headers
+    return tf;
+  }),
+);
 
 const MODEL = 'onnx-community/depth-anything-v2-base';
 
@@ -129,12 +153,19 @@ let estimator: Awaited<ReturnType<typeof pipeline<'depth-estimation'>>> | null =
 export async function loadDepthModel(device: 'wasm' | 'webgpu' = 'wasm') {
   if (estimator) return estimator;
   // env yapılandırması burada, pipeline çağrısından ÖNCE uygulanır.
-  const tf = await loadTransformers();
-  estimator = await tf.pipeline('depth-estimation', MODEL, {
-    device,
-    dtype: device === 'webgpu' ? 'fp16' : 'q8',
-  });
-  return estimator;
+  // E1.4 — estimator da onceRetry'den geçer: pipeline reddederse cache düşer
+  // (sonraki çağrı yeniden dener — cihaz kilidi serbest kalır), eşzamanlı
+  // çağrılar tek pipeline'a birleşir (webgpu cihaz kilidi çift edinilmez).
+  const est = await onceRetry(() =>
+    loadTransformers().then((tf) =>
+      tf.pipeline('depth-estimation', MODEL, {
+        device,
+        dtype: device === 'webgpu' ? 'fp16' : 'q8',
+      }),
+    ),
+  )();
+  estimator = est;
+  return est;
 }
 
 /**
