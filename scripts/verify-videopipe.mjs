@@ -41,13 +41,19 @@ function synthFrame(shift, seed = 42) {
   const rnd = mulberry32(seed);
   const lum = new Float32Array(W * H);
   const rgb = new Float32Array(W * H * 3);
+  // E3.1 FİXTÜR: saf yatay kaydırma TAM homografiydi (sonsuz düzlem) — homografi
+  // dejenere detektörü onu haklı olarak 'donme-fallback' etiketliyordu ve
+  // "hareketli → essential" beklentisi bozuluyordu. Kaydırma artık yatay
+  // BANTLARA ayrılıyor: üst yarı 1.5×, alt yarı 0.5× hız — farklı derinlikte
+  // iki düzlem = düzlemsel OLMAYAN 3B yapı → essential geçerli, homografi reddedilir.
   for (let y = 0; y < H; y += 8) {
+    const depth = y < H / 2 ? 1.5 : 0.5;
     for (let x = 0; x < W; x += 8) {
       const v = 0.15 + 0.8 * rnd();
       const r = 0.3 + 0.7 * rnd();
       const g = 0.3 + 0.7 * rnd();
       const b = 0.3 + 0.7 * rnd();
-      const sx = (x - shift + (W << 2)) % W;
+      const sx = (x - shift * depth + (W << 2)) % W;
       for (let dy = 0; dy < 8 && y + dy < H; dy++) {
         for (let dx = 0; dx < 8 && sx + dx < W; dx++) {
           lum[(y + dy) * W + (sx + dx)] = v;

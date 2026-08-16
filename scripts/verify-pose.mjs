@@ -8,6 +8,7 @@
 import assert from 'node:assert/strict';
 import {
   generateOrbitTrajectory,
+  generatePlanarScene,
   generatePointCloudScene,
   projectScene,
   quatToMatrix,
@@ -314,6 +315,93 @@ function buildMatches(frameA, frameB) {
     assert.equal(est[1].dejenere, true, 'cheirality 0 = dejenere');
     assert.equal(est[2].kaynak, 'donme-fallback', 'ikinci saf dönme de fallback');
     console.log('[8c] saf dönme: donme-fallback + dejenere ✓');
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 9. E3.1 KABUL — poz sağlamlığı (plan: Hartley ✓ var, Sampson ✓ var; yeni:
+//    adaptif iterasyon + cheirality belirsizliği + homografi dejenere tespiti).
+// ---------------------------------------------------------------------------
+{
+  const K = { width: W, height: H, fovY: (60 * Math.PI) / 180 };
+  const rnd = mulberry32(0xbadbad);
+
+  // (a) GÜRÜLTÜSÜZ: bilinen R,t → açı < 0.5°, t-yönü < 1° (plan kabulü).
+  {
+    const raw = generateOrbitTrajectory({ count: 2, arc: (40 * Math.PI) / 180 });
+    const scene = generatePointCloudScene(600, 1, 0x51ce4e);
+    const frames = projectScene(raw, scene, W, H, 0);
+    const matches = buildMatches(frames[0], frames[1]);
+    const rec = recoverPose(matches, K);
+    assert.ok(rec, 'E3.1a: gürültüsüz recoverPose null döndü');
+    assert.equal(rec.dejenere, false, 'E3.1a: gürültüsüz dejenere olmamalı');
+    const err = quatAngleDeg(matrixToQuat(rec.R), trueRelativeRotation(raw[0], raw[1]));
+    // t-yönü: t_rel = R2ᵀ·(t1 − t2) (kamera2 çerçevesi, X2 = R·X1 + t sözleşmesi)
+    const R2 = quatToMatrix(raw[1].R);
+    const dt = [raw[0].t[0] - raw[1].t[0], raw[0].t[1] - raw[1].t[1], raw[0].t[2] - raw[1].t[2]];
+    const tGT = [
+      R2[0] * dt[0] + R2[3] * dt[1] + R2[6] * dt[2],
+      R2[1] * dt[0] + R2[4] * dt[1] + R2[7] * dt[2],
+      R2[2] * dt[0] + R2[5] * dt[1] + R2[8] * dt[2],
+    ];
+    const nGT = Math.hypot(...tGT);
+    const nEst = Math.hypot(rec.t[0], rec.t[1], rec.t[2]);
+    const dot =
+      (tGT[0] / nGT) * (rec.t[0] / nEst) + (tGT[1] / nGT) * (rec.t[1] / nEst) + (tGT[2] / nGT) * (rec.t[2] / nEst);
+    const tErr = (Math.acos(Math.min(1, Math.max(-1, dot))) * 180) / Math.PI;
+    console.log(`[9a] gürültüsüz: rotasyon ${err.toFixed(4)}° (<0.5) · t-yönü ${tErr.toFixed(4)}° (<1)`);
+    assert.ok(err < 0.5, `E3.1a: rotasyon hatası < 0.5° → ${err.toFixed(4)}°`);
+    assert.ok(tErr < 1, `E3.1a: t-yönü hatası < 1° → ${tErr.toFixed(4)}°`);
+  }
+
+  // (b) %30 KABA AYKIRI: hâlâ < 2° (rotasyon VE t-yönü) — plan kabulü.
+  {
+    const raw = generateOrbitTrajectory({ count: 2, arc: (40 * Math.PI) / 180 });
+    const scene = generatePointCloudScene(600, 1, 0x51ce4e);
+    const frames = projectScene(raw, scene, W, H, 0.3, 0x9e0);
+    const matches = buildMatches(frames[0], frames[1]);
+    const corrupted = matches.map((m) => ({ ...m }));
+    const outlierCount = Math.floor(corrupted.length * 0.3);
+    for (let k = 0; k < outlierCount; k++) {
+      const i = Math.floor(rnd() * corrupted.length);
+      corrupted[i] = { ...corrupted[i], x2: rnd() * W, y2: rnd() * H };
+    }
+    const rec = recoverPose(corrupted, K, { seed: 0xc0ffee });
+    assert.ok(rec, 'E3.1b: %30 aykırıda recoverPose null döndü');
+    const err = quatAngleDeg(matrixToQuat(rec.R), trueRelativeRotation(raw[0], raw[1]));
+    const R2 = quatToMatrix(raw[1].R);
+    const dt = [raw[0].t[0] - raw[1].t[0], raw[0].t[1] - raw[1].t[1], raw[0].t[2] - raw[1].t[2]];
+    const tGT = [
+      R2[0] * dt[0] + R2[3] * dt[1] + R2[6] * dt[2],
+      R2[1] * dt[0] + R2[4] * dt[1] + R2[7] * dt[2],
+      R2[2] * dt[0] + R2[5] * dt[1] + R2[8] * dt[2],
+    ];
+    const nGT = Math.hypot(...tGT);
+    const nEst = Math.hypot(rec.t[0], rec.t[1], rec.t[2]);
+    const dot =
+      (tGT[0] / nGT) * (rec.t[0] / nEst) + (tGT[1] / nGT) * (rec.t[1] / nEst) + (tGT[2] / nGT) * (rec.t[2] / nEst);
+    const tErr = (Math.acos(Math.min(1, Math.max(-1, dot))) * 180) / Math.PI;
+    console.log(`[9b] %30 aykırı: rotasyon ${err.toFixed(3)}° (<2) · t-yönü ${tErr.toFixed(3)}° (<2)`);
+    assert.ok(err < 2, `E3.1b: rotasyon hatası < 2° → ${err.toFixed(3)}°`);
+    assert.ok(tErr < 2, `E3.1b: t-yönü hatası < 2° → ${tErr.toFixed(3)}°`);
+  }
+
+  // (c) DÜZLEMSEL SAHNE (planar, homografi ile açıklanabilir) → kaynak
+  //     'donme-fallback' + dejenere true. Essential MATEMATİKSEL çalışır ama
+  //     geometri dejeneredir — sessiz "başarı" yayılmamalı (plan kabulü).
+  {
+    const raw = generateOrbitTrajectory({ count: 3, arc: (60 * Math.PI) / 180, rise: 0.2 });
+    const scene = generatePlanarScene(400, 1.2, 1, 0xabc123);
+    const frames = projectScene(raw, scene, W, H, 0);
+    const fm = [];
+    for (let i = 0; i < frames.length - 1; i++) fm.push(buildMatches(frames[i], frames[i + 1]));
+    const est = chainPoseTrack(fm, K, raw.map((p) => p.timeMs));
+    console.log(
+      `[9c] düzlemsel sahne: kaynaklar ${est.map((p) => `${p.id}:${p.kaynak}${p.dejenere ? '!' : ''}`).join(' ')}`,
+    );
+    assert.ok(fm[0].length >= 30, 'E3.1c: düzlemsel eşleşme sayısı düşük — senaryo bozuk');
+    assert.equal(est[1].kaynak, 'donme-fallback', 'E3.1c: düzlemsel çift fallback olmalı (essential değil!)');
+    assert.equal(est[1].dejenere, true, 'E3.1c: düzlemsel dejenere true');
   }
 }
 
