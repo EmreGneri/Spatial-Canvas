@@ -62,7 +62,7 @@ const kf = selectKeyframes(frames.length, (ref, cand) => buildMatches(frames[ref
 // d_true = kameradan EKSEN derinliği (−cz) — triangulateWorldPoint.depthA ile
 // AYNI tanım. Piksel başına deterministik eşlemeler: d_pred / renk / GT nokta.
 const aModel = 2.7;
-const bModel = -0.4;
+const bModel = 0.15;
 const dPredMap = new Map(); // "k,x,y" → d_pred
 const rgbMap = new Map(); // "k,x,y" → [r,g,b]
 const gtMap = new Map(); // "k,x,y" → sahne nokta indeksi
@@ -80,7 +80,11 @@ for (const k of kf) {
     const dTrue = -(m[2] * dx + m[5] * dy + m[8] * dz);
     const key = `${k},${px},${py}`;
     if (dPredMap.has(key)) continue; // aynı piksele ilk nokta (deterministik)
-    dPredMap.set(key, aModel * dTrue + bModel);
+    // E5.4 — d_pred artık DİSPARİTE (büyük = yakın): gerçek modeller
+    // (Depth Anything / MiDaS) affine-değişmez TERS derinlik üretir.
+    // Fikstür eskiden mesafeye affine (aModel·dTrue + bModel) idi; o
+    // varsayım füzyonun uydurmasını yapısal olarak yanlış uzaya koyuyordu.
+    dPredMap.set(key, aModel / dTrue + bModel);
     const len = Math.hypot(dx, dy, dz) || 1;
     rgbMap.set(key, [0.5 + 0.5 * (dx / len), 0.5 + 0.5 * (dy / len), 0.5 + 0.5 * (dz / len)]);
     gtMap.set(key, i);

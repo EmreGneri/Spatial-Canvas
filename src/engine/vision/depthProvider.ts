@@ -6,55 +6,20 @@
 // (Depth Anything V2) fotoğraf yolunda zaten kullanılıyor; bu modül onu
 // keyframe karelerine bağlar.
 //
-// KRİTİK DÖNÜŞÜM — DISPARITE ≠ MESAFE. `estimateDepth` sözleşmesi
-// "0 = uzak, 1 = yakın" normalize DISPARITE verir. Füzyon ise d_pred'i
-// MESAFE gibi kullanır: `fitScaleAlignment` d_metric ≈ a·d_pred + b uydurur
-// ve scale.ts pozitif eğim bekler (negatif eğim → guven 0). Mesafe
-// disparitenin TERSİDİR (metrik ≈ c/disparite); affine uydurma bir ters
-// alma işlemini telafi EDEMEZ. Bu yüzden burada 1/d dönüşümü yapılır —
-// yapılmazsa uydurma monoton ama sistematik olarak yanlış olurdu.
+// SÖZLEŞME — d_pred DİSPARİTEDİR (büyük = yakın), mesafe DEĞİL.
+// `estimateDepth` zaten "0 = uzak, 1 = yakın" normalize disparite veriyor ve
+// füzyon (E5.4) uydurmayı TERS DERİNLİK uzayında yapıyor: 1/z = a·d + b.
+// Bu yüzden burada dönüşüm YOK — model çıktısı doğrudan geçer.
 //
-// UZAK KIRPMASI: normalize dispariteде 0'a yakın değerler (gökyüzü, çok
-// uzak yüzey) 1/d'yi patlatır. Taban, verinin kendi ALT YÜZDELİĞİNDEN
-// alınır (sabit eşik sahneye göre yanlış olurdu) — sonsuz yerine sonlu ve
-// sahneye uyarlanmış bir "en uzak" değeri.
+// TARİHÇE (aynı hatayı tekrarlamamak için): ilk sürüm burada 1/d alıp
+// [0,1]'e yeniden normalize ediyordu. İki sonucu oldu: (1) `out /= max`
+// adımı, max uzak kırpmasından geldiği için tüm sahneyi aralığın dibine
+// sıkıştırıp RÖLYEFİ EZDİ (video sahnesi düz panoya döndü); (2) uydurma
+// mesafe uzayında kaldığı için MiDaS parlaklıkla aynı kalitede uydu
+// (rmse/|a| ≈ 2.3 vs 1.95) ve eğim işareti koşudan koşuya döndü.
+// Affine belirsizlik disparite uzayında yaşar — çözüm de orada olmalı.
 import type { DepthProvider } from './types.ts';
 import { KEYFRAME_HEIGHT, KEYFRAME_WIDTH, type KeyframeFrame } from './videoPipe.ts';
-
-/** Uzak kırpması için kullanılan alt yüzdelik (0..1). */
-export const DISPARITY_FLOOR_PCT = 0.02;
-
-/**
- * Normalize DİSPARİTEYİ (0 = uzak, 1 = yakın) mesafe-orantılı, [0,1]'e
- * ölçeklenmiş bir alana çevirir — SAF fonksiyon (model yok, test edilebilir).
- *
- * Çıktı MUTLAK metrik değildir; füzyondaki affine hizalama metriğe taşır.
- * Tek gereken monoton ARTAN olması (uzak → büyük) ve sonlu kalması.
- */
-export function disparityToDistance(disparity: Float32Array): Float32Array {
-  const n = disparity.length;
-  const out = new Float32Array(n);
-  if (n === 0) return out;
-
-  // Alt yüzdelik: sıralama yerine kopya + sort (n ≈ 110k, tek sefer, yeterli).
-  const sorted = Float32Array.from(disparity).sort();
-  const floorIdx = Math.min(n - 1, Math.max(0, Math.floor(n * DISPARITY_FLOOR_PCT)));
-  // Taban 0 olamaz (bölme patlar); veri tamamen 0 ise küçük bir sabite düş.
-  const floor = Math.max(sorted[floorIdx], 1e-3);
-
-  let max = 0;
-  for (let i = 0; i < n; i++) {
-    const d = 1 / Math.max(disparity[i], floor);
-    out[i] = d;
-    if (d > max) max = d;
-  }
-  // [0,1]'e ölçekle — luminance yolunun d_pred aralığıyla aynı büyüklük
-  // mertebesinde kalsın (scale.ts'in guven formülü |a| aralığına bakıyor).
-  if (max > 0) {
-    for (let i = 0; i < n; i++) out[i] /= max;
-  }
-  return out;
-}
 
 /**
  * MiDaS destekli `DepthProvider`. Tek canvas yeniden kullanılır (kare başına
@@ -88,15 +53,14 @@ export function createMidasDepthProvider(
     // ödenir (suite ve fotoğraf-only oturumlar bu maliyeti görmez).
     const { estimateDepth } = await import('../../depth.ts');
     const res = await estimateDepth(canvas);
-    const dist = disparityToDistance(res.data);
-    if (res.width === width && res.height === height) return dist;
+    if (res.width === width && res.height === height) return res.data;
 
     const out = new Float32Array(width * height);
     for (let y = 0; y < height; y++) {
       const sy = Math.min(res.height - 1, Math.round((y * res.height) / height));
       for (let x = 0; x < width; x++) {
         const sx = Math.min(res.width - 1, Math.round((x * res.width) / width));
-        out[y * width + x] = dist[sy * res.width + sx];
+        out[y * width + x] = res.data[sy * res.width + sx];
       }
     }
     return out;

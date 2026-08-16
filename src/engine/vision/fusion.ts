@@ -104,11 +104,32 @@ export interface FusionResult {
  * keyframeIndex (D.4): splat'ın kaynak keyframe'i — timeline filtresi CPU'da
  * okur (GPU'ya gitmez, splats.ts dokunulmadı).
  */
+/**
+ * Ölçek çözülemediğinde disparite tabanı. Gökyüzü/çok uzak yüzeyde disparite
+ * 0'a gider ve 1/d patlar; taban onu sonlu tutar (sahne yarıçapı ≈ 1/taban).
+ */
+const SPLAT_DISPARITY_EPS = 0.02;
+
 export function fuseKeyframes(input: FusionInput): FusionResult {
   const { poses, splatPixels, matches, getDepthAt, getColorAt, K } = input;
   const sampleStep = input.sampleStep ?? 1;
 
-  // ── Ölçek hizalaması: TÜM çiftlerin üçgenleme havuzu → tek en küçük kare ──
+  // ── Ölçek hizalaması — TERS DERİNLİK (DİSPARİTE) UZAYINDA ────────────────
+  //
+  // E5.4 (2026-08-16, ÖNCEKİ DAVRANIŞ DEĞİŞTİ): uydurma eskiden
+  // z ≈ a·d_pred + b biçimindeydi, yani d_pred'in MESAFEYLE affine ilişkili
+  // olduğu varsayılıyordu. Depth Anything (ve genel olarak MiDaS ailesi)
+  // affine-değişmez TERS DERİNLİK üretir: doğru ilişki
+  //
+  //     1/z = a·disparite + b
+  //
+  // ve bu, mesafe uzayında affine ile İFADE EDİLEMEZ (ters alma affine
+  // değildir). Ölçüldü: mesafe uzayında uydurma, MiDaS ile parlaklıkla
+  // AYNI kalitede çıkıyordu (rmse/|a| ≈ 2.3 vs 1.95) — yani derinlik sinyali
+  // uydurmaya hiç ulaşmıyordu; ayrıca eğim işareti koşudan koşuya
+  // dönüyordu (a = +123, +9.19, −18.53).
+  //
+  // d_pred artık SÖZLEŞMEYLE disparitedir (büyük = yakın, types.ts).
   const pairs: Array<{ dPred: number; dMetric: number }> = [];
   for (const km of matches) {
     const pa = poses[km.a];
@@ -119,7 +140,8 @@ export function fuseKeyframes(input: FusionInput): FusionResult {
       if (!tri) continue;
       const dPred = getDepthAt(km.a, m.x1, m.y1);
       if (!(dPred > 0)) continue;
-      pairs.push({ dPred, dMetric: tri.depthA });
+      if (!(tri.depthA > 0)) continue; // ters alınamaz
+      pairs.push({ dPred, dMetric: 1 / tri.depthA });
     }
   }
   const scale = fitScaleAlignment(pairs);
@@ -133,7 +155,13 @@ export function fuseKeyframes(input: FusionInput): FusionResult {
     if (!pose) continue;
     const d = getDepthAt(sp.keyIdx, sp.x, sp.y);
     if (!(d > 0)) continue;
-    const s = scale ? scale.scaleA * d + scale.scaleB : d;
+    // Ters derinlikten mesafeye: z = 1/(a·disparite + b). Ölçek çözülemediyse
+    // disparitenin KENDİSİ tersine çevrilir (metrik değil ama sıralama doğru;
+    // dispariteyi doğrudan mesafe saymak sahneyi TERS çevirirdi — yakın
+    // nesneler uzağa giderdi).
+    const invZ = scale ? scale.scaleA * d + scale.scaleB : Math.max(d, SPLAT_DISPARITY_EPS);
+    if (!(invZ > 0) || !Number.isFinite(invZ)) continue;
+    const s = 1 / invZ;
     if (!(s > 0) || !Number.isFinite(s)) continue;
     const col = getColorAt(sp.keyIdx, sp.x, sp.y);
     if (!col) continue;
