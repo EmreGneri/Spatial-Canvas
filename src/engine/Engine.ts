@@ -220,6 +220,29 @@ export class Engine {
   private selectedKeyframe: number | null = null;
 
   /**
+   * SIFIRLAMA — "başlangıç noktası" anlık görüntüleri.
+   * Efektlerle oynadıktan sonra (ya da yeni bir görsele geçerken) kullanıcı
+   * başlangıca dönemiyordu: graf sıfırlaması yalnız düğümleri geri alıyor,
+   * material/pass uniform'larına dokunmuyordu. Burada kayıt/kurulum anındaki
+   * GERÇEK değerler saklanır; ParamDef.default'tan türetmek renk kollarını
+   * bozardı (kind: 'color' için default sayıdır).
+   */
+  private paramDefaults = new Map<string, ParamValues>();
+  private passDefaults: {
+    grain: ParamValues;
+    feedback: ParamValues;
+    chromatic: ParamValues;
+    bloom: ParamValues;
+    look: ParamValues;
+    sim: ParamValues;
+  } | null = null;
+  /** Kamera başlangıç pozu (kurulumdaki konum + hedef). */
+  private cameraHome = {
+    pos: new THREE.Vector3(0, 0, 3.5),
+    target: new THREE.Vector3(0, 0, 0),
+  };
+
+  /**
    * GÃœN 6 (opt): otomatik DPR dÃ¼ÅŸÃ¼rme. FPS sÃ¼rdÃ¼rÃ¼lebilir eÅŸiÄŸin (30) altÄ±na
    * dÃ¼ÅŸerse drawing buffer 384â†’256'ya iner (karede 2.25x daha az piksel);
    * tekrar 45+ olursa geri yÃ¼kselir. Histerezis: sÄ±k sÄ±k salÄ±nÄ±m yapmaz.
@@ -291,6 +314,17 @@ export class Engine {
     // GÃ¼n A: zincir bÃ¼yÃ¼dÃ¼kÃ§e sabit indeks bozulur â€” grain'in yeri kurulum
     // anÄ±nda okunur, kapatÄ±ldÄ±ÄŸÄ±nda not edilir, geri aÃ§Ä±lÄ±nca oraya dÃ¶ner.
     this.grainPassIndex = this.composer.passes.indexOf(this.grainPass);
+    // Pass/look/sim BAŞLANGIÇ değerlerini sakla — sıfırlama bunlara döner.
+    // Anlık görüntü pass'ler kurulduktan HEMEN SONRA alınır: preset yükleme
+    // ya da graf uygulaması bu değerleri henüz değiştirmemiştir.
+    this.passDefaults = {
+      grain: collectParams(GRAIN_PARAMS, this.grainUniforms),
+      feedback: collectParams(FEEDBACK_PARAMS, this.feedbackUniforms),
+      chromatic: collectParams(CHROMATIC_PARAMS, this.chromaticUniforms),
+      bloom: collectParams(BLOOM_PARAMS, this.bloomUniforms),
+      look: collectParams(LOOK_PARAMS, this.lookUniforms),
+      sim: collectParams(SIM_PARAMS, this.simUniforms),
+    };
     this.outputPass = new OutputPass();
     this.composer.addPass(this.outputPass);
 
@@ -642,6 +676,11 @@ releasePhoto() {
   /** Render modunu graf'a kaydeder: ad â†’ material + parametre tanÄ±mlarÄ±. */
   registerRenderMode(name: string, material: THREE.Material, params: ParamDef[]) {
     this.renderModes.set(name, { material, params });
+    // BAŞLANGIÇ NOKTASI ANLIK GÖRÜNTÜSÜ (sıfırlama için).
+    // ParamDef.default'tan sıfırlamak YETMEZ: renk kolları (kind: 'color')
+    // ParamDef'te `default: 0` taşır — sayı, renk değil. Gerçek başlangıç
+    // değeri material'ın kendi uniform'undadır; kayıt anında okunur.
+    this.paramDefaults.set(name, collectParams(params, (material as THREE.ShaderMaterial).uniforms as Record<string, THREE.IUniform>));
     if (this.pointsMaterial === material) this.renderModeName = name;
     // 'splat' AYRI BİR ÇİZİM NESNESİDİR (instanced quad), nokta bulutunun
     // material takası değil: points geometrisinde aCorner/aSplatIndex yoktur.
@@ -782,6 +821,46 @@ releasePhoto() {
 
 
   /** Aktif modun gÃ¼ncel parametre DEÄERLERÄ° â€” preset serileÅŸtirmesi iÃ§in. */
+  /**
+   * SIFIRLA — sahneyi "yeni açılmış" hâline döndürür.
+   *
+   * Neden gerekli: efekt kollarıyla oynadıktan sonra başlangıç noktasına
+   * dönmenin yolu yoktu. Graf sıfırlaması yalnız düğüm bağlantılarını geri
+   * alıyor; material ve pass uniform'ları oynanmış hâlde kalıyordu — yeni bir
+   * görsele geçince de o ayarlar devam ediyor ve "neden böyle görünüyor?"
+   * sorusuna cevap bulunamıyordu.
+   *
+   * Geri alınanlar: her kayıtlı render modunun parametreleri, post-pass
+   * zinciri (grain/feedback/chromatic/bloom), global look (exposure + sis),
+   * simülasyon kolları ve kamera pozu. MEDYA (fotoğraf/video/depth) ve graf
+   * DOKUNULMAZ — "efektleri sıfırla" ile "her şeyi sil" ayrı işlerdir;
+   * kullanıcı görselini kaybetmez.
+   */
+  resetRenderParams(opts: { camera?: boolean } = {}) {
+    for (const [name, entry] of this.renderModes) {
+      const defaults = this.paramDefaults.get(name);
+      if (!defaults) continue;
+      const u = (entry.material as THREE.ShaderMaterial).uniforms as Record<string, THREE.IUniform>;
+      applyParams(entry.params, u, defaults);
+    }
+    if (this.passDefaults) {
+      applyParams(GRAIN_PARAMS, this.grainUniforms, this.passDefaults.grain);
+      applyParams(FEEDBACK_PARAMS, this.feedbackUniforms, this.passDefaults.feedback);
+      applyParams(CHROMATIC_PARAMS, this.chromaticUniforms, this.passDefaults.chromatic);
+      applyParams(BLOOM_PARAMS, this.bloomUniforms, this.passDefaults.bloom);
+      applyParams(LOOK_PARAMS, this.lookUniforms, this.passDefaults.look);
+      applyParams(SIM_PARAMS, this.simUniforms, this.passDefaults.sim);
+    }
+    // Feedback birikimi bayat kare taşır; temizlenmezse eski efektin izi
+    // ekranda kalır ve "sıfırlandı" izlenimini bozar.
+    this.feedbackPass.requestClear();
+    if (opts.camera !== false) {
+      this.camera.position.copy(this.cameraHome.pos);
+      this.controls.target.copy(this.cameraHome.target);
+      this.controls.update();
+    }
+  }
+
   activeRenderParams(): ParamValues {
     const entry = this.renderModes.get(this.renderModeName);
     if (!entry) return {};

@@ -219,6 +219,15 @@ export class FeedbackPass extends Pass {
     this.enabled = active;
   }
 
+  /**
+   * Birikimi bir sonraki karede temizle. Sıfırlama (Engine.resetRenderParams)
+   * bunu çağırır: parametreler başa dönse bile ping-pong tamponunda ESKİ
+   * efektin izi durur ve "sıfırlandı" izlenimini bozar.
+   */
+  requestClear() {
+    this.needsClear = true;
+  }
+
   setSize(width: number, height: number) {
     for (const target of this.targets) target.setSize(width, height);
     // Yeniden boyutlandırma tamponların içeriğini geçersiz kılar.
