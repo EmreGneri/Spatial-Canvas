@@ -17,6 +17,7 @@ import {
   bucketSortByDepth,
   createSortScratch,
   ensureSortScratch,
+  filterOrderByKeyframe,
   needsResort,
   radixSortByDepth,
   sortSplatsByDepth,
@@ -254,6 +255,54 @@ const viewDepth = (view, x, y, z) => view[2] * x + view[6] * y + view[10] * z + 
   assert.ok(bucketMs < 8, `kova kare bütçesine sığar (${bucketMs.toFixed(2)} ms < 8 ms)`);
 }
 
+// --- 9. D.4 TIMELINE FİLTRESİ (Gün 5-6): sıra korunarak sıkıştırma ---
+{
+  const g = buildSpikeSphere(600);
+  // Splat'lara 4 keyframe'e bölünmüş kimlik ver.
+  const kf = new Uint16Array(g.count);
+  for (let i = 0; i < g.count; i++) kf[i] = i % 4;
+  const view = viewAtZ(4);
+  const scratch = createSortScratch(g.count);
+  const res = radixSortByDepth(g.a, g.count, view, 0, scratch);
+  // Filtresiz: dokunmaz.
+  const all = filterOrderByKeyframe(res.order.slice(), res.count, kf, null);
+  assert.equal(all, res.count, 'keyframe = null → filtre uygulanmaz');
+  assert.equal(
+    filterOrderByKeyframe(res.order.slice(), res.count, null, 2),
+    res.count,
+    'kimlik dizisi yoksa filtre uygulanmaz',
+  );
+  // Her keyframe için sıkıştır.
+  let total = 0;
+  for (let k = 0; k < 4; k++) {
+    const copy = res.order.slice();
+    const n = filterOrderByKeyframe(copy, res.count, kf, k);
+    total += n;
+    // (a) yalnızca o keyframe'in splat'ları
+    for (let i = 0; i < n; i++) {
+      assert.equal(kf[copy[i]], k, `filtre yalnızca keyframe ${k} bırakır`);
+    }
+    // (b) SIRA KORUNUR: derinlik hâlâ artan (arkadan öne)
+    let prev = -Infinity;
+    for (let i = 0; i < n; i++) {
+      const idx = copy[i];
+      const d = viewDepth(view, g.a[idx * 4], g.a[idx * 4 + 1], g.a[idx * 4 + 2]);
+      assert.ok(d >= prev - 1e-4, 'sıkıştırma arkadan öne sırasını bozmaz');
+      prev = d;
+    }
+    // (c) tekrar yok
+    const seen = new Set();
+    for (let i = 0; i < n; i++) {
+      assert.equal(seen.has(copy[i]), false, 'filtrede index tekrarı yok');
+      seen.add(copy[i]);
+    }
+  }
+  // (d) parçalar toplamı bütüne eşit — hiçbir splat kaybolmaz/çoğalmaz
+  assert.equal(total, res.count, `4 keyframe toplamı = tüm splat (${total} vs ${res.count})`);
+  // (e) var olmayan keyframe → boş
+  assert.equal(filterOrderByKeyframe(res.order.slice(), res.count, kf, 99), 0, 'olmayan keyframe → 0 splat');
+}
+
 console.log(
-  'OK · splat (spike küre kabuğu + anizotropi, radix TAM sıralama arkadan öne, opaklık kapısı, dejenere girdiler, kova yaklaşıklığı kova genişliğiyle sınırlı, yeniden sıralama kapısı, 147k ölçümü)',
+  'OK · splat (spike küre kabuğu + anizotropi, radix TAM sıralama arkadan öne, opaklık kapısı, dejenere girdiler, kova yaklaşıklığı kova genişliğiyle sınırlı, yeniden sıralama kapısı, 147k ölçümü, D.4 timeline filtresi)',
 );

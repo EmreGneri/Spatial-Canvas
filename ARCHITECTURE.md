@@ -782,6 +782,30 @@ burası yalnızca okur.
   BAĞIMSIZ: bu yük fill-rate değil **CPU sıralama** sınırlıdır. Referans:
   `points` modu aynı sahnede 0.40 ms.
 
+### D.2b Poz görselleştirme + D.4 timeline (Zeynep — Gün 5-6)
+
+- **`src/shaders/trajectoryOverlay.ts`** — keyframe frustum'ları + yörünge
+  çizgisi. Frustum köşeleri KAMERA UZAYINDA kurulur ve `p_world = R·p_cam + t`
+  ile dünyaya taşınır. **Ters yön (camera_from_world) ALINMAZ** — kayıt zaten
+  doğru yöndedir; tersini almak frustum'ları orijine göre AYNALAR ve hiçbir
+  sayı patlamaz (Gün 5'in en olası sessiz hatası). `verify-overlay.mjs`
+  frustum ekseninin gerçekten hedefe baktığını geometrik olarak denetler.
+  Tek `LineSegments` + tek `Line` — keyframe başına nesne yok.
+- **D.4 timeline filtresi** — `filterOrderByKeyframe` (`splatSort.ts`):
+  sıralanmış çizim indeksini YERİNDE sıkıştırır. Sıra arkadan öne olduğu için
+  sıkıştırma o sırayı KORUR; filtre sıralamadan SONRA uygulanır ki sıralama
+  maliyeti seçime göre değişmesin. `keyframeIndex` D.4 gereği **GPU'ya
+  GİTMEZ** — filtre tamamen CPU tarafındadır, material bundan habersizdir.
+  Kanıt: keyframe'lerin splat sayıları toplamı = tüm splat sayısı (parçalar
+  bütünü verir, kayıp/çoğalma yok).
+- **Türetilen normalin tabanı (`NORMAL_MIN_NZ` = 0.38, `splats.ts` köprüsü):**
+  komşu z farkından türetilen normal, derinlik SÜREKSİZLİĞİNDE patlıyor ve
+  splat kameraya dik kılcal bir şeride çöküyordu. Sınır eksen başına eğim
+  kırparak sağlanamaz (iki eksen birden büyükse `n_z` yine çöker); doğrudan
+  normale uygulanır. Ölçüm: `|n_z| < 0.35` taşıyan splat oranı **%15.87 → %0**,
+  en küçük `|n_z|` tam **0.380**. Gerçek füzyon normalleri geldiğinde bu
+  tabana ihtiyaç kalmaz.
+
 ### D.6b Sentetik yörünge üreteci (Zeynep — Gün 4)
 
 `src/engine/vision/trajectory.ts` — Gün 5 poz çözücüsünün doğruluk verisi.

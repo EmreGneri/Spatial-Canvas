@@ -16,6 +16,8 @@ import { createPointsCloud } from './points';
 import { SplatObject, fillGaussiansFromPointCloud, uploadGaussianData } from './splats';
 import type { GaussianBufferData } from '../shaders/splatFixture';
 import type { SplatSortMode } from '../shaders/splatSort';
+import { createTrajectoryOverlay, type TrajectoryOverlay } from '../shaders/trajectoryOverlay';
+import type { PoseTrackRecord } from './vision/types';
 import { createSimulation, type SimulationUniforms } from './simulation';
 import { createGrainPass, type GrainPass, type GrainPassUniforms } from '../shaders/grainPass';
 import {
@@ -209,6 +211,13 @@ export class Engine {
   private splatMinOpacity = 0.02;
   /** Viewport (px) — splat Jacobian'ının piksel ölçeği. resize yazar. */
   private viewportPx = new THREE.Vector2(1, 1);
+
+  /** GÜN 5 — keyframe frustum'ları + yörünge çizgisi (poz varsa kurulur). */
+  private trajectoryOverlay: TrajectoryOverlay | null = null;
+  private poseTrack: PoseTrackRecord[] = [];
+  private trajectoryVisible = true;
+  /** D.4 timeline seçimi (null = tüm keyframe'ler). */
+  private selectedKeyframe: number | null = null;
 
   /**
    * GÃœN 6 (opt): otomatik DPR dÃ¼ÅŸÃ¼rme. FPS sÃ¼rdÃ¼rÃ¼lebilir eÅŸiÄŸin (30) altÄ±na
@@ -645,13 +654,66 @@ releasePhoto() {
   setGaussians(data: GaussianBufferData | null) {
     if (!this.splatObject) return;
     if (!data) {
-      this.splatObject.syncFromTextures(0);
+      this.splatObject.syncFromTextures(0, null);
       this.syncRenderVisibility();
       return;
     }
     uploadGaussianData(this.splatObject.textures, data);
-    this.splatObject.syncFromTextures(data.count);
+    // D.4: keyframeIndex GPU'ya gitmez, timeline filtresi için CPU'da tutulur.
+    this.splatObject.syncFromTextures(data.count, data.keyframeIndex);
     this.syncRenderVisibility();
+  }
+
+  /**
+   * GÜN 5 (render şeridi) — poz zincirini sahnede görünür kılar: keyframe
+   * frustum'ları + yörünge çizgisi. Kayıt D.2 yönündedir (kamera→dünya);
+   * overlay tersini ALMAZ. `null` → overlay boşalır ve gizlenir.
+   */
+  setPoseTrack(poses: PoseTrackRecord[] | null) {
+    this.poseTrack = poses ?? [];
+    if (!this.trajectoryOverlay) {
+      if (this.poseTrack.length === 0) return;
+      this.trajectoryOverlay = createTrajectoryOverlay();
+      this.scene.add(this.trajectoryOverlay.group);
+    }
+    this.trajectoryOverlay.update(this.poseTrack, this.camera.aspect, this.selectedKeyframe);
+    this.trajectoryOverlay.setVisible(this.trajectoryVisible && this.poseTrack.length > 0);
+  }
+
+  /** Poz zinciri (UI timeline'ı bunu okur). */
+  get poses(): PoseTrackRecord[] {
+    return this.poseTrack;
+  }
+
+  /** Yörünge/frustum overlay'ini aç-kapa. */
+  setTrajectoryVisible(v: boolean) {
+    this.trajectoryVisible = v;
+    this.trajectoryOverlay?.setVisible(v && this.poseTrack.length > 0);
+  }
+
+  get trajectoryShown(): boolean {
+    return this.trajectoryVisible;
+  }
+
+  /**
+   * GÜN 5-6 — D.4 timeline filtresi: yalnızca seçili keyframe'den gelen
+   * splat'lar çizilir (null = hepsi). Seçim aynı zamanda frustum vurgusudur.
+   */
+  setSelectedKeyframe(id: number | null) {
+    this.selectedKeyframe = id;
+    this.splatObject?.setKeyframeFilter(id);
+    if (this.trajectoryOverlay) {
+      this.trajectoryOverlay.update(this.poseTrack, this.camera.aspect, id);
+    }
+  }
+
+  get selectedKeyframeId(): number | null {
+    return this.selectedKeyframe;
+  }
+
+  /** Sahnedeki keyframe sayısı (timeline uzunluğu). */
+  get keyframeCount(): number {
+    return Math.max(this.poseTrack.length, this.splatObject?.keyframeCount ?? 0);
   }
 
   /** Splat modu çizilebilir mi (GaussianBuffer dolu)? UI bunu söyler. */
@@ -1131,6 +1193,7 @@ depth,
 this.simulation.dispose();
     this.points.geometry.dispose();
     this.splatObject?.dispose();
+    this.trajectoryOverlay?.dispose();
     this.solidMesh?.geometry.dispose();
     if (this.solidMesh) this.scene.remove(this.solidMesh);
     // KayÄ±tlÄ± material'lar Ã§aÄŸÄ±ranÄ±n malÄ± (App useMemo ile Ã¼retir ve bÄ±rakÄ±r);

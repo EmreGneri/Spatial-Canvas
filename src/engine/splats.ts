@@ -3,6 +3,7 @@ import { POSITION_TEXTURE_SIZE } from './buffers';
 import type { GaussianBufferData } from '../shaders/splatFixture';
 import {
   ensureSortScratch,
+  filterOrderByKeyframe,
   needsResort,
   sortSplatsByDepth,
   type SplatSortMode,
@@ -33,6 +34,34 @@ import {
  * içindir (buffers.ts). Burada flip açık olsaydı index → uv çevrimi sessizce
  * dikey aynalanır ve sıralama başka splat'ı çizerdi.
  */
+
+/**
+ * Türetilen normalin en küçük |n_z|'si. Eksen başına eğim kırpmak YETMEZ
+ * (iki eksen birden büyükse n_z yine çöker); sınır doğrudan normalin
+ * kendisine uygulanır: yanal bileşen, n_z bu tabanı tutacak şekilde
+ * ölçeklenir. 0.38 → splat kameraya göre en fazla ~68° eğilebilir.
+ *
+ * Bu bir GÖRÜNTÜ kararı değil, TÜRETME hatasının tavanıdır: gerçek füzyon
+ * normalleri geldiğinde (Gün 7) bu tabana ihtiyaç kalmaz.
+ */
+const NORMAL_MIN_NZ = 0.38;
+
+/**
+ * (nx, ny, 1) ham normalini normalize eder ve |n_z| ≥ NORMAL_MIN_NZ olacak
+ * şekilde yanal bileşeni kısar. Çıktı BİRİM uzunluktadır.
+ */
+function stabilizedNormal(nx: number, ny: number, out: Float32Array, o: number) {
+  const lat = Math.hypot(nx, ny);
+  // n_z = 1/√(1+lat²) ≥ min  ⇔  lat ≤ √(1/min² − 1)
+  const maxLat = Math.sqrt(1 / (NORMAL_MIN_NZ * NORMAL_MIN_NZ) - 1);
+  const k = lat > maxLat ? maxLat / lat : 1;
+  const cx = nx * k;
+  const cy = ny * k;
+  const len = Math.hypot(cx, cy, 1);
+  out[o] = cx / len;
+  out[o + 1] = cy / len;
+  out[o + 2] = 1 / len;
+}
 
 /** Splat quad'ının köşe düzeni: iki üçgen, dört köşe (TRIANGLE indeksli). */
 const QUAD_CORNERS = new Float32Array([-1, -1, 1, -1, 1, 1, -1, 1]);
@@ -137,9 +166,12 @@ export function fillGaussiansFromPointCloud(
   const C = tex.c.image.data as Uint8Array;
   const n = grid * grid;
   // Dünya adımı: home grid'i [-halfW, +halfW] × [-1, +1] aralığını kaplar.
-  // Adım x ve y'de farklı olabilir; ölçek için ikisinin ortalaması alınır.
+  // NORMAL türevleri için sabit adım yeterlidir (grid düzenli).
   const stepX = Math.abs(home[4] - home[0]) || 2 / grid;
   const stepY = Math.abs(home[grid * 4 + 1] - home[1]) || 2 / grid;
+  // Yarıçap: komşu aralığının yarısı → komşu splat'lar 2σ'da buluşur,
+  // Gauss kuyrukları örtüşür. Aralık grid boyunca SABİTTİR (yukarıdaki
+  // "yarıçap küreseldir" kaydına bak).
   const baseScale = 0.5 * Math.max(stepX, stepY);
 
   for (let j = 0; j < grid; j++) {
@@ -160,15 +192,25 @@ export function fillGaussiansFromPointCloud(
       const zd = home[(k - (j > 0 ? grid : 0)) * 4 + 2];
       const zu = home[(k + (j < grid - 1 ? grid : 0)) * 4 + 2];
       // grid satırı j ARTARKEN dünya y AZALIR → dz/dy işareti ters.
+      // EĞİM TAVANI (ölçüldü — aşağı bak): derinlik SÜREKSİZLİĞİNDE (siluet
+      // kenarı, kol/gövde sınırı) merkezi fark patlar; normal kameraya
+      // neredeyse DİK döner, splat kılcal bir şerite çöker ve yüzeyde delik
+      // bırakır. Ölçüm (2026-08-14, sentetik görsel, 640×420): tavansız
+      // %15.87 splat |n_z| < 0.35 taşıyordu ve yüzeyin %9.68'i delikti;
+      // yarıçapı 3× büyütmek deliği yalnızca %4.48'e indiriyordu — yani
+      // sorun YARIÇAP değil YÖNELİMDİ.
       const dzdx = (zr - zl) / (2 * stepX);
       const dzdy = -(zu - zd) / (2 * stepY);
-      const nx = -dzdx;
-      const ny = -dzdy;
-      const nz = 1;
-      const len = Math.hypot(nx, ny, nz) || 1;
-      B[o] = nx / len;
-      B[o + 1] = ny / len;
-      B[o + 2] = nz / len;
+      stabilizedNormal(-dzdx, -dzdy, B, o);
+      // YARIÇAP KÜRESELDİR — ve öyle KALMALI. Denendi ve ÖLÇÜLDÜ (2026-08-14):
+      // splat başına "komşu dünya mesafesi"nden yarıçap türetmek hiçbir şeyi
+      // değiştirmiyor, çünkü önem remap'i (buildImportanceRemap) yalnızca
+      // hangi DEPTH pikselinin okunduğunu büker; parçacığın DÜNYA konumu
+      // kendi grid yerindedir (ARCHITECTURE.md · Point Cloud Sözleşmesi:
+      // "grid ve aUv sözleşmesi aynı kalır"). Ölçüm: türetilen yarıçapın
+      // min/maks/ortalaması 0.0026 / 0.0026 / 0.0026 — yani tam olarak
+      // küresel değerin kendisi. Fazladan komşu okuması ve dallanma bedava
+      // değildi; geri alındı.
       B[o + 3] = baseScale;
 
       if (colorData) {
@@ -207,6 +249,13 @@ export class SplatObject {
   private lastDir = new Float32Array([0, 0, 1]);
   private splatCount = 0;
   private drawCount = 0;
+  /**
+   * D.4 timeline filtresi (Gün 5-6): splat başına kaynak keyframe id'si.
+   * GPU'ya GİTMEZ (D.4 kaydı) — filtre CPU'da, sıralama girdisinde uygulanır.
+   */
+  private keyframeIndex: Uint16Array | null = null;
+  /** Seçili keyframe (null = hepsi). Filtre sıralamada uygulanır. */
+  private keyframeFilter: number | null = null;
   /** Son sıralamanın süresi (ms) — Gün 4 ölçümü ve UI paneli okur. */
   lastSortMs = 0;
   /** Son sıralamada gerçekten çizilen splat sayısı. */
@@ -244,13 +293,39 @@ export class SplatObject {
   }
 
   /** GaussianBuffer'ı doldurduktan SONRA çağrılır: sıralama girdisini tazeler. */
-  syncFromTextures(count: number) {
+  syncFromTextures(count: number, keyframeIndex?: Uint16Array | null) {
     this.splatCount = Math.min(count, this.textures.capacity);
     this.xyzw.set((this.textures.a.image.data as Float32Array).subarray(0, this.splatCount * 4), 0);
+    // D.4: keyframe kimliği CPU'da yaşar (GPU'ya gitmez). Yeni veri gelince
+    // eski kimlik dizisi geçersizdir — verilmezse filtre kapanır, aksi halde
+    // timeline başka bir sahnenin indekslerini süzerdi.
+    this.keyframeIndex = keyframeIndex ?? null;
+    if (!this.keyframeIndex) this.keyframeFilter = null;
     // Yeni veri → sıra kesin bayat; bir sonraki update zorla sıralasın.
     this.lastDir[0] = 0;
     this.lastDir[1] = 0;
     this.lastDir[2] = 0;
+  }
+
+  /** D.4 timeline: yalnızca bu keyframe'in splat'ları çizilir (null = hepsi). */
+  setKeyframeFilter(id: number | null) {
+    if (this.keyframeFilter === id) return;
+    this.keyframeFilter = this.keyframeIndex ? id : null;
+    // Filtre sıralamadan sonra uygulanıyor; sıra bayat olmasa da instance
+    // sayısı değişmeli → kapıyı zorla.
+    this.lastDir[0] = 0;
+    this.lastDir[1] = 0;
+    this.lastDir[2] = 0;
+  }
+
+  /** Sahnedeki farklı keyframe sayısı (timeline uzunluğu). 0 = kimlik yok. */
+  get keyframeCount(): number {
+    if (!this.keyframeIndex) return 0;
+    let max = -1;
+    for (let i = 0; i < this.splatCount; i++) {
+      if (this.keyframeIndex[i] > max) max = this.keyframeIndex[i];
+    }
+    return max + 1;
   }
 
   /** Material takas edildiğinde texture bağlarını yeniden işler (Engine kuralı). */
@@ -296,13 +371,23 @@ export class SplatObject {
       this.scratch,
     );
     this.lastSortMs = performance.now() - t0;
+    // D.4 TIMELINE FİLTRESİ: sıralanmış diziyi YERİNDE sıkıştır. Sıra
+    // arkadan öne olduğu için sıkıştırma o sırayı korur — yeniden sıralama
+    // gerekmez. Filtre sıralamadan SONRA uygulanır ki sıralama maliyeti
+    // filtreye göre değişmesin (ölçüm tutarlılığı).
+    const count = filterOrderByKeyframe(
+      result.order,
+      result.count,
+      this.keyframeIndex,
+      this.keyframeFilter,
+    );
     const dst = this.indexAttr.array as Float32Array;
-    for (let k = 0; k < result.count; k++) dst[k] = result.order[k];
+    for (let k = 0; k < count; k++) dst[k] = result.order[k];
     this.indexAttr.needsUpdate = true;
     this.indexAttr.clearUpdateRanges?.();
-    this.indexAttr.addUpdateRange?.(0, result.count);
-    this.drawCount = result.count;
-    this.geometry.instanceCount = result.count;
+    this.indexAttr.addUpdateRange?.(0, count);
+    this.drawCount = count;
+    this.geometry.instanceCount = count;
   }
 
   setVisible(v: boolean) {

@@ -271,6 +271,32 @@ export function sortSplatsByDepth(
 }
 
 /**
+ * D.4 TIMELINE FİLTRESİ: sıralanmış `order` dizisini YERİNDE sıkıştırır,
+ * yalnızca `keyframe` id'sine ait splat'lar kalır. Yeni uzunluğu döner.
+ *
+ * Sıra ARKADAN ÖNE olduğu için sıkıştırma o sırayı KORUR (kararlı seçim) —
+ * filtreden sonra yeniden sıralamaya gerek yoktur. Filtre bilerek
+ * sıralamadan SONRA uygulanır: sıralama maliyeti seçime göre değişmesin,
+ * timeline'da gezinirken ölçüm tutarlı kalsın.
+ *
+ * `keyframe = null` ya da kimlik dizisi yoksa dokunmaz (tüm splat'lar).
+ */
+export function filterOrderByKeyframe(
+  order: Uint32Array,
+  count: number,
+  keyframeIndex: Uint16Array | null,
+  keyframe: number | null,
+): number {
+  if (keyframe === null || !keyframeIndex) return count;
+  let w = 0;
+  for (let k = 0; k < count; k++) {
+    const idx = order[k];
+    if (keyframeIndex[idx] === keyframe) order[w++] = idx;
+  }
+  return w;
+}
+
+/**
  * YENİDEN SIRALAMA KAPISI: sıra her karede değil, kamera YETERİNCE dönünce
  * kurulur. 147k'lık `Uint32Array` her karede GPU'ya yüklenirse (590 kB/kare,
  * 60 fps'te ~35 MB/s) sürücü kuyruğu şişer; oysa 1-2 derecelik kamera
