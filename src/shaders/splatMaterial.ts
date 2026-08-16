@@ -53,6 +53,36 @@ export const SPLAT_FLATTEN = 0.1;
  *  daha büyüğü görünmeyen fragment'e para öder. */
 export const SPLAT_CUTOFF_SIGMA = 2;
 
+/**
+ * Gauss düşüşünün KESİM DEĞERİ: kesim yarıçapında (2σ) ham Gauss hâlâ
+ * exp(-2) = 0.135 taşır. Bu değer sıfıra ÇEKİLMEDEN kesilirse alfa %13.5'ten
+ * bir anda 0'a düşer — splat'ın çevresinde görünür sert bir kenar (kes-kopar)
+ * oluşur. Normalize edilmiş düşüş kesim noktasında TAM 0'a iner.
+ */
+export const SPLAT_EDGE = Math.exp(-0.5 * SPLAT_CUTOFF_SIGMA * SPLAT_CUTOFF_SIGMA);
+
+/**
+ * Normalize Gauss düşüşü — CPU'da test edilebilsin diye burada da var.
+ * `rNorm` = yarıçap / kesim yarıçapı ∈ [0, 1].
+ * Sözleşme: f(0) = 1, f(1) = 0, aralıkta monoton azalan.
+ * GLSL karşılığı AYNI sabitlerden üretilir (aşağıda şablonla gömülür), yani
+ * ikisi ayrışamaz.
+ */
+export function splatFalloff(rNorm: number): number {
+  if (rNorm >= 1) return 0;
+  if (rNorm <= 0) return 1;
+  const r2 = (rNorm * SPLAT_CUTOFF_SIGMA) ** 2;
+  return (Math.exp(-0.5 * r2) - SPLAT_EDGE) / (1 - SPLAT_EDGE);
+}
+
+/**
+ * Ekranda bir splat'ın inebileceği en küçük yarıçap (piksel). Altına inen
+ * splat KAYBOLUR (örnekleme ızgarasını ıskalar) ve uzak yüzeyler delik delik
+ * görünür. Yarıçap tabana çekilir, ALFA da alan oranıyla (r/rmin)² kısılır —
+ * enerji korunur, yani splat büyütülmüş olmaz, SÖNÜMLENİR.
+ */
+export const SPLAT_MIN_SCREEN_RADIUS = 0.75;
+
 export interface SplatMaterialUniforms {
   /** D.1 gSplatA — xyz + opaklık. Değerini ENGINE yazar. */
   uSplatA: { value: THREE.Texture | null };
@@ -124,6 +154,7 @@ const SPLAT_VERTEX = /* glsl */ `
   varying float vOpacity;
   varying vec3 vNormalW;
   varying float vViewDepth;
+  varying float vAlphaScale;
 
   /** index → GaussianBuffer texel merkezi (y-flip YOK: upload'da çözüldü). */
   vec2 splatUv(float index) {
@@ -170,6 +201,7 @@ const SPLAT_VERTEX = /* glsl */ `
     if (viewPos.z > -0.01) {
       gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
       vQuad = vec2(0.0);
+      vAlphaScale = 0.0;
       return;
     }
 
@@ -218,6 +250,14 @@ const SPLAT_VERTEX = /* glsl */ `
     vec2 e2 = vec2(-e1.y, e1.x);
     float r1 = min(${SPLAT_CUTOFF_SIGMA.toFixed(1)} * sqrt(l1), uMaxScreenRadius);
     float r2 = min(${SPLAT_CUTOFF_SIGMA.toFixed(1)} * sqrt(l2), uMaxScreenRadius);
+    // MİNİMUM EKRAN YARIÇAPI: piksel altına inen splat örnekleme ızgarasını
+    // ıskalayıp KAYBOLUR (uzak yüzey delik delik). Tabana çekilir, alfa da
+    // alan oranıyla kısılır — enerji korunur, splat büyümez, sönümlenir.
+    float rmin = ${SPLAT_MIN_SCREEN_RADIUS.toFixed(2)};
+    float shrink = (min(r1, rmin) / rmin) * (min(r2, rmin) / rmin);
+    vAlphaScale = clamp(shrink, 0.0, 1.0);
+    r1 = max(r1, rmin);
+    r2 = max(r2, rmin);
 
     // Köşeyi piksel uzayında yerleştir, sonra clip uzayına taşı.
     vec2 offsetPx = e1 * (aCorner.x * r1) + e2 * (aCorner.y * r2);
@@ -246,12 +286,15 @@ const SPLAT_FRAGMENT = /* glsl */ `
   varying float vOpacity;
   varying vec3 vNormalW;
   varying float vViewDepth;
+  varying float vAlphaScale;
 
   void main() {
     // Mahalanobis uzaklığı birim elips uzayında sadeleşti: |vQuad|² = r².
     float r2 = dot(vQuad, vQuad);
     if (r2 > ${(SPLAT_CUTOFF_SIGMA * SPLAT_CUTOFF_SIGMA).toFixed(1)}) discard;
-    float g = exp(-0.5 * r2);
+    // NORMALİZE DÜŞÜŞ: ham Gauss kesim yarıçapında 0.135 taşıyor ve orada
+    // kesilince görünür sert kenar bırakıyordu. Kesim noktasında tam 0'a in.
+    float g = (exp(-0.5 * r2) - ${SPLAT_EDGE.toFixed(6)}) / ${(1 - SPLAT_EDGE).toFixed(6)};
 
     vec3 col = vColor.rgb;
     // AO renk grid'i sözleşmesiyle aynı: .a = oklüzyon, 1 = açık.
@@ -262,7 +305,7 @@ const SPLAT_FRAGMENT = /* glsl */ `
     col *= mix(1.0, 0.35 + 0.65 * diff, uLightStrength);
     col *= uBrightness;
 
-    float alpha = g * vOpacity * uSplatOpacity;
+    float alpha = g * vOpacity * uSplatOpacity * vAlphaScale;
     if (alpha < 0.003) discard;
 
     // Sis (Gün A global look): diğer modlarla AYNI üstel formül, kamera

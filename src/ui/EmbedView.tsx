@@ -5,7 +5,7 @@ import { createAsciiMaterial, ASCII_PARAMS } from '../shaders/asciiMaterial';
 import { createNeonWireMaterial, NEON_PARAMS } from '../shaders/neonWireMaterial';
 import { createSolidMaterial, SOLID_PARAMS } from '../shaders/solidMaterial';
 import { createSplatMaterial, SPLAT_PARAMS } from '../shaders/splatMaterial';
-import { createCrystalMaterial, CRYSTAL_PARAMS } from '../shaders/crystalMaterial';
+import { createCrystalMaterial, createCrystalSplatMaterial, CRYSTAL_PARAMS } from '../shaders/crystalMaterial';
 import { applyRenderState, type RenderState } from '../shaders/renderPreset';
 import { EMBED_CHROME_CSS, SIGNATURE_TEXT } from './embedChrome';
 import type { RenderMode } from './ModeSelector';
@@ -67,6 +67,9 @@ export function EmbedView({
     engine.registerRenderMode('solid', materials.solid, SOLID_PARAMS);
     engine.registerRenderMode('splat', materials.splat, SPLAT_PARAMS);
     engine.registerRenderMode('crystal', materials.crystal, CRYSTAL_PARAMS);
+    // Gün 3: crystal video kaynağında da çizsin — splat varyantı ORTAK
+    // uniform nesnelerini kullanır, ayrı knob seti yoktur.
+    engine.setCrystalSplatMaterial(createCrystalSplatMaterial(materials.crystal));
     engine.setPointsMaterial(materials[mode]);
 
     if (preset) {

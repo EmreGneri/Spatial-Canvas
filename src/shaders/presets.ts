@@ -7,6 +7,7 @@ import {
   type PointCloudState,
   type RenderState,
   type SolidState,
+  type CrystalState,
 } from './renderPreset';
 
 /**
@@ -79,10 +80,122 @@ const FEEDBACK_OFF: FeedbackState = {
   uDecay: 0.98,
 };
 
+/** crystalMaterial.ts factory değerleri (Gün 2). */
+const DEFAULT_CRYSTAL: CrystalState = {
+  uNormalKaynak: 0,
+  uFacetScale: 6,
+  uFresnelStrength: 0.9,
+  uFresnelPower: 3,
+  uSpecStrength: 0.8,
+  uSpecPower: 64,
+  uTintColor: '#cfe6ff',
+  uDensity: 0.8,
+  uSparkleAmount: 0,
+  uRefractStrength: 0,
+  uDispersion: 0,
+};
+
 /** Chromatic kapalı: uAmount 0 iken üç kanal da aynı noktadan örneklenir. */
 const CHROMATIC_OFF: ChromaticState = { uAmount: 0, uRadial: 1, uAngle: 0 };
 
 export const BUILT_IN_PRESETS: { name: string; state: RenderState }[] = [
+  // ── CRYSTAL (Gün 4) ────────────────────────────────────────────────────
+  // Üçü de AYNI geometriyi kullanır; fark yalnız cam karakterindedir.
+  {
+    // BUZ: yüksek fresnel + düşük yoğunluk + soğuk ton → ince, aydınlık cam.
+    name: 'kristal · buz',
+    state: {
+      version: RENDER_PRESET_VERSION,
+      mode: 'crystal',
+      points: { ...DEFAULT_POINTS },
+      ascii: { ...DEFAULT_ASCII },
+      neon: { ...DEFAULT_NEON },
+      solid: { ...DEFAULT_SOLID },
+      crystal: {
+        ...DEFAULT_CRYSTAL,
+        uFacetScale: 9,
+        uFresnelStrength: 1.5,
+        uFresnelPower: 2.2,
+        uSpecStrength: 1.0,
+        uSpecPower: 96,
+        uTintColor: '#dff1ff',
+        uDensity: 0.35,
+      },
+      feedback: { ...FEEDBACK_OFF },
+      chromatic: { ...CHROMATIC_OFF },
+      grain: {
+        uGrainAmount: 0.04,
+        uGrainSpeed: 1,
+        uVignette: 0.45,
+        uContrast: 1.05,
+        uSaturation: 1,
+      },
+    },
+  },
+  {
+    // OBSİDYEN: yüksek yoğunluk + düşük fresnel + keskin vurgu → koyu, ağır
+    // volkanik cam. Absorpsiyon baskın, kenar parlaması geri planda.
+    name: 'kristal · obsidyen',
+    state: {
+      version: RENDER_PRESET_VERSION,
+      mode: 'crystal',
+      points: { ...DEFAULT_POINTS },
+      ascii: { ...DEFAULT_ASCII },
+      neon: { ...DEFAULT_NEON },
+      solid: { ...DEFAULT_SOLID },
+      crystal: {
+        ...DEFAULT_CRYSTAL,
+        uFacetScale: 4,
+        uFresnelStrength: 0.45,
+        uFresnelPower: 4.5,
+        uSpecStrength: 1.4,
+        uSpecPower: 180,
+        uTintColor: '#6a6f7d',
+        uDensity: 2.6,
+      },
+      feedback: { ...FEEDBACK_OFF },
+      chromatic: { ...CHROMATIC_OFF },
+      grain: {
+        uGrainAmount: 0.04,
+        uGrainSpeed: 1,
+        uVignette: 0.45,
+        uContrast: 1.05,
+        uSaturation: 1,
+      },
+    },
+  },
+  {
+    // PRİZMA: iri fasetler + orta yoğunluk. Dispersiyon knob'u Gün 5'te
+    // bağlanacak; bugün 0 (kimlik) — preset o gün tek satırla canlanır.
+    name: 'kristal · prizma',
+    state: {
+      version: RENDER_PRESET_VERSION,
+      mode: 'crystal',
+      points: { ...DEFAULT_POINTS },
+      ascii: { ...DEFAULT_ASCII },
+      neon: { ...DEFAULT_NEON },
+      solid: { ...DEFAULT_SOLID },
+      crystal: {
+        ...DEFAULT_CRYSTAL,
+        uFacetScale: 3,
+        uFresnelStrength: 1.1,
+        uFresnelPower: 2.6,
+        uSpecStrength: 1.2,
+        uSpecPower: 48,
+        uTintColor: '#ffe9f2',
+        uDensity: 1.1,
+      },
+      feedback: { ...FEEDBACK_OFF },
+      chromatic: { ...CHROMATIC_OFF },
+      grain: {
+        uGrainAmount: 0.04,
+        uGrainSpeed: 1,
+        uVignette: 0.45,
+        uContrast: 1.05,
+        uSaturation: 1,
+      },
+    },
+  },
   {
     name: 'sis',
     state: {

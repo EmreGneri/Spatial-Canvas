@@ -354,6 +354,16 @@ export class SplatObject {
     return max + 1;
   }
 
+  /**
+   * Çizim material'ını takas eder (Gün 3: crystal modu splat geometrisinde de
+   * çizebilsin diye). Texture bağları yeni material'a yeniden işlenir.
+   */
+  setMaterial(material: THREE.Material) {
+    if (this.mesh.material === material) return;
+    this.mesh.material = material;
+    this.bindTextures(material);
+  }
+
   /** Material takas edildiğinde texture bağlarını yeniden işler (Engine kuralı). */
   bindTextures(material: THREE.Material) {
     const u = (material as THREE.ShaderMaterial).uniforms as
