@@ -175,6 +175,8 @@ function sampsonDistanceSq(E: number[], r1: [number, number, number], r2: [numbe
 }
 
 export interface RansacOptions {
+  /** Maksimum RANSAC yinelemesi (E3.1: ADAPTİF sayaç bunun ÜST SINIRIDIR —
+   *  `log(1−p)/log(1−w⁸)` gerekeni hesaplar, gelişme durunca erken durur). */
   iterations?: number;
   /** Aykırı eşiği — PİKSEL (içeride odak uzunluğuyla normalize-uzaya çevrilir). */
   pixelThreshold?: number;
@@ -183,6 +185,18 @@ export interface RansacOptions {
 }
 
 const RANSAC_DEFAULTS: Required<RansacOptions> = { iterations: 500, pixelThreshold: 1.5, seed: 0xc0ffee };
+
+/** E3.1 — adaptif yineleme sayacı: tüm 8'li örneklerin içerdekilerden gelme
+ *  olasılığı 1−p olacak kadar yinele (Hartley & Zisserman §4.7):
+ *  n = ⌈log(1−p) / log(1−w⁸)⌉, w = içerdeki oranı. Cap'e kırpılır; w=1'de
+ *  tek örnek yeter (gürültüsüz veride her 8'li tam E verir). */
+function adaptiveIterations(w: number, p: number, cap: number): number {
+  if (w >= 1) return 1;
+  const num = Math.log(1 - p);
+  const den = Math.log(1 - Math.pow(w, 8));
+  if (!isFinite(den) || den >= 0) return cap;
+  return Math.min(cap, Math.max(1, Math.ceil(num / den)));
+}
 
 /**
  * RANSAC + normalize 8-nokta: rastgele 8'li örneklerden E aday üretir, TÜM
@@ -208,8 +222,12 @@ export function ransacEssential(
 
   let bestMask: Uint8Array | null = null;
   let bestCount = -1;
-
-  for (let iter = 0; iter < o.iterations; iter++) {
+  // E3.1 — adaptif: en iyi içerdeki oranı iyileştikçe gereken yineleme sayısı
+  // düşer; `o.iterations` artık CAP'tır (kesin sayaç değil). Deterministik:
+  // aynı girdi aynı rnd dizisini tüketir, aynı yerde durur.
+  let needed = o.iterations;
+  const CONFIDENCE = 0.99;
+  for (let iter = 0; iter < needed; iter++) {
     // Fisher–Yates kısmi karıştırma: tekrarsız 8 indeks.
     const idx = Array.from({ length: n }, (_, i) => i);
     for (let k = 0; k < 8; k++) {
@@ -232,6 +250,7 @@ export function ransacEssential(
     if (count > bestCount) {
       bestCount = count;
       bestMask = mask;
+      needed = adaptiveIterations(count / n, CONFIDENCE, o.iterations);
     }
   }
 
@@ -241,6 +260,102 @@ export function ransacEssential(
   const refined = eightPointEssential(inlierRays) ?? eightPointEssential(rays.filter((_, i) => bestMask![i] === 1).slice(0, 8));
   if (!refined) return null;
   return { E: refined, inlierMask: bestMask };
+}
+
+/** 3×3 ters (satır-öncelikli) — homografi transfer hatası için. */
+function mat3Inverse(m: number[]): number[] {
+  const [a, b, c, d, e, f, g, h, i] = m;
+  const det = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g);
+  if (Math.abs(det) < 1e-18) return [1, 0, 0, 0, 1, 0, 0, 0, 1];
+  const inv = 1 / det;
+  return [
+    (e * i - f * h) * inv, (c * h - b * i) * inv, (b * f - c * e) * inv,
+    (f * g - d * i) * inv, (a * i - c * g) * inv, (c * d - a * f) * inv,
+    (d * h - e * g) * inv, (b * g - a * h) * inv, (a * e - b * d) * inv,
+  ];
+}
+
+/** Homojen (x,y,1)'i dehomojenleştirir. */
+function dehomogenize(h: number[]): [number, number] | null {
+  if (Math.abs(h[2]) < 1e-12) return null;
+  return [h[0] / h[2], h[1] / h[2]];
+}
+
+/**
+ * E3.1 — HOMOGRAFİ DEJENERE DETEKTÖRÜ: aynı eşleşmelere homografi (DLT,
+ * Hartley normalize, 4+ nokta) uydurur ve simetrik transfer hatasıyla içerdeki
+ * ORANINI essential'ınkiyle karşılaştırır.
+ *
+ * NEDEN: saf dönme ve düzlemsel sahneler homografiyle TAM açıklanır —
+ * essential'ın "iyi içerdeki oranı" o zaman YANILTICIDIR (geometri aslında
+ * dejeneredir; epipolar çözüm ölçek/derinlik üretemez). Dönme için E hiç
+ * çözülemez (cheirality 0 yakalar), ama DÜZLEMSEL + ötelemeli sahnede E
+ * matematiksel olarak çalışır — sessiz yanlış "başarı" burada önlenir.
+ *
+ * Oran: HESSEL her iki geometriyi de AYNI eşleşme kümesi üzerinde sayar;
+ * `ratioH + SLACK >= ratioE` → dejenere ("yakın ya da üstü" — plan).
+ */
+const HOMOGRAPHY_SLACK = 0.05;
+const HOMOGRAPHY_MIN_POINTS = 4;
+
+export function homographyInlierRatio(
+  matches: PointMatch[],
+  K: CameraIntrinsicsSimple,
+  inlierMask: Uint8Array,
+  pixelThreshold: number,
+): number | null {
+  const idx: number[] = [];
+  for (let i = 0; i < matches.length; i++) if (inlierMask[i]) idx.push(i);
+  if (idx.length < HOMOGRAPHY_MIN_POINTS) return null;
+
+  const f = focalLength(K);
+  const pts1: [number, number][] = idx.map((i) => [(matches[i].x1 - K.width / 2) / f, -(matches[i].y1 - K.height / 2) / f]);
+  const pts2: [number, number][] = idx.map((i) => [(matches[i].x2 - K.width / 2) / f, -(matches[i].y2 - K.height / 2) / f]);
+  const n1 = hartleyNormalize(pts1);
+  const n2 = hartleyNormalize(pts2);
+
+  // DLT: A·h = 0 (her korespondans 2 satır — x' × Hx = 0), en küçük
+  // özdeğerin özvektörü. Satırlar: h4,h5,h6 ve h1,h2,h3 katsayıları BİRİNCİ
+  // noktanın (x,y) koordinatlarıdır; ikinci nokta yalnız h7..h9 çarpımlarında.
+  const A: number[][] = [];
+  for (let i = 0; i < idx.length; i++) {
+    const [x, y] = n1.normalized[i];
+    const [xp, yp] = n2.normalized[i];
+    A.push([0, 0, 0, -x, -y, -1, yp * x, yp * y, yp]);
+    A.push([x, y, 1, 0, 0, 0, -xp * x, -xp * y, -xp]);
+  }
+  const AtA: number[][] = Array.from({ length: 9 }, () => new Array(9).fill(0));
+  for (const row of A) {
+    for (let r = 0; r < 9; r++) {
+      for (let c = 0; c < 9; c++) AtA[r][c] += row[r] * row[c];
+    }
+  }
+  const { vectors } = jacobiEigenSymmetric(AtA);
+  const hNorm = vectors[0];
+  // Denormalize: H = T2⁻¹ · hNorm · T1 (T⁻¹ = [1/s,0,cx; 0,1/s,cy; 0,0,1]).
+  const s1 = n1.T[0];
+  const s2 = n2.T[0];
+  const T1inv = [1 / s1, 0, n1.T[2] / -s1, 0, 1 / s1, n1.T[5] / -s1, 0, 0, 1];
+  const T2inv = [1 / s2, 0, n2.T[2] / -s2, 0, 1 / s2, n2.T[5] / -s2, 0, 0, 1];
+  const H = mat3Mul(mat3Mul(T2inv, hNorm), n1.T);
+  const Hinv = mat3Inverse(H);
+
+  // Simetrik transfer hatası (normalize uzayda, essential'la AYNI eşik).
+  const threshSq = (pixelThreshold / f) ** 2;
+  let inliers = 0;
+  for (let i = 0; i < matches.length; i++) {
+    const x1: [number, number, number] = [(matches[i].x1 - K.width / 2) / f, -(matches[i].y1 - K.height / 2) / f, 1];
+    const x2: [number, number, number] = [(matches[i].x2 - K.width / 2) / f, -(matches[i].y2 - K.height / 2) / f, 1];
+    const Hx1 = dehomogenize(mat3Vec(H, x1));
+    const Hix2 = dehomogenize(mat3Vec(Hinv, x2));
+    if (!Hx1 || !Hix2) continue;
+    const dx1 = Hx1[0] - x2[0];
+    const dy1 = Hx1[1] - x2[1];
+    const dx2 = Hix2[0] - x1[0];
+    const dy2 = Hix2[1] - x1[1];
+    if (dx1 * dx1 + dy1 * dy1 + dx2 * dx2 + dy2 * dy2 < threshSq) inliers++;
+  }
+  return inliers / matches.length;
 }
 
 export interface PoseCandidate {
@@ -333,26 +448,44 @@ export function recoverPose(
 
   let best = candidates[0];
   let bestVotes = -1;
+  const votes: number[] = [];
   for (const cand of candidates) {
-    let votes = 0;
-    for (const [v1, v2] of inlierRays) {
-      const { s1, s2 } = triangulateDepths(cand.R, cand.t, v1, v2);
-      if (s1 > 0 && s2 > 0) votes++;
+    let v = 0;
+    for (const [r1, r2] of inlierRays) {
+      const { s1, s2 } = triangulateDepths(cand.R, cand.t, r1, r2);
+      if (s1 > 0 && s2 > 0) v++;
     }
-    if (votes > bestVotes) {
-      bestVotes = votes;
+    votes.push(v);
+    if (v > bestVotes) {
+      bestVotes = v;
       best = cand;
     }
   }
 
   let inlierCount = 0;
   for (let i = 0; i < inlierMask.length; i++) inlierCount += inlierMask[i];
+
   // Cheirality oyu 0 = dört adayın HİÇBİRİ geometrik olarak geçerli değil
   // (dejenere hareket: saf dönme / sıfır baz hattı / düzlemsel sahne) —
   // candidates[0]'ı "kötünün iyisi" diye zincire bağlamak çöp poz yayar
   // (video yolunun donmuş kareleri bu yoldan bozuk poz üretiyordu).
   // Çağıran (chainPoseTrack.fillOnFailure) null'u dürüstçe işler.
   if (bestVotes <= 0) return null;
+
+  // E3.1 — cheirality BELİRSİZLİĞİ: en iyi ile ikinci aday arasındaki oy
+  // farkı dar ise (1.5× altı) hangi t-işaretinin doğru olduğu net değildir
+  // (derinlik işareti veriden ayrışmıyor — dar baz hattı / neredeyse-saf
+  // dönme). Sonuç yanlış işaretli t yayabilir → dejenere kabul edilir.
+  const sorted = votes.slice().sort((p, q) => q - p);
+  if (sorted.length >= 2 && bestVotes < 1.5 * sorted[1]) return null;
+
+  // E3.1 — homografi dejenere tespiti: düzlemsel sahne / saf dönme. Essential
+  // matematiksel olarak "başarılı" olabilir ama geometri dejeneredir — sessiz
+  // yanlış sonuç yaymamak için dejenere kabul edilir (chain → donme-fallback).
+  const ratioE = matches.length > 0 ? inlierCount / matches.length : 0;
+  const ratioH = homographyInlierRatio(matches, K, inlierMask, opts.pixelThreshold ?? RANSAC_DEFAULTS.pixelThreshold);
+  if (ratioH !== null && ratioH + HOMOGRAPHY_SLACK >= ratioE) return null;
+
   return {
     R: new Float32Array(best.R),
     t: new Float32Array(best.t),

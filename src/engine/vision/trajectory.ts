@@ -264,6 +264,23 @@ export function generatePointCloudScene(count = 600, extent = 1, seed = 0x51ce4e
   return out;
 }
 
+/**
+ * E3.1 — DÜZLEMSEL sahne: noktalar z = planeZ düzleminde (kamera yönüne
+ * dik). Essential matrix için dejeneredir (homografi yeter) — poz çözücünün
+ * homografi-dejenere detektörünü sınamak için. Küre kabuğu BİLEREK
+ * düzlemsel değildi; bu üreteç tam tersi ucu üretir.
+ */
+export function generatePlanarScene(count = 400, extent = 1.2, planeZ = 1, seed = 0xabc123): Float32Array {
+  const rnd = mulberry32(seed);
+  const out = new Float32Array(count * 3);
+  for (let i = 0; i < count; i++) {
+    out[i * 3] = (rnd() * 2 - 1) * extent;
+    out[i * 3 + 1] = (rnd() * 2 - 1) * extent;
+    out[i * 3 + 2] = planeZ;
+  }
+  return out;
+}
+
 export interface ProjectedFrame {
   /** Poz id'si (PoseTrackRecord.id ile aynı). */
   id: number;
