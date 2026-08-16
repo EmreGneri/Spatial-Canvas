@@ -6,6 +6,7 @@ import { POINTS_PARAMS, type PointCloudMaterial } from '../shaders/pointCloudMat
 import { ASCII_PARAMS, CHAR_SETS, type AsciiMaterial } from '../shaders/asciiMaterial';
 import { NEON_PARAMS, type NeonWireMaterial } from '../shaders/neonWireMaterial';
 import { SOLID_PARAMS, type SolidMaterial } from '../shaders/solidMaterial';
+import { type SplatMaterial } from '../shaders/splatMaterial';
 import { FEEDBACK_PARAMS, type FeedbackPassUniforms } from '../shaders/feedbackPass';
 import { CHROMATIC_PARAMS, type ChromaticPassUniforms } from '../shaders/chromaticPass';
 import { BLOOM_PARAMS, type BloomPassUniforms } from '../shaders/bloomPass';
@@ -232,6 +233,7 @@ export function ControlPanel({
   ascii,
   neon,
   solid,
+  splat,
   feedback,
   chromatic,
   bloom,
@@ -244,6 +246,8 @@ points: PointCloudMaterial;
   ascii: AsciiMaterial;
   neon: NeonWireMaterial;
   solid: SolidMaterial;
+  /** Gün 8: splat preset grubu (renderPreset serileştirmesi). */
+  splat?: SplatMaterial;
   /** Feedback pass zincire eklenmemişse verilmez — bölüm de çıkmaz. */
   feedback?: FeedbackPassUniforms;
   /** Chromatic pass zincire eklenmemişse verilmez — bölüm de çıkmaz. */
@@ -263,7 +267,7 @@ points: PointCloudMaterial;
   // olmazsa uniform değişse de panel eski sayıyı göstermeye devam eder.
   const [revision, setRevision] = useState(0);
 
-  const targets: RenderTargets = { mode, points, ascii, neon, solid, grain, feedback, chromatic, setMode };
+  const targets: RenderTargets = { mode, points, ascii, neon, solid, splat, grain, feedback, chromatic, setMode };
 
   return (
     <aside style={panelStyle}>

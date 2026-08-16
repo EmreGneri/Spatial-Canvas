@@ -84,6 +84,9 @@ export interface SplatMaterialUniforms {
   uFogColor: { value: THREE.Color };
 }
 
+/** Diğer modlarla aynı tür sözleşmesi (renderPreset/ControlPanel tipi). */
+export type SplatMaterial = THREE.ShaderMaterial & { uniforms: SplatMaterialUniforms };
+
 /**
  * Gün 3 — preset sözleşmesi. `uSplatA/B/C`, `uViewport`, `uSplatGrid`
  * HESAPLANAN değerlerdir (Engine yazar), kullanıcı kolu değildir → listede
@@ -120,6 +123,7 @@ const SPLAT_VERTEX = /* glsl */ `
   varying vec4 vColor;     // rgb + AO
   varying float vOpacity;
   varying vec3 vNormalW;
+  varying float vViewDepth;
 
   /** index → GaussianBuffer texel merkezi (y-flip YOK: upload'da çözüldü). */
   vec2 splatUv(float index) {
@@ -160,6 +164,7 @@ const SPLAT_VERTEX = /* glsl */ `
     mat3 cov3 = MV * transpose(MV);
 
     vec4 viewPos = modelViewMatrix * vec4(A.xyz, 1.0);
+    vViewDepth = -viewPos.z;
     // Kameranın arkasındaki (ya da tam düzlemindeki) splat: Jacobian ıraksar.
     // Quad'ı yok et (dejenere üçgen), fragment aşamasına hiç gitmesin.
     if (viewPos.z > -0.01) {
@@ -240,6 +245,7 @@ const SPLAT_FRAGMENT = /* glsl */ `
   varying vec4 vColor;
   varying float vOpacity;
   varying vec3 vNormalW;
+  varying float vViewDepth;
 
   void main() {
     // Mahalanobis uzaklığı birim elips uzayında sadeleşti: |vQuad|² = r².
@@ -259,16 +265,18 @@ const SPLAT_FRAGMENT = /* glsl */ `
     float alpha = g * vOpacity * uSplatOpacity;
     if (alpha < 0.003) discard;
 
-    // Sis (Gün A global look): kamera uzaklığına göre değil, dünya z'sine göre
-    // uygulanan diğer modlarla aynı basitlikte — splat'ta ekran derinliği yok.
-    col = mix(col, uFogColor, clamp(uFogDensity, 0.0, 1.0));
+    // Sis (Gün A global look): diğer modlarla AYNI üstel formül, kamera
+    // uzaklığı (görüş uzayı -z) üzerinden — uFogDensity ~0.06'da uzak splatlar
+    // söner, yakınlar net kalır. Eski flat mix (clamp) uzaklığı hiç okumuyordu.
+    float fogF = 1.0 - exp(-uFogDensity * uFogDensity * vViewDepth * vViewDepth);
+    col = mix(col, uFogColor, fogF);
 
     // Premultiplied alpha: blend "one, one-minus-src-alpha".
     gl_FragColor = vec4(col * alpha, alpha);
   }
 `;
 
-export function createSplatMaterial(): THREE.ShaderMaterial {
+export function createSplatMaterial(): SplatMaterial {
   const material = new THREE.ShaderMaterial({
     uniforms: {
       uSplatA: { value: null },
@@ -301,5 +309,5 @@ export function createSplatMaterial(): THREE.ShaderMaterial {
     depthTest: true,
     side: THREE.DoubleSide,
   });
-  return material;
+  return material as SplatMaterial;
 }

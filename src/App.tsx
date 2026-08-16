@@ -471,6 +471,10 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
       lastPhotoRef.current = null;
       lastDepthRef.current = null;
       maskLoadedRef.current = false;
+      // Gün 8: fotoğraf maskesi bu kaynakta geçersiz — nesne ayırma canlı
+      // shader bayrağıyla birlikte kapatılır (UI "AÇIK" yalanı söylemesin).
+      setSegment(false);
+      engineRef.current!.setObjectSeparation(false);
       engineRef.current!.setVideoSource(video);
       startLuminanceLoop(video, 'kamera (model yok)');
       say('kamera açık · canlı luminance height map');
@@ -498,6 +502,10 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
       lastPhotoRef.current = null;
       lastDepthRef.current = null;
       maskLoadedRef.current = false;
+      // Gün 8: fotoğraf maskesi bu kaynakta geçersiz — nesne ayırma canlı
+      // shader bayrağıyla birlikte kapatılır (UI "AÇIK" yalanı söylemesin).
+      setSegment(false);
+      engineRef.current!.setObjectSeparation(false);
       engineRef.current!.setVideoSource(video);
       say(`video yüklendi · ${file.name} · luminance yolu (model yok)`);
       startLuminanceLoop(video, 'video');
@@ -735,6 +743,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
           ascii={materials.ascii}
           neon={materials.neon}
           solid={materials.solid}
+          splat={materials.splat}
           setMode={changeMode}
           mode={mode}
         />

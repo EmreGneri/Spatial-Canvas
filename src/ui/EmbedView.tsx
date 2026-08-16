@@ -74,6 +74,7 @@ export function EmbedView({
           ascii: materials.ascii,
           neon: materials.neon,
           solid: materials.solid,
+          splat: materials.splat,
           grain: engine.grainUniforms,
         },
         preset,
