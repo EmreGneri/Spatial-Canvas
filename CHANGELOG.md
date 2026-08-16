@@ -294,12 +294,22 @@ Gerçek klip zinciri (ölçüldü): 8 keyframe · **471 akış eşleşmesi** ·
 **0 poz hatası** · **24.313 splat** · füzyon 430 ms. Timeline bölümlemesi tam:
 keyframe başına 3.034–3.045, toplam 24.313 = tüm splat.
 
-- **Panelin dosya-girişi bağlantısı (React `onChange` → `run(file)`) otomatik
-  DOĞRULANMADI:** programatik `DataTransfer` ile doldurulan file input'ta
-  React'in `onChange`'i tetiklenmiyor, panel `hazır` durumunda kaldı. Zincirin
-  geri kalanı (çözme → seek yakalama → akış → poz → füzyon → Engine → timeline)
-  gerçek dosyayla doğrulandı; doğrulanmayan tek halka 3 satırlık React
-  işleyicisidir. Elle bir kez tıklanarak teyit edilmeli.
+**Panel ELLE, uçtan uca doğrulandı (2026-08-16, kullanıcı makinesi, gerçek
+klip).** Zincirin tamamı — dosya seçimi (React `onChange` → `run`) dahil —
+tek tıkla çalıştı: **8 keyframe · 658 akış eşleşmesi · 1 poz hatası ·
+24.576 splat · 2.186 ms**, timeline 0–7 düğmeleri ve yörünge/frustum anahtarı
+göründü; metrik paneli `report.json`'ı okudu. Böylece önceki turda
+doğrulanamayan tek halka kapandı.
+
+**BULGU 3 — ölçek uyarım YETERSİZDİ (bu koşuda yakalandı).** Panel ölçeği
+`a = +62.54, b = 561.99, rmse = 531.45` gösterdi ve eğim POZİTİF olduğu için
+uyarı TETİKLENMEDİ — sayı ekranda makul gibi durdu. Oysa `d_pred ∈ [0,1]`
+olduğundan uydurmanın kapsadığı aralık ≈ |a| = 62.5'tir; rmse = 531 bunun
+**8.5 katı**, yani uydurma veriyi hiç açıklamıyor. İşaret kontrolü tek başına
+yetmiyormuş. Eklendi: `rmse > 0.25·|a|` de GEÇERSİZ sayılır ve kırmızı
+gösterilir (`judgeScale`). Not: video yolunda yoğun derinlik luminance'tan
+geldiği için (model değil) ölçek çözücüsüne zaten zayıf veri gidiyor —
+`scale.ts` yine de düzeltilmedi, Emre'nin modülü.
 
 ---
 
