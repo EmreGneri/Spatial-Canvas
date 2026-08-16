@@ -806,6 +806,25 @@ burası yalnızca okur.
   en küçük `|n_z|` tam **0.380**. Gerçek füzyon normalleri geldiğinde bu
   tabana ihtiyaç kalmaz.
 
+### D.6c Dosya videosu: ARAMA (seek) tabanlı yakalama (Zeynep — Gün 6)
+
+`src/engine/vision/seekCapture.ts` — `captureKeyframesBySeek`. **Dosyadan**
+yüklenen video için keyframe yakalama yolu; canlı kaynak (kamera/stream) için
+`videoPipe.captureKeyframes` (rVFC) doğru yol olmaya devam eder.
+
+İki ölçülmüş gerekçe (2026-08-14, 1920×1080 · 12.0 sn gerçek klip):
+
+1. **rVFC/rAF görünürlüğe bağlıdır.** Sayfa kompozit edilmiyorsa
+   (`document.hidden`) video İLERLEMEZ: ölçüldü — 12.4 sn boyunca rVFC 0,
+   rAF 0, `currentTime` 0 → 0, video kendiliğinden duraklıyor ve yakalama
+   **0 kare** dönüyor. `seeked` olayı kompozitörden bağımsızdır.
+2. **Taban (baseline) darlığı.** Oynatma yakalaması 8 × 250 ms = klibin
+   yalnızca 2 saniyesini örnekliyordu; poz çözümü PARALLAKS ister. Seek yolu
+   klibin tamamına yayar: ölçülen zaman damgaları 0.60 → 11.41 sn.
+
+Sözleşme aynı (`KeyframeFrame[]`), füzyon tarafında tek satır değişmez.
+Bir seek zaman aşımına uğrarsa o kare ATLANIR, çekim düşmez.
+
 ### D.6b Sentetik yörünge üreteci (Zeynep — Gün 4)
 
 `src/engine/vision/trajectory.ts` — Gün 5 poz çözücüsünün doğruluk verisi.

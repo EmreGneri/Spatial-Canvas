@@ -257,13 +257,49 @@ Bilinçli sınırlar (dürüstlük kayıtları):
   ÜRETİLMEDİ.** Tarayıcı paneli görüntülenmediği için ekran görüntüsü
   alınamıyor (rAF duruyor, kare kompozit edilmiyor); ölçümler `gl.readPixels`
   ile alındı. Panel açıldığında stiller alınabilir.
-- **Capture akışı GERÇEK video dosyasıyla uçtan uca denenmedi** — elimde test
-  videosu yok. Füzyon zinciri sentetik keyframe dizisiyle tarayıcıda
-  çalıştırıldı (yukarıdaki 18.432 splat); video ÇÖZME adımı (`captureKeyframes`,
-  rVFC) yalnızca Emre'nin `verify-videopipe.mjs`'i kadar test edilmiştir.
+- **GERÇEK VİDEO ile koşuldu (1920×1080, 12.0 sn) ve İKİ GERÇEK SORUN çıktı —
+  aşağıdaki ayrı bölüme bak.**
 - **CapturePanel'in timeline'ı React state'ine bağlıdır:** Engine'e panel
   DIŞINDAN poz yüklenirse (konsol/preset) timeline yeniden çizilmez. Gerçek
   akışta capture sonucu `setState` tetiklediği için sorun değil.
+
+### Gerçek video koşusu (1920×1080 · 12.0 sn) — iki bulgu
+
+Boru hattı gerçek bir klipte uçtan uca çalıştırıldı. Sonuç: **çalışıyor**, ama
+iki gerçek sorun görünür oldu.
+
+**BULGU 1 — `videoPipe.captureKeyframes` bu koşulda 0 kare döndürdü.**
+Sebep: rVFC/rAF yalnızca sayfa KOMPOZİT edilirken çalışır. Sayfa gizliyken
+(`document.hidden`) video ilerlemiyor — ölçüldü: 12.4 sn'de rVFC 0, rAF 0,
+`currentTime` 0 → 0, video kendiliğinden duraklıyor. Ayrıca oynatma yakalaması
+klibin yalnızca ilk 2 saniyesini örnekliyordu (8 × 250 ms) — poz için taban
+çok dar. Çözüm: **arama (seek) tabanlı yakalama** (`seekCapture.ts`, D.6c) —
+görünürlükten bağımsız, klibin tamamına yayar. Ölçüm: **8 kare, 0.60 → 11.41 sn,
+1.18 sn**; ardışık kare farkı 0.0068–0.0128 (kareler gerçekten farklı, kopya
+değil). Canlı kaynak yolu (rVFC) DEĞİŞMEDİ.
+
+**BULGU 2 — ölçek hizalaması gerçek klipte GEÇERSİZ sonuç veriyor.**
+`d_metric ≈ a·d_pred + b` uydurması **a = −15.98**, b = 52.84, **rmse = 52.71**
+döndürdü. Negatif eğim fiziksel olarak anlamsızdır ("tahmin derinleştikçe
+gerçek mesafe azalıyor"); en küçük kareler her zaman BİR cevap verir, ama bu
+cevap geçersizdir. Ek olarak poz zincirindeki ardışık kamera mesafeleri
+**tam olarak 1** çıkıyor (monoküler ölçek belirsizliği: essential matrix
+ötelemeyi birim uzunlukta verir) — yani yörünge şekli dönmelere bağlı, ölçek
+D.2'nin `scaleA/scaleB`'sinden gelmeli ve bu klipte gelmiyor.
+`scale.ts` Emre'nin modülü olduğu için **düzeltilmedi, raporlanıyor.**
+CapturePanel artık `a ≤ 0` durumunu ayrı bir dalda KIRMIZI gösteriyor
+("GEÇERSİZ … metrik DEĞİL") — sayıyı sessizce göstermek onu makul gibi okutur.
+
+Gerçek klip zinciri (ölçüldü): 8 keyframe · **471 akış eşleşmesi** ·
+**0 poz hatası** · **24.313 splat** · füzyon 430 ms. Timeline bölümlemesi tam:
+keyframe başına 3.034–3.045, toplam 24.313 = tüm splat.
+
+- **Panelin dosya-girişi bağlantısı (React `onChange` → `run(file)`) otomatik
+  DOĞRULANMADI:** programatik `DataTransfer` ile doldurulan file input'ta
+  React'in `onChange`'i tetiklenmiyor, panel `hazır` durumunda kaldı. Zincirin
+  geri kalanı (çözme → seek yakalama → akış → poz → füzyon → Engine → timeline)
+  gerçek dosyayla doğrulandı; doğrulanmayan tek halka 3 satırlık React
+  işleyicisidir. Elle bir kez tıklanarak teyit edilmeli.
 
 ---
 
