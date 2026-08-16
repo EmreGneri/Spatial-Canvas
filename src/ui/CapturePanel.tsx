@@ -74,6 +74,39 @@ export interface CaptureStats {
   ms: number;
 }
 
+/**
+ * Ölçek hizalamasının GEÇERLİ olup olmadığına karar verir.
+ *
+ * `d_pred` 0..1 aralığında olduğu için uydurmanın kapsadığı değer aralığı
+ * ≈ |a|'dır; artık (rmse) bu aralığın `SCALE_RMSE_LIMIT` katını aşıyorsa
+ * doğru veriyi açıklamıyor demektir. Eşik cömert (0.25) — amaç "biraz kötü"
+ * uydurmaları elemek değil, ÇÖPÜ makul göstermemek.
+ */
+const SCALE_RMSE_LIMIT = 0.25;
+
+function judgeScale(stats: CaptureStats | null): { ok: boolean; text: string } {
+  if (!stats) return { ok: true, text: '' };
+  const { scaleA: a, scaleB: b, scaleRmse: rmse } = stats;
+  if (a === null || b === null || rmse === null) {
+    return { ok: false, text: 'çözülemedi — d_pred ölçeğinde (metrik DEĞİL)' };
+  }
+  if (a <= 0) {
+    return {
+      ok: false,
+      text: `GEÇERSİZ: a=${a.toFixed(2)} ≤ 0 (negatif eğim) · rmse=${rmse.toFixed(2)} — metrik DEĞİL`,
+    };
+  }
+  if (rmse > SCALE_RMSE_LIMIT * Math.abs(a)) {
+    return {
+      ok: false,
+      text:
+        `GEÇERSİZ: rmse=${rmse.toFixed(2)}, uydurmanın kapsadığı aralığın (|a|=${Math.abs(a).toFixed(2)}) ` +
+        `${(rmse / Math.abs(a)).toFixed(1)}× katı — uydurma veriyi açıklamıyor, metrik DEĞİL`,
+    };
+  }
+  return { ok: true, text: `a=${a.toFixed(4)} b=${b.toFixed(4)} · rmse=${rmse.toFixed(4)}` };
+}
+
 export function CapturePanel({
   engine,
   setMode,
@@ -181,6 +214,7 @@ export function CapturePanel({
   );
 
   const kfCount = engine.keyframeCount;
+  const scaleVerdict = judgeScale(stats);
 
   return (
     <div style={panelStyle}>
@@ -244,19 +278,20 @@ export function CapturePanel({
           <span>splat</span>
           <span style={{ color: '#c8c8d4' }}>{stats.splats.toLocaleString('tr-TR')}</span>
           <span>ölçek</span>
-          {/* NEGATİF EĞİM FİZİKSEL OLARAK ANLAMSIZDIR: d_metric = a·d_pred + b
-              ilişkisinde a ≤ 0, "tahmin derinleştikçe gerçek mesafe azalıyor"
-              demektir. Çözücü sayı döndürebilir (en küçük kareler her zaman
-              bir cevap verir) ama o cevap GEÇERSİZDİR — sayıyı sessizce
-              göstermek onu makul gibi okutur. Gerçek klipte görüldü
-              (a = −15.98, rmse = 52.71), bu yüzden ayrı bir dal. */}
-          <span style={{ color: stats.scaleA === null || stats.scaleA <= 0 ? '#c66' : '#c8c8d4' }}>
-            {stats.scaleA === null
-              ? 'çözülemedi — d_pred ölçeğinde (metrik DEĞİL)'
-              : stats.scaleA <= 0
-                ? `GEÇERSİZ: a=${stats.scaleA.toFixed(2)} ≤ 0 (negatif eğim) · rmse=${stats.scaleRmse!.toFixed(2)} — sahne d_pred ölçeğinde, metrik DEĞİL`
-                : `a=${stats.scaleA.toFixed(4)} b=${stats.scaleB!.toFixed(4)} · rmse=${stats.scaleRmse!.toFixed(4)}`}
-          </span>
+          {/* ÖLÇEK UYDURMASI İKİ AYRI ŞEKİLDE GEÇERSİZ OLABİLİR — ikisi de
+              denetlenir, çünkü en küçük kareler HER ZAMAN bir cevap döndürür:
+
+              1. NEGATİF EĞİM (a ≤ 0): "tahmin derinleştikçe gerçek mesafe
+                 azalıyor" demek — fiziksel olarak anlamsız. Gerçek klipte
+                 görüldü: a = −15.98.
+              2. BÜYÜK ARTIK (rmse): d_pred ∈ [0,1] olduğundan uydurmanın
+                 kapsadığı aralık ≈ |a|'dır. rmse o aralığın çeyreğini aşıyorsa
+                 doğru, veriyi AÇIKLAMIYOR demektir. Bu, 1. koşulu geçen bir
+                 koşuda yakalandı (2026-08-16, gerçek klip): a = +62.54 POZİTİF
+                 olduğu için eski kontrol susuyordu, oysa rmse = 531.45 — yani
+                 hata, açıklanan aralığın 8 KATI. Tek başına işaret kontrolü
+                 YETMİYOR. */}
+          <span style={{ color: scaleVerdict.ok ? '#c8c8d4' : '#c66' }}>{scaleVerdict.text}</span>
           <span>süre</span>
           <span style={{ color: '#c8c8d4' }}>{Math.round(stats.ms)} ms</span>
         </div>
