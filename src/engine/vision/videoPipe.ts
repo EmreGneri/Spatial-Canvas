@@ -36,6 +36,8 @@ import type { KeyframeMatch } from './fusion.ts';
 import { fuseVideoFrames } from './fusion.ts';
 import type { ScaleFit } from './scale.ts';
 import { scaleVerdict } from './scale.ts';
+import { createMidasDepthProvider } from './depthProvider.ts';
+import { alignDepthChain } from './temporal.ts';
 import { computeOpticalFlow } from './flow.ts';
 
 export const KEYFRAME_WIDTH = 384;
@@ -170,6 +172,15 @@ export function luminanceDepthProvider(frame: KeyframeFrame): Float32Array {
   return frame.lum;
 }
 
+/** MiDaS sağlayıcısını kurmayı dener; canvas yoksa/kurulamazsa null. */
+function tryCreateMidasProvider(width: number, height: number): DepthProvider | null {
+  try {
+    return createMidasDepthProvider(width, height);
+  } catch {
+    return null;
+  }
+}
+
 /**
  * E1.3 — TEK-ÇALIŞMA KİLİDİ. Eşzamanlı ikinci koşu reddedilir (iki füzyon
  * yarışı çifte setGaussians/flicker üretir); koşu bitince — başarı ya da
@@ -227,8 +238,39 @@ export async function buildFusionScene(
     const times = frames.map((f) => f.timeMs);
     const poses = chainPoseTrack(frameMatches, K, times);
 
-    const depthProvider = opts.depthProvider ?? ((f: KeyframeFrame) => Promise.resolve(luminanceDepthProvider(f)));
-    const depth = await Promise.all(frames.map(depthProvider));
+    // ── E5.1: DERİNLİK — luminance yerine MiDaS + zamansal hizalama ────────
+    // Sağlayıcı SIRAYLA çağrılır (paralel değil): model tek cihaz kilidi
+    // tutuyor (depth.ts), eşzamanlı çağrılar kilitte kuyruğa girip hiçbir
+    // hız kazandırmadan bellek tepesi yaratırdı.
+    //
+    // GERİ DÜŞÜŞ YALNIZ VARSAYILANDA: çağıran AÇIKÇA bir provider verdiyse
+    // onun hatası YUTULMAZ (çağıran o kaynağı seçti; sessizce başka veriyle
+    // sahne kurmak yanlış sonucu doğruymuş gibi gösterirdi). Model indirmesi
+    // gibi varsayılan yolun hatası ise yakalamayı düşürmez — parlaklığa
+    // dönülür ve `derinlikKaynagi` bunu görünür kılar.
+    let derinlikKaynagi: 'midas' | 'luminance' = 'luminance';
+    const rawDepth: Float32Array[] = [];
+    if (opts.depthProvider) {
+      for (const f of frames) rawDepth.push(await opts.depthProvider(f));
+    } else {
+      const midas = typeof document !== 'undefined' ? tryCreateMidasProvider(w, h) : null;
+      if (midas) {
+        try {
+          for (const f of frames) rawDepth.push(await midas(f));
+          derinlikKaynagi = 'midas';
+        } catch {
+          rawDepth.length = 0;
+        }
+      }
+      if (rawDepth.length !== frames.length) {
+        rawDepth.length = 0;
+        for (const f of frames) rawDepth.push(luminanceDepthProvider(f));
+      }
+    }
+
+    // Her kare KENDİ içinde normalize geldiği için ham zincir katman kaydırır;
+    // ortak izlerden affine hizalama keyframe-0 uzayına taşır (temporal.ts).
+    const { depths: depth } = alignDepthChain(rawDepth, frameMatches, w, h);
 
     const res = fuseVideoFrames({
       poses,
@@ -305,6 +347,7 @@ export async function buildFusionScene(
         bazUzunlugu: bazN > 0 ? bazToplam / bazN : 0,
         olcek,
         teshis: 'iyi',
+        derinlikKaynagi,
       },
     };
   } finally {
