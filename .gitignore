@@ -21,3 +21,8 @@ assets/*.jpeg
 assets/*.webp
 assets/*.png
 !assets/thumbnail.jpg
+
+# Test videoları — kişisel/telifli ve yüzlerce MB, repo geçmişine girmez
+public/*.MOV
+public/*.mov
+public/*.mp4

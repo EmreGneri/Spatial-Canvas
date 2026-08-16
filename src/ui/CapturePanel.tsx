@@ -1,7 +1,8 @@
 import { useCallback, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 import type { Engine } from '../engine';
-import { buildFusionScene, captureKeyframes, VIDEO_FOV_Y } from '../engine/vision/videoPipe';
+import { buildFusionScene, VIDEO_FOV_Y } from '../engine/vision/videoPipe';
+import { captureKeyframesBySeek } from '../engine/vision/seekCapture';
 import type { RenderMode } from './ModeSelector';
 
 /**
@@ -119,16 +120,17 @@ export function CapturePanel({
           video.onloadeddata = () => resolve();
           video.onerror = () => reject(new Error('video açılamadı (codec?)'));
         });
-        // Yakalama oynatma sırasında yapılır: rVFC yalnızca çizilen karede
-        // tetiklenir, durağan videodan kare gelmez (videoPipe kaydı).
-        await video.play().catch(() => {
-          throw new Error('video oynatılamadı (autoplay engeli?)');
-        });
-
         setStage('capturing');
         setProgress(`0 / ${maxFrames} keyframe`);
-        const frames = await captureKeyframes(video, { maxFrames, intervalMs: 250 });
-        video.pause();
+        // ARAMA (SEEK) TABANLI yakalama — `videoPipe.captureKeyframes` DEĞİL.
+        // İki sebep (ikisi de ölçüldü, seekCapture.ts başlığına bak):
+        //  1. rVFC/rAF yalnızca sayfa kompozit edilirken çalışır; sekme arka
+        //     plandayken video ilerlemez ve yakalama SIFIR kare döner.
+        //  2. Oynatma yakalaması klibin yalnızca ilk 2 saniyesini örnekliyordu
+        //     (8 × 250 ms); poz çözümü için taban (parallaks) çok dar.
+        // Seek yolu klibin TAMAMINA eşit aralıkla yayar ve görünürlükten
+        // bağımsızdır. Canlı kaynak (kamera) için videoPipe'ınki doğru yoldur.
+        const frames = await captureKeyframesBySeek(video, { maxFrames });
         setProgress(`${frames.length} / ${maxFrames} keyframe`);
         if (frames.length < 2) {
           throw new Error(
@@ -242,10 +244,18 @@ export function CapturePanel({
           <span>splat</span>
           <span style={{ color: '#c8c8d4' }}>{stats.splats.toLocaleString('tr-TR')}</span>
           <span>ölçek</span>
-          <span style={{ color: stats.scaleA === null ? '#dc6' : '#c8c8d4' }}>
+          {/* NEGATİF EĞİM FİZİKSEL OLARAK ANLAMSIZDIR: d_metric = a·d_pred + b
+              ilişkisinde a ≤ 0, "tahmin derinleştikçe gerçek mesafe azalıyor"
+              demektir. Çözücü sayı döndürebilir (en küçük kareler her zaman
+              bir cevap verir) ama o cevap GEÇERSİZDİR — sayıyı sessizce
+              göstermek onu makul gibi okutur. Gerçek klipte görüldü
+              (a = −15.98, rmse = 52.71), bu yüzden ayrı bir dal. */}
+          <span style={{ color: stats.scaleA === null || stats.scaleA <= 0 ? '#c66' : '#c8c8d4' }}>
             {stats.scaleA === null
               ? 'çözülemedi — d_pred ölçeğinde (metrik DEĞİL)'
-              : `a=${stats.scaleA.toFixed(4)} b=${stats.scaleB!.toFixed(4)} · rmse=${stats.scaleRmse!.toFixed(4)}`}
+              : stats.scaleA <= 0
+                ? `GEÇERSİZ: a=${stats.scaleA.toFixed(2)} ≤ 0 (negatif eğim) · rmse=${stats.scaleRmse!.toFixed(2)} — sahne d_pred ölçeğinde, metrik DEĞİL`
+                : `a=${stats.scaleA.toFixed(4)} b=${stats.scaleB!.toFixed(4)} · rmse=${stats.scaleRmse!.toFixed(4)}`}
           </span>
           <span>süre</span>
           <span style={{ color: '#c8c8d4' }}>{Math.round(stats.ms)} ms</span>
