@@ -2,9 +2,11 @@ import * as THREE from 'three';
 import { POSITION_TEXTURE_SIZE } from './buffers';
 import type { GaussianBufferData } from '../shaders/splatFixture';
 import {
+  createResortState,
   ensureSortScratch,
   filterOrderByKeyframe,
   needsResort,
+  type ResortState,
   sortSplatsByDepth,
   type SplatSortMode,
   type SplatSortScratch,
@@ -246,7 +248,11 @@ export class SplatObject {
   private scratch: SplatSortScratch | null = null;
   /** Sıralama girdisi: gSplatA'nın CPU kopyası (texture'dan geri okuma yok). */
   private readonly xyzw: Float32Array;
-  private lastDir = new Float32Array([0, 0, 1]);
+  private resort: ResortState = createResortState();
+  /** Sahne yarıçapı (splat konumlarının maksimum normu) — öteleme kapısının
+   *  eşiği buna GÖRELİDİR; sabit dünya mesafesi farklı ölçekli sahnelerde
+   *  yanlış karar verir. syncFromTextures her veri yüklemesinde günceller. */
+  private sceneRadius = 1;
   private splatCount = 0;
   private drawCount = 0;
   /**
@@ -301,10 +307,32 @@ export class SplatObject {
     // timeline başka bir sahnenin indekslerini süzerdi.
     this.keyframeIndex = keyframeIndex ?? null;
     if (!this.keyframeIndex) this.keyframeFilter = null;
+    // Sahne yarıçapı: öteleme kapısının eşiği buna görelidir. Splat
+    // konumlarının maksimum normu — sahne 10× büyütülünce eşik de büyür,
+    // aynı GÖRELİ hareket aynı kararı verir.
+    let r2 = 0;
+    for (let i = 0; i < this.splatCount; i++) {
+      const o = i * 4;
+      const d = this.xyzw[o] * this.xyzw[o] + this.xyzw[o + 1] * this.xyzw[o + 1] + this.xyzw[o + 2] * this.xyzw[o + 2];
+      if (d > r2) r2 = d;
+    }
+    this.sceneRadius = Math.max(1e-4, Math.sqrt(r2));
     // Yeni veri → sıra kesin bayat; bir sonraki update zorla sıralasın.
-    this.lastDir[0] = 0;
-    this.lastDir[1] = 0;
-    this.lastDir[2] = 0;
+    this.forceResort();
+  }
+
+  /**
+   * Kapıyı bir sonraki `update`'te KESİN açar. Yön vektörünü sıfırlamak
+   * yeterlidir (hiçbir birim vektörle eşik dolmaz); konum da uzağa itilir ki
+   * yalnız-öteleme kolu da tetiklensin.
+   */
+  private forceResort() {
+    this.resort.dir[0] = 0;
+    this.resort.dir[1] = 0;
+    this.resort.dir[2] = 0;
+    this.resort.pos[0] = Infinity;
+    this.resort.pos[1] = 0;
+    this.resort.pos[2] = 0;
   }
 
   /** D.4 timeline: yalnızca bu keyframe'in splat'ları çizilir (null = hepsi). */
@@ -313,9 +341,7 @@ export class SplatObject {
     this.keyframeFilter = this.keyframeIndex ? id : null;
     // Filtre sıralamadan sonra uygulanıyor; sıra bayat olmasa da instance
     // sayısı değişmeli → kapıyı zorla.
-    this.lastDir[0] = 0;
-    this.lastDir[1] = 0;
-    this.lastDir[2] = 0;
+    this.forceResort();
   }
 
   /** Sahnedeki farklı keyframe sayısı (timeline uzunluğu). 0 = kimlik yok. */
@@ -359,7 +385,16 @@ export class SplatObject {
     if (u?.['uViewport']) (u['uViewport'].value as THREE.Vector2).copy(viewport);
 
     const view = camera.matrixWorldInverse.elements;
-    if (!needsResort(view, this.lastDir)) return;
+    if (
+      !needsResort(
+        view,
+        (camera as THREE.PerspectiveCamera).position,
+        this.resort,
+        this.sceneRadius,
+      )
+    ) {
+      return;
+    }
     this.scratch = ensureSortScratch(this.scratch, this.splatCount);
     const t0 = performance.now();
     const result = sortSplatsByDepth(

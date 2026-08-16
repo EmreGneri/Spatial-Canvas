@@ -15,6 +15,7 @@ import assert from 'node:assert/strict';
 import {
   BUCKET_COUNT,
   bucketSortByDepth,
+  createResortState,
   createSortScratch,
   ensureSortScratch,
   filterOrderByKeyframe,
@@ -208,12 +209,11 @@ const viewDepth = (view, x, y, z) => view[2] * x + view[6] * y + view[10] * z + 
   assert.notEqual(bigger, scratch, 'havuz küçükse yeniden ayrılır');
 }
 
-// --- 7. yeniden sıralama kapısı (Gün 4): küçük dönüşte sıra kurulmaz ---
+// --- 7. yeniden sıralama kapısı (Gün 4 + Gün 1/Zeynep): DÖNME **ve** ÖTELEME ---
 {
-  const last = new Float32Array([0, 0, 1]);
-  // İlk çağrı: lastDir (0,0,1) ile view yönü aynı → sıralama GEREKMEZ.
-  assert.equal(needsResort(IDENTITY_VIEW, last), false, 'aynı yön → yeniden sıralama yok');
-  // 1° dönme (eşik 2°): hâlâ gerekmez.
+  const st = createResortState();
+  const P = (x, y, z) => ({ x, y, z });
+  const R = 2; // sahne yarıçapı → öteleme eşiği 0.02·2 = 0.04
   const rot = (deg) => {
     const r = (deg * Math.PI) / 180;
     const m = IDENTITY_VIEW.slice();
@@ -221,10 +221,46 @@ const viewDepth = (view, x, y, z) => view[2] * x + view[6] * y + view[10] * z + 
     m[10] = Math.cos(r);
     return m;
   };
-  assert.equal(needsResort(rot(1), last), false, '1° dönme → eşik altı, sıra korunur');
-  assert.equal(needsResort(rot(5), last), true, '5° dönme → yeniden sıralanır');
-  // Kapı geçtikten sonra yön güncellenmiş olmalı: aynı view tekrar gelirse hayır.
-  assert.equal(needsResort(rot(5), last), false, 'kapı geçince yön güncellenir');
+  // İlk çağrı: yön (0,0,1) ile aynı, konum (0,0,0) ile aynı → gerek YOK.
+  assert.equal(needsResort(IDENTITY_VIEW, P(0, 0, 0), st, R), false, 'aynı yön + aynı konum → sıralama yok');
+  // DÖNME kolu (eski davranış korunuyor)
+  assert.equal(needsResort(rot(1), P(0, 0, 0), st, R), false, '1° dönme → eşik altı');
+  assert.equal(needsResort(rot(5), P(0, 0, 0), st, R), true, '5° dönme → yeniden sıralanır');
+  assert.equal(needsResort(rot(5), P(0, 0, 0), st, R), false, 'kapı geçince yön güncellenir');
+
+  // ÖTELEME kolu (Gün 1 düzeltmesi — eski kapı bunu GÖRMÜYORDU)
+  const st2 = createResortState();
+  needsResort(IDENTITY_VIEW, P(0, 0, 0), st2, R); // durumu sabitle
+  assert.equal(
+    needsResort(IDENTITY_VIEW, P(0.01, 0, 0), st2, R),
+    false,
+    'eşik altı öteleme (0.01 < 0.04) → sıralama yok',
+  );
+  assert.equal(
+    needsResort(IDENTITY_VIEW, P(0.5, 0, 0), st2, R),
+    true,
+    'SAF ÖTELEME (dönme yok) → yeniden sıralanır',
+  );
+  assert.equal(
+    needsResort(IDENTITY_VIEW, P(0.5, 0, 0), st2, R),
+    false,
+    'kapı geçince konum güncellenir (hareketsiz kamera tetiklemez)',
+  );
+
+  // ÖLÇEK BAĞIMSIZLIĞI: sahne 10× büyürse aynı GÖRELİ hareket aynı kararı verir.
+  const stA = createResortState();
+  const stB = createResortState();
+  needsResort(IDENTITY_VIEW, P(0, 0, 0), stA, 1);
+  needsResort(IDENTITY_VIEW, P(0, 0, 0), stB, 10);
+  const relMove = 0.1; // yarıçapın %10'u
+  assert.equal(needsResort(IDENTITY_VIEW, P(relMove * 1, 0, 0), stA, 1), true, 'r=1 sahnede %10 hareket → resort');
+  assert.equal(needsResort(IDENTITY_VIEW, P(relMove * 10, 0, 0), stB, 10), true, 'r=10 sahnede %10 hareket → resort');
+  const stC = createResortState();
+  const stD = createResortState();
+  needsResort(IDENTITY_VIEW, P(0, 0, 0), stC, 1);
+  needsResort(IDENTITY_VIEW, P(0, 0, 0), stD, 10);
+  assert.equal(needsResort(IDENTITY_VIEW, P(0.005 * 1, 0, 0), stC, 1), false, 'r=1 sahnede %0.5 hareket → resort YOK');
+  assert.equal(needsResort(IDENTITY_VIEW, P(0.005 * 10, 0, 0), stD, 10), false, 'r=10 sahnede %0.5 hareket → resort YOK');
 }
 
 // --- 8. ÖLÇÜM (Gün 4): 147k splat'ta radix vs kova, medyan süre ---

@@ -16,7 +16,7 @@ import type * as THREE from 'three';
  * material konum alamaz (ARCHITECTURE.md · Point Cloud Sözleşmesi).
  */
 
-export type RenderMode = 'points' | 'ascii' | 'neon' | 'solid' | 'splat';
+export type RenderMode = 'points' | 'ascii' | 'neon' | 'solid' | 'splat' | 'crystal';
 
 export interface RenderModeMaterials {
   points: PointCloudMaterial;
@@ -25,6 +25,8 @@ export interface RenderModeMaterials {
   solid: SolidMaterial;
   /** 5. mod (Gün D): instanced Gauss splat — kendi çizim nesnesi vardır. */
   splat: THREE.ShaderMaterial;
+  /** 6. mod (Gün 2): kristal/cam — solid ile aynı kabuk mesh'ini kullanır. */
+  crystal: THREE.ShaderMaterial;
 }
 
 const MODES: { id: RenderMode; label: string }[] = [
@@ -33,6 +35,7 @@ const MODES: { id: RenderMode; label: string }[] = [
   { id: 'neon', label: 'Neon' },
   { id: 'solid', label: 'Solid' },
   { id: 'splat', label: 'Splat' },
+  { id: 'crystal', label: 'Crystal' },
 ];
 
 const rowStyle: CSSProperties = {

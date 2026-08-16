@@ -306,10 +306,40 @@ export function filterOrderByKeyframe(
  * yöne göre açısı. `cosThreshold` = cos(eşik açı); varsayılan cos(2°).
  * Dönüş: yeniden sıralama gerekli mi.
  */
+/**
+ * Yeniden sıralama durumu: son sıralamanın YÖNÜ ve KONUMU. İkisi de gerekli
+ * (aşağıdaki nota bak); tek bir Float32Array yerine ayrı alanlar, çağıranın
+ * yanlışlıkla birini güncellemeyi unutmasını engeller.
+ */
+export interface ResortState {
+  /** Son sıralamadaki birim görüş yönü. */
+  dir: Float32Array;
+  /** Son sıralamadaki kamera DÜNYA konumu. */
+  pos: Float32Array;
+}
+
+export function createResortState(): ResortState {
+  return { dir: new Float32Array([0, 0, 1]), pos: new Float32Array([0, 0, 0]) };
+}
+
+/** Öteleme eşiği: sahne yarıçapının bu oranı kadar kayma sırayı bayatlatır. */
+export const RESORT_POS_FRACTION = 0.02;
+
+/** Kamera dünya konumu — THREE.Vector3 bu şekle uyar (`length` orada METOT
+ *  olduğu için ArrayLike kullanılamaz). */
+export interface Vec3Like {
+  x: number;
+  y: number;
+  z: number;
+}
+
 export function needsResort(
   view: ArrayLike<number>,
-  lastDir: Float32Array,
+  camPos: Vec3Like,
+  state: ResortState,
+  sceneRadius: number,
   cosThreshold = Math.cos((2 * Math.PI) / 180),
+  posFraction = RESORT_POS_FRACTION,
 ): boolean {
   const x = view[2];
   const y = view[6];
@@ -318,10 +348,26 @@ export function needsResort(
   const nx = x / len;
   const ny = y / len;
   const nz = z / len;
-  const dot = nx * lastDir[0] + ny * lastDir[1] + nz * lastDir[2];
-  if (dot >= cosThreshold) return false;
-  lastDir[0] = nx;
-  lastDir[1] = ny;
-  lastDir[2] = nz;
+  const dot = nx * state.dir[0] + ny * state.dir[1] + nz * state.dir[2];
+  const rotated = dot < cosThreshold;
+
+  // ÖTELEME KAPISI (Gün 1 düzeltmesi): kapı eskiden YALNIZCA görüş yönüne
+  // bakıyordu. Kamera dönmeden yalnızca kayarsa (dolly/truck — video
+  // sahnelerinde BASKIN hareket) görüş yönü sabit kalır, kapı kapalı kalır ve
+  // arkadan-öne sıra bayatlar: splat'lar yanlış sırada blend edilir.
+  // Eşik sahne yarıçapına GÖRELİDİR — mutlak bir dünya mesafesi, 10× büyütülmüş
+  // bir sahnede aynı göreli hareket için farklı karar verirdi.
+  const dx = camPos.x - state.pos[0];
+  const dy = camPos.y - state.pos[1];
+  const dz = camPos.z - state.pos[2];
+  const moved = Math.hypot(dx, dy, dz) > Math.max(1e-6, sceneRadius * posFraction);
+
+  if (!rotated && !moved) return false;
+  state.dir[0] = nx;
+  state.dir[1] = ny;
+  state.dir[2] = nz;
+  state.pos[0] = camPos.x;
+  state.pos[1] = camPos.y;
+  state.pos[2] = camPos.z;
   return true;
 }
