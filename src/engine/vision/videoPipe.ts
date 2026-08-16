@@ -35,6 +35,7 @@ import { chainPoseTrack } from './pose.ts';
 import type { KeyframeMatch } from './fusion.ts';
 import { fuseVideoFrames } from './fusion.ts';
 import type { ScaleFit } from './scale.ts';
+import { scaleVerdict } from './scale.ts';
 import { computeOpticalFlow } from './flow.ts';
 
 export const KEYFRAME_WIDTH = 384;
@@ -279,31 +280,16 @@ export async function buildFusionScene(
       bazToplam += Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2]);
       bazN++;
     }
-    // ÖLÇEK KARARI — `rmse: 0, guven: 1` SABİT YAZILMIŞTI, yani uydurma ne
-    // kadar kötü olursa olsun "kusursuz ve tam güvenilir" raporlanıyordu.
-    // Gerçek klipte ölçülen değerler: a = −15.98 / rmse = 52.71 ve
-    // a = +62.54 / rmse = 531.45 — ikisi de "gecerli, rmse 0, guven 1"
-    // olarak çıkardı. Artık gerçek rmse taşınıyor ve güven ölçülüyor.
-    //
-    // GÜVEN: d_pred ∈ [0,1] olduğundan uydurmanın kapsadığı aralık ≈ |a|.
-    // rmse o aralığın çeyreğini aşarsa uydurma veriyi açıklamıyordur →
-    // guven 0. Negatif eğim fiziksel olarak anlamsızdır → guven 0.
-    // NOT (D4 için): `durum` hâlâ "fit var mı" sorusuna bakıyor. Kalite
-    // KAPISI D4'ün işi ve `ScaleRed`'e uygun bir sebep (ör. 'kotu-uydurma')
-    // eklenmesini gerektiriyor — union dondurulmuş olduğu için burada
-    // genişletmedim; `guven === 0` şimdilik o sinyali taşıyor.
-    const olcek: ScaleVerdict = res.scale
-      ? {
-          durum: 'gecerli',
-          a: res.scale.scaleA,
-          b: res.scale.scaleB,
-          rmse: res.scale.rmse,
-          guven:
-            res.scale.scaleA > 0
-              ? Math.max(0, Math.min(1, 1 - res.scale.rmse / (0.25 * Math.abs(res.scale.scaleA))))
-              : 0,
-        }
-      : { durum: 'gecersiz', sebep: 'ucgenleme-yetersiz' };
+    // ÖLÇEK KARARI (E4.1) — kapılar scale.ts'te yaşar (`scaleVerdict`):
+    // fit yok + hareket yok → 'ucgenleme-yetersiz' (E1.2 sözleşmesi korunur),
+    // taban yok → 'baz-yok', parallaks eşik altı → 'parallaks-yetersiz'.
+    // Önceden rmse/guven SABİT (0/1) yazılıyordu (Zeynep'in f5881e8
+    // düzeltmesi); güven hesabı da scaleVerdict'e taşındı (Zeynep'in formülü:
+    // guven = 1 − rmse/(0.25·|a|), negatif eğim → 0).
+    const olcek: ScaleVerdict = scaleVerdict(res.scale, {
+      bazUzunlugu: bazN > 0 ? bazToplam / bazN : 0,
+      medyanParallaksPx,
+    });
 
     return {
       data: fitBufferToCamera(res.data),

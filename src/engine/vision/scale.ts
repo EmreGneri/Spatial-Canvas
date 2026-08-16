@@ -33,7 +33,7 @@
 import type { PointMatch } from './pose.ts';
 import { pixelToRay, triangulateDepths, type CameraIntrinsicsSimple } from './pose.ts';
 import { mat3Mul, mat3Transpose, mat3Vec } from './linalg.ts';
-import type { PoseTrackRecord } from './types.ts';
+import type { PoseTrackRecord, ScaleVerdict } from './types.ts';
 import { quatToMatrix } from './trajectory.ts';
 
 export interface TriangulatedPoint {
@@ -197,6 +197,56 @@ export function fitScaleAlignment(pairs: Array<{ dPred: number; dMetric: number 
     inliers: use.length,
     rejected: clean.length - use.length,
   };
+}
+
+export interface ScaleVerdictGates {
+  /** Ortalama taban uzunluğu (pose zinciri birimlerinde; 0 = taban yok). */
+  bazUzunlugu: number;
+  /** Medyan piksel parallaksı. */
+  medyanParallaksPx: number;
+  /** Taban alt eşiği — altı 'baz-yok'. Varsayılan 0.1. */
+  minBaz?: number;
+  /** Parallaks alt eşiği — altı 'parallaks-yetersiz'. Varsayılan 3px. */
+  minParallaksPx?: number;
+}
+
+const VERDICT_DEFAULTS: Required<Pick<ScaleVerdictGates, 'minBaz' | 'minParallaksPx'>> = {
+  minBaz: 0.1,
+  minParallaksPx: 3,
+};
+
+/**
+ * ÖLÇEK KAPILARI (E4.1): fit + sahne koşullarından `ScaleVerdict`.
+ *
+ * Uydurmanın KENDİSİNİN doğruluğunu değil, uydurmanın ANLAMLI olduğu ön
+ * koşulları sınar:
+ *  - Taban (baz) yoksa (saf dönme) `t`'den üçgenlenen derinlik anlamsızdır
+ *    → 'baz-yok'.
+ *  - Parallaks eşik altındaysa üçgenleme gürültüye boğulur (ışınlar neredeyse
+ *    paralel — scale.ts başlığındaki 2026-08-14/16 ölçümleri) → 'parallaks-yetersiz'.
+ *  - Fit hiç yoksa: hareket yoksa E1.2 sözleşmesindeki 'ucgenleme-yetersiz'
+ *    KORUNUR (videoPipe teşhisi bu sebebi bekler); hareket var ama taban yoksa
+ *    'baz-yok' daha açıklayıcıdır.
+ *  - Fit varsa + kapılar geçtiyse 'gecerli' (a, b, rmse, guven).
+ *
+ * GÜVEN: d_pred ∈ [0,1] olduğundan uydurmanın kapsadığı aralık ≈ |a|. rmse o
+ * aralığın çeyreğini aşarsa uydurma veriyi açıklamıyordur → guven 0. Negatif
+ * eğim fiziksel olarak anlamsızdır → guven 0.
+ */
+export function scaleVerdict(fit: ScaleFit | null, gates: ScaleVerdictGates): ScaleVerdict {
+  const g = { ...VERDICT_DEFAULTS, ...gates };
+  if (!fit) {
+    // Durağan (hareket yok): E1.2 sözleşmesi bu sebebi bekler — önce bakılır.
+    if (g.medyanParallaksPx < g.minParallaksPx) return { durum: 'gecersiz', sebep: 'ucgenleme-yetersiz' };
+    // Hareket var ama taban yok: saf dönme — ölçek çözülemez.
+    if (g.bazUzunlugu < g.minBaz) return { durum: 'gecersiz', sebep: 'baz-yok' };
+    return { durum: 'gecersiz', sebep: 'ucgenleme-yetersiz' };
+  }
+  if (g.bazUzunlugu < g.minBaz) return { durum: 'gecersiz', sebep: 'baz-yok' };
+  if (g.medyanParallaksPx < g.minParallaksPx) return { durum: 'gecersiz', sebep: 'parallaks-yetersiz' };
+  const guven =
+    fit.scaleA > 0 ? Math.max(0, Math.min(1, 1 - fit.rmse / (0.25 * Math.abs(fit.scaleA)))) : 0;
+  return { durum: 'gecerli', a: fit.scaleA, b: fit.scaleB, rmse: fit.rmse, guven };
 }
 
 /**
