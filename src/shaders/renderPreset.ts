@@ -2,6 +2,7 @@ import type { PointCloudMaterial } from './pointCloudMaterial';
 import type { AsciiMaterial } from './asciiMaterial';
 import type { NeonWireMaterial } from './neonWireMaterial';
 import type { SolidMaterial } from './solidMaterial';
+import type { SplatMaterial } from './splatMaterial';
 import type { FeedbackPassUniforms } from './feedbackPass';
 import type { ChromaticPassUniforms } from './chromaticPass';
 import type { GrainPassUniforms } from './grainPass';
@@ -98,6 +99,15 @@ export interface SolidState {
   uSpecular?: number;
 }
 
+export interface SplatState {
+  uSplatScale: number;
+  uSplatOpacity: number;
+  uMaxScreenRadius: number;
+  uBrightness: number;
+  uLightStrength: number;
+  uAoStrength: number;
+}
+
 export interface FeedbackState {
   uFeedbackAmount: number;
   uZoom: number;
@@ -127,6 +137,9 @@ export interface RenderState {
   ascii: AsciiState;
   neon: NeonState;
   solid: SolidState;
+  /** Gün 8 — opsiyonel: eski kayıtlarda (v1 öncesi) yoktur; yoksa splat
+   *  uniform'ları dokunulmadan kalır (uAoStrength deseni). */
+  splat?: SplatState;
   feedback: FeedbackState;
   chromatic: ChromaticState;
   grain: GrainState;
@@ -136,6 +149,8 @@ export interface RenderState {
  * Serileştirmenin okuyup yazdığı canlı nesneler.
  * Feedback ve chromatic pass'leri henüz composer'a takılı olmadığı için
  * opsiyonel: yoksa varsayılan değerler yazılır, geri yüklemede atlanır.
+ * Splat material'ı da aynı sözleşmeyle opsiyoneldir (her zaman kurulu olması
+ * gerekmez — EmbedView/ControlPanel bağlamına göre değişir).
  */
 export interface RenderTargets {
   mode: RenderMode;
@@ -144,6 +159,7 @@ export interface RenderTargets {
   neon: NeonWireMaterial;
   solid: SolidMaterial;
   grain: GrainPassUniforms;
+  splat?: SplatMaterial;
   feedback?: FeedbackPassUniforms;
   chromatic?: ChromaticPassUniforms;
   /** Mod değişimi Engine'den geçer (setPointsMaterial); çağıran bağlar. */
@@ -160,6 +176,16 @@ const FEEDBACK_OFF: FeedbackState = {
 };
 
 const CHROMATIC_OFF: ChromaticState = { uAmount: 0, uRadial: 1, uAngle: 0 };
+
+/** Splat material'ı hedeflerde yokken yazılacak değerler — factory başlangıçları. */
+const SPLAT_OFF: SplatState = {
+  uSplatScale: 1,
+  uSplatOpacity: 0.85,
+  uMaxScreenRadius: 128,
+  uBrightness: 1,
+  uLightStrength: 0.4,
+  uAoStrength: 0.6,
+};
 
 export function serializeRenderState(targets: RenderTargets): RenderState {
   const p = targets.points.uniforms;
@@ -218,6 +244,16 @@ export function serializeRenderState(targets: RenderTargets): RenderState {
       uAoStrength: s.uAoStrength.value,
       uSpecular: s.uSpecular.value,
     },
+    splat: targets.splat
+      ? {
+          uSplatScale: targets.splat.uniforms.uSplatScale.value,
+          uSplatOpacity: targets.splat.uniforms.uSplatOpacity.value,
+          uMaxScreenRadius: targets.splat.uniforms.uMaxScreenRadius.value,
+          uBrightness: targets.splat.uniforms.uBrightness.value,
+          uLightStrength: targets.splat.uniforms.uLightStrength.value,
+          uAoStrength: targets.splat.uniforms.uAoStrength.value,
+        }
+      : { ...SPLAT_OFF },
     feedback: f
       ? {
           uFeedbackAmount: f.uFeedbackAmount.value,
@@ -327,6 +363,20 @@ export function applyRenderState(
     col(state.solid.uWallColor, s.uWallColor);
     num(state.solid.uAoStrength, s.uAoStrength);
     num(state.solid.uSpecular, s.uSpecular);
+  }
+
+  if (state.splat) {
+    const sp = targets.splat;
+    if (sp) {
+      num(state.splat.uSplatScale, sp.uniforms.uSplatScale);
+      num(state.splat.uSplatOpacity, sp.uniforms.uSplatOpacity);
+      num(state.splat.uMaxScreenRadius, sp.uniforms.uMaxScreenRadius);
+      num(state.splat.uBrightness, sp.uniforms.uBrightness);
+      num(state.splat.uLightStrength, sp.uniforms.uLightStrength);
+      num(state.splat.uAoStrength, sp.uniforms.uAoStrength);
+    } else {
+      warnings.push('splat material kurulu değil — preset\'in splat ayarları uygulanmadı');
+    }
   }
 
   if (state.feedback) {
