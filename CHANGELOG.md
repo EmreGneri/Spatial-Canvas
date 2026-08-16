@@ -301,6 +301,43 @@ tek tıkla çalıştı: **8 keyframe · 658 akış eşleşmesi · 1 poz hatası 
 göründü; metrik paneli `report.json`'ı okudu. Böylece önceki turda
 doğrulanamayan tek halka kapandı.
 
+**BULGU 4 — ölçek çözücüsü ÇÖZÜLDÜ: `fitScaleAlignment` artık dayanıklı
+(robust).** Kök sebep düz en küçük karelerdi: `d_metric` üçgenlemeden gelir ve
+hatası AĞIR KUYRUKLUDUR — ışınlar neredeyse paralelken (küçük parallaks,
+epipole yakını nokta) üçgenlenen derinlik binlere fırlar ve kareler hatayı
+ödüllendirdiği için tek bir böyle nokta bütün uydurmayı çeker.
+
+Çözüm iki aşamalı ve **deterministik** (RANSAC yok, rastgelelik yok):
+`d_metric` üzerinde MAD maskesi → OLS → artıklar üzerinde ikinci MAD maskesi →
+yeniden OLS. `ScaleFit` artık `inliers`/`rejected` de taşır (sessiz temizlik
+yok). Temiz veride her iki maske de her şeyi tutar → sonuç düz OLS ile
+BİREBİR aynıdır, Emre'nin mevcut testleri değişmeden geçer.
+
+Kanıt (yeni `[3b]` regresyon testi — 200 temiz + 10 patlamış nokta):
+
+| | scaleA | scaleB | atılan |
+|---|---|---|---|
+| dayanıklı uydurma | **2.5000** (gerçek 2.5) | **−0.3000** (gerçek −0.3) | 10 |
+| aynı veride düz OLS | **−13.36** | — | — |
+
+10 zehirli nokta 210'un içinde düz OLS'i NEGATİF eğime düşürüyor — gerçek
+klipte gördüğümüz imzanın aynısı.
+
+Gerçek klipte etkisi (aynı 12 sn'lik video, 8 keyframe):
+
+| | önce (düz OLS) | sonra (dayanıklı) |
+|---|---|---|
+| scaleA | **−15.98** (negatif) | **+15.54** |
+| scaleB | 52.84 | 26.45 |
+| rmse | 52.71 | **15.83** |
+| inlier / atılan | — | 313 / 56 |
+
+**Ama hâlâ metrik DEĞİL:** `rmse/|a| = 1.02`, panel eşiği olan 0.25'in çok
+üstünde — panel bunu doğru şekilde GEÇERSİZ göstermeye devam ediyor. Kalan
+sorun çözücüde değil GİRDİDE: video yolunda `d_pred` derinlik modelinden
+değil LUMINANCE'tan geliyor (App tasarımı). Ölçek hizalamasının anlamlı
+olması için video yoluna gerçek yoğun derinlik gerekir — bu fazın dışında.
+
 **BULGU 3 — ölçek uyarım YETERSİZDİ (bu koşuda yakalandı).** Panel ölçeği
 `a = +62.54, b = 561.99, rmse = 531.45` gösterdi ve eğim POZİTİF olduğu için
 uyarı TETİKLENMEDİ — sayı ekranda makul gibi durdu. Oysa `d_pred ∈ [0,1]`

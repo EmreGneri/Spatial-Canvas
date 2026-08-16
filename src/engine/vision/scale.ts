@@ -82,14 +82,37 @@ export interface ScaleFit {
   scaleB: number;
   /** Uydurma artığının RMS'i (d_metric biriminde) — hizalama kalitesi. */
   rmse: number;
+  /** Uydurmaya giren nokta sayısı (aykırı ayıklamadan SONRA). */
+  inliers: number;
+  /** Aykırı sayılıp atılan nokta sayısı. */
+  rejected: number;
+}
+
+/** Medyan (kopya üzerinde sıralar — girdi bozulmaz). */
+function median(values: number[]): number {
+  const s = values.slice().sort((p, q) => p - q);
+  const m = s.length >> 1;
+  return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
 }
 
 /**
- * `d_metric ≈ scaleA·d_pred + scaleB` en küçük kareler (kapalı form normal
- * denklemler — 2 bilinmeyen, N≥2 nokta). `d_pred` sabitse (varyans yok)
- * eğim tanımsızdır, `null` döner (sessiz yanlış sayı üretilmez).
+ * MAD (medyan mutlak sapma) tabanlı aykırı maskesi. Ortalama/std DEĞİL:
+ * ortalama ve std'nin kendisi aykırılardan bozulur, MAD bozulmaz (kırılma
+ * noktası %50). `k = 3.5` ≈ normal dağılımda 3.5σ.
+ *
+ * MAD ≈ 0 ise (değerlerin yarısından fazlası birebir aynı) filtre KAPANIR —
+ * aksi halde medyandan farklı her nokta atılır ve uydurma çöker.
  */
-export function fitScaleAlignment(pairs: Array<{ dPred: number; dMetric: number }>): ScaleFit | null {
+function madMask(values: number[], k: number): boolean[] {
+  const med = median(values);
+  const mad = median(values.map((v) => Math.abs(v - med)));
+  if (!(mad > 1e-12)) return values.map(() => true);
+  const limit = k * 1.4826 * mad; // 1.4826: MAD → σ tutarlılık çarpanı
+  return values.map((v) => Math.abs(v - med) <= limit);
+}
+
+/** Kapalı form OLS (normal denklemler). Varyans yoksa null. */
+function ols(pairs: Array<{ dPred: number; dMetric: number }>): { a: number; b: number } | null {
   const n = pairs.length;
   if (n < 2) return null;
   let sx = 0;
@@ -104,14 +127,76 @@ export function fitScaleAlignment(pairs: Array<{ dPred: number; dMetric: number 
   }
   const denom = n * sxx - sx * sx;
   if (!(Math.abs(denom) > 1e-9)) return null; // d_pred'de varyans yok
-  const scaleA = (n * sxy - sx * sy) / denom;
-  const scaleB = (sy - scaleA * sx) / n;
+  const a = (n * sxy - sx * sy) / denom;
+  return { a, b: (sy - a * sx) / n };
+}
+
+/** Aykırı ayıklamanın agresifliği (MAD katı). */
+const SCALE_MAD_K = 3.5;
+
+/**
+ * `d_metric ≈ scaleA·d_pred + scaleB` — **DAYANIKLI (robust)** uydurma.
+ *
+ * ── NEDEN DÜZ EN KÜÇÜK KARELER YETMİYOR (ölçüldü) ───────────────────────
+ * `d_metric` ÜÇGENLEMEDEN gelir ve hatası ağır kuyrukludur: ışınlar
+ * neredeyse paralel olduğunda (küçük parallaks, epipole yakın nokta)
+ * üçgenlenen derinlik binlere fırlar. Düz OLS'te tek bir böyle nokta bütün
+ * uydurmayı çeker — kareler hatayı ödüllendirir.
+ *
+ * Gerçek klipte iki koşuda da bu görüldü (2026-08-14 / 2026-08-16):
+ *   a = −15.98, b =  52.84, rmse =  52.71   (eğim NEGATİF — anlamsız)
+ *   a = +62.54, b = 561.99, rmse = 531.45   (rmse, |a|'nın 8.5 katı)
+ * İkisinde de uydurma veriyi açıklamıyordu ama fonksiyon "başarılı" dönüyordu.
+ *
+ * ── ÇÖZÜM ───────────────────────────────────────────────────────────────
+ * İki aşamalı, DETERMİNİSTİK (RANSAC yok — rastgelelik yok, tekrarlanabilir):
+ *   1. `d_metric` üzerinde MAD maskesi → üçgenleme patlamaları atılır.
+ *   2. Kalanla OLS → artıklar üzerinde ikinci MAD maskesi → yeniden OLS.
+ * `rmse` ve `inliers/rejected` KALAN noktalar üzerinden raporlanır; çağıran
+ * kaç noktanın atıldığını görebilir (sessiz temizlik yok).
+ *
+ * Temiz veride (aykırısız) her iki maske de her şeyi tutar → sonuç düz
+ * OLS ile BİREBİR aynıdır; mevcut sentetik testler aynen geçer.
+ */
+export function fitScaleAlignment(pairs: Array<{ dPred: number; dMetric: number }>): ScaleFit | null {
+  // Sonlu olmayan girdiler sessizce uydurmayı zehirler.
+  const clean = pairs.filter(
+    (p) => Number.isFinite(p.dPred) && Number.isFinite(p.dMetric),
+  );
+  if (clean.length < 2) return null;
+
+  // 1. AŞAMA — d_metric aykırıları (üçgenleme patlamaları).
+  const mask1 = madMask(clean.map((p) => p.dMetric), SCALE_MAD_K);
+  let use = clean.filter((_, i) => mask1[i]);
+  if (use.length < 2) use = clean; // maske her şeyi yediyse ham veriye dön
+
+  let fit = ols(use);
+  if (!fit) return null;
+
+  // 2. AŞAMA — artık aykırıları (doğruya uymayan noktalar).
+  const resid = use.map((p) => p.dMetric - (fit!.a * p.dPred + fit!.b));
+  const mask2 = madMask(resid, SCALE_MAD_K);
+  const use2 = use.filter((_, i) => mask2[i]);
+  if (use2.length >= 2) {
+    const refit = ols(use2);
+    if (refit) {
+      fit = refit;
+      use = use2;
+    }
+  }
+
   let sq = 0;
-  for (const { dPred, dMetric } of pairs) {
-    const r = dMetric - (scaleA * dPred + scaleB);
+  for (const { dPred, dMetric } of use) {
+    const r = dMetric - (fit.a * dPred + fit.b);
     sq += r * r;
   }
-  return { scaleA, scaleB, rmse: Math.sqrt(sq / n) };
+  return {
+    scaleA: fit.a,
+    scaleB: fit.b,
+    rmse: Math.sqrt(sq / use.length),
+    inliers: use.length,
+    rejected: clean.length - use.length,
+  };
 }
 
 /**
