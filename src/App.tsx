@@ -718,7 +718,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
           />
         )}
       </div>
-      {engine && <ModeSelector engine={engine} materials={materials} mode={mode} onChange={changeMode} />}
+      {engine && <ModeSelector engine={engine} materials={materials} mode={mode} onChange={changeMode} onReset={() => say('sıfırlandı: efektler, look ve kamera başlangıç değerlerinde (görsel korundu)')} />}
       {engine && <NodeGraphEditor engine={engine} graphTick={graphTick} onRenderModeChange={changeMode} />}
       {/* GÜN 6-7 (render şeridi): capture akışı + metrik paneli. İkisi de
           kendi durumunu tutar; Engine'e yalnızca imzalı API'den yazarlar

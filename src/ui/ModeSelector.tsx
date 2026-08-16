@@ -63,11 +63,14 @@ export function ModeSelector({
   materials,
   mode,
   onChange,
+  onReset,
 }: {
   engine: Engine;
   materials: RenderModeMaterials;
   mode: RenderMode;
   onChange: (mode: RenderMode) => void;
+  /** Sıfırlama sonrası kabuk (App) log/gösterge tazelemek isterse. */
+  onReset?: () => void;
 }) {
   function select(next: RenderMode) {
     // Aynı moda tekrar tıklamak boşuna takas: Engine giden material'ı dispose
@@ -91,6 +94,26 @@ export function ModeSelector({
           {label}
         </button>
       ))}
+      {/* SIFIRLA — efekt kollarıyla oynadıktan sonra başlangıç noktasına
+          dönmenin tek yolu. Medyayı ve grafı SİLMEZ: yalnız render/pass/look/
+          sim parametreleri ve kamera pozu başa döner (Engine.resetRenderParams
+          docstring'i). Yeni bir görsele geçmeden önce buna basmak, önceki
+          görselin ayarlarının yeni görsele taşınmasını engeller. */}
+      <button
+        type="button"
+        title="efektleri ve kamerayı başlangıca döndür (görsel silinmez)"
+        style={{
+          ...buttonStyle(false),
+          marginLeft: 8,
+          borderColor: '#3a3a46',
+        }}
+        onClick={() => {
+          engine.resetRenderParams();
+          onReset?.();
+        }}
+      >
+        ↺ sıfırla
+      </button>
     </div>
   );
 }

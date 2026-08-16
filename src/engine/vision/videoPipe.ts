@@ -225,7 +225,6 @@ export async function buildFusionScene(
 
     const times = frames.map((f) => f.timeMs);
     const poses = chainPoseTrack(frameMatches, K, times);
-    const fails = poses.length - 1 - frameMatches.filter((m) => m.length >= 8).length;
 
     const depthProvider = opts.depthProvider ?? ((f: KeyframeFrame) => Promise.resolve(luminanceDepthProvider(f)));
     const depth = await Promise.all(frames.map(depthProvider));
@@ -243,7 +242,19 @@ export async function buildFusionScene(
 
     // E1.2 — CaptureDiagnostics (naif doldurma; D6'da gate'lere bağlanır).
     const dagilim: Record<PoseKaynak, number> = { essential: 0, 'donme-fallback': 0, basarisiz: 0 };
-    for (let i = 1; i < poses.length; i++) dagilim[poses[i].kaynak!] += 1;
+    for (let i = 1; i < poses.length; i++) {
+      // `!` yerine savunmalı okuma: `kaynak` bugün pose.ts'in TÜM dönüş
+      // yollarında yazılıyor, ama eksik gelirse `dagilim[undefined]` NaN
+      // üretir ve pozBasariOrani sessizce NaN'a düşerdi.
+      const k = poses[i].kaynak;
+      if (k && k in dagilim) dagilim[k] += 1;
+      else dagilim.basarisiz += 1;
+    }
+    // POZ HATASI — GERÇEK sayaç. Eskiden `m.length >= 8` vekiliyle
+    // hesaplanıyordu: 20 eşleşmesi olup RANSAC'ı tutmayan bir çift
+    // "başarılı" sayılıyordu, yani hata SAYICI EKSİK RAPORLUYORDU.
+    // `kaynak` alanı (E1.2) artık gerçek cevabı taşıyor.
+    const fails = dagilim['donme-fallback'] + dagilim.basarisiz;
     const ciftSayisi = Math.max(1, poses.length - 1);
     const eslesmeSayilari = frameMatches.map((m) => m.length).sort((a, b) => a - b);
     const medyanEslesme = eslesmeSayilari.length ? eslesmeSayilari[Math.floor(eslesmeSayilari.length / 2)] : 0;
@@ -253,16 +264,45 @@ export async function buildFusionScene(
     }
     paralaks.sort((a, b) => a - b);
     const medyanParallaksPx = paralaks.length ? paralaks[Math.floor(paralaks.length / 2)] : 0;
+    // TABAN (baseline) — ARDIŞIK keyframe'ler ARASINDAKİ mesafe.
+    // Eskiden `|t|` (ORİJİNE uzaklık) ortalanıyordu: monoküler zincirde her
+    // adım birim uzunlukta olduğu için |t| indeksle BÜYÜR (1, 2, 3, …) ve
+    // ortalaması ≈ n/2 çıkar — "taban uzunluğu" olarak ANLAMSIZ bir sayı.
+    // D4'ün "min baz" kapısı bu sayıya bakacaktı; düzeltilmeseydi kapı
+    // çöp üzerine kurulurdu.
     let bazToplam = 0;
     let bazN = 0;
     for (let i = 1; i < poses.length; i++) {
-      if (poses[i].kaynak === 'essential') {
-        bazToplam += Math.hypot(poses[i].t[0], poses[i].t[1], poses[i].t[2]);
-        bazN++;
-      }
+      if (poses[i].kaynak !== 'essential') continue;
+      const a = poses[i - 1].t;
+      const b = poses[i].t;
+      bazToplam += Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2]);
+      bazN++;
     }
+    // ÖLÇEK KARARI — `rmse: 0, guven: 1` SABİT YAZILMIŞTI, yani uydurma ne
+    // kadar kötü olursa olsun "kusursuz ve tam güvenilir" raporlanıyordu.
+    // Gerçek klipte ölçülen değerler: a = −15.98 / rmse = 52.71 ve
+    // a = +62.54 / rmse = 531.45 — ikisi de "gecerli, rmse 0, guven 1"
+    // olarak çıkardı. Artık gerçek rmse taşınıyor ve güven ölçülüyor.
+    //
+    // GÜVEN: d_pred ∈ [0,1] olduğundan uydurmanın kapsadığı aralık ≈ |a|.
+    // rmse o aralığın çeyreğini aşarsa uydurma veriyi açıklamıyordur →
+    // guven 0. Negatif eğim fiziksel olarak anlamsızdır → guven 0.
+    // NOT (D4 için): `durum` hâlâ "fit var mı" sorusuna bakıyor. Kalite
+    // KAPISI D4'ün işi ve `ScaleRed`'e uygun bir sebep (ör. 'kotu-uydurma')
+    // eklenmesini gerektiriyor — union dondurulmuş olduğu için burada
+    // genişletmedim; `guven === 0` şimdilik o sinyali taşıyor.
     const olcek: ScaleVerdict = res.scale
-      ? { durum: 'gecerli', a: res.scale.scaleA, b: res.scale.scaleB, rmse: 0, guven: 1 }
+      ? {
+          durum: 'gecerli',
+          a: res.scale.scaleA,
+          b: res.scale.scaleB,
+          rmse: res.scale.rmse,
+          guven:
+            res.scale.scaleA > 0
+              ? Math.max(0, Math.min(1, 1 - res.scale.rmse / (0.25 * Math.abs(res.scale.scaleA))))
+              : 0,
+        }
       : { durum: 'gecersiz', sebep: 'ucgenleme-yetersiz' };
 
     return {
