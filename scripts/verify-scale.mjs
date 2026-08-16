@@ -13,8 +13,8 @@ import {
   toFirstKeyframeOrigin,
 } from '../src/engine/vision/trajectory.ts';
 import { chainPoseTrack } from '../src/engine/vision/pose.ts';
-import { alignKeyframeScale, fitScaleAlignment, selectKeyframes, triangulateWorldPoint } from '../src/engine/vision/scale.ts';
-import { mulberry32 } from '../src/engine/vision/linalg.ts';
+import { alignKeyframeScale, fitScaleAlignment, scaleVerdict, selectKeyframes, triangulateWorldPoint } from '../src/engine/vision/scale.ts';
+import { mulberry32, matrixToQuat } from '../src/engine/vision/linalg.ts';
 
 const W = 640;
 const H = 480;
@@ -265,6 +265,92 @@ function buildMatches(frameA, frameB) {
   const b = selectKeyframes(frames.length, build, { minParallaxPx: 25, minTrackedCount: 50 });
   assert.deepEqual(a, b, 'selectKeyframes determinist değil');
   console.log('[7] determinizm: birebir');
+}
+
+// ---------------------------------------------------------------------------
+// 8. ÖLÇEK KAPILARI (E4.1) — scaleVerdict: fit + sahne koşullarından karar.
+//    Kapılar uydurmanın KENDİSİNİN doğruluğunu değil, uydurmanın ANLAMLI
+//    olduğu ön koşulları sınar: taban (baz) yoksa ölçek çözülemez, parallaks
+//    eşik altındaysa üçgenleme gürültüye boğulur.
+// ---------------------------------------------------------------------------
+{
+  // (a) %25 AYKIRI (E4.1 kabul): 150 temiz + 50 patlamış nokta — eğim/kayma
+  // %5'ten az sapmalı. [3b]'deki oran %4.8'di; bu blok planın %25'ini ölçer.
+  const aT = 2.2;
+  const bT = 0.35;
+  const clean = [];
+  for (let i = 0; i < 150; i++) {
+    const dPred = 0.15 + (0.9 * i) / 149;
+    clean.push({ dPred, dMetric: aT * dPred + bT });
+  }
+  const poisoned = clean.slice();
+  for (let i = 0; i < 50; i++) poisoned.push({ dPred: 0.2 + 0.02 * i, dMetric: 300 + 150 * i });
+  const fit25 = fitScaleAlignment(poisoned);
+  assert.ok(fit25, '[8a] %25 aykırı uydurma null döndü');
+  console.log(`[8a] %25 aykırı: scaleA=${fit25.scaleA.toFixed(4)} (gerçek ${aT}) · scaleB=${fit25.scaleB.toFixed(4)} (gerçek ${bT}) · atılan=${fit25.rejected}`);
+  assert.ok(Math.abs(fit25.scaleA - aT) / aT < 0.05, `[8a] %25 aykırı eğimi %5'ten fazla bozdu: ${fit25.scaleA}`);
+  assert.ok(Math.abs(fit25.scaleB - bT) < 0.05, `[8a] %25 aykırı kaymayı bozdu: ${fit25.scaleB}`);
+
+  // (b) SAF DÖNME → 'baz-yok': kamera yerinde döner (t = 0). Pikseller
+  // HAREKET EDER (parallaks > 0) ama taban UZUNLUĞU yoktur — ölçek ancak
+  // dönmeden çözülemez (t'den türetilen derinlik anlamsız olur).
+  {
+    const rotY = (deg) => {
+      const a = (deg * Math.PI) / 180;
+      const c = Math.cos(a);
+      const s = Math.sin(a);
+      return [c, 0, s, 0, 1, 0, -s, 0, c];
+    };
+    const pan = [0, 3, 6, 9].map((deg, i) => ({
+      R: matrixToQuat(rotY(deg)),
+      // Kamera SAHNE ORİJİNİNDE DEĞİL: bulutun 1.2 GERİSİNDE (trajectory.ts
+      // mesafe kuralı, kamera −z'ye bakar — orijinde olsaydı noktalar
+      // kameranın İÇİNDE kalır, izdüşümler geçersiz olurdu: ölçüldü).
+      t: [0, 0, 1.2],
+      fovY: Math.PI / 3,
+      timeMs: i * 250,
+      kaynak: 'essential',
+      dejenere: false,
+      inlierSayisi: 100,
+      inlierOrani: 1,
+    }));
+    const scene = generatePointCloudScene(400, 1, 0x51ce4e);
+    const frames = projectScene(pan, scene, W, H, 0);
+    const K = { width: W, height: H, fovY: pan[0].fovY };
+    const matches = buildMatches(frames[0], frames[1]);
+    const disps = matches.map((p) => Math.hypot(p.x2 - p.x1, p.y2 - p.y1)).sort((x, y) => x - y);
+    const parallaks = disps[Math.floor(disps.length / 2)];
+    assert.ok(parallaks > 5, `[8b] dönme fikstürü paralaks üretmiyor (${parallaks.toFixed(1)}px) — senaryo bozuk`);
+    const fit = alignKeyframeScale(pan[0], pan[1], matches, K, () => 1);
+    const v = scaleVerdict(fit, { bazUzunlugu: 0, medyanParallaksPx: parallaks });
+    console.log(`[8b] saf dönme: parallaks ${parallaks.toFixed(1)}px · fit ${fit ? 'var' : 'yok'} → ${v.durum}${v.durum === 'gecersiz' ? ' (' + v.sebep + ')' : ''}`);
+    assert.ok(v.durum === 'gecersiz' && v.sebep === 'baz-yok', `[8b] saf dönme 'baz-yok' vermeli, geldi: ${JSON.stringify(v)}`);
+  }
+
+  // (c) DÜŞÜK PARALLAKS → 'parallaks-yetersiz': taban var, fit var, ama
+  // piksel hareketi eşik altında — üçgenlenen derinlikler gürültüye boğulur.
+  {
+    const rnd = mulberry32(0xbeef);
+    const pairs = [];
+    for (let i = 0; i < 120; i++) {
+      const dMetric = 0.4 + 2.6 * rnd();
+      pairs.push({ dPred: (dMetric + 0.2) / 1.8, dMetric });
+    }
+    const fit = fitScaleAlignment(pairs);
+    assert.ok(fit, '[8c] kontrol fiti null döndü');
+    const low = scaleVerdict(fit, { bazUzunlugu: 1.0, medyanParallaksPx: 1.2 });
+    console.log(`[8c] düşük parallaks (1.2px): ${low.durum}${low.durum === 'gecersiz' ? ' (' + low.sebep + ')' : ''}`);
+    assert.ok(low.durum === 'gecersiz' && low.sebep === 'parallaks-yetersiz', `[8c] 'parallaks-yetersiz' beklenir, geldi: ${JSON.stringify(low)}`);
+    // Pozitif kontrol: aynı fit, sağlıklı koşullar → gecerli + guven alanları.
+    const ok = scaleVerdict(fit, { bazUzunlugu: 1.0, medyanParallaksPx: 8.0 });
+    console.log(`[8c] sağlıklı koşullar: ${ok.durum} · a=${ok.a.toFixed(3)} · rmse=${ok.rmse.toExponential(2)} · guven=${ok.guven.toFixed(3)}`);
+    assert.ok(ok.durum === 'gecerli' && Number.isFinite(ok.guven) && ok.guven > 0 && ok.guven <= 1, `[8c] sağlıklı koşullar gecerli dönmeli: ${JSON.stringify(ok)}`);
+    // Durağan (hareket YOK): fit null + parallaks 0 → üçgenleme-yetersiz
+    // (E1.2 sözleşmesi — videoPipe teşhisi bu sebebi bekler).
+    const still = scaleVerdict(null, { bazUzunlugu: 0, medyanParallaksPx: 0 });
+    assert.ok(still.durum === 'gecersiz' && still.sebep === 'ucgenleme-yetersiz', `[8c] durağan 'ucgenleme-yetersiz' vermeli: ${JSON.stringify(still)}`);
+    console.log('[8c] durağan (parallaks 0) → ucgenleme-yetersiz ✓');
+  }
 }
 
 console.log('OK ölçek hizalama + keyframe zinciri (Gün 6)');
