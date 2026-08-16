@@ -32,6 +32,9 @@
 // Math.random YOK — her hesaplama deterministik (repo kuralı).
 
 import type { FlowPoint } from './types.ts';
+import type { PointMatch } from './pose.ts';
+import type { ScaleFit } from './scale.ts';
+import { fitScaleAlignment } from './scale.ts';
 
 export interface TemporalOptions {
   /** EMA karışım katsayısı (0,1]: depth = (1−α)·warp + α·raw. Ölçümden. */
@@ -242,4 +245,96 @@ export function stabilizeDepth(
     }
   }
   return { depth, occlusion };
+}
+
+// ---------------------------------------------------------------------------
+// E5.1 — KEYFRAME'LER ARASI DERİNLİK HİZALAMA
+// ---------------------------------------------------------------------------
+
+/** `alignDepthChain` çıktısı. */
+export interface DepthChainAlignment {
+  /** Keyframe-0 uzayına taşınmış derinlikler (kare 0 dokunulmaz). */
+  depths: Float32Array[];
+  /** Çift başına ham uydurma (i → i+1 arası); eşleşme yetersizse null. */
+  fits: Array<ScaleFit | null>;
+}
+
+/**
+ * Her keyframe'in derinliğini keyframe-0 UZAYINA taşır.
+ *
+ * NEDEN: derinlik sağlayıcı (MiDaS ya da luminance) her kareyi KENDİ içinde
+ * normalize eder — göreli derinlik, mutlak değil. Aynı duvar kare 0'da 0.62,
+ * kare 3'te 0.41 olabilir. Füzyon bu sayıları TEK dünyaya yerleştirdiğinden
+ * hizalanmamış zincir katman kaymasına (hayalet yüzey) döner.
+ *
+ * NASIL: ardışık kare çiftinin ORTAK izleri (flow'dan gelen `PointMatch`)
+ * aynı 3B noktayı gösterir; o noktalarda d_i ile d_{i+1} arasında affine bir
+ * ilişki (a·d + b) beklenir. Uydurma scale.ts'in DAYANIKLI `fitScaleAlignment`
+ * fonksiyonuyla yapılır (MAD + refit) — yeni bir çözücü yazılmaz; oradaki
+ * aykırı direnci burada da gerekli, çünkü oklüzyona giren izler derinlik
+ * çiftini zehirler.
+ *
+ * ZİNCİRLEME: T_i(d) = A_i·d + B_i, A_0 = 1, B_0 = 0 ve
+ *   A_i = A_{i−1}·a_i,  B_i = A_{i−1}·b_i + B_{i−1}
+ * (kare i'nin uzayını i−1'e, oradan 0'a taşımanın bileşkesi).
+ *
+ * BAŞARISIZLIK: bir çiftte uydurma yoksa (eşleşme az / dejenere) O ADIM
+ * KİMLİK alınır ve `fits[i] = null` raporlanır. Alternatif — zinciri kesmek —
+ * sonraki tüm kareleri düşürürdü; sessizce yanlış ölçek yaymaktansa o adımda
+ * hizalama YAPILMAZ ve durum çağırana görünür kalır.
+ */
+export function alignDepthChain(
+  depths: Float32Array[],
+  frameMatches: PointMatch[][],
+  width: number,
+  height: number,
+): DepthChainAlignment {
+  const fits: Array<ScaleFit | null> = [];
+  const out: Float32Array[] = [depths[0]];
+
+  const at = (d: Float32Array, x: number, y: number): number => {
+    const xi = Math.round(x);
+    const yi = Math.round(y);
+    if (xi < 0 || yi < 0 || xi >= width || yi >= height) return NaN;
+    return d[yi * width + xi];
+  };
+
+  for (let i = 1; i < depths.length; i++) {
+    const matches = frameMatches[i - 1] ?? [];
+    const prev = depths[i - 1];
+    const curr = depths[i];
+    // dPred = bu karenin derinliği, dMetric = önceki karenin (hedef uzay):
+    // uydurma a·d_i + b ≈ d_{i−1} verir.
+    const pairs: Array<{ dPred: number; dMetric: number }> = [];
+    for (const m of matches) {
+      const dCurr = at(curr, m.x2, m.y2);
+      const dPrev = at(prev, m.x1, m.y1);
+      if (!Number.isFinite(dCurr) || !Number.isFinite(dPrev)) continue;
+      pairs.push({ dPred: dCurr, dMetric: dPrev });
+    }
+    fits.push(fitScaleAlignment(pairs));
+  }
+
+  // Bileşkeyi ayrı geçişte kur: yukarıdaki döngü YALNIZ uydurmaları toplar,
+  // burada birikim uygulanır (iki iş bir döngüde karışmasın).
+  let accA = 1;
+  let accB = 0;
+  for (let i = 1; i < depths.length; i++) {
+    const fit = fits[i - 1];
+    if (fit) {
+      accB = accA * fit.scaleB + accB;
+      accA = accA * fit.scaleA;
+    }
+    const src = depths[i];
+    // Kimlik dönüşümde kopya üretme (kare 0 gibi referans davransın).
+    if (accA === 1 && accB === 0) {
+      out.push(src);
+      continue;
+    }
+    const dst = new Float32Array(src.length);
+    for (let p = 0; p < src.length; p++) dst[p] = accA * src[p] + accB;
+    out.push(dst);
+  }
+
+  return { depths: out, fits };
 }

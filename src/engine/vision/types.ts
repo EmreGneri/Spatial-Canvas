@@ -179,4 +179,11 @@ export interface CaptureDiagnostics {
   olcek: ScaleVerdict;
   /** Yakalama tanısı (E1.2 naif: 'iyi'). */
   teshis: Teshis;
+  /**
+   * E5.1 — d_pred'in NEREDEN geldiği. Sözleşmeye EKLENDİ (alan ekleme
+   * sözleşme bozmaz; kaldırma/tip değiştirme bozar). 'luminance' değeri
+   * "kaba derinlik" demektir: model yüklenemedi ya da DOM yok, parlaklık
+   * vekil olarak kullanıldı — sessiz geri düşüş bırakılmaz, UI etiketleyebilir.
+   */
+  derinlikKaynagi?: 'midas' | 'luminance';
 }
