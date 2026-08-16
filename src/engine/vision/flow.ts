@@ -9,10 +9,11 @@ export const FLOW_WIDTH = 320;
 export const FLOW_HEIGHT = 180;
 
 /** D.6 — hedef köşe sayısı bandı. FONKSİYONLAR BUNLARI ZORLAMAZ: düşük
- *  dokulu karede 300'ün altı köşe bulunabilir — o durumda OLDUĞU GİBİ döner,
- *  sahte köşe ÜRETİLMEZ. */
+ *  dokulu karede MIN_CORNERS'ın altında köşe bulunabilir — o durumda OLDUĞU
+ *  GİBİ döner, sahte köşe ÜRETİLMEZ. E2.1: MAX_CORNERS 500→800 (gerçek
+ *  yakalamada 300 köşe → 3 eşleşme → 11 poz hatası; verim artırıldı). */
 export const MIN_CORNERS = 300;
-export const MAX_CORNERS = 500;
+export const MAX_CORNERS = 800;
 
 /** Shi-Tomasi köşe adayı. */
 export interface Corner {
@@ -140,7 +141,16 @@ function buildPyramid(lum: Float32Array, w: number, h: number, levels: number): 
  *   4. qualityLevel × maxR altındakiler elenir, R'ye göre azalan sıralanır.
  *   5. Greedy non-max suppression: minDistance çapında daha düşük skorlu
  *      adaylar elenir (320×180'de brute-force yeterli, kd-tree gerekmez).
- *      En fazla maxCorners döner.
+ *      En fazla maxCorners döner. E2.1: minDistance 7→5 — ölçülen tavan
+ *      756 eşleşme (5) vs 697 (7); 384×288'de 800 köşe ≈ 11.7 px ortalama
+ *      aralık verir, 5 px NMS çapı rahat.
+ *   6. E2.1: 7 px KENAR BANDI DIŞLANIR — en ince LK penceresi (yarı-boy 7)
+ *      o banttaki köşeyi HİÇ izleyemez (ölçüldü: 800 köşenin 111'i status=0
+ *      ölü ağırlıktı). Bütçe izlenebilir köşelere gider.
+ *   7. E2.1: grid kota (8×6 hücre, hücre başına kota) GLOBAL skor sırasında
+ *      işlenir — hücre-hücre sıralı seçim komşu kümeleri bloklayıp kotayı
+ *      %50'ye düşürüyordu (ölçüldü); global skor sırası + kota hem verimli
+ *      NMS paketleme hem yayılım garantisi verir.
  *
  * DÜRÜSTLÜK: düşük dokulu karede az köşe bulunabilir — OLDUĞU GİBİ döner;
  * MIN_CORNERS ZORLANMAZ (sahte köşe üretilmez).
@@ -152,8 +162,10 @@ export function detectCorners(
   opts?: { maxCorners?: number; minDistance?: number; qualityLevel?: number },
 ): Corner[] {
   const maxCorners = opts?.maxCorners ?? MAX_CORNERS;
-  const minDistance = opts?.minDistance ?? 7;
-  const qualityLevel = opts?.qualityLevel ?? 0.01;
+  const minDistance = opts?.minDistance ?? 5;
+  // E2.1: 0.01 → 0.005 — orta güçlü köşeler de aday olur (video kareleri
+  // düşük kontrastlı olabilir; katı eşik köşe havuzunu aç bırakıyordu).
+  const qualityLevel = opts?.qualityLevel ?? 0.005;
 
   const { ix, iy } = sobelGradients(luminance, width, height);
   const ix2 = new Float32Array(ix.length);
@@ -182,13 +194,32 @@ export function detectCorners(
 
   const threshold = qualityLevel * maxR;
   const candidates: Corner[] = [];
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
+  // E2.1 — KENAR BANDI DIŞLAMA: en ince LK penceresinin yarı-boyuna (7 px)
+  // eşit banttaki köşe HİÇ izlenemez (warp + pencere çerçeve dışı taşar) —
+  // ölçüldü: 800 köşenin 111'i bu banttaydı ve TAMAMI status=0'dı (ölü ağırlık,
+  // yine de LK süresi harcıyor). Bütçe böylece izlenebilir köşelere gider.
+  const BORDER_PX = 7;
+  for (let y = BORDER_PX; y < height - BORDER_PX; y++) {
+    for (let x = BORDER_PX; x < width - BORDER_PX; x++) {
       const i = y * width + x;
       if (r[i] >= threshold) candidates.push({ x, y, score: r[i] });
     }
   }
   candidates.sort((p, q) => q.score - p.score);
+
+  // E2.1 — GRID BUCKETING: hücre başına kota (cap). Seçim GLOBAL skor sırasında
+  // yapılır (verimli NMS paketleme), kota yayılımı garantiler — doku zengini
+  // bölge tüm kotayı yemez (gerçek yakalamada köşeler tek kadraj köşesine
+  // yığılıp RANSAC verimi düşüyordu; kareye yayılmış köşe daha iyi geometrik
+  // kapsama verir). Hücre-hücre sıralı seçim YANLIŞ çıktı: komşu hücrelerdeki
+  // yoğun kümeler birbirini bloklayıp kotayı %50'ye düşürüyordu (ölçüldü).
+  const GRID_COLS = 8;
+  const GRID_ROWS = 6;
+  const perCell = Math.ceil(maxCorners / (GRID_COLS * GRID_ROWS)) + 2;
+  const cellCount = new Int32Array(GRID_COLS * GRID_ROWS);
+  const cellOf = (x: number, y: number) =>
+    Math.min(GRID_COLS - 1, Math.floor((x * GRID_COLS) / width)) +
+    GRID_COLS * Math.min(GRID_ROWS - 1, Math.floor((y * GRID_ROWS) / height));
 
   // Greedy NMS: korunan adayın minDistance çapı içindeki daha düşük skorlu
   // adaylar elenir (azalan sırada tarandığı için korunan her zaman en
@@ -197,6 +228,8 @@ export function detectCorners(
   const minD2 = minDistance * minDistance;
   for (const c of candidates) {
     if (kept.length >= maxCorners) break;
+    const cell = cellOf(c.x, c.y);
+    if (cellCount[cell] >= perCell) continue;
     let ok = true;
     for (const k of kept) {
       const dx = k.x - c.x;
@@ -206,7 +239,10 @@ export function detectCorners(
         break;
       }
     }
-    if (ok) kept.push(c);
+    if (ok) {
+      kept.push(c);
+      cellCount[cell]++;
+    }
   }
   return kept;
 }
@@ -220,7 +256,7 @@ export interface OpticalFlowOptions {
   maxCorners?: number;
   minDistance?: number;
   qualityLevel?: number;
-  /** Piramit seviye sayısı. */
+  /** Piramit seviye sayısı (E2.1: 3→4 — daha geniş hareket küresi). */
   pyramidLevels?: number;
   /** LK penceresi yarı-boyu (pencere = 2·R+1). */
   windowRadius?: number;
@@ -228,6 +264,12 @@ export interface OpticalFlowOptions {
   maxIterations?: number;
   /** Yakınsama eşiği (px): |du| + |dv| < ε → dur. */
   epsilon?: number;
+  /** E2.1 — yapı tensörü determinant eşiği (zayıf yapı izlenmez; köşe
+   *  detektörünün küçük özdeğeriyle aynı felsefe, LK penceresi içinde). */
+  minEigThreshold?: number;
+  /** E2.1 — geri-ileri tutarlılık: curr'den prev'e ters iz > 1 px saparsa
+   *  eşleşme çöp sayılır (status=0) — RANSAC aykırı havuzu küçülür. */
+  fbConsistency?: boolean;
   /**
    * Artık hata eşiği: son warp'ta pencerenin NORMALİZE LUMİNANS FARKI'nın
    * RMS'i (domain [0,1] → fark ∈ [−1,1] → RMS ≤ 1.0). BİRİM PİKSEL DEĞİL
@@ -274,8 +316,8 @@ function lkLevel(
   maxIterations: number,
   epsilon: number,
   errorThreshold: number,
+  minEigThreshold: number,
 ): { u: number; v: number; ok: boolean } {
-  const detMin = 1e-4;
   for (let it = 0; it < maxIterations; it++) {
     const xw = x0 + u;
     const yw = y0 + v;
@@ -308,7 +350,7 @@ function lkLevel(
       }
     }
     const det = sxx * syy - sxy * sxy;
-    if (det < detMin) return { u, v, ok: false };
+    if (det < minEigThreshold) return { u, v, ok: false };
     const du = (-b1 * syy + b2 * sxy) / det;
     const dv = (b1 * sxy - b2 * sxx) / det;
     u += du;
@@ -332,14 +374,81 @@ function lkLevel(
 }
 
 /**
+ * Tek noktanın piramit boyunca izlenmesi (kaba → ince). E2.1: ileri iz
+ * `trackPoint(prevPyr, currPyr, ...)`, geri-ileri tutarlılık kontrolü aynı
+ * fonksiyonla TERS yönde çalışır — iki kod yolu da aynı hesabı kullanır.
+ */
+function trackPoint(
+  prevPyr: Float32Array[],
+  currPyr: Float32Array[],
+  width: number,
+  height: number,
+  x: number,
+  y: number,
+  levels: number,
+  windowRadius: number,
+  maxIterations: number,
+  epsilon: number,
+  errorThreshold: number,
+  minEigThreshold: number,
+): { u: number; v: number; ok: boolean } {
+  let u = 0;
+  let v = 0;
+  for (let l = levels - 1; l >= 0; l--) {
+    const scale = Math.pow(2, l);
+    const cw = Math.floor(width / scale);
+    const ch = Math.floor(height / scale);
+    const res = lkLevel(
+      prevPyr[l],
+      currPyr[l],
+      cw,
+      ch,
+      x / scale,
+      y / scale,
+      u,
+      v,
+      windowRadius,
+      maxIterations,
+      epsilon,
+      errorThreshold,
+      minEigThreshold,
+    );
+    if (!res.ok) {
+      // E2.1 — KABA seviyede düz bölge (det < eşik) izi ÖLDÜRMEZ: o ölçekte
+      // sinyal yoksa mevcut (u,v) olduğu gibi inceltilir — küçük hareketlerin
+      // asıl çözümü ince seviyelerdedir (4. seviye kaba piramitte doku
+      // ortalamayla kaybolur; ölçüldü: 3→4 seviyede 140→45 eşleşmeye düşüş).
+      // Gerçek yapı eksikliği EN İNCE seviyede (l===0) yakalanır: orada det/
+      // RMS/sınır yolları status=0 döndürür.
+      if (l > 0) {
+        u *= 2;
+        v *= 2;
+        continue;
+      }
+      return { u, v, ok: false };
+    }
+    u = res.u;
+    v = res.v;
+    if (l > 0) {
+      u *= 2;
+      v *= 2;
+    }
+  }
+  return { u, v, ok: true };
+}
+
+/**
  * Piramidal Lucas-Kanade akışı (D.6).
  *
- * 1. Köşeler detectCorners(prev) ile (maxCorners: 500 bandı).
+ * 1. Köşeler detectCorners(prev) ile (maxCorners: 800 bandı, grid dağılımı).
  * 2. pyramidLevels seviyeli piramitler (2×2 ortalama, deterministik).
  * 3. En KABA seviyede (u,v) = (0,0); her seviyede lkLevel çağrılır, sonuç
  *    (u,v) ×2 ölçeklenir (piramidal warp önerme) ve inceltilir.
- * 4. Nihai (u,v) = en ince seviye sonucu. status: pencere taşması / det
- *    sıfırı / RMS hata eşiği → 0.
+ * 4. E2.1 — GERİ-İLERİ TUTARLILIK: curr'de (x+u, y+v)'den prev'e ters iz;
+ *    ters akış ileri akışın tersinden > 1 px saparsa eşleşme ÇÖP (status=0)
+ *    — RANSAC'a giren aykırı havuzu küçülür (oklüzyon/kodlama artefaktı).
+ * 5. Nihai (u,v) = en ince seviye sonucu. status: pencere taşması / det
+ *    sıfırı / RMS hata eşiği / geri-ileri sapma → 0.
  *
  * Çıktı FlowPoint[]: x,y KAYNAK karedeki köşe (piksel), u,v piksel akış.
  */
@@ -350,11 +459,13 @@ export function computeOpticalFlow(
   height: number,
   opts?: OpticalFlowOptions,
 ): FlowPoint[] {
-  const pyramidLevels = opts?.pyramidLevels ?? 3;
+  const pyramidLevels = opts?.pyramidLevels ?? 4;
   const windowRadius = opts?.windowRadius ?? 7;
   const maxIterations = opts?.maxIterations ?? 10;
   const epsilon = opts?.epsilon ?? 0.01;
   const errorThreshold = opts?.errorThreshold ?? 0.055;
+  const minEigThreshold = opts?.minEigThreshold ?? 1e-3;
+  const fbConsistency = opts?.fbConsistency ?? true;
 
   const corners = detectCorners(prevLum, width, height, {
     maxCorners: opts?.maxCorners,
@@ -366,36 +477,42 @@ export function computeOpticalFlow(
 
   const points: FlowPoint[] = [];
   for (const c of corners) {
-    let u = 0;
-    let v = 0;
-    let status: 0 | 1 = 1;
-    for (let l = pyramidLevels - 1; l >= 0 && status === 1; l--) {
-      const scale = Math.pow(2, l);
-      const cw = Math.floor(width / scale);
-      const ch = Math.floor(height / scale);
-      const res = lkLevel(
-        prevPyr[l],
-        currPyr[l],
-        cw,
-        ch,
-        c.x / scale,
-        c.y / scale,
-        u,
-        v,
+    const fwd = trackPoint(
+      prevPyr,
+      currPyr,
+      width,
+      height,
+      c.x,
+      c.y,
+      pyramidLevels,
+      windowRadius,
+      maxIterations,
+      epsilon,
+      errorThreshold,
+      minEigThreshold,
+    );
+    let status: 0 | 1 = fwd.ok ? 1 : 0;
+    let u = fwd.u;
+    let v = fwd.v;
+    if (status === 1 && fbConsistency) {
+      const back = trackPoint(
+        currPyr,
+        prevPyr,
+        width,
+        height,
+        c.x + u,
+        c.y + v,
+        pyramidLevels,
         windowRadius,
         maxIterations,
         epsilon,
         errorThreshold,
+        minEigThreshold,
       );
-      if (!res.ok) {
+      // Tutarlılık eşiği 1 px (E2.1) — alt-piksel simetri hatası değil,
+      // gerçek oklüzyon/yanlış-iz ayırt edilir.
+      if (!back.ok || Math.abs(back.u + u) > 1 || Math.abs(back.v + v) > 1) {
         status = 0;
-        break;
-      }
-      u = res.u;
-      v = res.v;
-      if (l > 0) {
-        u *= 2;
-        v *= 2;
       }
     }
     points.push({ x: c.x, y: c.y, u, v, status });

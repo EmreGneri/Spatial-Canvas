@@ -21,9 +21,10 @@
  *    korunur). Sunum ölçeğidir, ölçüm ölçeği değildir.
  * 4. Math.random YOK; RANSAC mulberry32 (deterministik).
  *
- * BOYUT SÖZLEŞMESİ: 256×192 (video 640×480'nin 4:3 alt kümesi) — flow/poz/
- * füzyon/hedef tek boyutta; fovY = 60° dikey (D.3 varsayılan, Engine
- * PerspectiveCamera(60)).
+ * BOYUT SÖZLEŞMESİ: 384×288 (video 640×480'nin 4:3 alt kümesi; E2.1:
+ * 256×192 → 384×288 — büyük kare = daha çok köşe adayı = daha çok eşleşme;
+ * flow/poz/füzyon/hedef tek boyutta) — fovY = 60° dikey (D.3 varsayılan,
+ * Engine PerspectiveCamera(60)).
  */
 
 import type { GaussianBufferData } from '../../shaders/splatFixture.ts';
@@ -36,8 +37,8 @@ import { fuseVideoFrames } from './fusion.ts';
 import type { ScaleFit } from './scale.ts';
 import { computeOpticalFlow } from './flow.ts';
 
-export const KEYFRAME_WIDTH = 256;
-export const KEYFRAME_HEIGHT = 192;
+export const KEYFRAME_WIDTH = 384;
+export const KEYFRAME_HEIGHT = 288;
 /** Dikey görüş açısı (radyan) — D.3 varsayılanı 60°. */
 export const VIDEO_FOV_Y = Math.PI / 3;
 
@@ -209,7 +210,8 @@ export async function buildFusionScene(
     let matched = 0;
     for (let i = 0; i + 1 < frames.length; i++) {
       const iz: FlowPoint[] = computeOpticalFlow(frames[i].lum, frames[i + 1].lum, w, h, {
-        maxCorners: 300,
+        // E2.1: 300 → 800 köşe (gerçek yakalamada 3 eşleşme → 11 poz hatası).
+        maxCorners: 800,
       });
       const pts: PointMatch[] = [];
       for (const p of iz) {
