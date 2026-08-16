@@ -17,9 +17,43 @@ import { KEYFRAME_HEIGHT, KEYFRAME_WIDTH, type KeyframeFrame } from './videoPipe
  *     saniyesi neredeyse hareketsizdir, essential matrix dejenereye yaklaşır.
  *
  * Bu fonksiyon `currentTime` ATAYIP `seeked` olayını bekler. `seeked`
- * kompozitörden bağımsız çalışır (gizli sekmede de gelir) ve keyframe'leri
- * klibin TAMAMINA eşit aralıkla yayar — yani hem test edilebilir hem de
- * geometrik olarak daha iyi bir taban üretir.
+ * kompozitörden bağımsız çalışır (gizli sekmede de gelir) ve zaman noktaları
+ * saf bir fonksiyonda (`keyframeTimes`) hesaplandığı için test edilebilir.
+ *
+ * ARALIK KURALI (E4.3, 2026-08-16 — ÖNCEKİ DAVRANIŞ DEĞİŞTİ):
+ * keyframe'ler eskiden klibin TAMAMINA yayılıyordu. O kural klibin KISA
+ * olduğunu varsayıyordu (bu başlıktaki 12 sn'lik ölçüm) ve uzun klipte
+ * sessizce çöküyor: 260.04 sn'lik yürüyüş klibinde 8 kare → 33.4 sn aralık →
+ * ardışık kareler FARKLI SAHNE. Gerçek ölçüm (aynı klip, 384×288,
+ * computeOpticalFlow):
+ *
+ *   aralık(sn) | eşleşme | medyan parallaks(px)
+ *        0.25  |    378  |  3.61
+ *        0.50  |    211  |  6.12
+ *        1.00  |     64  | 12.41
+ *        2.00  |      1  |  6.84
+ *        4.00  |      0  |  —
+ *       33.40  |      0  |  —     <- eski davranış, uygulamada 0 eşleşme/7 poz hatası
+ *
+ * Doğru zihin modeli: TABAN, tek çiftin aralığından değil poz ZİNCİRİNİN
+ * birikiminden gelir. Kareler ardışık ÖRTÜŞMELİ olmak zorunda. Bu yüzden
+ * aralık artık klip süresinden BAĞIMSIZ: hedef `gapSec`, klibe sığmazsa
+ * küçülür.
+ *
+ * BİLİNEN SINIR — sabit aralık bu klibi tam çözmüyor. Kamera hızı klip
+ * İÇİNDE 10 kat değişiyor (aynı 0.5 sn aralık t=13.0'da 6.12 px, t=14.0'da
+ * 68 px parallaks üretiyor; ikincisi LK izleme küresini aşıyor). Ölçüm:
+ *
+ *   t=13.0 penceresi          t=14.0 penceresi
+ *   0.25 sn → 378 eşleşme     0.125 sn → 260 eşleşme (15.02 px)
+ *   0.50 sn → 211 eşleşme     0.25  sn →  59 eşleşme (33.86 px)
+ *   1.00 sn →  64 eşleşme     0.50  sn →   3 eşleşme
+ *
+ * Doğru çözüm PARALLAKS GÜDÜMLÜ seçim (hedef banda göre aralığı uyarlamak);
+ * sabit `gapSec` onun ucuz yaklaşığı. Varsayılan 0.125 sn bu klipte 7/7 poz
+ * veriyor ama YAVAŞ segmentlerde çift başına parallaksı 3 px ölçek kapısının
+ * altına düşürebilir — o durumda scale.ts dürüstçe 'parallaks-yetersiz'
+ * raporlar (sessiz yanlış sonuç değil).
  *
  * Çıktı `KeyframeFrame[]` — `videoPipe.buildFusionScene` girdisiyle BİREBİR
  * aynı sözleşme; füzyon tarafında tek satır değişmez.
@@ -34,6 +68,46 @@ export interface SeekCaptureOptions {
   endFrac?: number;
   /** Tek bir seek için bekleme tavanı (ms). */
   seekTimeoutMs?: number;
+  /**
+   * Ardışık keyframe'ler arası HEDEF süre (sn). Klibe sığmazsa küçülür.
+   * KALİBRASYON KOLU — sabitlenmemesinin sebebi başlıktaki hız değişkenliği:
+   * yavaş (tripod pan) çekimde parallaks biriktirmek için büyütmek,
+   * koşan/çeviren kamerada küçültmek gerekir.
+   */
+  gapSec?: number;
+}
+
+/**
+ * Varsayılan hedef aralık (sn) — TAHMİN DEĞİL, uçtan uca ÖLÇÜLDÜ.
+ * 260 sn NYC yürüyüş klibi, t=13.0'dan 8 keyframe, tam zincir
+ * (flow → PointMatch → chainPoseTrack):
+ *
+ *   aralık | medyan eşleşme | poz başarısı
+ *   0.125  |            489 | 7/7   <- seçilen
+ *   0.25   |            240 | 6/7
+ *   0.5    |             12 | 3/7
+ */
+export const DEFAULT_GAP_SEC = 0.125;
+
+/**
+ * Keyframe zaman noktaları — SAF fonksiyon (DOM yok, test edilebilir).
+ *
+ * `[startFrac·d, endFrac·d]` penceresinin BAŞINDAN itibaren `gapSec`
+ * aralıkla `maxFrames` nokta üretir. Pencere dar kalırsa aralık pencereye
+ * sıkışır (klip dışına seek etmektense örtüşme artar).
+ */
+export function keyframeTimes(duration: number, opts: SeekCaptureOptions = {}): number[] {
+  const maxFrames = Math.max(2, opts.maxFrames ?? 8);
+  const startFrac = opts.startFrac ?? 0.05;
+  const endFrac = opts.endFrac ?? 0.95;
+  const gapSec = opts.gapSec ?? DEFAULT_GAP_SEC;
+  const t0 = startFrac * duration;
+  const t1 = endFrac * duration;
+  // Klip oranı ARTIK yayılımı belirlemiyor; yalnızca üst sınırı veriyor.
+  const span = Math.min(t1 - t0, gapSec * (maxFrames - 1));
+  const out: number[] = [];
+  for (let i = 0; i < maxFrames; i++) out.push(t0 + (span * i) / (maxFrames - 1));
+  return out;
 }
 
 /**
@@ -48,9 +122,6 @@ export async function captureKeyframesBySeek(
   video: HTMLVideoElement,
   opts: SeekCaptureOptions = {},
 ): Promise<KeyframeFrame[]> {
-  const maxFrames = Math.max(2, opts.maxFrames ?? 8);
-  const startFrac = opts.startFrac ?? 0.05;
-  const endFrac = opts.endFrac ?? 0.95;
   const seekTimeoutMs = opts.seekTimeoutMs ?? 4000;
 
   const duration = video.duration;
@@ -67,12 +138,10 @@ export async function captureKeyframesBySeek(
   canvas.height = h;
   const ctx = canvas.getContext('2d', { willReadFrequently: true })!;
 
-  const t0 = startFrac * duration;
-  const t1 = endFrac * duration;
+  const times = keyframeTimes(duration, opts);
   const out: KeyframeFrame[] = [];
 
-  for (let i = 0; i < maxFrames; i++) {
-    const t = maxFrames > 1 ? t0 + ((t1 - t0) * i) / (maxFrames - 1) : t0;
+  for (const t of times) {
     const ok = await seekTo(video, t, seekTimeoutMs);
     if (!ok) continue; // bu zaman noktası gelmedi — atla, çekimi düşürme
     ctx.drawImage(video, 0, 0, w, h);
