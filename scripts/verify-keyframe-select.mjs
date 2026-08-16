@@ -20,12 +20,25 @@ import assert from 'node:assert/strict';
 import { register } from 'node:module';
 register('./ts-extension-loader.mjs', import.meta.url);
 
-const { selectKeyframeTimes, PARALLAX_TARGET_PX, PARALLAX_BAND_PX } = await import(
+const { selectKeyframeTimes, PARALLAX_TARGET_PX, PARALLAX_BAND_PX, TRACK_RATIO_MIN } = await import(
   '../src/engine/vision/seekCapture.ts'
 );
 
 /**
- * Sentetik ölçüm: parallaks = ∫hız dt. `hiz(t)` px/sn.
+ * LK'nın izleyebildiği yer değiştirme tavanı (px) — bu fikstürün EN ÖNEMLİ
+ * parçası. Gerçek ölçüm parallaksla birlikte MONOTON ARTMAZ: yer değiştirme
+ * izleme küresini aşınca eşleşme çöker ve medyan 0'a düşer.
+ *
+ * İlk sürüm bunu modellemiyordu (parallaks = ∫hız dt, hep artan) ve gerçek
+ * klipte KAÇAK GERİ BESLEMEYE yol açtı: büyük aralık → 0 eşleşme → seçici
+ * "parallaks yok" okuyup aralığı DAHA DA büyüttü → istenen 8 kare yerine 4,
+ * 3532 yerine 11 eşleşme. Fikstür artık çöküşü taklit ediyor; test [6] bunu
+ * doğrudan sınıyor.
+ */
+const LK_KURESI_PX = 35;
+
+/**
+ * Sentetik ölçüm: parallaks = ∫hız dt, ama küre aşılınca izleme çöker.
  * Ölçüm sayısı sayılır (bütçe testi için).
  */
 const olcumYap = (hiz) => {
@@ -35,10 +48,17 @@ const olcumYap = (hiz) => {
     // Basit dikdörtgen integrasyon (0.01 sn adım) — hız profili değişse de doğru.
     let p = 0;
     for (let t = tA; t < tB; t += 0.01) p += hiz(t) * 0.01;
-    return p;
+    if (p > LK_KURESI_PX) {
+      // Küre aşıldı: izler kopar, medyan anlamsızlaşır (gerçek davranış).
+      return { parallaksPx: 0, izlemeOrani: 0.02 };
+    }
+    return { parallaksPx: p, izlemeOrani: 0.85 };
   };
   return { measure, durum };
 };
+
+/** Ölçüm sonucundan yalnız parallaks (assert'lerde okunur). */
+const px = async (measure, a, b) => (await measure(a, b)).parallaksPx;
 
 const gaps = (t) => t.slice(1).map((v, i) => v - t[i]);
 
@@ -54,7 +74,7 @@ const gaps = (t) => t.slice(1).map((v, i) => v - t[i]);
   console.log(`[1] yavaş kamera (12 px/sn): toplam taban ${span.toFixed(2)} sn (sabit yol: 0.875 sn)`);
   assert.ok(span > 5, `toplam taban ${span.toFixed(2)} sn — sabit yoldan belirgin uzun olmalı`);
   for (const g of gaps(t)) {
-    const p = await measure(0, g); // aynı hızda parallaks = 12·g
+    const p = await px(measure, 0, g); // aynı hızda parallaks = 12·g
     assert.ok(
       p >= PARALLAX_BAND_PX[0] && p <= PARALLAX_BAND_PX[1],
       `çift parallaksı bant dışı: ${p.toFixed(1)} px`,
@@ -80,10 +100,14 @@ const gaps = (t) => t.slice(1).map((v, i) => v - t[i]);
     `[2] hız değişimi: yavaş bölge ortalama aralık ${yavasOrt.toFixed(3)} sn, hızlı bölge ${hizliOrt.toFixed(3)} sn (${(yavasOrt / hizliOrt).toFixed(1)}× uyarlama)`,
   );
   assert.ok(yavasOrt > hizliOrt * 3, 'hızlı bölgede aralık belirgin kısalmalı');
-  // Hiçbir çift LK küresini aşmamalı.
+  // Hiçbir çift LK küresini aşmamalı (aşan çift = kopuk izleme = düşen poz).
   for (let i = 1; i < t.length; i++) {
-    const p = await measure(t[i - 1], t[i]);
-    assert.ok(p <= PARALLAX_BAND_PX[1], `çift ${i} parallaksı bant üstü: ${p.toFixed(1)} px`);
+    const r = await measure(t[i - 1], t[i]);
+    assert.ok(
+      r.izlemeOrani >= TRACK_RATIO_MIN,
+      `çift ${i} izleme çökmüş (oran ${r.izlemeOrani}) — aralık LK küresini aşıyor`,
+    );
+    assert.ok(r.parallaksPx <= PARALLAX_BAND_PX[1], `çift ${i} bant üstü: ${r.parallaksPx.toFixed(1)} px`);
   }
 }
 
@@ -100,8 +124,8 @@ const gaps = (t) => t.slice(1).map((v, i) => v - t[i]);
 }
 
 // ---------------------------------------------------------------------------
-// 4. HAREKETSİZ KAMERA (tripod) — parallaks hiç birikmiyor. Sonsuz aramaya
-//    girmemeli; klip sonuna dayanınca eldekini döndürmeli.
+// 4. HAREKETSİZ KAMERA (tripod) — parallaks hiç birikmiyor ama İZLEME
+//    SAĞLAM. Aralık büyümeli (doğru tepki), sonsuz aramaya girmemeli.
 // ---------------------------------------------------------------------------
 {
   const { measure, durum } = olcumYap(() => 0);
@@ -126,6 +150,30 @@ const gaps = (t) => t.slice(1).map((v, i) => v - t[i]);
     'zaman klip dışında',
   );
   console.log(`[5] sözleşme: artan + klip içi + deterministik (hedef ${PARALLAX_TARGET_PX} px) ✓`);
+}
+
+// ---------------------------------------------------------------------------
+// 6. KAÇAK GERİ BESLEME (gerçek klipte görülen hata) — çok hızlı kamera.
+//    İlk tahmin bile LK küresini aşıyor: ölçüm "0 parallaks" döner ama
+//    İZLEME ORANI çökük gelir. Seçici bunu "hareket yok" sanıp aralığı
+//    BÜYÜTMEMELİ; KÜÇÜLTMELİ. Regresyonda 8 kare istenmişken 4 kare ve
+//    11 eşleşme dönmüştü.
+// ---------------------------------------------------------------------------
+{
+  const { measure } = olcumYap(() => 600); // 600 px/sn — 0.125 sn'de bile 75 px
+  const t = await selectKeyframeTimes(260, measure, { maxFrames: 8, startSec: 13 });
+  const g = gaps(t);
+  console.log(
+    `[6] çok hızlı kamera (600 px/sn): ${t.length} kare, en büyük aralık ${Math.max(...g).toFixed(4)} sn`,
+  );
+  assert.equal(t.length, 8, 'kaçak geri besleme kare sayısını düşürmemeli');
+  for (let i = 1; i < t.length; i++) {
+    const r = await measure(t[i - 1], t[i]);
+    assert.ok(
+      r.izlemeOrani >= TRACK_RATIO_MIN,
+      `çift ${i} izleme çökük — seçici aralığı küçültmek yerine büyütmüş`,
+    );
+  }
 }
 
 console.log('OK parallaks güdümlü keyframe seçimi (E5.3)');
