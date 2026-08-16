@@ -509,9 +509,13 @@ export function computeOpticalFlow(
         errorThreshold,
         minEigThreshold,
       );
-      // Tutarlılık eşiği 1 px (E2.1) — alt-piksel simetri hatası değil,
-      // gerçek oklüzyon/yanlış-iz ayırt edilir.
-      if (!back.ok || Math.abs(back.u + u) > 1 || Math.abs(back.v + v) > 1) {
+      // Tutarlılık eşiği 1 px — ÖKLİD mesafesi (u²+v² ≤ 1). Eksen başına
+      // kontrol çapraz sapmada √2 ≈ 1.41 px'e izin veriyordu (Zeynep
+      // denetim notu, 2026-08-16); ölçülen iyi eşleşmeler 0.36 px altında,
+      // sıkılaştırma eşleşme kaybettirmez (verify-flow [2b] 756 korunur).
+      const fbDx = back.u + u;
+      const fbDy = back.v + v;
+      if (!back.ok || fbDx * fbDx + fbDy * fbDy > 1) {
         status = 0;
       }
     }

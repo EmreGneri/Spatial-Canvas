@@ -2,6 +2,28 @@
 
 Tarih: 2026-08-16 · Branch: feat/splat-render · Başlangıç: `npm run verify` 19/19 yeşil.
 
+## Zeynep denetimi (2026-08-16, f5881e8) — benim E1.2 kodumda 3 gerçek hata
+
+1. **Ölçek kararı sabit yazılmıştı** (`{ durum:'gecerli', rmse:0, guven:1 }`): uydurma ne
+   kadar kötü olursa olsun "kusursuz" raporlanıyordu; CapturePanel judgeScale ile çelişiyordu.
+   Zeynep düzeltti: gerçek rmse taşınıyor, guven = 1 − rmse/(0.25·|a|) (negatif eğim → 0).
+   Notu: `durum` hâlâ "fit var mı"; kalite kapısı D4'ün işi, ScaleRed donuk olduğundan
+   genişletmedi — `guven === 0` sinyali taşıyor. (BENİM NOTUM: D4'e bu sinyal bağlanacak.)
+2. **bazUzunlugu yanlıştı**: |t| (orijine uzaklık) ortalanıyordu — monoküler zincirde |t|
+   indeksle büyür (≈ n/2). Düzeltme: ARDIŞIK pozlar arası mesafe.
+3. **pozBasariOrani vekili yanlıştı**: `m.length >= 8` sayıyordu; RANSAC'ı tutmayan çift
+   "başarılı" görünüyordu. Düzeltme: `kaynak` alanından sayılıyor (fallback+basarisiz =
+   hata); `dagilim[kaynak!]` non-null assertion'ı savunmalı okumaya çevrildi (NaN riski).
+
+Zeynep ayrıca ekledi: **sıfırla butonu** (Engine.resetRenderParams + verify-reset.mjs +
+ModeSelector UI) — anlık görüntüden geri yükleme (ParamDef.default değil: renk kolları
+`default: 0` taşır), feedback birikimi temizlenir, medyaya dokunulmaz. verify zinciri 23
+script'e çıktı.
+
+**FB notu (Zeynep) → DÜZELTİLDİ (commit 6f0d0b5?)**: FB eşiği eksen başına idi (çapraz
+sapmada √2 ≈ 1.41 px'e izin veriyordu) → Öklid mesafesi (u²+v² ≤ 1) yapıldı. Ölçülen iyi
+eşleşmeler 0.36 px altında — 756 eşleşme korundu, GT hatası max 0.306 px.
+
 ## E2.1 tamamlandı (2026-08-16, commit bc45cf9)
 
 - MAX_CORNERS 500→800, qualityLevel 0.01→0.005, minDistance 7→5, pyramidLevels 3→4.
