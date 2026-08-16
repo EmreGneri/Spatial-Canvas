@@ -93,6 +93,82 @@ export const CRYSTAL_PARAMS: ParamDef[] = [
   { key: 'uDispersion', label: 'kromatik ayrışma', min: 0, max: 0.05, default: 0 },
 ];
 
+
+/**
+ * ORTAK CAM AYDINLATMA ÇEKİRDEĞİ (GLSL).
+ *
+ * İki material bunu paylaşır: kabuk mesh'i (fotoğraf) ve splat (video).
+ * Kopyalamak yerine paylaşmanın sebebi, Gün 5/6'da kırılma ve parıltı
+ * eklenince İKİ yerde birden düzeltme yapma zorunluluğunu ortadan kaldırmak —
+ * bu tür ikizlerde biri hep geride kalır.
+ *
+ * `crystalShade` GÖRÜŞ UZAYINDA çalışır: N ve V görüş uzayı vektörleridir,
+ * kamera orijindedir.
+ */
+export const CRYSTAL_SHADING_GLSL = /* glsl */ `
+  /**
+   * FASET: normali kaba bir yön ızgarasına yuvarlar. Düz yüzey yerine kırık
+   * cam yüzleri üretir — geometriyi değiştirmeden, yalnız gölgelemeyle.
+   * uFacetScale KÜÇÜLDÜKÇE faset İRİLEŞİR (1 = kapalı).
+   */
+  vec3 facetNormal(vec3 n, float scale) {
+    if (scale <= 1.0) return n;
+    return normalize(floor(n * scale + 0.5) / scale);
+  }
+
+  /**
+   * Cam gölgelemesi. base = taban renk (doku × tint), d = görüş-uzayı
+   * derinliği (absorpsiyon için).
+   */
+  vec3 crystalShade(vec3 N, vec3 V, vec3 base, float d) {
+    // Absorpsiyon (Beer-Lambert benzeri): kalın/uzak yerler daha doygun.
+    vec3 col = base * exp(-uDensity * d * 0.25);
+
+    // Speküler: iki sabit yönlü ışık (key + fill). Cam parlaklığının ÇOĞU
+    // buradan gelir; fresnel yalnız kenarı aydınlatır.
+    vec3 key = normalize(vec3(0.5, 0.8, 0.6));
+    vec3 fill = normalize(vec3(-0.6, 0.2, 0.4));
+    float spec = pow(max(dot(N, normalize(key + V)), 0.0), uSpecPower)
+               + 0.35 * pow(max(dot(N, normalize(fill + V)), 0.0), uSpecPower);
+    float diff = 0.5 + 0.5 * max(dot(N, key), 0.0);
+
+    // Fresnel (Schlick).
+    float fres = pow(1.0 - clamp(dot(N, V), 0.0, 1.0), uFresnelPower) * uFresnelStrength;
+
+    col *= diff;
+    col += vec3(spec) * uSpecStrength;
+    col += vec3(fres);
+    return col;
+  }
+`;
+
+/**
+ * Cam knob'larının GLSL bildirimleri — iki material de aynı uniform adlarını
+ * kullanır (uniform NESNELERİ de paylaşılır: tek slider, iki material).
+ */
+export const CRYSTAL_UNIFORM_GLSL = /* glsl */ `
+  uniform float uNormalKaynak;
+  uniform float uFacetScale;
+  uniform float uFresnelStrength;
+  uniform float uFresnelPower;
+  uniform float uSpecStrength;
+  uniform float uSpecPower;
+  uniform vec3 uTintColor;
+  uniform float uDensity;
+  uniform float uFogDensity;
+  uniform vec3 uFogColor;
+
+  // GÜN 5/6'DA BAĞLANACAK — bugün BİLEREK tanımlı ama kullanılmıyor.
+  // ParamDef listesi, preset şeması ve uniform sözleşmesi Gün 2'de dondu
+  // (verify-crystal-params denetliyor); o günler geldiğinde yalnız fragment
+  // gövdesi değişecek, arayüz değil.
+  uniform sampler2D uSceneColor;   // Gün 5: ekran-uzayı kırılma kaynağı
+  uniform float uRefractStrength;  // Gün 5
+  uniform float uDispersion;       // Gün 5: kromatik ayrışma
+  uniform float uSparkleAmount;    // Gün 6: parıltı
+  uniform float uTime;             // Gün 6: Engine tick'inden
+`;
+
 const CRYSTAL_VERTEX = /* glsl */ `
   varying vec2 vUv;
   varying vec3 vViewPos;
@@ -114,47 +190,19 @@ const CRYSTAL_FRAGMENT = /* glsl */ `
 
   uniform sampler2D uImageTexture;
   uniform float uHasImage;
-  uniform float uNormalKaynak;
-  uniform float uFacetScale;
-  uniform float uFresnelStrength;
-  uniform float uFresnelPower;
-  uniform float uSpecStrength;
-  uniform float uSpecPower;
-  uniform vec3 uTintColor;
-  uniform float uDensity;
-  uniform float uFogDensity;
-  uniform vec3 uFogColor;
-
-  // GÜN 5/6'DA BAĞLANACAK — bugün BİLEREK tanımlı ama kullanılmıyor.
-  // Sebep: ParamDef listesi, preset şeması ve uniform sözleşmesi BUGÜN
-  // donuyor (verify-crystal-params bunu denetliyor); o günler geldiğinde
-  // yalnızca fragment gövdesi değişecek, arayüz değil. Varsayılanları 0
-  // olduğu için mod ilk açılışta doğru görünür.
-  uniform sampler2D uSceneColor;   // Gün 5: ekran-uzayı kırılma kaynağı
-  uniform float uRefractStrength;  // Gün 5
-  uniform float uDispersion;       // Gün 5: kromatik ayrışma
-  uniform float uSparkleAmount;    // Gün 6: parıltı
-  uniform float uTime;             // Gün 6: Engine tick'inden
+${CRYSTAL_UNIFORM_GLSL}
 
   varying vec2 vUv;
   varying vec3 vViewPos;
   varying vec3 vViewNormal;
 
-  /**
-   * FASET: normali kaba bir yön ızgarasına yuvarlar. Düz yüzey yerine kırık
-   * cam yüzleri üretir — geometriyi değiştirmeden, yalnız gölgelemeyle.
-   * uFacetScale büyüdükçe faset KÜÇÜLÜR (çözünürlük artar).
-   */
-  vec3 facetNormal(vec3 n, float scale) {
-    if (scale <= 1.0) return n;
-    return normalize(floor(n * scale + 0.5) / scale);
-  }
+${CRYSTAL_SHADING_GLSL}
 
   void main() {
     // --- normal kaynağı ---
     vec3 N;
     if (uNormalKaynak < 1.5) {
-      // 0 = mesh attribute, 1 = splat normali (ikisi de vViewNormal'a taşındı)
+      // 0 = mesh attribute, 1 = splat normali (mesh yolunda ikisi de vViewNormal)
       N = normalize(vViewNormal);
     } else {
       // 2 = depth türevi: görüş-uzayı pozisyonundan yüzey normali.
@@ -162,39 +210,156 @@ const CRYSTAL_FRAGMENT = /* glsl */ `
       N = normalize(cross(dFdx(vViewPos), dFdy(vViewPos)));
     }
     N = facetNormal(N, uFacetScale);
-    // Kamera görüş uzayında; V = yüzeyden kameraya (kamera orijinde).
     vec3 V = normalize(-vViewPos);
     if (dot(N, V) < 0.0) N = -N; // arka yüzler ters normal taşıyabilir
 
-    // --- taban renk ---
     vec3 base = uHasImage > 0.5 ? texture2D(uImageTexture, vUv).rgb : vec3(0.55, 0.62, 0.72);
     base *= uTintColor;
 
-    // --- absorpsiyon (Beer-Lambert benzeri) ---
-    // d: görüş-uzayı derinliği. Kalın/uzak yerler daha doygun ve koyu.
-    float d = max(0.0, -vViewPos.z);
-    base *= exp(-uDensity * d * 0.25);
-
-    // --- speküler: iki sabit yönlü ışık (key + fill) ---
-    // Cam parlaklığının ÇOĞU buradan gelir; fresnel yalnız kenarı aydınlatır.
-    vec3 key = normalize(vec3(0.5, 0.8, 0.6));
-    vec3 fill = normalize(vec3(-0.6, 0.2, 0.4));
-    vec3 hKey = normalize(key + V);
-    vec3 hFill = normalize(fill + V);
-    float spec = pow(max(dot(N, hKey), 0.0), uSpecPower)
-               + 0.35 * pow(max(dot(N, hFill), 0.0), uSpecPower);
-    // Diffuse'un cam üzerinde payı az — yüzeyin tamamen düz görünmemesi için.
-    float diff = 0.5 + 0.5 * max(dot(N, key), 0.0);
-
-    // --- fresnel (Schlick) ---
-    float fres = pow(1.0 - clamp(dot(N, V), 0.0, 1.0), uFresnelPower) * uFresnelStrength;
-
-    vec3 col = base * diff;
-    col += vec3(spec) * uSpecStrength;
-    col += vec3(fres);
-
+    vec3 col = crystalShade(N, V, base, max(0.0, -vViewPos.z));
     col = mix(col, uFogColor, clamp(uFogDensity, 0.0, 1.0));
     gl_FragColor = vec4(col, 1.0);
+  }
+`;
+
+/**
+ * SPLAT VARYANTI (video kaynağı) — Gün 3.
+ *
+ * Kabuk mesh'i yalnız FOTOĞRAF yolunda kurulur; video → 3B sonucu splat
+ * bulutudur. Crystal modunun "hem fotoğraf hem video" ölçütünü karşılaması
+ * için splat geometrisinde de çizmesi gerekir.
+ *
+ * Vertex tarafı splatMaterial'ın EWA izdüşümüyle AYNI matematiktir (elips
+ * ekseni = Σ₂ özvektörleri); fragment tarafı ortak `crystalShade` çekirdeğini
+ * çağırır ve alfayı Gauss düşüşünden alır. Normal `gSplatB.xyz`ten gelir
+ * (dünya çerçevesi) ve görüş uzayına taşınır.
+ */
+const CRYSTAL_SPLAT_VERTEX = /* glsl */ `
+  precision highp float;
+
+  uniform sampler2D uSplatA;
+  uniform sampler2D uSplatB;
+  uniform sampler2D uSplatC;
+  uniform float uSplatGrid;
+  uniform vec2 uViewport;
+  uniform float uSplatScale;
+  uniform float uMaxScreenRadius;
+
+  attribute vec2 aCorner;
+  attribute float aSplatIndex;
+
+  varying vec2 vQuad;
+  varying vec3 vColorRgb;
+  varying float vOpacity;
+  varying vec3 vViewNormal;
+  varying float vViewDepth;
+
+  vec2 splatUv(float index) {
+    float x = mod(index, uSplatGrid);
+    float y = floor(index / uSplatGrid);
+    return (vec2(x, y) + 0.5) / uSplatGrid;
+  }
+
+  mat3 basisFromNormal(vec3 n) {
+    vec3 up = abs(n.z) < 0.999 ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0);
+    vec3 t = normalize(cross(up, n));
+    return mat3(t, cross(n, t), n);
+  }
+
+  void main() {
+    vec2 uv = splatUv(aSplatIndex);
+    vec4 A = texture2D(uSplatA, uv);
+    vec4 B = texture2D(uSplatB, uv);
+    vColorRgb = texture2D(uSplatC, uv).rgb;
+    vOpacity = A.w;
+
+    vec3 nW = normalize(B.xyz);
+    vViewNormal = normalize(mat3(modelViewMatrix) * nW);
+    float s = max(B.w, 1e-5) * uSplatScale;
+
+    mat3 R = basisFromNormal(nW);
+    vec3 sc = vec3(s, s, s * 0.1);
+    mat3 M = mat3(R[0] * sc.x, R[1] * sc.y, R[2] * sc.z);
+    mat3 W = mat3(modelViewMatrix);
+    mat3 MV = W * M;
+    mat3 cov3 = MV * transpose(MV);
+
+    vec4 viewPos = modelViewMatrix * vec4(A.xyz, 1.0);
+    vViewDepth = -viewPos.z;
+    if (viewPos.z > -0.01) {
+      gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+      vQuad = vec2(0.0);
+      return;
+    }
+
+    float fx = projectionMatrix[0][0] * uViewport.x * 0.5;
+    float fy = projectionMatrix[1][1] * uViewport.y * 0.5;
+    float invZ = 1.0 / -viewPos.z;
+    float invZ2 = invZ * invZ;
+    mat2x3 J = mat2x3(
+      vec3(fx * invZ, 0.0, fx * viewPos.x * invZ2),
+      vec3(0.0, fy * invZ, fy * viewPos.y * invZ2)
+    );
+    vec3 c0 = cov3 * J[0];
+    vec3 c1 = cov3 * J[1];
+    float a = dot(J[0], c0) + 0.3;
+    float b = dot(J[0], c1);
+    float d = dot(J[1], c1) + 0.3;
+
+    float tr = a + d;
+    float det = a * d - b * b;
+    float disc = sqrt(max(tr * tr * 0.25 - det, 0.0));
+    float l1 = tr * 0.5 + disc;
+    float l2 = max(tr * 0.5 - disc, 0.1);
+    // Köşegen dalda eksen seçimi (splatMaterial'daki hata geçmişinin aynısı).
+    vec2 e1 = abs(b) > 1e-6
+      ? normalize(vec2(b, l1 - a))
+      : (a >= d ? vec2(1.0, 0.0) : vec2(0.0, 1.0));
+    vec2 e2 = vec2(-e1.y, e1.x);
+    float r1 = min(2.0 * sqrt(l1), uMaxScreenRadius);
+    float r2 = min(2.0 * sqrt(l2), uMaxScreenRadius);
+
+    vec2 offsetPx = e1 * (aCorner.x * r1) + e2 * (aCorner.y * r2);
+    vQuad = aCorner * 2.0;
+
+    vec4 clip = projectionMatrix * viewPos;
+    clip.xy += offsetPx * (2.0 / uViewport) * clip.w;
+    gl_Position = clip;
+  }
+`;
+
+const CRYSTAL_SPLAT_FRAGMENT = /* glsl */ `
+  precision highp float;
+
+${CRYSTAL_UNIFORM_GLSL}
+
+  varying vec2 vQuad;
+  varying vec3 vColorRgb;
+  varying float vOpacity;
+  varying vec3 vViewNormal;
+  varying float vViewDepth;
+
+${CRYSTAL_SHADING_GLSL}
+
+  void main() {
+    float r2 = dot(vQuad, vQuad);
+    if (r2 > 4.0) discard;
+    float g = exp(-0.5 * r2);
+
+    // Splat yolunda normal GERÇEK veridir (gSplatB) — depth türevine düşmeye
+    // gerek yok; uNormalKaynak = 2 seçilse bile splat'ın kendi normali daha
+    // doğrudur (quad düzlemi yüzeyi temsil etmez).
+    vec3 N = facetNormal(normalize(vViewNormal), uFacetScale);
+    vec3 V = vec3(0.0, 0.0, 1.0); // splat quad'ı kameraya bakar
+    if (dot(N, V) < 0.0) N = -N;
+
+    vec3 base = vColorRgb * uTintColor;
+    vec3 col = crystalShade(N, V, base, vViewDepth);
+    col = mix(col, uFogColor, clamp(uFogDensity, 0.0, 1.0));
+
+    float alpha = g * vOpacity;
+    if (alpha < 0.003) discard;
+    gl_FragColor = vec4(col * alpha, alpha);
   }
 `;
 
@@ -233,4 +398,41 @@ export function createCrystalMaterial(): CrystalMaterial {
     side: THREE.FrontSide,
   });
   return material as CrystalMaterial;
+}
+
+/**
+ * Splat varyantı: cam knob'larının UNIFORM NESNELERİNİ paylaşır.
+ *
+ * `{ ...shared }` yayılımı her uniform'un `{ value }` NESNESİNİ kopyalar
+ * (referans), değerini değil — yani ControlPanel ya da preset tek bir yere
+ * yazdığında iki material birden görür. İki ayrı uniform seti tutup elle
+ * senkronlamak, kaçınılmaz olarak birinin geride kalmasıyla biterdi.
+ *
+ * Splat'a özgü uniform'lar (uSplatA/B/C, uViewport, …) crystal knob'ları
+ * DEĞİLDİR: değerlerini Engine yazar (SplatObject.bindTextures / update).
+ */
+export function createCrystalSplatMaterial(shared: CrystalMaterial): THREE.ShaderMaterial {
+  return new THREE.ShaderMaterial({
+    uniforms: {
+      ...shared.uniforms,
+      uSplatA: { value: null },
+      uSplatB: { value: null },
+      uSplatC: { value: null },
+      uSplatGrid: { value: 384 },
+      uViewport: { value: new THREE.Vector2(1, 1) },
+      uSplatScale: { value: 1 },
+      uMaxScreenRadius: { value: 128 },
+    },
+    vertexShader: CRYSTAL_SPLAT_VERTEX,
+    fragmentShader: CRYSTAL_SPLAT_FRAGMENT,
+    transparent: true,
+    blending: THREE.CustomBlending,
+    blendSrc: THREE.OneFactor,
+    blendDst: THREE.OneMinusSrcAlphaFactor,
+    blendSrcAlpha: THREE.OneFactor,
+    blendDstAlpha: THREE.OneMinusSrcAlphaFactor,
+    depthWrite: false,
+    depthTest: true,
+    side: THREE.DoubleSide,
+  });
 }

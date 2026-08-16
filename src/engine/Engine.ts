@@ -220,6 +220,14 @@ export class Engine {
   private selectedKeyframe: number | null = null;
 
   /**
+   * GÜN 3 — crystal'ın SPLAT varyantı. Kabuk mesh'i yalnız fotoğraf yolunda
+   * kurulur; video → 3B sonucu splat bulutudur. Crystal modu seçiliyken
+   * kabuk YOKSA bu material splat nesnesine takılır, böylece mod her iki
+   * kaynakta da çizer. Knob'lar ORTAK (uniform nesneleri paylaşılıyor).
+   */
+  private crystalSplatMaterial: THREE.Material | null = null;
+
+  /**
    * SIFIRLAMA — "başlangıç noktası" anlık görüntüleri.
    * Efektlerle oynadıktan sonra (ya da yeni bir görsele geçerken) kullanıcı
    * başlangıca dönemiyordu: graf sıfırlaması yalnız düğümleri geri alıyor,
@@ -544,13 +552,27 @@ setPointsMaterial(material: THREE.Material) {
 
   /** GÃœN B: solid mod aktif + kabuk hazÄ±rsa bulut gizlenir, mesh gÃ¶rÃ¼nÃ¼r. */
   private syncRenderVisibility() {
-    const solidActive = Engine.usesShellMesh(this.renderModeName);
+    // CRYSTAL YÖNLENDİRMESİ (Gün 3): kabuk varsa mesh'te, yoksa splat'ta çizer.
+    // Video yolunda kabuk hiç kurulmaz (fotoğraf-only) — crystal'ın "her iki
+    // kaynakta çizer" ölçütü bu dala bağlı.
+    const crystalOnSplat =
+      this.renderModeName === 'crystal' &&
+      !this.solidReady &&
+      Boolean(this.crystalSplatMaterial) &&
+      (this.splatObject?.ready ?? false);
+    if (crystalOnSplat && this.crystalSplatMaterial) {
+      this.splatObject!.setMaterial(this.crystalSplatMaterial);
+    } else if (this.renderModeName === 'splat' && this.splatObject) {
+      const splatMat = this.renderModes.get('splat')?.material;
+      if (splatMat) this.splatObject.setMaterial(splatMat);
+    }
+    const solidActive = Engine.usesShellMesh(this.renderModeName) && !crystalOnSplat;
     // 'splat' aktif + GaussianBuffer dolu → nokta bulutu gizlenir, splat
     // nesnesi görünür. Buffer boşsa (fotoğraf yüklenmemiş) nokta bulutunda
     // kalınır — solid modunun graceful fallback'iyle aynı desen.
     const splatActive = this.renderModeName === 'splat' && (this.splatObject?.ready ?? false);
-    this.splatObject?.setVisible(splatActive);
-    this.points.visible = !(solidActive && this.solidReady) && !splatActive;
+    this.splatObject?.setVisible(splatActive || crystalOnSplat);
+    this.points.visible = !(solidActive && this.solidReady) && !splatActive && !crystalOnSplat;
     if (this.solidMesh) {
       this.solidMesh.visible = solidActive && this.solidReady;
       // Mesh ilk kurulumda o andaki material'a baÄŸlanÄ±r; fotoÄŸraf points
@@ -821,6 +843,12 @@ releasePhoto() {
 
 
   /** Aktif modun gÃ¼ncel parametre DEÄERLERÄ° â€” preset serileÅŸtirmesi iÃ§in. */
+  /** Crystal'ın splat varyantını kaydeder (App kurar; knob'lar ortaktır). */
+  setCrystalSplatMaterial(material: THREE.Material | null) {
+    this.crystalSplatMaterial = material;
+    this.syncRenderVisibility();
+  }
+
   /**
    * SIFIRLA — sahneyi "yeni açılmış" hâline döndürür.
    *

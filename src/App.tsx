@@ -8,7 +8,7 @@ import { createAsciiMaterial, ASCII_PARAMS } from './shaders/asciiMaterial';
 import { createNeonWireMaterial, NEON_PARAMS } from './shaders/neonWireMaterial';
 import { createSolidMaterial, SOLID_PARAMS } from './shaders/solidMaterial';
 import { createSplatMaterial, SPLAT_PARAMS } from './shaders/splatMaterial';
-import { createCrystalMaterial, CRYSTAL_PARAMS } from './shaders/crystalMaterial';
+import { createCrystalMaterial, createCrystalSplatMaterial, CRYSTAL_PARAMS } from './shaders/crystalMaterial';
 import { ModeSelector, type RenderMode } from './ui/ModeSelector';
 import { CapturePanel } from './ui/CapturePanel';
 import { MetricsPanel } from './ui/MetricsPanel';
@@ -101,6 +101,9 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
     engine.registerRenderMode('solid', materials.solid, SOLID_PARAMS);
     engine.registerRenderMode('splat', materials.splat, SPLAT_PARAMS);
     engine.registerRenderMode('crystal', materials.crystal, CRYSTAL_PARAMS);
+    // Gün 3: crystal video kaynağında da çizsin — splat varyantı ORTAK
+    // uniform nesnelerini kullanır, ayrı knob seti yoktur.
+    engine.setCrystalSplatMaterial(createCrystalSplatMaterial(materials.crystal));
     engine.setPointsMaterial(materials.points);
     const textureType = engine.simTextureLabel;
     setLog((prev) => [
