@@ -134,6 +134,44 @@ function buildMatches(frameA, frameB) {
   const degenerate = fitScaleAlignment([{ dPred: 1, dMetric: 2 }, { dPred: 1, dMetric: 3 }]);
   assert.equal(degenerate, null, 'sabit d_pred için null dönmeli (dejenere)');
   console.log('[3] dejenere (sabit d_pred) → null ✓');
+
+  // [3b] DAYANIKLILIK: üçgenleme patlamalarına karşı aykırı ayıklama.
+  // Gerçek klipte görüldü (2026-08-14 / 2026-08-16): ışınlar neredeyse
+  // paralel olduğunda üçgenlenen derinlik binlere fırlıyor ve düz OLS bütün
+  // uydurmayı o birkaç noktaya kaptırıyor (a = -15.98 / rmse = 531 gibi).
+  // Burada 200 temiz nokta + 10 patlamış nokta veriliyor; uydurma temiz
+  // doğruyu BULMALI ve patlamışları aykırı saymalı.
+  {
+    const aT = 2.5;
+    const bT = -0.3;
+    const clean = [];
+    for (let i = 0; i < 200; i++) {
+      const dPred = 0.1 + (0.8 * i) / 199;
+      clean.push({ dPred, dMetric: aT * dPred + bT });
+    }
+    const poisoned = clean.slice();
+    for (let i = 0; i < 10; i++) {
+      // Epipole yakını nokta: d_pred normal, d_metric patlamış.
+      poisoned.push({ dPred: 0.2 + 0.05 * i, dMetric: 500 + 200 * i });
+    }
+    const fit = fitScaleAlignment(poisoned);
+    assert.ok(fit, '[3b] dayanıklı uydurma null döndü');
+    console.log(
+      `[3b] zehirli veri (200 temiz + 10 patlamış): scaleA=${fit.scaleA.toFixed(4)} (gerçek ${aT}) · ` +
+        `scaleB=${fit.scaleB.toFixed(4)} (gerçek ${bT}) · rmse=${fit.rmse.toExponential(2)} · ` +
+        `inlier=${fit.inliers} atılan=${fit.rejected}`,
+    );
+    assert.ok(Math.abs(fit.scaleA - aT) < 0.05, `[3b] aykırılar eğimi bozdu: ${fit.scaleA}`);
+    assert.ok(Math.abs(fit.scaleB - bT) < 0.05, `[3b] aykırılar kaymayı bozdu: ${fit.scaleB}`);
+    assert.ok(fit.rejected >= 10, `[3b] patlamış noktalar atılmadı (atılan ${fit.rejected})`);
+    // Düz OLS aynı veride ÇÖKMELİ — düzeltmenin gerçekten gerekli olduğunun kanıtı.
+    const n = poisoned.length;
+    let sx = 0, sy = 0, sxx = 0, sxy = 0;
+    for (const { dPred, dMetric } of poisoned) { sx += dPred; sy += dMetric; sxx += dPred * dPred; sxy += dPred * dMetric; }
+    const naiveA = (n * sxy - sx * sy) / (n * sxx - sx * sx);
+    console.log(`[3b] aynı veride DÜZ OLS: scaleA=${naiveA.toFixed(2)} (gerçek ${aT}) — düzeltme olmasa bu gelirdi`);
+    assert.ok(Math.abs(naiveA - aT) > 1, '[3b] düz OLS bu veride zaten bozulmalıydı (test düzeneği zayıf)');
+  }
 }
 
 // ---------------------------------------------------------------------------
