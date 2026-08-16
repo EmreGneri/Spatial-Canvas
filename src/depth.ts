@@ -149,22 +149,68 @@ export type DepthEstimateOptions = {
 };
 
 let estimator: Awaited<ReturnType<typeof pipeline<'depth-estimation'>>> | null = null;
+/** Modelin GERÇEKTEN yüklendiği cihaz (ölçüm/teşhis için okunur). */
+export let depthDevice: 'wasm' | 'webgpu' | null = null;
 
-export async function loadDepthModel(device: 'wasm' | 'webgpu' = 'wasm') {
+/**
+ * WebGPU var mı? Tarayıcı desteği + adaptör edinimi ayrı şeylerdir: `navigator.gpu`
+ * tanımlı olduğu hâlde adaptör gelmeyebilir (sürücü/liste dışı GPU). İkisi de
+ * kontrol edilir, aksi hâlde pipeline kurulumu geç ve gürültülü şekilde patlar.
+ */
+async function webgpuKullanilabilir(): Promise<boolean> {
+  if (typeof navigator === 'undefined') return false; // Node (verify suite)
+  const gpu = (navigator as unknown as { gpu?: { requestAdapter(): Promise<unknown> } }).gpu;
+  if (!gpu) return false;
+  try {
+    return (await gpu.requestAdapter()) != null;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Modeli yükler. VARSAYILAN CİHAZ ARTIK OTOMATİK (E5.2, 2026-08-16 —
+ * ÖNCEKİ DAVRANIŞ DEĞİŞTİ: sabit 'wasm' idi).
+ *
+ * NEDEN: wasm yolu `numThreads = 1` ile koşuyor (COOP/COEP başlığı
+ * istemeyelim diye, satır 67). Fotoğraf yolunda tek kare için kabul
+ * edilebilirdi; E5.1'de video yolu keyframe BAŞINA bir çıkarım yapmaya
+ * başlayınca maliyet çarpıldı. Gerçek ölçüm (2026-08-16, 8 keyframe,
+ * 384×288 girdi): tüm boru hattı 108.262 ms — kare başına ~13.5 sn, ve
+ * bunun neredeyse tamamı çıkarım.
+ *
+ * Cihaz açıkça verilmezse WebGPU denenir, yoksa wasm'a düşülür. `device`
+ * parametresi KORUNDU: çağıran zorlayabilir (ölçüm/karşılaştırma için).
+ */
+export async function loadDepthModel(device?: 'wasm' | 'webgpu') {
   if (estimator) return estimator;
+  const secilen = device ?? ((await webgpuKullanilabilir()) ? 'webgpu' : 'wasm');
   // env yapılandırması burada, pipeline çağrısından ÖNCE uygulanır.
   // E1.4 — estimator da onceRetry'den geçer: pipeline reddederse cache düşer
   // (sonraki çağrı yeniden dener — cihaz kilidi serbest kalır), eşzamanlı
   // çağrılar tek pipeline'a birleşir (webgpu cihaz kilidi çift edinilmez).
-  const est = await onceRetry(() =>
+  const kur = (d: 'wasm' | 'webgpu') =>
     loadTransformers().then((tf) =>
-      tf.pipeline('depth-estimation', MODEL, {
-        device,
-        dtype: device === 'webgpu' ? 'fp16' : 'q8',
-      }),
-    ),
-  )();
+      tf.pipeline('depth-estimation', MODEL, { device: d, dtype: d === 'webgpu' ? 'fp16' : 'q8' }),
+    );
+
+  // Adaptör gelse bile pipeline kurulumu patlayabilir (fp16 desteği, sürücü).
+  // O durumda wasm'a düşülür — aksi hâlde onceRetry her denemede aynı
+  // webgpu yolunu tekrarlar ve derinlik hiç çalışmaz.
+  const est = await onceRetry(async () => {
+    if (secilen === 'wasm') return kur('wasm');
+    try {
+      const w = await kur('webgpu');
+      depthDevice = 'webgpu';
+      return w;
+    } catch {
+      const f = await kur('wasm');
+      depthDevice = 'wasm';
+      return f;
+    }
+  })();
   estimator = est;
+  depthDevice ??= secilen;
   return est;
 }
 
