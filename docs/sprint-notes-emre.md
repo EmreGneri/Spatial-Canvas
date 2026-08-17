@@ -77,3 +77,60 @@ eşleşmeler 0.36 px altında — 756 eşleşme korundu, GT hatası max 0.306 px
 - E1.2 sözleşme dondurma: PoseResult/ScaleVerdict/CaptureDiagnostics/DepthProvider tipleri; recoverPose kaynak/dejenere alanları (başarısızlıkta null korunur — F2 davranışı); chainPoseTrack kaynak etiketi (donme-fallback <8 eşleşmede basarisiz).
 - E1.4: transformersPromise rejection cache'i düşürme (retry) — test fake loader ile.
 - E2.1: videoPipe maxCorners 300→800; grid bucketing; FB tutarlılık (>1px at); minEigThreshold; pyramid 3→4; 256×192→384×288 (KEYFRAME sabitleri — seekCapture otomatik takip eder).
+
+# Gün 3–4 (2026-08-17) — E3.1 + E4.1/E4.2
+
+## E3.1 poz sağlamlığı (commit 0bbecb0)
+
+- Adaptif RANSAC: `iterations` artık ÜST SINIR (varsayılan 500); başarı anında
+  hedef güven p=0.99'a göre n = ⌈log(1−p)/log(1−w⁸)⌉; w ≥ 1 → tek iterasyon.
+- recoverPose iki yeni dejenere kapısı: (1) cheirality oylarında belirsizlik
+  (best < 1.5×second) → null; (2) homografi oranı `ratioH + 0.05 ≥ ratioE` →
+  null. null → zincirin mevcut 'donme-fallback' + dejenere:true etiketi (zincir
+  DEĞİŞMEDİ).
+- Homografi detektörü: essential inlier'larına DLT (Hartley normalize) +
+  simetrik transfer, eşik `(pixelThreshold/f)²` (E ile aynı).
+- DLT satır türetimi (HATA YAKALANDI): sabit slotlara İLK noktanın (x,y)
+  koordinatları girer; ikinci nokta yalnızca h7–h9 çarpımlarında. Yanlış
+  sürümde (x'/y' sabit slotlarda) ratioH düzlemsel sahnede 0.004 çıkıyordu.
+- Kabul (verify-pose blok 9): [9a] gürültüsüz 0.0000°/0.0000° (<0.5°/1°);
+  [9b] %30 aykırı 0.183°/0.058° (<2°); [9c] düzlemsel sahne (generatePlanarScene,
+  arc 60°) → kaynaklar 1:donme-fallback! 2:donme-fallback! (ratioE 0.411 vs
+  ratioH 1.000).
+- YAN ÜRÜN: verify-videopipe "hareketli" fikstürü saf yatay kaydırma idi = TAM
+  homografi (sonsuz düzlem) — yeni detektör onu haklı olarak 'donme-fallback'
+  yapıyordu. Denenen kavisli warp LK'yı TAMAMEN bozuyor (status 0 ×800);
+  çözüm: iki derinlik bantlı fikstür (üst yarı 1.5× / alt yarı 0.5× hız) —
+  LK sağlam, homografi reddediliyor, essential geri geldi (1805 eşleşme).
+- AÇIK ÖLÇÜM: gerçek el kamerası doğrusal ötelenme videolarında poz başarısı
+  0/11 → ≥7/11 (manuel/browser ölçümü, docs'a yazılacak).
+
+## E4.1 ölçek kapıları (commit 90bfdcd) + E4.2 normal kalitesi (dd29c4d)
+
+- Bu iki madde PARALEL OTURUMDA işlenmişti: benim çalışma ağacımdaki
+  uncommitted E4.1/E4.2 dosyalarım (scale.ts scaleVerdict + videoPipe bağlantısı
+  + verify-scale blok 8 + verify-normals.mjs + package.json zinciri) paralel
+  oturum tarafından commit'lenip origin'e rebase edildi; kendi kopyalarım
+  checkout'ta silindi. İçerik BİREBİR aynı — çakışma yok, kayıp yok.
+- E4.1 scaleVerdict(fit, {bazUzunlugu, medyanParallaksPx, minBaz:0.1,
+  minParallaksPx:3}): fit yok + hareket yok → 'ucgenleme-yetersiz' (E1.2
+  sözleşmesi korunur); fit yok/yoksa + baz < eşik + parallaks var → 'baz-yok';
+  fit var + parallaks < eşik → 'parallaks-yetersiz'; geçerse 'gecerli'
+  (a,b,rmse,guven — Zeynep'in f5881e8 formülü scaleVerdict'e taşındı).
+- Kabul: [8a] %25 aykırı → scaleA 2.2000/scaleB 0.3500 (≤%5 sapma, 50 atılan);
+  [8b] saf dönme fikstürü (rotY, t=[0,0,1.2], fovY) → 'baz-yok' (parallaks
+  23.2px, fit yok); [8c] düşük parallaks 1.2px → 'parallaks-yetersiz',
+  sağlıklı 8px → gecerli guven 1.0, durağan → 'ucgenleme-yetersiz'.
+- E4.2 verify-normals.mjs: [1] splat küre 2876 texel ortalama 0.023°; [2] eğik
+  düzlem 4096 texel 0.554° (kenar texelleri tek yanlı fark /2 — görünmez splat
+  sınırları, 0.55° ≪ 5° kabul); [3] mesh düz düzlem ön yüz 0.000°/arka kapak
+  0.000°; [4] mesh eğik düzlem geometrik normalden 0.005°. İki üretici yol da
+  (splats komşu-fark, mesh z-alanı eğimi) analitik yüzeylerde doğru; kod
+  değişikliği GEREKMEDİ — betik regresyon ağı olarak eklendi.
+
+## Durum
+
+- Zeynep'in E4.3 + E5.1–E5.4 üstte (keyframe aralığı, video derinliği MiDaS +
+  zamansal hizalama + ters derinlik uzayı, WebGPU otomatik seçim, parallaks
+  güdümlü keyframe). verify zinciri **30 script**, `npm run verify` exit 0,
+  `npx tsc --noEmit` temiz. E3.1 blok 9 ve E4.1 blok 8 tümüyle yeşil.
