@@ -13,6 +13,7 @@ import { ModeSelector, type RenderMode } from './ui/ModeSelector';
 import { CapturePanel } from './ui/CapturePanel';
 import { MetricsPanel } from './ui/MetricsPanel';
 import { NodeGraphEditor } from './ui/NodeGraphEditor';
+import { TrackerOverlay } from './ui/TrackerOverlay';
 import {
   applyPreset,
   deleteSlot,
@@ -69,6 +70,9 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
   const [segment, setSegment] = useState(false);
   /** Tanılama: RMBG maskesini overlay olarak göster (model mi, morf mu?). */
   const [showMask, setShowMask] = useState(false);
+  /** Tracker HUD overlay açık mı (Gün 2: mock veri — gerçek tracker.ts
+   *  bağlantısı akşam sync'inde takılır). */
+  const [trackerOn, setTrackerOn] = useState(false);
   const [useTextureColor, setUseTextureColor] = useState(true);
   const [fps, setFps] = useState(0);
   /** GÜN 6: WebM kayıt süresi — döngüsel butonla değiştirilir (5/10/20). */
@@ -642,6 +646,14 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
         <button disabled={busy} onClick={toggleMaskOverlay} style={showMask ? { background: '#a53', color: '#fff', border: '1px solid #a53' } : undefined}>
           maskeyi göster: {showMask ? 'AÇIK' : 'kapalı'}
         </button>
+        <button
+          disabled={busy}
+          onClick={() => setTrackerOn((on) => !on)}
+          title="izleme HUD'u: hedef kutuları motor görüntüsünün üstüne çizilir (Gün 2: mock veri)"
+          style={trackerOn ? { background: '#357', color: '#fff', border: '1px solid #357' } : undefined}
+        >
+          tracker: {trackerOn ? 'AÇIK' : 'kapalı'}
+        </button>
         <label style={{ display: 'flex', gap: 4, alignItems: 'center', color: '#889', fontSize: 12, cursor: 'pointer' }}>
           <input
             type="checkbox"
@@ -714,6 +726,10 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
         }}
         style={{ width: 640, height: 420, border: '1px solid #222', background: '#000', position: 'relative' }}
       >
+        {/* Tracker HUD — maske overlay'iyle AYNI desen: motor canvas'ının
+            üstünde, WebGL sahnesinin dışında. Kapalıyken hiç mount edilmez,
+            rAF döngüsü de çalışmaz. Gün 2: veri hâlâ mock. */}
+        {trackerOn && <TrackerOverlay />}
         {showMask && (
           <canvas
             ref={segOverlayRef}
