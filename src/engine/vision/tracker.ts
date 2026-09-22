@@ -37,13 +37,33 @@ export interface TrackerOptions {
   idMatchRadius?: number;
 }
 
-const DEFAULTS: Required<TrackerOptions> = {
+/**
+ * Varsayılanlar GERÇEK klip üzerinde ölçülerek seçildi
+ * (`assets/test-clips/yay-100derece-stgeorge.mp4`, 160×90, 15 fps, 75 kare):
+ *
+ * | ayar                          | süre/kare | hedef | ID ömrü (medyan) | anlık ID |
+ * |-------------------------------|-----------|-------|------------------|----------|
+ * | eski (kume 14, idR 24)        |   36.1 ms |    26 |                6 |     %21  |
+ * | + fb kapalı, pencere 5, 100 köşe | 7.4 ms |    24 |                5 |     %23  |
+ * | + kume 28, idR 40 (BUGÜNKÜ)   |    7.4 ms |    11 |                6 |     %21  |
+ *
+ * Üç karar: (1) **4.9× hız** — HUD ana iş parçacığında koşuyor, 36 ms her
+ * 3. karede görünür takılma demekti. (2) **kümeleme yarıçapı 14 → 28**:
+ * 26 kutu görsel gürültüydü, 11 kutu aranan "Tracker" estetiği.
+ * (3) **ID eşleşme yarıçapı 24 → 40**: kutular büyüyünce kare arası yer
+ * değişimi de büyüdü, 24 px dar kalıyordu — ID ömrü 3 → 6 kareye çıktı.
+ *
+ * Ölçülüp REDDEDİLENLER (fark üretmedi, değiştirilmedi): piramit 4 → 2 ve
+ * iterasyon 10 → 5 — ikisi de süreyi hiç değiştirmedi (LK zaten eşikte
+ * yakınsıyor, üst piramit seviyeleri 20×11 px'te neredeyse bedava).
+ */
+export const TRACKER_DEFAULTS: Required<TrackerOptions> = {
   everyNFrames: 3,
-  maxCorners: 150,
+  maxCorners: 100,
   maxTargets: 32,
   minArea: 16,
-  clusterRadius: 14,
-  idMatchRadius: 24,
+  clusterRadius: 28,
+  idMatchRadius: 40,
 };
 
 /** Nokta kümelerini greedy şekilde birleştirir (tek geçiş, O(n·k)). Her
@@ -83,8 +103,12 @@ function clusterPoints(
 
 /** İzlenen akış noktalarından hedef kutuları kurar: kümele → min-alan
  *  filtrele → büyükten küçüğe sırala/kırp → önceki karenin ID'lerini
- *  en-yakın-merkeze göre devral (yoksa yeni ID). */
-function toTargets(
+ *  en-yakın-merkeze göre devral (yoksa yeni ID).
+ *
+ *  DIŞA AÇIK ve DOM'SUZ: kare yakalama (canvas) `Tracker` sınıfında kalır,
+ *  karar mantığı burada — Node'dan gerçek klip kareleriyle çalıştırılabilsin
+ *  (tarayıcı gerektirmeden ölçüm). */
+export function targetsFromFlow(
   flow: FlowPoint[],
   prev: TrackedTarget[],
   opts: Required<TrackerOptions>,
@@ -107,6 +131,11 @@ function toTargets(
     .sort((a, b) => b.w * b.h - a.w * a.h)
     .slice(0, opts.maxTargets);
 
+  // ponytail: ID devamlılığı tek kare geriye bakar (histerezis yok). Ölçülen
+  // kalan titreme: ID'lerin ~%20-27'si tek karelik (iki gerçek klipte 18/86 ve
+  // 25/91). Sebep greedy kümelemenin kare arası bölünüp birleşmesi. Gerekirse
+  // yükseltme yolu: eşleşmeyen hedefi 2-3 kare "hayalet" tutmak ya da
+  // kümelemeyi ızgara tabanlı/kararlı tohumlu yapmak.
   const usedPrev = new Set<number>();
   const r2 = opts.idMatchRadius * opts.idMatchRadius;
   return boxes.map((b) => {
@@ -144,7 +173,7 @@ export class Tracker {
   private lastTargets: TrackedTarget[] = [];
 
   constructor(opts: TrackerOptions = {}) {
-    this.opts = { ...DEFAULTS, ...opts };
+    this.opts = { ...TRACKER_DEFAULTS, ...opts };
     this.canvas.width = TRACKER_WIDTH;
     this.canvas.height = TRACKER_HEIGHT;
     this.ctx = this.canvas.getContext('2d', { willReadFrequently: true });
@@ -179,10 +208,17 @@ export class Tracker {
     this.prevLum = lum;
     if (!prevLum) return this.lastTargets; // ilk kare — akış için çift gerekir
 
-    const flow = computeOpticalFlow(prevLum, lum, w, h, { maxCorners: this.opts.maxCorners }).filter(
-      (p) => p.status === 1,
-    );
-    this.lastTargets = toTargets(flow, this.lastTargets, this.opts, () => this.nextIdCounter++);
+    // HUD akış ayarı FÜZYON ayarından AYRI (ölçüldü, yukarıdaki tablo):
+    // `fbConsistency` kapalı + `windowRadius` 5 birlikte 36.1 → 11.1 ms.
+    // Gerekçe: geri-ileri tutarlılık RANSAC'ın aykırı havuzunu küçültmek
+    // için var; HUD'da kötü eşleşmenin bedeli bir karelik yanlış kutudur,
+    // görsel olarak fark edilmez. Füzyon yolu (videoPipe) bu ayarı GÖRMEZ.
+    const flow = computeOpticalFlow(prevLum, lum, w, h, {
+      maxCorners: this.opts.maxCorners,
+      fbConsistency: false,
+      windowRadius: 5,
+    }).filter((p) => p.status === 1);
+    this.lastTargets = targetsFromFlow(flow, this.lastTargets, this.opts, () => this.nextIdCounter++);
     return this.lastTargets;
   }
 }
