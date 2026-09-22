@@ -251,6 +251,21 @@ export class Engine {
   };
 
   /**
+   * "Canlı fotoğraf" paralaks sway (viral sprint, hızlı prototip — ParamDef
+   * yok, preset'e kaydolmaz). Sway AÇILDIĞI ANDAKI kamera pozunun etrafında
+   * salınır (cameraHome'a SIFIRLAMAZ — kullanıcının manuel çevirdiği kare
+   * korunur). `swayBasePos/Target` yoksa sway kapalıdır (tek doğruluk kaynağı).
+   */
+  private swayEnabled = false;
+  private swayBasePos: THREE.Vector3 | null = null;
+  private swayBaseTarget: THREE.Vector3 | null = null;
+  private swayTime = 0;
+  private swayAmplitudeDeg = 4;
+  private swaySpeed = 1;
+  /** OrbitControls sürüklerken sway duraklar — elle kontrolle çakışmasın. */
+  private userInteracting = false;
+
+  /**
    * GÃœN 6 (opt): otomatik DPR dÃ¼ÅŸÃ¼rme. FPS sÃ¼rdÃ¼rÃ¼lebilir eÅŸiÄŸin (30) altÄ±na
    * dÃ¼ÅŸerse drawing buffer 384â†’256'ya iner (karede 2.25x daha az piksel);
    * tekrar 45+ olursa geri yÃ¼kselir. Histerezis: sÄ±k sÄ±k salÄ±nÄ±m yapmaz.
@@ -292,6 +307,15 @@ export class Engine {
     this.controls.dampingFactor = 0.08;
     this.controls.minDistance = 1;
     this.controls.maxDistance = 15;
+    // Sway: sürüklerken duraklat, bırakınca YENİ pozdan devam et (eski poza
+    // sıçramasın) — kullanıcının kadrajı sway'e teslim edilmez.
+    this.controls.addEventListener('start', () => {
+      this.userInteracting = true;
+    });
+    this.controls.addEventListener('end', () => {
+      this.userInteracting = false;
+      this.rebaseSway();
+    });
 
     this.points = createPointsCloud(this.simulation.positionTexture);
     this.pointsMaterial = this.points.material as THREE.Material;
@@ -359,6 +383,7 @@ export class Engine {
       const uPositions = (this.pointsMaterial as THREE.ShaderMaterial).uniforms?.['uPositions'];
       if (uPositions) uPositions.value = this.simulation.positionTexture;
       this.pushLookUniforms();
+      this.applySway(dt);
       this.controls.update();
       // SPLAT: alpha blend sırası CPU'da kurulur. controls.update()'ten SONRA
       // (kamera matrisi güncel) ve composer.render()'dan ÖNCE olmalı — bir kare
@@ -886,6 +911,9 @@ releasePhoto() {
       this.camera.position.copy(this.cameraHome.pos);
       this.controls.target.copy(this.cameraHome.target);
       this.controls.update();
+      // Sway açıksa yeni (home) pozdan devam etsin — bir sonraki applySway
+      // çağrısı eski taban'a sıçrayıp "sıfırla"yı görünmez kılmasın.
+      this.rebaseSway();
     }
   }
 
@@ -999,6 +1027,24 @@ if (entry && entry.material !== this.pointsMaterial) {
   setCameraPose(pose: CameraPose) {
     this.camera.position.set(...pose.position);
     this.controls.target.set(...pose.target);
+  }
+
+  /**
+   * "Canlı fotoğraf" paralaks sway aç/kapat. AÇILDIĞI ANDAKI kamera pozu
+   * temel alınır (`rebaseSway`) — cameraHome'a atlamaz, kullanıcının
+   * kadrajını korur. Kapatınca kamera o an sway'in ürettiği pozda kalır
+   * (sıçrama yok); bir sonraki `applySway` çağrısı olmayacağı için sabitlenir.
+   */
+  setAutoSway(enabled: boolean, opts?: { amplitudeDeg?: number; speed?: number }) {
+    if (opts?.amplitudeDeg !== undefined) this.swayAmplitudeDeg = opts.amplitudeDeg;
+    if (opts?.speed !== undefined) this.swaySpeed = opts.speed;
+    if (enabled === this.swayEnabled) return;
+    this.swayEnabled = enabled;
+    if (enabled) this.rebaseSway();
+    else {
+      this.swayBasePos = null;
+      this.swayBaseTarget = null;
+    }
   }
 
   private setPostPassEnabled(enabled: boolean) {
@@ -1288,6 +1334,34 @@ depth,
       }
     }
     // Orta bölge (30..45): sayaçlar olduğu gibi kalır — salınım bastırılır.
+  }
+
+  /** Sway'in temel pozunu ŞİMDİKİ kamera pozuna çeker (enable anında ve
+   *  manuel sürüklemenin BİTİMİNDE çağrılır) — sway her zaman "kullanıcının
+   *  son bıraktığı yer"den devam eder, cameraHome'dan değil. */
+  private rebaseSway() {
+    if (!this.swayEnabled) return;
+    this.swayBasePos = this.camera.position.clone();
+    this.swayBaseTarget = this.controls.target.clone();
+    this.swayTime = 0;
+  }
+
+  /** `swayBasePos` etrafında küçük açılı yörünge (yaw + hafif pitch),
+   *  hedefe göre küresel koordinatta — kamera her karede TABAN'dan yeniden
+   *  hesaplanır (birikimli sürüklenme yok). dt saniye; kare hızından
+   *  bağımsız (SIM_PARAMS'taki uDtScale felsefesiyle aynı). */
+  private applySway(dt: number) {
+    if (!this.swayEnabled || this.userInteracting || !this.swayBasePos || !this.swayBaseTarget) return;
+    this.swayTime += dt;
+    const amp = THREE.MathUtils.degToRad(this.swayAmplitudeDeg);
+    const yaw = Math.sin(this.swayTime * 0.6 * this.swaySpeed) * amp;
+    const pitch = Math.sin(this.swayTime * 0.37 * this.swaySpeed) * amp * 0.6;
+    const offset = this.swayBasePos.clone().sub(this.swayBaseTarget);
+    const spherical = new THREE.Spherical().setFromVector3(offset);
+    spherical.theta += yaw;
+    spherical.phi = THREE.MathUtils.clamp(spherical.phi + pitch, 0.05, Math.PI - 0.05);
+    this.camera.position.copy(this.swayBaseTarget).add(new THREE.Vector3().setFromSpherical(spherical));
+    this.controls.target.copy(this.swayBaseTarget);
   }
 
   private resize() {
