@@ -14,6 +14,7 @@ import { CapturePanel } from './ui/CapturePanel';
 import { MetricsPanel } from './ui/MetricsPanel';
 import { NodeGraphEditor } from './ui/NodeGraphEditor';
 import { TrackerOverlay } from './ui/TrackerOverlay';
+import { Tracker } from './engine/vision/tracker';
 import {
   applyPreset,
   deleteSlot,
@@ -46,6 +47,10 @@ const LUMINANCE_MOTION_GAIN = 6;
 export default function App() {  const containerRef = useRef<HTMLDivElement>(null);
   const engineRef = useRef<Engine | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  /** Tracker HUD veri üreteci (Emre, engine/vision/tracker.ts) — kaynak
+   *  değiştiğinde (teardownSource) sıfırlanır, eski karenin izi sızmasın. */
+  const trackerRef = useRef<Tracker | null>(null);
+  if (trackerRef.current === null) trackerRef.current = new Tracker();
   const streamRef = useRef<MediaStream | null>(null);
   const timerRef = useRef<number | null>(null);
   const objectUrlRef = useRef<string | null>(null);
@@ -187,6 +192,9 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
     // Tur 12 (şikayet 1): GPU'daki video dokusunu bırak — yeni kaynak
     // gelene kadar eski karelerin renkleri parçacıklarda kalmasın.
     engineRef.current?.setVideoSource(null);
+    // Tracker HUD (Gün 2 akşam sync): eski kaynağın luminance karesi yeni
+    // kaynakla karşılaştırılırsa sahte akış üretir — kaynak değişiminde sil.
+    trackerRef.current?.reset();
   }
 
   async function run(source: HTMLCanvasElement | HTMLImageElement) {
@@ -728,8 +736,16 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
       >
         {/* Tracker HUD — maske overlay'iyle AYNI desen: motor canvas'ının
             üstünde, WebGL sahnesinin dışında. Kapalıyken hiç mount edilmez,
-            rAF döngüsü de çalışmaz. Gün 2: veri hâlâ mock. */}
-        {trackerOn && <TrackerOverlay />}
+            rAF döngüsü de çalışmaz. Gün 2 akşam sync: mock veri yerine
+            gerçek tracker.ts — kaynak yoksa (fotoğraf modu) boş dizi döner. */}
+        {trackerOn && (
+          <TrackerOverlay
+            getTargets={() => {
+              const video = videoRef.current;
+              return video ? trackerRef.current!.step(video) : [];
+            }}
+          />
+        )}
         {showMask && (
           <canvas
             ref={segOverlayRef}
