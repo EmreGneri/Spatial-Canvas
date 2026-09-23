@@ -33,6 +33,10 @@ interface HudSettings {
   minAreaPct: number;
   labels: boolean;
   links: boolean;
+  /** En büyük hedef "LOCK" olarak vurgulanır, diğerleri söner. */
+  lock: boolean;
+  /** Sol üstte Inspector tarzı sayaç bloğu. */
+  readout: boolean;
 }
 
 const DEFAULT_SETTINGS: HudSettings = {
@@ -43,7 +47,25 @@ const DEFAULT_SETTINGS: HudSettings = {
   minAreaPct: 0.2,
   labels: true,
   links: true,
+  lock: true,
+  readout: true,
 };
+
+/**
+ * GÜN 3 (görsel cila) — kutular üç ZAMANLI durum taşır, çünkü tracker
+ * verisi kendi başına HUD için fazla sert:
+ *
+ * 1. YUMUŞATMA: `tracker.ts` her 3. karede hesaplar (everyNFrames), aradaki
+ *    karelerde AYNI kutuyu döndürür — ham çizim 20 Hz'de zıplıyor. Kutu
+ *    hedefe üstel olarak yaklaşır: aradaki kareler boş geçmez, kayma akar.
+ * 2. KİLİTLENME: yeni ID büyükten küçüğe toplanarak gelir (acquire) —
+ *    Emre'nin ölçtüğü ID devri (~%21 tek karelik) böylece kaza değil,
+ *    kasıt gibi okunur.
+ * 3. KAYBOLMA: hedef düşünce kutu hemen silinmez, hayalet olarak söner.
+ */
+const SMOOTH_TAU = 0.06;
+const ACQUIRE_MS = 260;
+const LOST_FADE_MS = 220;
 
 /** Bağlantı çizgisi en fazla bu mesafedeki merkezler arasında (overlay
  *  köşegeninin oranı) çekilir. */
@@ -82,11 +104,15 @@ export function TrackerOverlay({
     if (!ctx) return;
 
     const mock = createMockTargets();
+    const states = new Map<number, TrackState>();
     let raf = 0;
     let lastCount = -1;
+    let lastTime = 0;
 
     const frame = (time: number) => {
       raf = requestAnimationFrame(frame);
+      const dt = lastTime ? Math.min((time - lastTime) / 1000, 0.1) : 0;
+      lastTime = time;
 
       // Canvas çözünürlüğü = görüntülenen boyut × DPR (bulanık çizgi yok).
       const dpr = window.devicePixelRatio || 1;
@@ -107,7 +133,8 @@ export function TrackerOverlay({
       const minArea = (s.minAreaPct / 100) * src.w * src.h;
       const targets = raw.filter((t) => t.w * t.h >= minArea).slice(0, s.maxTargets);
 
-      drawHud(ctx, targets, s, cssW / src.w, cssH / src.h, cssW, cssH);
+      const live = syncStates(states, targets, time, dt);
+      drawHud(ctx, live, s, cssW / src.w, cssH / src.h, cssW, cssH, src);
 
       if (targets.length !== lastCount) {
         lastCount = targets.length;
@@ -156,6 +183,12 @@ export function TrackerOverlay({
             <Row label="links">
               <input type="checkbox" checked={settings.links} onChange={(e) => set('links', e.target.checked)} />
             </Row>
+            <Row label="lock">
+              <input type="checkbox" checked={settings.lock} onChange={(e) => set('lock', e.target.checked)} />
+            </Row>
+            <Row label="readout">
+              <input type="checkbox" checked={settings.readout} onChange={(e) => set('readout', e.target.checked)} />
+            </Row>
           </div>
         )}
       </div>
@@ -172,17 +205,99 @@ function Row({ label, children }: { label: string; children: ReactNode }) {
   );
 }
 
+/** Bir hedefin ekrandaki (zamana yayılmış) hali — kaynak piksel uzayında. */
+interface TrackState extends TrackedTarget {
+  born: number;
+  /** Hedef bu kareden beri yok; null ise canlı. */
+  lostAt: number | null;
+}
+
+/**
+ * Durum haritasını bu karenin hedefleriyle eşitler ve çizilecek listeyi
+ * döndürür: kutular hedefe üstel yaklaşır, yeni ID'ler `born` ile işaretlenir,
+ * düşen hedefler hemen silinmez (hayalet söner), süresi dolanlar atılır.
+ */
+function syncStates(
+  states: Map<number, TrackState>,
+  targets: TrackedTarget[],
+  time: number,
+  dt: number,
+): TrackState[] {
+  // Kare hızından bağımsız üstel yaklaşma (60 Hz'de de 120 Hz'de de aynı
+  // görünür süre) — simülasyondaki uDtScale ile aynı felsefe.
+  const k = dt > 0 ? 1 - Math.exp(-dt / SMOOTH_TAU) : 1;
+  const seen = new Set<number>();
+
+  for (const t of targets) {
+    seen.add(t.id);
+    const prev = states.get(t.id);
+    if (!prev) {
+      states.set(t.id, { ...t, born: time, lostAt: null });
+      continue;
+    }
+    prev.x += (t.x - prev.x) * k;
+    prev.y += (t.y - prev.y) * k;
+    prev.w += (t.w - prev.w) * k;
+    prev.h += (t.h - prev.h) * k;
+    prev.lostAt = null; // geri geldi (aynı ID) — hayaletten canlıya döner
+  }
+
+  const out: TrackState[] = [];
+  for (const [id, st] of states) {
+    if (!seen.has(id)) {
+      st.lostAt ??= time;
+      if (time - st.lostAt > LOST_FADE_MS) {
+        states.delete(id);
+        continue;
+      }
+    }
+    out.push(st);
+  }
+  return out;
+}
+
+/** Hedefin görünürlük katsayısı: toplanırken 0→1, kaybolurken 1→0. */
+function stateAlpha(st: TrackState, time: number): number {
+  const appear = Math.min(1, (time - st.born) / ACQUIRE_MS);
+  const fade = st.lostAt === null ? 1 : Math.max(0, 1 - (time - st.lostAt) / LOST_FADE_MS);
+  return appear * fade;
+}
+
 /** Tüm HUD'u çizer. sx/sy: kaynak piksel → overlay CSS pikseli. */
 function drawHud(
   ctx: CanvasRenderingContext2D,
-  targets: TrackedTarget[],
+  states: TrackState[],
   s: HudSettings,
   sx: number,
   sy: number,
   viewW: number,
   viewH: number,
+  src: { w: number; h: number },
 ) {
-  const boxes = targets.map((t) => ({ id: t.id, x: t.x * sx, y: t.y * sy, w: t.w * sx, h: t.h * sy }));
+  const time = performance.now();
+  // LOCK = en büyük CANLI hedef. Hayalet kilit almaz (kaybolan kutu
+  // "kilitli" görünürse HUD yalan söyler).
+  let lockId = -1;
+  let lockArea = 0;
+  for (const st of states) {
+    if (st.lostAt !== null) continue;
+    const area = st.w * st.h;
+    if (area > lockArea) {
+      lockArea = area;
+      lockId = st.id;
+    }
+  }
+
+  const boxes = states.map((st) => {
+    const alpha = stateAlpha(st, time);
+    // Toplanma anında kutu biraz büyük başlar ve yerine oturur.
+    const grow = 1 + 0.35 * (1 - Math.min(1, (time - st.born) / ACQUIRE_MS));
+    const w = st.w * sx * grow;
+    const h = st.h * sy * grow;
+    const cx = (st.x + st.w / 2) * sx;
+    const cy = (st.y + st.h / 2) * sy;
+    return { id: st.id, x: cx - w / 2, y: cy - h / 2, w, h, alpha, srcX: st.x + st.w / 2, srcY: st.y + st.h / 2, live: st.lostAt === null };
+  });
 
   ctx.save();
   ctx.strokeStyle = s.accent;
@@ -191,21 +306,23 @@ function drawHud(
   ctx.shadowBlur = s.glow;
   ctx.lineCap = 'square';
 
-  // 1) Bağlantı çizgileri — kutuların ALTINDA, soluk.
-  if (s.links && boxes.length > 1) {
+  // 1) Bağlantı çizgileri — kutuların ALTINDA, soluk. Hayaletler bağlanmaz:
+  //    ölü hedefe giden çizgi ağı olduğundan kalabalık gösterir.
+  if (s.links) {
+    const linked = boxes.filter((b) => b.live);
     const maxD = LINK_DIST_FRAC * Math.hypot(viewW, viewH);
     ctx.lineWidth = 1;
-    for (let i = 0; i < boxes.length; i++) {
-      const a = boxes[i];
+    for (let i = 0; i < linked.length; i++) {
+      const a = linked[i];
       const ax = a.x + a.w / 2;
       const ay = a.y + a.h / 2;
-      for (let j = i + 1; j < boxes.length; j++) {
-        const b = boxes[j];
+      for (let j = i + 1; j < linked.length; j++) {
+        const b = linked[j];
         const bx = b.x + b.w / 2;
         const by = b.y + b.h / 2;
         const d = Math.hypot(bx - ax, by - ay);
         if (d > maxD) continue;
-        ctx.globalAlpha = 0.5 * (1 - d / maxD);
+        ctx.globalAlpha = 0.5 * (1 - d / maxD) * Math.min(a.alpha, b.alpha);
         ctx.beginPath();
         ctx.moveTo(ax, ay);
         ctx.lineTo(bx, by);
@@ -215,20 +332,26 @@ function drawHud(
     ctx.globalAlpha = 1;
   }
 
-  // 2) Kutular + köşe parantezleri + merkez artı.
+  // 2) Kutular + köşe parantezleri + merkez artı. LOCK açıkken kilitli
+  //    hedef tam parlaklıkta, ötekiler geri çekilir — göz nereye bakacağını
+  //    bilir (screenshot'taki Inspector hiyerarşisi).
   for (const b of boxes) {
+    const isLock = s.lock && b.id === lockId;
+    const emphasis = s.lock ? (isLock ? 1 : 0.45) : 1;
+    const a = b.alpha * emphasis;
     if (s.style !== 'brackets') {
-      ctx.globalAlpha = s.style === 'both' ? 0.35 : 1;
+      ctx.globalAlpha = a * (s.style === 'both' ? 0.35 : 1);
       ctx.lineWidth = 1;
       ctx.strokeRect(b.x, b.y, b.w, b.h);
-      ctx.globalAlpha = 1;
     }
     if (s.style !== 'box') {
-      ctx.lineWidth = 2;
+      ctx.globalAlpha = a;
+      ctx.lineWidth = isLock ? 2.5 : 2;
       drawBrackets(ctx, b.x, b.y, b.w, b.h);
     }
     const cx = b.x + b.w / 2;
     const cy = b.y + b.h / 2;
+    ctx.globalAlpha = a;
     ctx.lineWidth = 1;
     ctx.beginPath();
     ctx.moveTo(cx - 3, cy);
@@ -236,28 +359,74 @@ function drawHud(
     ctx.moveTo(cx, cy - 3);
     ctx.lineTo(cx, cy + 3);
     ctx.stroke();
+    // LOCK'un nişangâhı kenarlara uzanır — kutuyu sahnede "hedeflenmiş"
+    // gösterir.
+    if (isLock) {
+      ctx.globalAlpha = a * 0.35;
+      ctx.beginPath();
+      ctx.moveTo(0, cy);
+      ctx.lineTo(b.x, cy);
+      ctx.moveTo(b.x + b.w, cy);
+      ctx.lineTo(viewW, cy);
+      ctx.moveTo(cx, 0);
+      ctx.lineTo(cx, b.y);
+      ctx.moveTo(cx, b.y + b.h);
+      ctx.lineTo(cx, viewH);
+      ctx.stroke();
+    }
   }
+  ctx.globalAlpha = 1;
 
   // 3) Etiketler — glow'suz (okunurluk), koyu zemin üstünde.
   if (s.labels) {
     ctx.shadowBlur = 0;
     ctx.font = HUD_FONT;
     ctx.textBaseline = 'bottom';
-    for (let i = 0; i < boxes.length; i++) {
-      const b = boxes[i];
-      const t = targets[i];
-      const text = `#${String(t.id).padStart(2, '0')} ${Math.round(t.x + t.w / 2)},${Math.round(t.y + t.h / 2)}`;
+    for (const b of boxes) {
+      const isLock = s.lock && b.id === lockId;
+      const text = `${isLock ? 'LOCK ' : ''}#${String(b.id).padStart(2, '0')} ${Math.round(b.srcX)},${Math.round(b.srcY)}`;
       const tw = ctx.measureText(text).width;
       const lx = Math.min(Math.max(0, b.x), viewW - tw - 4);
       const ly = b.y > 14 ? b.y - 2 : b.y + b.h + 13;
-      ctx.globalAlpha = 0.6;
+      ctx.globalAlpha = b.alpha * 0.6;
       ctx.fillStyle = '#000';
       ctx.fillRect(lx, ly - 11, tw + 4, 12);
-      ctx.globalAlpha = 1;
+      ctx.globalAlpha = b.alpha * (s.lock && !isLock ? 0.55 : 1);
       ctx.fillStyle = s.accent;
       ctx.fillText(text, lx + 2, ly);
     }
+    ctx.globalAlpha = 1;
   }
+
+  // 4) Sol üst sayaç bloğu — Inspector estetiği: ne izlendiği yazılı olsun.
+  if (s.readout) {
+    const liveCount = boxes.filter((b) => b.live).length;
+    drawReadout(ctx, s.accent, [
+      `TRK ${String(liveCount).padStart(2, '0')}`,
+      s.lock && lockId !== -1 ? `LOCK #${String(lockId).padStart(2, '0')}` : 'LOCK --',
+      `SRC ${src.w}×${src.h}`,
+    ]);
+  }
+  ctx.restore();
+}
+
+/** Sol üst köşedeki sabit bilgi bloğu (glow'suz, koyu zeminli satırlar). */
+function drawReadout(ctx: CanvasRenderingContext2D, accent: string, lines: string[]) {
+  ctx.save();
+  ctx.shadowBlur = 0;
+  ctx.font = HUD_FONT;
+  ctx.textBaseline = 'top';
+  const pad = 4;
+  const lineH = 13;
+  const w = Math.max(...lines.map((l) => ctx.measureText(l).width)) + pad * 2;
+  ctx.globalAlpha = 0.55;
+  ctx.fillStyle = '#000';
+  ctx.fillRect(8, 8, w, lines.length * lineH + pad * 2);
+  ctx.globalAlpha = 0.9;
+  ctx.fillStyle = accent;
+  lines.forEach((l, i) => ctx.fillText(l, 8 + pad, 8 + pad + i * lineH));
+  // Blok kenarı: ince sol çizgi — panel gibi dursun, kutu gibi değil.
+  ctx.fillRect(8, 8, 1, lines.length * lineH + pad * 2);
   ctx.restore();
 }
 
