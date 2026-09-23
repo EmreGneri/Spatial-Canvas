@@ -51,6 +51,8 @@ export interface TrackerOptions {
   minArea?: number;
   /** Aynı kümeye ait sayılacak nokta-merkez mesafesi (px). */
   clusterRadius?: number;
+  /** Bir kutunun büyüyebileceği en büyük kenar (px). Zincirlemeyi kırar. */
+  maxBoxSize?: number;
   /** ID sürekliliği için önceki kareyle eşleştirme mesafe tavanı (px). */
   idMatchRadius?: number;
 }
@@ -74,25 +76,58 @@ export interface TrackerOptions {
  * Ölçülüp REDDEDİLENLER (fark üretmedi, değiştirilmedi): piramit 4 → 2 ve
  * iterasyon 10 → 5 — ikisi de süreyi hiç değiştirmedi (LK zaten eşikte
  * yakınsıyor, üst piramit seviyeleri 20×11 px'te neredeyse bedava).
+ *
+ * ── KUTU TAVANI TURU (bildirilen "kutular saçma yerlerde" hatası) ────────
+ * Kök neden `clusterPoints`'te belgeli: zincirleme kümeleme. Tavan (18 px)
+ * eklendikten sonra, ÜÇ gerçek klipte 128×72'de ölçüm:
+ *
+ * | klip            | tavansız: en büyük kutu / ID ömrü | tavanlı: kutu / ID ömrü |
+ * |-----------------|-----------------------------------|--------------------------|
+ * | stgeorge        |  103 px / 4 kare                  |  ≤26 px / 11 kare        |
+ * | mariatheresa    |   98 px / 7 kare                  |  ≤26 px /  8 kare        |
+ * | NYC yürüyüş     |   84 px / 4 kare                  |  ≤26 px /  7 kare        |
+ *
+ * Tavan yalnız yeri düzeltmedi, KARARLILIĞI da düzeltti: dev kutunun
+ * merkezi her karede noktalar girip çıktıkça oynuyor, ID kopuyordu; yerel
+ * kutu sabit duruyor. En uzun yaşayan ID artık üç klipte de 74 karenin
+ * tamamı boyunca hayatta. Tarayıcıda hizalama: kutu merkezlerinin 61/61'i
+ * (%100) içeriğin üstünde.
+ *
+ * `maxTargets` 32 → 20: tavan kutuları böldüğü için sayı 26-32'ye çıkıyordu;
+ * görsel kalabalığı sınır bu kolda tutulur (overlay'in kendi "max" slider'ı
+ * ayrıca kullanıcı tarafında daraltabilir).
  */
 export const TRACKER_DEFAULTS: Required<TrackerOptions> = {
   everyNFrames: 3,
   maxCorners: 100,
-  maxTargets: 32,
+  maxTargets: 20,
   minArea: 16,
   // Yarıçaplar çözünürlükle birlikte ölçeklendi (160→128, ×0.8): 28→22, 40→32.
   // Ölçeklenmezlerse aynı piksel yarıçapı küçülen karede GÖRECELİ olarak
   // büyür, kümeler gereğinden fazla birleşir.
   clusterRadius: 22,
   idMatchRadius: 32,
+  maxBoxSize: 18,
 };
 
-/** Nokta kümelerini greedy şekilde birleştirir (tek geçiş, O(n·k)). Her
- *  kümenin merkezi eklenen son noktanın konumuna göre güncellenir — kesin
- *  centroid değil ama HUD kutusu için yeterli, ekstra geçiş gerektirmez. */
+/**
+ * Nokta kümelerini greedy şekilde birleştirir (tek geçiş, O(n·k)). Her
+ * kümenin merkezi eklenen son noktanın konumuna göre güncellenir — kesin
+ * centroid değil ama HUD kutusu için yeterli, ekstra geçiş gerektirmez.
+ *
+ * KUTU BOYUTU TAVANI (`maxBoxSize`) ZİNCİRLEMEYİ KIRAR. Tek-bağlantı
+ * kümeleme geçişlidir: A–B yakın, B–C yakın ise A ile C aynı kutuya girer.
+ * Noktalar kareye yayıldığında (çizilen kare tam da böyledir) her şey TEK
+ * kutuda birleşiyordu; o kutunun merkezi bütün noktaların ortalamasıdır,
+ * yani genellikle BOŞLUĞA denk gelir — bildirilen "kutular saçma yerlerde"
+ * hatasının kök nedeni buydu. Ölçüldü (çizilen kare, 14 izlenen nokta):
+ * tavansız 1 kutu 32×40 (karenin üçte biri) · tavan 12 → 5 kutu, en büyüğü
+ * 20×20 · tavan 8 → 9 kutu, en büyüğü 15×15.
+ */
 function clusterPoints(
   points: { x: number; y: number }[],
   radius: number,
+  maxBoxSize: number,
 ): { minX: number; minY: number; maxX: number; maxY: number; cx: number; cy: number }[] {
   const r2 = radius * radius;
   const clusters: { minX: number; minY: number; maxX: number; maxY: number; cx: number; cy: number }[] = [];
@@ -102,10 +137,13 @@ function clusterPoints(
       const c = clusters[i];
       const dx = c.cx - p.x;
       const dy = c.cy - p.y;
-      if (dx * dx + dy * dy <= r2) {
-        hit = i;
-        break;
-      }
+      if (dx * dx + dy * dy > r2) continue;
+      // Nokta bu kümeye girerse kutu tavanı aşıyor mu? Aşıyorsa küme
+      // BÜYÜMEZ; nokta kendi kümesini kurar (zincir burada kırılır).
+      if (Math.max(c.maxX, p.x) - Math.min(c.minX, p.x) > maxBoxSize) continue;
+      if (Math.max(c.maxY, p.y) - Math.min(c.minY, p.y) > maxBoxSize) continue;
+      hit = i;
+      break;
     }
     if (hit === -1) {
       clusters.push({ minX: p.x, minY: p.y, maxX: p.x, maxY: p.y, cx: p.x, cy: p.y });
@@ -138,7 +176,7 @@ export function targetsFromFlow(
   // Kümeleme "current" konumunda çalışır (x+u, y+v) — kutunun ekranda
   // göründüğü yer, akışın başladığı yer değil.
   const pts = flow.map((p) => ({ x: p.x + p.u, y: p.y + p.v }));
-  const clusters = clusterPoints(pts, opts.clusterRadius);
+  const clusters = clusterPoints(pts, opts.clusterRadius, opts.maxBoxSize);
 
   const PAD = 4; // tek nokta bile görünür bir kutu alsın
   const boxes = clusters
