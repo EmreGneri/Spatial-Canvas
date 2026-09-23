@@ -13,6 +13,72 @@ En yeni üstte.
 
 ---
 
+## 2026-09-23 — Viral sprint, render katmanı (Zeynep): tracker HUD, canlı fotoğraf, neon düzeltmesi
+
+Sözleşme DEĞİŞMEDİ: yeni render modu, yeni ParamDef, yeni preset alanı ve yeni
+graf düğümü YOK. Sprint kararı gereği iki yeni özellik de ad-hoc React
+state'inde durur — preset'e kaydolmazlar.
+
+**Tracker HUD overlay** (`src/ui/TrackerOverlay.tsx`, yeni) — motor canvas'ının
+üstüne binen ayrı bir 2D `<canvas>`; maske overlay'iyle aynı desen, WebGL
+sahnesine hiç girmiyor. Emre'nin `engine/vision/tracker.ts` sözleşmesini okur
+(`TrackedTarget` = {id,x,y,w,h}, tracker'ın kendi piksel uzayı) ve kendi
+boyutuna ölçekler. Köşe parantez / kutu / ikisi, glow, ID + koordinat etiketi,
+yakın hedefler arası bağlantı çizgisi, LOCK vurgusu, sol üstte sayaç bloğu.
+Kapalıyken mount edilmez — rAF döngüsü de kurulmaz.
+
+Ham tracker verisi HUD için sertti: `everyNFrames` nedeniyle kutular 20 Hz'de
+zıplıyordu. Kutular artık hedefe üstel yaklaşıyor (kare hızından bağımsız),
+yeni ID'ler toplanarak beliriyor, düşen hedefler hayalet olarak sönüyor.
+
+**"Canlı fotoğraf" paralaks sway** (`src/ui/ModeSelector.tsx`) — Emre'nin
+`Engine.setAutoSway`'ine bağlı toggle + hız kolu. Yeni geometri yok; kamera
+açıldığı andaki pozun etrafında salınır. Ölçüldü: yörünge yarıçapı sabit
+(3.50), sürüklerken durup bırakılan YENİ pozdan devam ediyor, kapatınca kamera
+olduğu yerde kalıyor. WebM export sway açıkken çalışıyor (4.97 sn, 1280×840,
+2.3 MB). **Döngü uyarısı:** sway iki ayrı frekans taşıyor (yaw 0.6·hız, pitch
+0.37·hız) — hiçbir hızda 5/10/20 sn'lik klip tam kapanmıyor. Gerçekten
+loop'lanabilir klip için pitch'in yaw'ın harmoniği olması gerekir (Engine
+tarafı, YAPILMADI).
+
+**NEON MODU DÜZELTİLDİ — ekran siyahtı.** Mod, material, `uPositions` ve
+görünürlük doğruydu; hata shader matematiğindeydi. Motorun kendi konum
+texture'ı geri okunarak ölçüldü (sentetik görsel, 384×384 grid):
+
+| ölçüm | değer |
+|---|---|
+| z aralığı | −1.000 .. 0.695 (sözleşmeye uygun) |
+| en büyük komşu farkı | 0.799 |
+| ESKİ ölçekte en güçlü kenar | 0.446 |
+| ESKİ ölçekte ortalama kenar | 0.010 |
+| ekranda en parlak piksel | **55/255, 60 üstü piksel YOK** |
+
+Kök neden: Sobel normalizasyonu (0.125) komşu texel'ler arasında ~1.0'lık z
+basamağı varsayıyordu. Sampler Gün B/C'den beri silüet-oranlı **sürekli** bir
+hacim üretiyor — keskin basamak yok, gradyan 10-40 kat küçük. Kenar gücü rengi
+doğrudan çarptığı için (tint · uGlowIntensity · vEdge) bu bant pratikte
+siyahtı: mod çiziyordu, görünmeyecek kadar sönük çiziyordu.
+
+Dört düzeltme (`src/shaders/neonWireMaterial.ts`): `EDGE_GAIN = 16` (ölçülen
+0.02-0.45 bandı 0.3-1.0'e taşınır, eşik kolu yeniden anlamlı), `vEdge` artık
+`smoothstep(eşik, eşik+0.25)`, `gl_PointSize` alt sınırı 1.5 px (varsayılan
+kalınlık başlangıç mesafesinde 0.86 px'lik sprite veriyordu — çizgi rasterde
+eriyordu), fotoğraf rengi kullanılırken ton korunup değer tavana çekilir.
+**Sonuç: en parlak piksel 55 → 203, parlak piksel oranı %0 → %0.30.**
+
+**Arayüz** (`src/App.tsx`) — üst şerit 13 kontrole çıkmıştı ve üç ayrı stil bir
+aradaydı (tarayıcı varsayılanı, ad-hoc renkli toggle'lar, PNG/WebM'in koyu
+stili). Hepsi koyu terminal diline çekildi; şerit sarıyor, gruplar ayraçla
+bölündü, fps sağa alındı, çıplak dosya input'u butona döndü. Toggle vurgu
+renkleri anlam taşıdığı için değişmedi.
+
+**Regresyon:** `npm run typecheck` temiz; `npm run verify` zinciri 29/29 geçti.
+Altı render modu da çiziliyor (aynı sahnede en parlak piksel / parlak piksel
+oranı): points 241/%5.5 · ascii 214/%3.9 · neon 203/%0.3 · solid 219/%5.5 ·
+splat 202/%8.1 · crystal 224/%2.2.
+
+---
+
 ## 2026-08-14 — Gün 6 (Emre): ölçek hizalama + keyframe zinciri
 
 Sözleşme: `ARCHITECTURE.md` → yeni "D.11 Ölçek Hizalama + Keyframe Zinciri

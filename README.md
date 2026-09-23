@@ -4,6 +4,14 @@ Tarayıcıda çalışan mekânsal görsel motor. Fotoğraf → derinlik haritas�
 
 ## Durum
 
+- **Viral sprint (render katmanı — Zeynep):** **tracker HUD overlay** (motor
+  canvas'ının üstünde ayrı 2D canvas — köşe parantez kutuları, LOCK vurgusu,
+  ID/koordinat etiketleri, sayaç bloğu; üstteki "tracker" düğmesi), **"canlı
+  fotoğraf" paralaks sway** (mod satırındaki düğme + hız kolu, `setAutoSway`),
+  **neon modu düzeltildi** (ekran siyahtı: Sobel ölçeği artık gerçek derinlik
+  verisine göre — en parlak piksel 55 → 203) ve üst araç çubuğu tek görsel dile
+  çekildi. İkisi de preset'e kaydolmaz (sprint kararı). `npm run verify` 29/29.
+  Detay: [CHANGELOG.md](CHANGELOG.md).
 - **Gün C (denetim turu):** solid modun iki kök hatası düzeltildi — kabuk mesh'i
   dikey ters kuruluyordu ve ön yüzün sarımı içe dönük olduğu için fotoğraf
   dokusu görünmeyen arka kapağa biniyor, ekranda düz gri kütle kalıyordu. 3D
