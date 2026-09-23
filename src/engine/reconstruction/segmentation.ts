@@ -4,16 +4,34 @@
  * Depth siluet eşiği (SILHOUETTE_BIN_LO = 0.05) ince uzuvları korumak için
  * düşük tutulur; arka plan duvarları/zeminler bu eşiğin üstüne düştüğünde
  * siluete sızabiliyor. Bu modül subject-agnostic bir ön plan maskesi üretir
- * (BriaRMBG-1.4: insan, nesne, araç, manzara fark etmeksizin ön planı
- * ayırır) ve silhouette.ts'ye AND koşulu olarak girer — siluet yalnızca
- * "depth eşiği VE nesne maskesi"nin kesiştiği piksellerde aday olur.
+ * (insan, nesne, araç, manzara fark etmeksizin ön planı ayırır) ve
+ * silhouette.ts'ye AND koşulu olarak girer — siluet yalnızca "depth eşiği VE
+ * nesne maskesi"nin kesiştiği piksellerde aday olur.
  *
- * Model: briaai/RMBG-1.4 (SegformerForSemanticSegmentation mimarisi, çıkış
- * grafikte sigmoid'lenmiş 0..1 olasılık). ONNX dışa aktarımının giriş adı
- * 'input' olduğu için transformers.js'nin pixel_values sözleşmesiyle çalışmaz
- * — encoder_forward session input adlarıyla eşleştirme yaptığından
- * model._call({ input }) ile doğrudan beslenir (scripts/verify-seg.mjs
- * çalıştırılabilir kanıttır).
+ * ── MODEL DEĞİŞTİ (2026-09-24, TİCARİ LİSANS GEREĞİ) ──────────────────────
+ * Eski: `briaai/RMBG-1.4`. Model kartı birebir şunu diyor: "available as a
+ * source-available model for NON-COMMERCIAL use" — ticari kullanım BRIA ile
+ * ayrı, ücretli anlaşma ister. Abonelikli üründe ağırlığı kendi sunucumuzdan
+ * servis etmek dağıtımdır, o yüzden çıkarıldı.
+ *
+ * Yeni: `imgly/isnet-general-onnx` — **MIT**, aynı IS-Net ailesi, aynı ONNX
+ * giriş/çıkış adları (`input`/`output`), aynı 1024² girdi.
+ *
+ * ÖLÇÜLDÜ (gerçek fotoğraf, aynı letterbox, WebGPU fp16):
+ *   ön plan oranı  IS-Net %20.7 · RMBG %20.1
+ *   belirsiz bant  IS-Net %2.96 · RMBG %0.88
+ *   iki maskenin örtüşmesi (IoU) **0.8916**
+ * Aynı özneyi buluyor; kenar bandı biraz yumuşak. Zaten dilate + feather
+ * uyguladığımız için fark boru hattında sönümleniyor.
+ *
+ * ── NEDEN transformers.js DEĞİL, DOĞRUDAN ORT ────────────────────────────
+ * imgly deposunun config'i minimaldir (`{"model_type":"isnet"}`) ve
+ * `AutoConfig` onu çözemiyor; Vite eksik JSON'a index.html döndürdüğü için
+ * hata "Unexpected token '<'" olarak görünür (gerçek sebebi gizler). Eski
+ * kod da zaten kütüphaneyi atlayıp `model._call({input})` çağırıyordu —
+ * oturumu doğrudan kurmak katmanı azaltır, giriş/çıkış adlarını açık eder.
+ * ORT İKİNCİ KOPYA DEĞİL: transformers.js de aynı node_modules paketini
+ * yüklüyor (ağ kaydıyla doğrulandı).
  *
  * Çıktı sözleşmesi: nesne maskesi, 1024² letterbox karesinin İÇ kırpımında
  * (kadraj bandı atılır). Engine, maskeyi depth haritasının boyutuna
@@ -27,27 +45,30 @@
  * devam eder; uzak arka plan 0 kalır (perde koruması sürer — AND eşiği aynı).
  */
 
-import {
-  AutoImageProcessor,
-  env,
-  RawImage,
-  SegformerForSemanticSegmentation,
-} from '@huggingface/transformers';
+// WEBGPU GİRİŞ NOKTASI ŞART. Düz `onnxruntime-web` içe aktarımı wasm-only
+// bundle'ı verir ve `executionProviders: ['webgpu']` sessizce wasm'a düşer —
+// ölçüldü: aynı fotoğrafta 13.8 sn (wasm) vs ~0.8 sn (webgpu). Node tarafı
+// (scripts/verify-seg.mjs) düz içe aktarımı kullanır; orada zaten wasm yolu
+// doğrudur ve webgpu yoktur.
+import * as ort from 'onnxruntime-web/webgpu';
 import { dilateAndFeatherMask, keepLargestComponent } from './silhouette.ts';
 
-// Model ağırlıkları ve ORT runtime yerel — CDN yok, ağ yok (depth.ts ile aynı
-// sözleşme). Değerler idempotent: depth.ts önce çalışsa bile aynı sonuç.
-env.allowRemoteModels = false;
-env.allowLocalModels = true;
-env.localModelPath = '/models/';
-env.backends.onnx.wasm!.wasmPaths = import.meta.env.DEV
-  ? '/node_modules/onnxruntime-web/dist/'
-  : '/ort/';
-env.backends.onnx.wasm!.numThreads = 1;
+// ORT runtime yerel — CDN yok (depth.ts ile aynı sözleşme). Aynı ORT örneği
+// olduğu için değerler idempotent: depth.ts önce çalışsa bile aynı sonuç.
+ort.env.wasm.wasmPaths = import.meta.env.DEV ? '/node_modules/onnxruntime-web/dist/' : '/ort/';
+ort.env.wasm.numThreads = 1;
 
-const MODEL = 'briaai/RMBG-1.4';
-/** BriaRMBG eğitim çözünürlüğü: işlemci her girdiyi bu kareye büyütür. */
+/** Model yolu — yerel, `public/models` altında (`npm run fetch:assets`). */
+const MODEL_PATH = '/models/imgly/isnet-general-onnx/onnx/model_fp16.onnx';
+/** IS-Net eğitim çözünürlüğü: girdi bu kareye letterbox'lanır. */
 const MODEL_INPUT_SIZE = 1024;
+/**
+ * Normalizasyon `preprocessor_config.json`'dan: do_rescale=false, mean=128,
+ * std=256 → (piksel[0..255] − 128) / 256. Eskiden bunu transformers.js'in
+ * işlemcisi yapıyordu; oturumu doğrudan kurduğumuz için burada açık yazılır.
+ */
+const NORM_MEAN = 128;
+const NORM_STD = 256;
 
 export type SegmentationResult = {
   /** 0..1 ön plan olasılığı (maske, kadraj bandı kırpılmış). */
@@ -56,21 +77,17 @@ export type SegmentationResult = {
   height: number;
 };
 
-let segModel: Awaited<
-  ReturnType<typeof SegformerForSemanticSegmentation.from_pretrained>
-> | null = null;
-let segProcessor: Awaited<ReturnType<typeof AutoImageProcessor.from_pretrained>> | null = null;
+let segSession: ort.InferenceSession | null = null;
 
-export async function loadSegmentationModel(device: 'wasm' | 'webgpu' = 'wasm') {
-  if (segModel && segProcessor) return { model: segModel, processor: segProcessor };
-  const model = await SegformerForSemanticSegmentation.from_pretrained(MODEL, {
-    device,
-    dtype: device === 'webgpu' ? 'fp16' : 'q8',
+export async function loadSegmentationModel(device: 'wasm' | 'webgpu' = 'webgpu') {
+  if (segSession) return segSession;
+  // WebGPU tercih edilir. Ağırlık fp16 olduğu için wasm yolunda desteklenmeyen
+  // op'a düşülebilir; o durumda hata YUTULMAZ, çağırana bildirilir — sessiz
+  // bozulma yasağı (bkz. vision/yetenek.ts).
+  segSession = await ort.InferenceSession.create(MODEL_PATH, {
+    executionProviders: device === 'webgpu' ? ['webgpu', 'wasm'] : ['wasm'],
   });
-  const processor = await AutoImageProcessor.from_pretrained(MODEL);
-  segModel = model;
-  segProcessor = processor;
-  return { model, processor };
+  return segSession;
 }
 
 /**
@@ -80,22 +97,31 @@ export async function loadSegmentationModel(device: 'wasm' | 'webgpu' = 'wasm') 
  */
 export async function segmentForeground(
   source: HTMLCanvasElement | HTMLImageElement,
-  device: 'wasm' | 'webgpu' = 'wasm',
+  device: 'wasm' | 'webgpu' = 'webgpu',
 ): Promise<SegmentationResult> {
-  const { model, processor } = await loadSegmentationModel(device);
+  const session = await loadSegmentationModel(device);
   const lb = letterboxCanvas(source, MODEL_INPUT_SIZE);
-  const input = await RawImage.fromCanvas(lb.canvas);
-  const processed = await processor(input);
-  // ONNX giriş adı 'input' (BriaRMBG dışa aktarımı) — transformers.js'nin
-  // pixel_values anahtarı session adıyla eşleşmez, doğrudan _call beslenir.
-  const result = (await model._call({ input: processed.pixel_values })) as {
-    output: { dims: number[]; data: Float32Array };
-  };
-  const [batch, ch, outH, outW] = result.output.dims as [number, number, number, number];
-  if (batch !== 1 || ch !== 1) {
-    throw new Error(`RMBG çıktısı beklenmeyen şekil: ${result.output.dims.join('x')}`);
+  const ctx = lb.canvas.getContext('2d', { willReadFrequently: true });
+  if (!ctx) throw new Error('segmentForeground: 2d context yok');
+  const px = ctx.getImageData(0, 0, MODEL_INPUT_SIZE, MODEL_INPUT_SIZE).data;
+  // NCHW + kanal ayrık: ONNX girdisi böyle bekliyor (RGBA satır düzeninden
+  // üç ayrı düzleme taşınır).
+  const n = MODEL_INPUT_SIZE * MODEL_INPUT_SIZE;
+  const tensor = new Float32Array(3 * n);
+  for (let i = 0; i < n; i++) {
+    tensor[i] = (px[i * 4] - NORM_MEAN) / NORM_STD;
+    tensor[n + i] = (px[i * 4 + 1] - NORM_MEAN) / NORM_STD;
+    tensor[2 * n + i] = (px[i * 4 + 2] - NORM_MEAN) / NORM_STD;
   }
-  const out = result.output.data;
+  const result = await session.run({
+    input: new ort.Tensor('float32', tensor, [1, 3, MODEL_INPUT_SIZE, MODEL_INPUT_SIZE]),
+  });
+  const tOut = result.output;
+  const [batch, ch, , outW] = tOut.dims as [number, number, number, number];
+  if (batch !== 1 || ch !== 1) {
+    throw new Error(`segmentasyon çıktısı beklenmeyen şekil: ${tOut.dims.join('x')}`);
+  }
+  const out = tOut.data as Float32Array;
   // Kadraj bandını at: kırpılmış rect maskesi (çıktı zaten 0..1 olasılık).
   const raw = new Float32Array(lb.w * lb.h);
   for (let j = 0; j < lb.h; j++) {
