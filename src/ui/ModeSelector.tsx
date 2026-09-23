@@ -183,7 +183,7 @@ function LivePhotoControls({ engine }: { engine: Engine }) {
       <button
         type="button"
         aria-pressed={on}
-        title="canlı fotoğraf: kamera hafifçe salınır (elle sürüklerken durur, kapatınca olduğu yerde kalır)"
+        title="canlı fotoğraf: kamera hafifçe salınır (elle sürüklerken durur, kapatınca açılış pozuna döner)"
         style={{ ...buttonStyle(on), marginLeft: 8 }}
         onClick={toggle}
       >
