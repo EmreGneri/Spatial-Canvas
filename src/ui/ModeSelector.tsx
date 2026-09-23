@@ -54,7 +54,12 @@ function buttonStyle(active: boolean): CSSProperties {
     cursor: active ? 'default' : 'pointer',
     color: active ? '#101014' : '#c8c8d4',
     background: active ? '#8ab' : '#1a1a22',
-    border: `1px solid ${active ? '#8ab' : '#26262e'}`,
+    // UZUN yazım: "sıfırla" düğmesi bu stilin üstüne yalnız `borderColor`
+    // yazıyor. Taban `border` kısayolu kaldığında React her yeniden çizimde
+    // "shorthand ile non-shorthand karıştırma" uyarısı basıyordu.
+    borderWidth: 1,
+    borderStyle: 'solid',
+    borderColor: active ? '#8ab' : '#26262e',
     borderRadius: 3,
   };
 }
