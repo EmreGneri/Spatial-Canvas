@@ -15,6 +15,7 @@ import { MetricsPanel } from './ui/MetricsPanel';
 import { NodeGraphEditor } from './ui/NodeGraphEditor';
 import { TrackerOverlay } from './ui/TrackerOverlay';
 import { Tracker, type TrackedTarget } from './engine/vision/tracker';
+import { liveDepthKullanilabilir, startLiveDepth } from './engine/vision/liveDepth';
 import {
   applyPreset,
   deleteSlot,
@@ -54,6 +55,11 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
   /** Son hesaplanan hedefler. Motorun çizim-sonrası kancasında yazılır,
    *  overlay'in kendi rAF'ında okunur — iki döngü birbirini beklemez. */
   const trackerTargetsRef = useRef<TrackedTarget[]>([]);
+  /** Canlı model derinliği sürücüsünü durduran kanca (yoksa çalışmıyor). */
+  const liveDepthStopRef = useRef<(() => void) | null>(null);
+  /** Luminance vekili hâlâ çizsin mi? Model devralınca false olur —
+   *  rVFC zinciri kendi kendini beslediği için durdurma bayrağı şart. */
+  const luminanceActiveRef = useRef(false);
   const streamRef = useRef<MediaStream | null>(null);
   const timerRef = useRef<number | null>(null);
   const objectUrlRef = useRef<string | null>(null);
@@ -172,6 +178,11 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
    */
   function teardownSource() {
     clearTimer();
+    luminanceActiveRef.current = false;
+    // Canlı model derinliği sürücüsü de bırakılır — yeni kaynak eski
+    // sürücüyle çakışmasın (iki döngü aynı GPU kuyruğunda çekişir).
+    liveDepthStopRef.current?.();
+    liveDepthStopRef.current = null;
     // GÜN 6 (madde 4): canlı home modunu kapat — sonraki fotoğraf yolu toptan
     // yazar (eski davranış korunur).
     const engine = engineRef.current;
@@ -294,6 +305,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
   /** Kamera/video: depth modeli yok, parlaklık = yükseklik. */
   function startLuminanceLoop(source: HTMLCanvasElement | HTMLVideoElement | HTMLImageElement, label: string) {
     clearTimer(); // kaynağı bırakmaz — teardownSource'u çağıran taraf yapar
+    luminanceActiveRef.current = true;
     // Yeni kaynak eski karenin normalizasyon aralığını miras almasın.
     resetLuminanceState();
     // GÜN 6 (madde 4): canlı home → blend yazım + gevşetilmiş yay. Home her
@@ -312,6 +324,8 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
 
     const processFrame = () => {
       scheduled = false;
+      // Model devraldıysa vekil susar (rVFC zinciri kendi kendini besler).
+      if (!luminanceActiveRef.current) return;
       // Video ilk kareyi çözmeden drawImage boş/hatalı çizer.
       if (source instanceof HTMLVideoElement && source.readyState < 2) return;
       const t0 = performance.now();
@@ -365,6 +379,76 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
       // yok, smoothing yine de titremeyi önler).
       timerRef.current = window.setInterval(processFrame, 100);
     }
+  }
+
+  function stopLuminanceLoop() {
+    luminanceActiveRef.current = false;
+    clearTimer();
+  }
+
+  /**
+   * VİDEO/KAMERA DERİNLİĞİ — parlaklık vekiliyle başlar, MODEL devralır.
+   *
+   * Eskiden video yolunda derinlik YOKTU: parlaklık yükseklik sayılıyordu
+   * (Gün 1 kararı), yani parlak pikseller öne fırlıyordu ve bulut sahnenin
+   * gerçek geometrisiyle ilgisiz bir mush oluyordu. `liveDepth.ts` (kişisel
+   * geliştirme reposundan taşındı) canlı yola gerçek modeli
+   * (depth-anything-v2-small, fp16, WebGPU) bağlar.
+   *
+   * VEKİL NEDEN HÂLÂ BAŞLIYOR: model soğuk açılışta saniyeler sürer; o süre
+   * boyunca sahne boş kalmasın diye parlaklık çizer, ilk gerçek derinlik
+   * gelince `stopLuminanceLoop` ile susar.
+   *
+   * WebGPU YOKSA canlı yol açılmaz (wasm'da ölçülen ~2 sn/kare — "canlı"
+   * olmaz) ve vekil devam eder; kullanıcıya sebebi söylenir, sessiz düşüş yok.
+   *
+   * TAŞINMAYAN (bilinçli): kişisel repodaki video maskesi tazeleme, kalite
+   * seçici UI ve istatistik paneli — hepsi kendi makinesini getiriyor.
+   * Buradaki iş "video derinliği gerçek olsun"du.
+   */
+  function startVideoDepth(video: HTMLVideoElement, label: string) {
+    startLuminanceLoop(video, label);
+    let iptal = false;
+    liveDepthStopRef.current = () => {
+      iptal = true;
+    };
+    void liveDepthKullanilabilir().then((varMi) => {
+      if (iptal || videoRef.current !== video) return;
+      if (!varMi) {
+        say('canlı derinlik: WebGPU yok — parlaklık vekiliyle devam');
+        return;
+      }
+      let devraldi = false;
+      let sayac = 0;
+      let sonLog = performance.now();
+      liveDepthStopRef.current = startLiveDepth(
+        video,
+        (d) => {
+          if (!devraldi) {
+            devraldi = true;
+            stopLuminanceLoop();
+            say('canlı derinlik: model devraldı (depth-anything-v2-small · fp16)');
+          }
+          engineRef.current?.setDepth(d.data, d.width, d.height);
+          sayac++;
+          const simdi = performance.now();
+          if (simdi - sonLog > 3000) {
+            say(`canlı derinlik · ${(sayac / ((simdi - sonLog) / 1000)).toFixed(1)} Hz · ${d.width}x${d.height}`);
+            sayac = 0;
+            sonLog = simdi;
+          }
+        },
+        {
+          onError: (err, ardisik) =>
+            say(`canlı derinlik hatası (${ardisik}/3): ${err instanceof Error ? err.message : String(err)}`),
+          onVazgec: () => {
+            say('canlı derinlik: ardışık 3 hata — parlaklık vekiline dönüldü');
+            liveDepthStopRef.current = null;
+            if (videoRef.current === video) startLuminanceLoop(video, label);
+          },
+        },
+      );
+    });
   }
 
   /**
@@ -525,7 +609,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
       setSegment(false);
       engineRef.current!.setObjectSeparation(false);
       engineRef.current!.setVideoSource(video);
-      startLuminanceLoop(video, 'kamera (model yok)');
+      startVideoDepth(video, 'kamera');
       say('kamera açık · canlı luminance height map');
     } catch (err) {
       say(`HATA kamera: ${err instanceof Error ? err.message : String(err)}`);
@@ -557,7 +641,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
       engineRef.current!.setObjectSeparation(false);
       engineRef.current!.setVideoSource(video);
       say(`video yüklendi · ${file.name} · luminance yolu (model yok)`);
-      startLuminanceLoop(video, 'video');
+      startVideoDepth(video, 'video');
     } else if (file.type.startsWith('image/')) {
       teardownSource(); // canlı döngü varsa dursun, tek kare depth'e geç
       setCameraOn(false);

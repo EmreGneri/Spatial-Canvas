@@ -2,6 +2,19 @@ import type { pipeline, RawImage } from '@huggingface/transformers';
 // Saf CPU yeniden örnekleme (silhouette.ts hiçbir şey import etmez — model
 // yığınına bağımlılık YOK, eval harness bağımsızlığı korunur).
 import { resampleBilinear } from './engine/reconstruction/silhouette.ts';
+import {
+  blendHeadDetail,
+  headRoiSec,
+  measureLimiterImpact,
+  measureMaskedDepthRange,
+  measureTwoPixelSlope,
+  shouldKeepHeadDetail,
+  type GridRect,
+  type HeadRoiKaynagi,
+} from './engine/reconstruction/headDetail.ts';
+import type { YuzReferansi } from './engine/vision/yuzReferansi.ts';
+import { POINTS_DEPTH_RANGE } from './engine/buffers.ts';
+import { localInference, localInferenceAvailable, type RawTensor } from './engine/sidecarClient.ts';
 
 /**
  * GÜN D/1 (M6 düzeltmesi) — transformers TEMBEL yüklenir.
@@ -18,7 +31,7 @@ import { resampleBilinear } from './engine/reconstruction/silhouette.ts';
  * Tip import'u (`import type`) derlemede silinir, çalışma zamanında modül
  * çekmez.
  */
-type Transformers = typeof import('@huggingface/transformers');
+export type Transformers = typeof import('@huggingface/transformers');
 let transformersPromise: Promise<Transformers> | null = null;
 
 /**
@@ -48,7 +61,7 @@ export function onceRetry<T>(loader: () => Promise<T>): () => Promise<T> {
   };
 }
 
-const loadTransformers = onceRetry<Transformers>(() =>
+export const loadTransformers = onceRetry<Transformers>(() =>
   import('@huggingface/transformers').then((tf) => {
     const { env } = tf;
     // Model weights and the ORT runtime both live locally — no CDN, no network.
@@ -69,6 +82,51 @@ const loadTransformers = onceRetry<Transformers>(() =>
   }),
 );
 
+/**
+ * GPU MODEL SIRASI — aynı anda TEK model çalıştırması.
+ *
+ * ÖLÇÜLDÜ (2026-08-22, gerçek klip, Intel UHD iGPU): canlı derinlik döngüsü
+ * koşarken RMBG maskesi başlatılınca derinlik çıkarımı üst üste patladı:
+ *
+ *   failed to call OrtRun(). ERROR_CODE: 1 ... buffer_manager.cc:553
+ *   Failed to download data from buffer: Buffer was unmapped before mapping
+ *   was resolved.
+ *
+ * İki ayrı ORT WebGPU oturumu aynı cihazda eşzamanlı koşunca birinin çıktı
+ * tamponu diğerinin arasına giren komutlarıyla geçersizleşiyor. Üç ardışık
+ * hatadan sonra canlı kol teslim olup parlaklık vekiline dönüyordu — yani
+ * maskeyi açmak derinliği KAPATIYORDU.
+ *
+ * Çözüm en ucuzu: tek kuyruk. Her model çağrısı sıraya girer; iş bitene kadar
+ * sıradaki bekler. Paralellik ZATEN kazanç getirmiyordu (tek GPU), kaybettiren
+ * sadece çakışmaydı.
+ *
+ * KURULUM DA SIRAYA GİRER (2026-08-23 — ilk sürüm yalnız ÇIKARIMI sarıyordu ve
+ * hata sürdü). Ölçüldü: derinlik döngüsü koşarken RMBG oturumu kurmak
+ * `TypeError: Cannot read properties of undefined (reading 'getBindGroupLayout')`
+ * veriyor; aynı iki oturum SIRAYLA kurulduğunda (maske → derinlik → maske) üçü
+ * de sorunsuz koşuyor. Yani kırılgan olan eşzamanlı çıkarım değil, çıkarım
+ * uçuştayken yapılan `from_pretrained`. Bu yüzden hem kurulum hem çalıştırma
+ * aynı kuyruktan geçer.
+ *
+ * Kuyruk YENİDEN GİRİŞLİ DEĞİL: sıradaki bir işin içinden `gpuSirasinaGir`
+ * çağırmak kilitlenir. Çağrı yerleri bilerek ARDIŞIK tutulmuştur (önce yükle,
+ * sonra çalıştır — iç içe değil).
+ *
+ * Hata da sırayı bırakır (`then(..., ...)` iki kolu da zincirler) — bir çağrı
+ * patlayınca kuyruk kilitlenmez.
+ */
+let gpuKuyrugu: Promise<unknown> = Promise.resolve();
+
+export function gpuSirasinaGir<T>(is: () => Promise<T>): Promise<T> {
+  const sonuc = gpuKuyrugu.then(is, is);
+  gpuKuyrugu = sonuc.then(
+    () => undefined,
+    () => undefined,
+  );
+  return sonuc;
+}
+
 const MODEL = 'onnx-community/depth-anything-v2-base';
 
 // Depth Anything V2 training resolution. The image processor resizes every
@@ -76,11 +134,30 @@ const MODEL = 'onnx-community/depth-anything-v2-base';
 // its native square without any aspect distortion.
 const MODEL_INPUT_SIZE = 518;
 
+export type HeadDetailDiagnostics = {
+  elapsedMs: number;
+  roi: GridRect;
+  /** ROI nereden: 'yuz' (MediaPipe ovali) | 'maske' (üst-çeyrek bandı — eski yol). */
+  roiKaynagi: HeadRoiKaynagi;
+  applied: boolean;
+  faceWorldRangeBefore: number;
+  faceWorldRangeAfter: number;
+  nonHeadWorldRangeBefore: number;
+  nonHeadWorldRangeAfter: number;
+  maxSeamJump: number;
+  maxTwoPixelSlope: number;
+  maxSlopeAllowed: number;
+  limiterChangedPixels: number;
+  limiterMaxChange: number;
+};
+
 export type DepthResult = {
   /** Normalized 0..1, 0 = far, 1 = near. Row 0 is the TOP of the image. */
   data: Float32Array;
   width: number;
   height: number;
+  /** Present only when a refined foreground mask enabled the head detail pass. */
+  headDetail?: HeadDetailDiagnostics;
 };
 
 export type DepthEstimateOptions = {
@@ -146,18 +223,54 @@ export type DepthEstimateOptions = {
    * eğim sınırlayıcı): kamera/video yolu ve mevcut testler etkilenmez.
    */
   subjectMask?: { data: Float32Array; width: number; height: number };
+  /**
+   * Yüz referansı (MediaPipe, App'te tespit edilir). Verilirse kafa kırpma
+   * ROI'si yüz ovalinden türer (`headRoiSec`); kaldırılmış kol ROI'ye giremez.
+   * Verilmezse/null ise ROI eski maske bandından — çıktı bit-aynı.
+   * Yalnız `subjectMask` ile birlikte anlamlıdır (head-detail o zaman koşar).
+   */
+  yuz?: YuzReferansi | null;
 };
 
 let estimator: Awaited<ReturnType<typeof pipeline<'depth-estimation'>>> | null = null;
 /** Modelin GERÇEKTEN yüklendiği cihaz (ölçüm/teşhis için okunur). */
-export let depthDevice: 'wasm' | 'webgpu' | null = null;
+export let depthDevice: 'wasm' | 'webgpu' | 'sidecar' | null = null;
+const sidecarEstimators = new WeakSet<object>();
+const loadSidecarEstimator = onceRetry(async () => {
+  const tf = await loadTransformers();
+  const processor = await tf.AutoImageProcessor.from_pretrained(MODEL);
+  const loadFallback = onceRetry(async () => {
+    const device = await webgpuKullanilabilir() ? 'webgpu' : 'wasm';
+    const model = await loadDepthModel(device);
+    return model.model;
+  });
+  const net = async (inputs: Record<string, unknown>) => {
+    const raw = await localInference!.infer('base', inputs.pixel_values as RawTensor, async () => {
+      const model = await loadFallback();
+      return (await gpuSirasinaGir(() => model(inputs)) as { predicted_depth: RawTensor }).predicted_depth;
+    });
+    return { predicted_depth: new tf.Tensor('float32', raw.data, raw.dims) };
+  };
+  // Reuse the actual Transformers pipeline, including its output interpolation.
+  // Only the raw model call changes; no second implementation of preprocessing.
+  const estimator = new tf.DepthEstimationPipeline({
+    task: 'depth-estimation', processor: processor as unknown as ConstructorParameters<typeof tf.DepthEstimationPipeline>[0]['processor'],
+    model: net as unknown as ConstructorParameters<typeof tf.DepthEstimationPipeline>[0]['model'],
+  });
+  sidecarEstimators.add(estimator);
+  return estimator;
+});
+
+function runPhotoModel(model: Awaited<ReturnType<typeof loadDepthModel>>, input: RawImage) {
+  return sidecarEstimators.has(model) ? model(input) : gpuSirasinaGir(() => model(input));
+}
 
 /**
  * WebGPU var mı? Tarayıcı desteği + adaptör edinimi ayrı şeylerdir: `navigator.gpu`
  * tanımlı olduğu hâlde adaptör gelmeyebilir (sürücü/liste dışı GPU). İkisi de
  * kontrol edilir, aksi hâlde pipeline kurulumu geç ve gürültülü şekilde patlar.
  */
-async function webgpuKullanilabilir(): Promise<boolean> {
+export async function webgpuKullanilabilir(): Promise<boolean> {
   if (typeof navigator === 'undefined') return false; // Node (verify suite)
   const gpu = (navigator as unknown as { gpu?: { requestAdapter(): Promise<unknown> } }).gpu;
   if (!gpu) return false;
@@ -182,23 +295,44 @@ async function webgpuKullanilabilir(): Promise<boolean> {
  * Cihaz açıkça verilmezse WebGPU denenir, yoksa wasm'a düşülür. `device`
  * parametresi KORUNDU: çağıran zorlayabilir (ölçüm/karşılaştırma için).
  */
+/**
+ * Tek pipeline edinimi — MODÜL seviyesinde memoize edilir.
+ *
+ * DÜZELTME: `onceRetry(...)` eskiden `loadDepthModel`in İÇİNDE çağrılıyordu,
+ * yani her çağrı kendi cache'ini kuruyordu — memoization hiç işlemiyordu.
+ * `if (estimator)` kapısı ilk await'ten ÖNCE geçildiği için eşzamanlı iki
+ * çağrı iki `pipeline()` edinimi yarıştırıyordu (docstring'in tam olarak
+ * engellediğini iddia ettiği durum: webgpu cihaz kilidi çift edinilir).
+ * Sarmalayıcı artık bir kez kurulur: eşzamanlı çağrılar birleşir, red
+ * durumunda cache düşer (yeniden denenebilir), başarıda kalıcıdır.
+ *
+ * `device` İLK çağrıda bağlanır (ölçüm scriptleri açıkça verir); sonraki
+ * çağrılar zaten hazır estimator'ı alır — eski davranışla aynı.
+ */
+let yukleEstimator: (() => Promise<NonNullable<typeof estimator>>) | null = null;
+
 export async function loadDepthModel(device?: 'wasm' | 'webgpu') {
+  if (!device && await localInferenceAvailable()) {
+    depthDevice = 'sidecar';
+    return loadSidecarEstimator();
+  }
   if (estimator) return estimator;
-  const secilen = device ?? ((await webgpuKullanilabilir()) ? 'webgpu' : 'wasm');
-  // env yapılandırması burada, pipeline çağrısından ÖNCE uygulanır.
-  // E1.4 — estimator da onceRetry'den geçer: pipeline reddederse cache düşer
-  // (sonraki çağrı yeniden dener — cihaz kilidi serbest kalır), eşzamanlı
-  // çağrılar tek pipeline'a birleşir (webgpu cihaz kilidi çift edinilmez).
   const kur = (d: 'wasm' | 'webgpu') =>
     loadTransformers().then((tf) =>
       tf.pipeline('depth-estimation', MODEL, { device: d, dtype: d === 'webgpu' ? 'fp16' : 'q8' }),
     );
 
-  // Adaptör gelse bile pipeline kurulumu patlayabilir (fp16 desteği, sürücü).
-  // O durumda wasm'a düşülür — aksi hâlde onceRetry her denemede aynı
-  // webgpu yolunu tekrarlar ve derinlik hiç çalışmaz.
-  const est = await onceRetry(async () => {
-    if (secilen === 'wasm') return kur('wasm');
+  yukleEstimator ??= onceRetry(async () => {
+    // env yapılandırması `kur` içinde, pipeline çağrısından ÖNCE uygulanır.
+    const secilen = device ?? ((await webgpuKullanilabilir()) ? 'webgpu' : 'wasm');
+    // Adaptör gelse bile pipeline kurulumu patlayabilir (fp16 desteği, sürücü).
+    // O durumda wasm'a düşülür — aksi hâlde her deneme aynı webgpu yolunu
+    // tekrarlar ve derinlik hiç çalışmaz.
+    if (secilen === 'wasm') {
+      const f = await kur('wasm');
+      depthDevice = 'wasm';
+      return f;
+    }
     try {
       const w = await kur('webgpu');
       depthDevice = 'webgpu';
@@ -208,10 +342,10 @@ export async function loadDepthModel(device?: 'wasm' | 'webgpu') {
       depthDevice = 'wasm';
       return f;
     }
-  })();
-  estimator = est;
-  depthDevice ??= secilen;
-  return est;
+  });
+
+  estimator = await yukleEstimator();
+  return estimator;
 }
 
 /**
@@ -244,7 +378,9 @@ export async function estimateDepth(
     lumCanvas = scaleCanvasTo(src, MODEL_INPUT_SIZE);
   }
 
-  const { predicted_depth } = await model(input);
+  // GPU sırası: canlı derinlik döngüsü koşarken fotoğraf yüklenirse iki
+  // WebGPU oturumu çakışır (bkz. gpuSirasinaGir).
+  const { predicted_depth } = await runPhotoModel(model, input);
 
   const [height, width] = predicted_depth.dims.slice(-2) as [number, number];
   let data = predicted_depth.data as Float32Array;
@@ -324,7 +460,10 @@ export async function estimateDepth(
   } else {
     limited = limitDepthSlope(normalized, outWidth, outHeight, null);
   }
-  return { data: limited, width: outWidth, height: outHeight };
+  const headDetail = subject
+    ? await mergeHeadDetail(limited, subject, outWidth, outHeight, source, model, RawImageCtor, opts.yuz ?? null)
+    : undefined;
+  return { data: limited, width: outWidth, height: outHeight, headDetail };
 }
 
 /** Kırpma çıkarımının atlandığı eşik: özne bbox'ı karenin bu kadarını zaten
@@ -412,15 +551,16 @@ async function mergeSubjectDetail(
 
   // 3. Aynı letterbox yolundan ikinci çıkarım.
   const lb = letterboxCanvas(cut, MODEL_INPUT_SIZE);
-  const out = await model(await RawImageCtor.fromCanvas(lb.canvas));
-  const [ch2, cw2] = out.predicted_depth.dims.slice(-2) as [number, number];
-  const cropDepth = normalizeDepth(
+  const kirpimGirdisi = await RawImageCtor.fromCanvas(lb.canvas);
+  const out = await runPhotoModel(model, kirpimGirdisi);
+  // Model kare çıktı verir (kenar = cw2); yükseklik bilgisi kullanılmaz.
+  const cw2 = (out.predicted_depth.dims.slice(-1) as [number])[0];
+  const cropped = normalizeDepth(
     cropDepth2(out.predicted_depth.data as Float32Array, cw2, lb),
     1,
   );
   // 4. Kırpma çıktısını bbox ızgarasına ölçekle.
-  const c = resampleBilinear(cropDepth, lb.w, lb.h, bw, bh);
-  void ch2;
+  const c = resampleBilinear(cropped, lb.w, lb.h, bw, bh);
 
   // 5. BANT HİZASI (min/max eşleme — DOĞRUSAL, şekli birebir korur).
   //
@@ -464,6 +604,75 @@ async function mergeSubjectDetail(
       depth[gi] = Math.min(1, Math.max(0, depth[gi] + (v - depth[gi]) * m));
     }
   }
+}
+
+/**
+ * Adds the second pyramid level only after the global limiter has finished.
+ * A fresh limiter probe decides whether the local relief is a stable surface
+ * or an isolated spike; rejected output is restored bit-for-bit.
+ */
+async function mergeHeadDetail(
+  depth: Float32Array,
+  mask: Float32Array,
+  w: number,
+  h: number,
+  source: HTMLCanvasElement | HTMLImageElement,
+  model: Awaited<ReturnType<typeof loadDepthModel>>,
+  RawImageCtor: typeof RawImage,
+  yuz: YuzReferansi | null,
+): Promise<HeadDetailDiagnostics | undefined> {
+  const { roi, kaynak } = headRoiSec(mask, w, h, yuz);
+  if (!roi || roi.width < 8 || roi.height < 8) return undefined;
+
+  const before = Float32Array.from(depth);
+  const faceBefore = measureMaskedDepthRange(before, mask, w, h, roi, true);
+  const nonHeadBefore = measureMaskedDepthRange(before, mask, w, h, roi, false);
+
+  const src = toCanvas(source);
+  const sx = src.width / w;
+  const sy = src.height / h;
+  const cx = Math.max(0, Math.round(roi.x * sx));
+  const cy = Math.max(0, Math.round(roi.y * sy));
+  const cw = Math.min(src.width - cx, Math.max(1, Math.round(roi.width * sx)));
+  const ch = Math.min(src.height - cy, Math.max(1, Math.round(roi.height * sy)));
+  const cut = document.createElement('canvas');
+  cut.width = cw;
+  cut.height = ch;
+  cut.getContext('2d', { willReadFrequently: true })!.drawImage(src, cx, cy, cw, ch, 0, 0, cw, ch);
+
+  const letterboxed = letterboxCanvas(cut, MODEL_INPUT_SIZE);
+  const input = await RawImageCtor.fromCanvas(letterboxed.canvas);
+  const startedAt = performance.now();
+  const out = await runPhotoModel(model, input);
+  const elapsedMs = performance.now() - startedAt;
+  const outputWidth = (out.predicted_depth.dims.slice(-1) as [number])[0];
+  const cropDepth = normalizeDepth(
+    cropDepth2(out.predicted_depth.data as Float32Array, outputWidth, letterboxed),
+    1,
+  );
+  const resampledCrop = resampleBilinear(cropDepth, letterboxed.w, letterboxed.h, roi.width, roi.height);
+  const merge = blendHeadDetail(depth, resampledCrop, mask, w, h, roi);
+  const maxTwoPixelSlope = measureTwoPixelSlope(depth, mask, w, h, roi);
+  const limiterProbe = limitDepthSlope(depth, w, h, mask);
+  const limiterImpact = measureLimiterImpact(depth, limiterProbe, mask, w, h, roi);
+  const applied = shouldKeepHeadDetail(merge, limiterImpact);
+  if (!applied) depth.set(before);
+
+  return {
+    elapsedMs,
+    roi,
+    roiKaynagi: kaynak,
+    applied,
+    faceWorldRangeBefore: faceBefore * POINTS_DEPTH_RANGE,
+    faceWorldRangeAfter: measureMaskedDepthRange(depth, mask, w, h, roi, true) * POINTS_DEPTH_RANGE,
+    nonHeadWorldRangeBefore: nonHeadBefore * POINTS_DEPTH_RANGE,
+    nonHeadWorldRangeAfter: measureMaskedDepthRange(depth, mask, w, h, roi, false) * POINTS_DEPTH_RANGE,
+    maxSeamJump: merge.maxSeamJump,
+    maxTwoPixelSlope,
+    maxSlopeAllowed: MAX_SLOPE_PER_PX,
+    limiterChangedPixels: limiterImpact.changed,
+    limiterMaxChange: limiterImpact.maxChange,
+  };
 }
 
 /** Letterbox karesinden iç dikdörtgeni kopyalar (cropDepth ile aynı iş, ayrı
@@ -554,7 +763,16 @@ function cropDepth(
  * without trimming they compress the whole 0..1 range and flatten foreground
  * detail.
  */
-function normalizeDepth(data: Float32Array, pct: number): Float32Array {
+/**
+ * Yüzdelik kırpmalı min/max SINIRLARI (256 kovalı histogram, sıralama yok).
+ *
+ * `normalizeDepth`ten AYRI durur çünkü canlı video yolu sınırların KENDİSİNE
+ * ihtiyaç duyar: uçları kareler arasında EMA ile taşıyıp öyle eşlemek istiyor.
+ * Önce normalize edip sonra EMA uygulamak İŞE YARAMAZ — normalize edilmiş her
+ * kare zaten 0..1'dir, EMA sabit uçları görür ve hiçbir şey yapmaz (bu hata
+ * bir kez yapıldı ve `verify-live-depth [15]` ile yakalandı).
+ */
+export function trimmedRange(data: Float32Array, pct: number): { lo: number; hi: number } {
   let mn = Infinity;
   let mx = -Infinity;
   for (const v of data) {
@@ -582,6 +800,11 @@ function normalizeDepth(data: Float32Array, pct: number): Float32Array {
       hi = mn + ((i + 1) / 256) * span;
     }
   }
+  return { lo, hi };
+}
+
+export function normalizeDepth(data: Float32Array, pct: number): Float32Array {
+  const { lo, hi } = trimmedRange(data, pct);
   const s = hi - lo || 1;
   const out = new Float32Array(data.length);
   for (let i = 0; i < data.length; i++) out[i] = Math.min(1, Math.max(0, (data[i] - lo) / s));
@@ -594,7 +817,7 @@ function normalizeDepth(data: Float32Array, pct: number): Float32Array {
 // foreground only so the background keeps its flat structure.
 // ---------------------------------------------------------------------------
 
-const DETAIL_STRENGTH_DEFAULT = 0.25;
+export const DETAIL_STRENGTH_DEFAULT = 0.25;
 const DETAIL_BLUR_RADIUS = 3;
 // Düşük eşik: gölgeli/koyu yüz bölgeleri (göz çukuru, çene altı, siyah saç)
 // da detay/stretch/sobel maskesine girer — yüzey deliği üretmezler.
@@ -626,7 +849,7 @@ function scaleCanvasTo(source: HTMLCanvasElement, size: number): HTMLCanvasEleme
  * D_final = D + λ · (Y − Blur(Y)) · Mask_fg. Applied in-place on the
  * normalized depth; output stays in 0..1 (contract).
  */
-function applyDetail(
+export function applyDetail(
   depth: Float32Array,
   lum: Float32Array,
   w: number,
@@ -683,10 +906,15 @@ function smoothstep(e0: number, e1: number, x: number): number {
 // ---------------------------------------------------------------------------
 
 const FOREGROUND_STRETCH_DEFAULT = true;
-const SOBEL_RELIEF_DEFAULT = 0.02;
+export const SOBEL_RELIEF_DEFAULT = 0.02;
 /** Stretch hedef aralığı: tam [0,1]'e açmak arka planla çakışırdı. */
 const STRETCH_LO = 0.1;
 const STRETCH_HI = 0.95;
+/**
+ * Kırpılmış kuyrukların yumuşak sıkıştırma genişliği (`t` uzayında).
+ * Büyük değer kuyruğu daha uzun tutar; çıktı yine kesin olarak 0..1'de kalır.
+ */
+const STRETCH_TAIL_KNEE = 0.5;
 /** Yumuşatma eşiği: ön plan maskesi bu değerin ALTINDAYSa stretch kapsamı dışı. */
 const STRETCH_MASK_LO = 0.1;
 /**
@@ -697,6 +925,20 @@ const STRETCH_MASK_LO = 0.1;
  * olduğundan burada daha geniş kırpma gerekir.
  */
 const STRETCH_TRIM_PCT = 10;
+
+/**
+ * Yüzdelik bandın içini aynen doğrusal bırakır. Dışarıdaki değerleri ise
+ * STRETCH_LO→0 ve STRETCH_HI→1 boşluklarına üstel olarak sıkıştırır; böylece
+ * aykırı pikseller sıralarını korur ama ortak bir düzleme kelepçelenmez.
+ */
+function foregroundStretchTarget(t: number): number {
+  if (t < 0) return STRETCH_LO * Math.exp(t / STRETCH_TAIL_KNEE);
+  if (t > 1) {
+    return STRETCH_HI +
+      (1 - STRETCH_HI) * (1 - Math.exp(-(t - 1) / STRETCH_TAIL_KNEE));
+  }
+  return STRETCH_LO + (STRETCH_HI - STRETCH_LO) * t;
+}
 
 const DEPTH_SMOOTHING_DEFAULT = true;
 const SMOOTH_RADIUS = 1;
@@ -798,9 +1040,68 @@ export function foregroundMask(depth: Float32Array, w: number, h: number): Float
  * yok) sahne geneli için %1 ile kullanır; maske içi kuyruk çok daha ağır
  * olduğu için burada daha geniş kırpma gerekir.
  *
- * Kırpma dışında kalan pikseller hedef banda KELEPÇELENİR (en yakın el / en
- * uzak omuz doyar) — 0..1 ve STRETCH_HI sözleşmeleri korunur. `pct` = 0 eski
- * ham min/max davranışına döner (kaçış kapısı, testler kullanır).
+ * Kırpma dışında kalan pikseller sert düzleme kelepçelenmez: alt kuyruk 0'a,
+ * üst kuyruk 1'e yumuşak ve tekdüze yaklaşır. Böylece parlak/metalik bölgelerin
+ * göreli sırası korunur, düz derinlik platosu oluşmaz ve 0..1 sözleşmesi
+ * değişmez. `pct` = 0 ham min/max davranışına döner (kaçış kapısı, testler
+ * kullanır).
+ */
+/**
+ * Stretch aralığının KARELER ARASI taşıma katsayısı.
+ *
+ * SÜPÜRÜLDÜ (2026-08-30, `verify-stretch-zamansal` senaryosu: öznenin %20'si
+ * tek karede öne geliyor, kıpırdamayan referans pikselin kayması ölçülüyor).
+ * Taşımasız kayma 0.2937:
+ *
+ *   α      tek-kare kayma   sönüm    30 kare sonra kalan hata
+ *   0.15   0.1002           2.93×    0.0009
+ *   0.12   0.0839           3.50×    0.0025
+ *   0.10   0.0722           4.07×    0.0049
+ *   0.08   0.0597           4.92×    0.0095   ← seçilen
+ *   0.06   0.0463           6.34×    0.0187
+ *   0.05   0.0393           7.48×    0.0266
+ *   0.04   0.0320           9.18×    0.0384
+ *
+ * TAKAS: küçük α sıçramayı daha çok söndürür ama KALICI değişimi daha yavaş
+ * izler. Seçim kuralı — kalıcı değişimin 30 kare sonraki kalan hatası 0..1
+ * aralığının %1'ini AŞMASIN (canlı yol 3.5–9 Hz, yani 30 kare ≈ 3–9 sn;
+ * bunun üstünde gecikme gözle "geriden geliyor" olarak okunur). Bu koşulu
+ * sağlayan en güçlü sönüm α = 0.08.
+ *
+ * `liveDepth.ts` · `LIVE_RANGE_ALPHA` = 0.15 ile BİLEREK farklıdır: o GLOBAL
+ * uçları taşıyor ve orada sıçrama kaynağı sahnenin tamamı; burada sıçramayı
+ * öznenin kendi içindeki tek bir uzuv üretiyor ve etkisi tüm özneye
+ * yayıldığı için daha sıkı sönüm gerekiyor.
+ */
+export const STRETCH_RANGE_ALPHA = 0.08;
+
+/** `applyForegroundStretch`'in kareler arası taşıdığı ön plan uçları. */
+export interface StretchAraligi {
+  lo: number | null;
+  hi: number | null;
+  /** Taşıma katsayısı — verilmezse `STRETCH_RANGE_ALPHA`. */
+  alpha?: number;
+}
+
+/** Temiz stretch aralığı durumu — kaynak değişiminde yenisi kurulur. */
+export function yeniStretchAraligi(alpha?: number): StretchAraligi {
+  return { lo: null, hi: null, alpha };
+}
+
+/**
+ * ── ZAMANSAL KARARLILIK (2026-08-30, ÖNCEKİ DAVRANIŞ DEĞİŞTİ) ──────────────
+ *
+ * `lo`/`hi` ESKİDEN her çağrıda yalnız o karenin maskeli piksellerinden
+ * hesaplanıyordu. Canlı yolda bu, "bulut nefes alıyor" kusurunun ikinci ve
+ * BAĞIMSIZ kaynağıydı: öznenin kendi min/max'ı değiştiği anda (el öne gelir,
+ * kafa döner, maske birkaç piksel kayar) TÜM öznenin z eşlemesi yeniden
+ * ölçekleniyordu. `kararliNormalize` global uçları EMA ile taşıyor ve
+ * `zamansalYumusat` alanı yumuşatıyor, ama stretch İKİSİNDEN DE SONRA
+ * çalıştığı için temporal filtre onu sönümleyemiyordu.
+ *
+ * `durum` verilirse uçlar `STRETCH_RANGE_ALPHA` ile taşınır. VERİLMEZSE
+ * davranış birebir eskisidir — fotoğraf yolu tek karelik olduğu için taşımaya
+ * ne ihtiyacı ne de anlamı vardır.
  */
 export function applyForegroundStretch(
   depth: Float32Array,
@@ -808,6 +1109,7 @@ export function applyForegroundStretch(
   w: number,
   h: number,
   pct = STRETCH_TRIM_PCT,
+  durum?: StretchAraligi,
 ) {
   let mn = Infinity;
   let mx = -Infinity;
@@ -841,13 +1143,22 @@ export function applyForegroundStretch(
       hi = mn + ((i + 1) / 256) * rawSpan;
     }
   }
+  // Kareler arası taşıma: bu karenin uçları HEDEFTİR, uygulanan uçlar EMA ile
+  // ona yaklaşır. İlk karede taşıma yoktur (miras yok) — `verify-stretch-zamansal [5]`.
+  if (durum) {
+    const a = durum.alpha ?? STRETCH_RANGE_ALPHA;
+    durum.lo = durum.lo === null ? lo : durum.lo + a * (lo - durum.lo);
+    durum.hi = durum.hi === null ? hi : durum.hi + a * (hi - durum.hi);
+    lo = durum.lo;
+    hi = durum.hi;
+  }
   const span = hi - lo;
   if (!(span > 1e-4)) return; // ön plan tek ton → genişletilecek bir şey yok
   for (let i = 0; i < depth.length; i++) {
     const m = mask[i];
     if (m > 0.001) {
-      const t = Math.min(1, Math.max(0, (depth[i] - lo) / span));
-      const stretched = STRETCH_LO + (STRETCH_HI - STRETCH_LO) * t;
+      const t = (depth[i] - lo) / span;
+      const stretched = foregroundStretchTarget(t);
       depth[i] = depth[i] + (stretched - depth[i]) * m;
     }
   }
@@ -866,11 +1177,20 @@ export function applyForegroundStretch(
 
 /** Piksel başına izin verilen maksimum derinlik artışı (0..1 depth birimi). */
 export const MAX_SLOPE_PER_PX = 0.02;
+/** 5×5 dış halkasındaki 8 yön: 3×3 aykırı tepeyi geniş yüzeyden ayırır. */
+const SLOPE_NEIGHBOR_RADIUS = 2;
 
 /**
- * d[i] = min(d[i], min(4-komşu d[j]) + maxStep), `passes` kez tekrarlanır
- * (her geçiş bir öncekinin ÇIKTISINDAN okur: tek geçişte sınırlama yalnızca
- * bir piksel yayılır, geniş bir sıçrama kütlesi tepeyi koruyabilirdi).
+ * Bir piksel ancak iki piksel uzaktaki geçerli 8 yön örneğinin YARIDAN
+ * FAZLASINI `maxStep`ten çok aşıyorsa yalıtık tepe sayılır. Tavan, bu düşük
+ * komşuların en düşüğünden türetilir ve `passes` kez tekrarlanır (her geçiş
+ * bir öncekinin ÇIKTISINDAN okur: geniş bir sıçrama kütlesi katman katman
+ * küçülür).
+ *
+ * Çoğunluk koşulu gerçek iç oklüzyon sınırını ayırt eder: saç→yüz veya
+ * kol→gövde basamağının yüksek tarafında düşük komşular yalnızca sınırın tek
+ * tarafındadır ve çoğunluk oluşturmaz. Eski `min(4-komşu)` kuralı tek düşük
+ * komşuyu yeterli sayıp bu sınırı her geçişte bir piksel içeri aşındırıyordu.
  *
  * `mask` verilirse sınırlama YALNIZCA mask ≥ 0.5 piksellerinde uygulanır ve
  * yalnızca maske İÇİNDEKİ komşular hesaba katılır: siluet sınırındaki GERÇEK
@@ -896,18 +1216,40 @@ export function limitDepthSlope(
       for (let x = 0; x < width; x++) {
         const i = y * width + x;
         if (mask && mask[i] < 0.5) continue;
-        let lo = Infinity;
-        if (x > 0 && (!mask || mask[i - 1] >= 0.5) && src[i - 1] < lo) lo = src[i - 1];
-        if (x < width - 1 && (!mask || mask[i + 1] >= 0.5) && src[i + 1] < lo) lo = src[i + 1];
-        if (y > 0 && (!mask || mask[i - width] >= 0.5) && src[i - width] < lo) lo = src[i - width];
-        if (y < height - 1 && (!mask || mask[i + width] >= 0.5) && src[i + width] < lo) {
-          lo = src[i + width];
+        const current = src[i];
+        let neighborCount = 0;
+        let lowerCount = 0;
+        let lowestLower = Infinity;
+        for (
+          let dy = -SLOPE_NEIGHBOR_RADIUS;
+          dy <= SLOPE_NEIGHBOR_RADIUS;
+          dy += SLOPE_NEIGHBOR_RADIUS
+        ) {
+          const ny = y + dy;
+          if (ny < 0 || ny >= height) continue;
+          for (
+            let dx = -SLOPE_NEIGHBOR_RADIUS;
+            dx <= SLOPE_NEIGHBOR_RADIUS;
+            dx += SLOPE_NEIGHBOR_RADIUS
+          ) {
+            if (dx === 0 && dy === 0) continue;
+            const nx = x + dx;
+            if (nx < 0 || nx >= width) continue;
+            const ni = ny * width + nx;
+            if (mask && mask[ni] < 0.5) continue;
+            neighborCount++;
+            const neighbor = src[ni];
+            if (current > neighbor + maxStep) {
+              lowerCount++;
+              if (neighbor < lowestLower) lowestLower = neighbor;
+            }
+          }
         }
-        // Maske içinde 4-komşusu olmayan yalıtık piksel: sınırlanacak referans
-        // yok, olduğu gibi kalır (uydurma taban üretilmez).
-        if (lo === Infinity) continue;
-        const cap = lo + maxStep;
-        if (src[i] > cap) dst[i] = cap;
+        // Sıkı çoğunluk yoksa piksel tutarlı bir yüzeyin/kenarın parçasıdır.
+        // Geçerli komşusu olmayan yalıtık maske pikseli de olduğu gibi kalır.
+        if (lowerCount <= neighborCount / 2) continue;
+        const cap = lowestLower + maxStep;
+        if (current > cap) dst[i] = cap;
       }
     }
     const swap = src;
@@ -918,10 +1260,17 @@ export function limitDepthSlope(
 }
 
 /**
- * Z_disp = β · √(Gx² + Gy²) · Mask_fg. 3×3 Sobel luminance gradyanları,
- * kenarlar kelepçeli (clamp-to-edge); sonuç depth'e eklenir ve 0..1 sözleşmesi
- * BURADA korunur (ekleme sonrası kırpma — bu aşama zincirin son ekleyen
- * aşamasıdır; sonraki kademe yalnızca aşağı çeker, üst sınırı garanti etmez).
+ * Z_disp = β · (lum − Blur(lum)) · Mask_fg. İŞARETLİ yüksek frekans: parlak
+ * detay (ağız içi, kaş) +z'ye, koyu detay (göz çukuru, saç gölgesi) −z'ye.
+ *
+ * GÜN C (bu dosyanın video yolu, depth.ts:1100-1104) ve GÜN D (bu fonksiyon):
+ * |Sobel| büyüklüğü her kenarda POZİTİF olduğu için her kenarı z'de sırt
+ * (ridge) yapıyordu — saç çizgisi, kaş, burun gölgesi, çene hepsi öne
+ * fırlıyor, yüz tel kafes gibi çıkıyordu. İşaretli form hem video yolunda
+ * hem burada aynı ilkeyi kullanır.
+ *
+ * 0..1 sözleşmesi BURADA korunur (ekleme sonrası kırpma — bu aşama zincirin
+ * son ekleyen aşamasıdır; sonraki kademe yalnızca aşağı çeker).
  */
 export function applySobelRelief(
   depth: Float32Array,
@@ -931,9 +1280,9 @@ export function applySobelRelief(
   h: number,
   beta: number,
 ) {
-  const mag = sobelMagnitude(lum, w, h);
+  const low = boxBlur(lum, w, h, DETAIL_BLUR_RADIUS);
   for (let i = 0; i < depth.length; i++) {
-    depth[i] = Math.min(1, depth[i] + beta * mag[i] * mask[i]);
+    depth[i] = Math.min(1, Math.max(0, depth[i] + beta * (lum[i] - low[i]) * mask[i]));
   }
 }
 
