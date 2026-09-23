@@ -3,6 +3,23 @@
 Sözleşmeye dokunan her değişiklik buraya yazılır (`ARCHITECTURE.md` kuralı: sessiz sapma yok).
 En yeni üstte.
 
+## 2026-09-23 — Tur 2 E3/E4 (Emre): Worker tracker ve karşılaştırma zemini
+
+- Tracker'ın optik akış/kümeleme hesabı ile YOLOS nesne tespiti Worker'a
+  taşındı. Ana iş parçacığı, küçültülmüş kareyi aktarır ve son HUD hedeflerini
+  okur. Kaynak/mod değişimlerinde eski Worker cevabı nesil numarasıyla atılır;
+  Worker veya Web Locks desteği yoksa önceki uygulama yolu çalışır.
+- Canlı derinlik ve Worker tespiti, Web Locks ile aynı GPU model sırasına
+  girer. Test: `verify-tracker-worker.mjs`, tip kontrolü, build ve gerçek
+  NYC klibinde özellik/nesne modu.
+- Aynı klipte tracker açık/kapalı FPS örnekleri
+  [E3 ölçümünde](docs/benchmarks/E3-tracker.md). Brush'ın pozlu veri kümesi
+  girdisi bu ortamda olmadığından onun süre/kalite hücreleri ölçülmedi;
+  Spatial Canvas koşusu ve yeniden üretim yolu
+  [E4 raporunda](docs/benchmarks/E4-brush.md).
+
+---
+
 > **ZEYNEP'E UYARI (Gün 7 kablosu — çakışma alanı):** `src/App.tsx`
 > değiştirildi: yeni import (`engine/vision/videoPipe`), `fuseVideoToSplat`
 > handler'ı ve üst buton satırına `video → 3B` butonu (kamera butonunun

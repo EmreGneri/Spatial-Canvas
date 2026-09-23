@@ -316,16 +316,18 @@ function tespitleriEsle(
  *  çağrısı en fazla bir gerçek optik akış hesabı yapar (throttle). */
 export class Tracker {
   private opts: Required<TrackerOptions>;
-  private canvas = document.createElement('canvas');
-  private ctx: CanvasRenderingContext2D | null;
+  private canvas = typeof document === 'undefined'
+    ? new OffscreenCanvas(TRACKER_WIDTH, TRACKER_HEIGHT)
+    : document.createElement('canvas');
+  private ctx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D | null;
   private prevLum: Float32Array | null = null;
   private frameCount = 0;
   private nextIdCounter = 1;
   private lastTargets: TrackedTarget[] = [];
   /** NESNE modu: tespit için ayrı, daha büyük yakalama tuvali. Tracker'ın
    *  kendi 128×72'si akış için yeterli ama model için çok küçük. */
-  private detectCanvas: HTMLCanvasElement | null = null;
-  private detectCtx: CanvasRenderingContext2D | null = null;
+  private detectCanvas: HTMLCanvasElement | OffscreenCanvas | null = null;
+  private detectCtx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D | null = null;
   private detectPending = false;
   private detectModelReady = false;
   private detectCaptureStep = -1;
@@ -383,11 +385,11 @@ export class Tracker {
 
   /** TRACKER_WIDTH×HEIGHT piksel uzayında hedefler döner. Tüketici
    *  (TrackerOverlay) kendi görüntülenen genişlik/yüksekliğine ölçekler. */
-  step(source: HTMLVideoElement | HTMLCanvasElement): TrackedTarget[] {
+  step(source: HTMLVideoElement | HTMLCanvasElement | ImageBitmap): TrackedTarget[] {
     this.frameCount++;
     if (this.frameCount % this.opts.everyNFrames !== 0) return this.lastTargets;
     if (!this.ctx) return this.lastTargets;
-    if (source instanceof HTMLVideoElement && source.readyState < 2) return this.lastTargets;
+    if (typeof HTMLVideoElement !== 'undefined' && source instanceof HTMLVideoElement && source.readyState < 2) return this.lastTargets;
 
     const w = TRACKER_WIDTH;
     const h = TRACKER_HEIGHT;
@@ -447,7 +449,7 @@ export class Tracker {
    * `detect.ts` DİNAMİK yüklenir: özellik modunda kalan kullanıcı ML
    * yığınını hiç indirmez (embed.ts'in lazy depth yüklemesiyle aynı ilke).
    */
-  private tespitPlanla(source: HTMLVideoElement | HTMLCanvasElement): void {
+  private tespitPlanla(source: HTMLVideoElement | HTMLCanvasElement | ImageBitmap): void {
     if (this.detectPending) return;
     const nesil = this.nesil;
     if (!this.detectModelReady) {
@@ -471,7 +473,9 @@ export class Tracker {
       return;
     }
     if (!this.detectCanvas) {
-      this.detectCanvas = document.createElement('canvas');
+      this.detectCanvas = typeof document === 'undefined'
+        ? new OffscreenCanvas(1, 1)
+        : document.createElement('canvas');
       this.detectCtx = this.detectCanvas.getContext('2d', { willReadFrequently: true });
     }
     const c = this.detectCanvas;
@@ -479,8 +483,9 @@ export class Tracker {
     if (!ctx) return;
     // Tespit tuvali akış tuvalinden BÜYÜK: 128×72'de insan birkaç piksel
     // kalır, model göremez. Kaynağın en-boyu korunur (ezmek kutuları kaydırır).
-    const sw = source instanceof HTMLVideoElement ? source.videoWidth : source.width;
-    const sh = source instanceof HTMLVideoElement ? source.videoHeight : source.height;
+    const isVideo = typeof HTMLVideoElement !== 'undefined' && source instanceof HTMLVideoElement;
+    const sw = isVideo ? source.videoWidth : source.width;
+    const sh = isVideo ? source.videoHeight : source.height;
     if (!(sw > 0) || !(sh > 0)) return;
     const uzun = 384;
     const k = uzun / Math.max(sw, sh);

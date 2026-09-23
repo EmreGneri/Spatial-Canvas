@@ -14,7 +14,8 @@ import { CapturePanel } from './ui/CapturePanel';
 import { MetricsPanel } from './ui/MetricsPanel';
 import { NodeGraphEditor } from './ui/NodeGraphEditor';
 import { TrackerOverlay } from './ui/TrackerOverlay';
-import { Tracker, type TrackedTarget, type TrackerModu } from './engine/vision/tracker';
+import { type TrackedTarget, type TrackerModu } from './engine/vision/tracker';
+import { TrackerClient } from './engine/vision/trackerClient';
 import { isitLiveModel, liveDepthKullanilabilir, startLiveDepth } from './engine/vision/liveDepth';
 import { yetenekRaporu } from './engine/vision/yetenek';
 import {
@@ -95,13 +96,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
   const videoRef = useRef<HTMLVideoElement | null>(null);
   /** Tracker HUD veri üreteci (Emre, engine/vision/tracker.ts) — kaynak
    *  değiştiğinde (teardownSource) sıfırlanır, eski karenin izi sızmasın. */
-  const trackerRef = useRef<Tracker | null>(null);
-  if (trackerRef.current === null) {
-    trackerRef.current = new Tracker();
-    // Yalnızca dev: konsoldan tracker durumunu ölçmek için (`__engine` ile
-    // aynı desen). Üretim bundle'ında yok.
-    if (import.meta.env.DEV) (window as unknown as { __tracker?: Tracker }).__tracker = trackerRef.current;
-  }
+  const trackerRef = useRef<TrackerClient | null>(null);
   /** Son hesaplanan hedefler. Motorun çizim-sonrası kancasında yazılır,
    *  overlay'in kendi rAF'ında okunur — iki döngü birbirini beklemez. */
   const trackerTargetsRef = useRef<TrackedTarget[]>([]);
@@ -158,6 +153,12 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
   const maskOverlayOnRef = useRef(false);
 
   useEffect(() => {
+    // Dev-only switch gives the E3 benchmark an identical main-thread path.
+    const mainTracker = import.meta.env.DEV &&
+      new URLSearchParams(window.location.search).get('trackerBackend') === 'main';
+    const tracker = new TrackerClient({}, mainTracker);
+    trackerRef.current = tracker;
+    if (import.meta.env.DEV) (window as unknown as { __tracker?: TrackerClient }).__tracker = tracker;
     const engine = new Engine(containerRef.current!);
     engineRef.current = engine;
     setEngine(engine);
@@ -202,6 +203,8 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
     return () => {
       clearInterval(fpsTimer);
       teardownSource();
+      tracker.dispose();
+      trackerRef.current = null;
       // Sahiplik: bu material'lar burada üretildi, burada bırakılır.
       // Engine yalnızca kendi yer tutucusunu dispose eder (Engine.setPointsMaterial).
       engine.dispose();

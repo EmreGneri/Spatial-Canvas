@@ -119,7 +119,16 @@ export const loadTransformers = onceRetry<Transformers>(() =>
 let gpuKuyrugu: Promise<unknown> = Promise.resolve();
 
 export function gpuSirasinaGir<T>(is: () => Promise<T>): Promise<T> {
-  const sonuc = gpuKuyrugu.then(is, is);
+  const siraliIs = () => {
+    // Web Locks share one queue across the page and the tracker worker.
+    // Serializing only each realm's promise chain would let two ORT WebGPU
+    // sessions initialize or infer on the same device at the same time.
+    if (typeof navigator !== 'undefined' && navigator.locks?.request) {
+      return navigator.locks.request('spatial-canvas-gpu-model', is);
+    }
+    return is();
+  };
+  const sonuc = gpuKuyrugu.then(siraliIs, siraliIs);
   gpuKuyrugu = sonuc.then(
     () => undefined,
     () => undefined,
@@ -317,10 +326,14 @@ export async function loadDepthModel(device?: 'wasm' | 'webgpu') {
     return loadSidecarEstimator();
   }
   if (estimator) return estimator;
-  const kur = (d: 'wasm' | 'webgpu') =>
-    loadTransformers().then((tf) =>
-      tf.pipeline('depth-estimation', MODEL, { device: d, dtype: d === 'webgpu' ? 'fp16' : 'q8' }),
-    );
+  const kur = async (d: 'wasm' | 'webgpu') => {
+    const tf = await loadTransformers();
+    const olustur = () => tf.pipeline('depth-estimation', MODEL, {
+      device: d,
+      dtype: d === 'webgpu' ? 'fp16' : 'q8',
+    });
+    return d === 'webgpu' ? gpuSirasinaGir(olustur) : olustur();
+  };
 
   yukleEstimator ??= onceRetry(async () => {
     // env yapılandırması `kur` içinde, pipeline çağrısından ÖNCE uygulanır.
