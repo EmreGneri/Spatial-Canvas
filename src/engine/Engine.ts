@@ -810,6 +810,25 @@ releasePhoto() {
   }
 
   /**
+   * E1 — DIŞA AKTARIM İÇİN SPLAT ANLIK GÖRÜNTÜSÜ.
+   *
+   * Kopya TUTULMAZ: GaussianBuffer texture'larının CPU tarafı zaten canlı
+   * veridir (`DataTexture.image.data`), doğrudan oradan okunur. `null` =
+   * sahnede splat yok (fotoğraf modu, füzyon koşmamış).
+   */
+  gaussianSnapshot(): { a: Float32Array; b: Float32Array; c: Uint8Array; count: number } | null {
+    const obj = this.splatObject;
+    if (!obj || obj.count <= 0) return null;
+    const t = obj.textures;
+    return {
+      a: t.a.image.data as Float32Array,
+      b: t.b.image.data as Float32Array,
+      c: t.c.image.data as Uint8Array,
+      count: obj.count,
+    };
+  }
+
+  /**
    * GÜN 5 (render şeridi) — poz zincirini sahnede görünür kılar: keyframe
    * frustum'ları + yörünge çizgisi. Kayıt D.2 yönündedir (kamera→dünya);
    * overlay tersini ALMAZ. `null` → overlay boşalır ve gizlenir.

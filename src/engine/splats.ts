@@ -299,6 +299,11 @@ export class SplatObject {
   }
 
   /** GaussianBuffer'ı doldurduktan SONRA çağrılır: sıralama girdisini tazeler. */
+  /** Yüklü splat sayısı — export ve tanı için (texture kapasitesi değil). */
+  get count(): number {
+    return this.splatCount;
+  }
+
   syncFromTextures(count: number, keyframeIndex?: Uint16Array | null) {
     this.splatCount = Math.min(count, this.textures.capacity);
     this.xyzw.set((this.textures.a.image.data as Float32Array).subarray(0, this.splatCount * 4), 0);
