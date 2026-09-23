@@ -14,7 +14,7 @@ import { CapturePanel } from './ui/CapturePanel';
 import { MetricsPanel } from './ui/MetricsPanel';
 import { NodeGraphEditor } from './ui/NodeGraphEditor';
 import { TrackerOverlay } from './ui/TrackerOverlay';
-import { Tracker, type TrackedTarget } from './engine/vision/tracker';
+import { Tracker, type TrackedTarget, type TrackerModu } from './engine/vision/tracker';
 import { isitLiveModel, liveDepthKullanilabilir, startLiveDepth } from './engine/vision/liveDepth';
 import {
   applyPreset,
@@ -87,6 +87,9 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
   /** Tracker HUD overlay açık mı (Gün 2: mock veri — gerçek tracker.ts
    *  bağlantısı akşam sync'inde takılır). */
   const [trackerOn, setTrackerOn] = useState(false);
+  /** Tracker modu: 'ozellik' kontrast kümeleri (model yok) · 'nesne' COCO
+   *  tespiti (etiketli kutular). HUD panelindeki seçiciden değişir. */
+  const [trackerMod, setTrackerMod] = useState<TrackerModu>('ozellik');
   const [useTextureColor, setUseTextureColor] = useState(true);
   const [fps, setFps] = useState(0);
   /** GÜN 6: WebM kayıt süresi — döngüsel butonla değiştirilir (5/10/20). */
@@ -209,6 +212,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
     // Tracker HUD (Gün 2 akşam sync): eski kaynağın luminance karesi yeni
     // kaynakla karşılaştırılırsa sahte akış üretir — kaynak değişiminde sil.
     trackerRef.current?.reset();
+    trackerTargetsRef.current = [];
   }
 
   async function run(source: HTMLCanvasElement | HTMLImageElement) {
@@ -890,7 +894,20 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
             üstünde, WebGL sahnesinin dışında. Kapalıyken hiç mount edilmez,
             rAF döngüsü de çalışmaz. Gün 2 akşam sync: mock veri yerine
             gerçek tracker.ts — kaynak yoksa (fotoğraf modu) boş dizi döner. */}
-        {trackerOn && <TrackerOverlay getTargets={() => trackerTargetsRef.current} />}
+        {trackerOn && (
+          <TrackerOverlay
+            getTargets={() => trackerTargetsRef.current}
+            getDetectionStatus={() => trackerRef.current!.status}
+            getGeneration={() => trackerRef.current!.generation}
+            mod={trackerMod}
+            onModChange={(m) => {
+              setTrackerMod(m);
+              trackerRef.current!.setMod(m);
+              trackerTargetsRef.current = [];
+              if (m === 'nesne') say('tracker: nesne modu — ilk tespit modeli yüklerken birkaç saniye sürebilir');
+            }}
+          />
+        )}
         {showMask && (
           <canvas
             ref={segOverlayRef}

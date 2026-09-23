@@ -38,6 +38,10 @@ export interface TrackedTarget {
   y: number;
   w: number;
   h: number;
+  /** NESNE modunda COCO sınıfı ('person', 'car'...). Özellik modunda yok. */
+  label?: string;
+  /** Tespit güveni (0..1) — yalnız nesne modunda. */
+  score?: number;
 }
 
 export interface TrackerOptions {
@@ -55,6 +59,23 @@ export interface TrackerOptions {
   maxBoxSize?: number;
   /** ID sürekliliği için önceki kareyle eşleştirme mesafe tavanı (px). */
   idMatchRadius?: number;
+  /**
+   * 'ozellik' = kontrast kümeleri (varsayılan, model gerektirmez).
+   * 'nesne'   = COCO nesne tespiti; kutular etiketli gelir.
+   */
+  mod?: TrackerModu;
+  /** Nesne modunda tespit kaç adımda bir koşar (aradaki adımlarda kutuları
+   *  akış taşır). Tespit ~100-140 ms; her adımda koşmak tempoyu yer. */
+  detectEveryNSteps?: number;
+  /** Nesne modunda en fazla kaç tespit tutulur (skora göre). */
+  detectMaxCount?: number;
+}
+
+export type TrackerModu = 'ozellik' | 'nesne';
+
+export interface DetectionStatus {
+  phase: 'idle' | 'loading' | 'ready' | 'error';
+  error: string | null;
 }
 
 /**
@@ -108,6 +129,11 @@ export const TRACKER_DEFAULTS: Required<TrackerOptions> = {
   clusterRadius: 22,
   idMatchRadius: 32,
   maxBoxSize: 18,
+  mod: 'ozellik',
+  // ~10 adım × everyNFrames(3) ≈ 30 kare ≈ saniyede bir tespit. Aradaki
+  // kutuları akış taşır, yani HUD 60 Hz akıcı kalırken model seyrek koşar.
+  detectEveryNSteps: 10,
+  detectMaxCount: 20,
 };
 
 /**
@@ -220,6 +246,72 @@ export function targetsFromFlow(
   });
 }
 
+/**
+ * Kutuyu İÇİNDEKİ akış noktalarının MEDYAN kaymasıyla taşır.
+ *
+ * Medyan, ortalama değil: kutunun içine düşen noktaların bir kısmı arka
+ * plana (nesnenin yanından görünen duvar, zemin) aittir ve onların akışı
+ * nesneninkinden farklıdır. Ortalama bu aykırı değerlerle sürüklenir,
+ * medyan çoğunluğu izler.
+ *
+ * İçinde izlenen nokta YOKSA kutu OLDUĞU YERDE kalır — uydurma hareket
+ * üretmek, kutuyu yanlış yere götürmekten daha kötüdür (HUD yalan söyler).
+ */
+export function moveBoxWithFlow(hedef: TrackedTarget, flow: FlowPoint[]): TrackedTarget {
+  const us: number[] = [];
+  const vs: number[] = [];
+  for (const p of flow) {
+    if (p.x < hedef.x || p.x > hedef.x + hedef.w) continue;
+    if (p.y < hedef.y || p.y > hedef.y + hedef.h) continue;
+    us.push(p.u);
+    vs.push(p.v);
+  }
+  if (us.length === 0) return hedef;
+  us.sort((a, b) => a - b);
+  vs.sort((a, b) => a - b);
+  const du = us[Math.floor(us.length / 2)];
+  const dv = vs[Math.floor(vs.length / 2)];
+  return { ...hedef, x: hedef.x + du, y: hedef.y + dv };
+}
+
+/** İki kutunun kesişim/birleşim oranı — tespit↔mevcut hedef eşleştirmesi. */
+function iou(a: TrackedTarget, b: TrackedTarget): number {
+  const x0 = Math.max(a.x, b.x);
+  const y0 = Math.max(a.y, b.y);
+  const x1 = Math.min(a.x + a.w, b.x + b.w);
+  const y1 = Math.min(a.y + a.h, b.y + b.h);
+  if (x1 <= x0 || y1 <= y0) return 0;
+  const kesisim = (x1 - x0) * (y1 - y0);
+  return kesisim / (a.w * a.h + b.w * b.h - kesisim);
+}
+
+/** Yeni tespitleri mevcut hedeflerle eşleştirip ID'leri devreder.
+ *  Eşleşme koşulu: AYNI SINIF ve IoU eşik üstü — sınıf kontrolü olmadan
+ *  üst üste binen bir insan ve bisiklet birbirinin ID'sini çalardı. */
+function tespitleriEsle(
+  yeni: TrackedTarget[],
+  onceki: TrackedTarget[],
+  nextId: () => number,
+  iouEsik = 0.3,
+): TrackedTarget[] {
+  const kullanilan = new Set<number>();
+  return yeni.map((t) => {
+    let enIyi = -1;
+    let enIyiSkor = iouEsik;
+    for (const p of onceki) {
+      if (kullanilan.has(p.id) || p.label !== t.label) continue;
+      const s = iou(t, p);
+      if (s >= enIyiSkor) {
+        enIyiSkor = s;
+        enIyi = p.id;
+      }
+    }
+    if (enIyi === -1) return { ...t, id: nextId() };
+    kullanilan.add(enIyi);
+    return { ...t, id: enIyi };
+  });
+}
+
 /** Bir canlı kaynağın (kamera/video) izleme durumunu tutar. Her `step`
  *  çağrısı en fazla bir gerçek optik akış hesabı yapar (throttle). */
 export class Tracker {
@@ -230,6 +322,18 @@ export class Tracker {
   private frameCount = 0;
   private nextIdCounter = 1;
   private lastTargets: TrackedTarget[] = [];
+  /** NESNE modu: tespit için ayrı, daha büyük yakalama tuvali. Tracker'ın
+   *  kendi 128×72'si akış için yeterli ama model için çok küçük. */
+  private detectCanvas: HTMLCanvasElement | null = null;
+  private detectCtx: CanvasRenderingContext2D | null = null;
+  private detectPending = false;
+  private detectModelReady = false;
+  private detectCaptureStep = -1;
+  private detectFlows: FlowPoint[][] = [];
+  private detectionStatus: DetectionStatus = { phase: 'idle', error: null };
+  private stepSayaci = 0;
+  /** Kaynak değişince uçuşta olan tespit sonucu YOK sayılsın diye. */
+  private nesil = 0;
 
   constructor(opts: TrackerOptions = {}) {
     this.opts = { ...TRACKER_DEFAULTS, ...opts };
@@ -238,12 +342,43 @@ export class Tracker {
     this.ctx = this.canvas.getContext('2d', { willReadFrequently: true });
   }
 
+  /** Mod çalışma anında değişebilir (UI seçici). Hedefler sıfırlanır:
+   *  iki modun kutuları farklı anlam taşır, karıştırmak yalan olurdu. */
+  setMod(mod: TrackerModu): void {
+    if (mod === this.opts.mod) return;
+    this.opts = { ...this.opts, mod };
+    this.lastTargets = [];
+    this.stepSayaci = 0;
+    this.detectCaptureStep = -1;
+    this.detectFlows = [];
+    this.detectionStatus = { phase: 'idle', error: null };
+    this.nesil++;
+  }
+
+  get mod(): TrackerModu {
+    return this.opts.mod;
+  }
+
+  get status(): DetectionStatus {
+    return this.detectionStatus;
+  }
+
+  get generation(): number {
+    return this.nesil;
+  }
+
   /** Kaynak değiştiğinde (kamera açıldı/kapandı, video değişti) çağrılır —
    *  eski karenin ID'leri yeni kaynağa sızmasın. */
   reset(): void {
     this.prevLum = null;
     this.lastTargets = [];
     this.frameCount = 0;
+    this.stepSayaci = 0;
+    this.detectCaptureStep = -1;
+    this.detectFlows = [];
+    this.detectionStatus = { phase: 'idle', error: null };
+    // Uçuştaki tespit eski kaynağa aittir; sonucu gelince atılsın.
+    this.nesil++;
   }
 
   /** TRACKER_WIDTH×HEIGHT piksel uzayında hedefler döner. Tüketici
@@ -265,6 +400,14 @@ export class Tracker {
 
     const prevLum = this.prevLum;
     this.prevLum = lum;
+    this.stepSayaci++;
+    // Detection needs only one frame. Optical flow still waits for a pair.
+    const needsFirstDetection = this.detectionStatus.phase === 'idle' ||
+      (this.detectionStatus.phase === 'loading' && this.detectModelReady);
+    if (this.opts.mod === 'nesne' &&
+      (needsFirstDetection || this.stepSayaci % this.opts.detectEveryNSteps === 0)) {
+      this.tespitPlanla(source);
+    }
     if (!prevLum) return this.lastTargets; // ilk kare — akış için çift gerekir
 
     // HUD akış ayarı FÜZYON ayarından AYRI (ölçüldü, yukarıdaki tablo):
@@ -277,7 +420,119 @@ export class Tracker {
       fbConsistency: false,
       windowRadius: 5,
     }).filter((p) => p.status === 1);
+
+    if (this.opts.mod === 'nesne') {
+      if (this.detectPending && this.detectCaptureStep >= 0 && this.stepSayaci > this.detectCaptureStep) {
+        this.detectFlows.push(flow);
+      }
+      // Kutuların KİMLİĞİ modelden, HAREKETİ akıştan gelir: tespit seyrek
+      // (~saniyede bir) koşar, aradaki her adımda kutular akışla taşınır.
+      // Böylece HUD model temposuna değil akış temposuna bağlı kalır.
+      this.lastTargets = this.lastTargets.map((t) => moveBoxWithFlow(t, flow));
+      return this.lastTargets;
+    }
+
     this.lastTargets = targetsFromFlow(flow, this.lastTargets, this.opts, () => this.nextIdCounter++);
     return this.lastTargets;
+  }
+
+  /**
+   * Tespiti ARKA PLANDA başlatır — `step` senkron kalmalı, yoksa HUD model
+   * beklerken donar. Sonuç geldiğinde kutular değiştirilir; o ana kadar
+   * mevcut kutular akışla taşınmaya devam eder.
+   *
+   * Aynı anda tek tespit (`detectPending`): kuyruk birikirse hepsi bayat
+   * kare üstünde çalışır ve GPU'yu derinlik modeliyle çekişmeye sokar.
+   *
+   * `detect.ts` DİNAMİK yüklenir: özellik modunda kalan kullanıcı ML
+   * yığınını hiç indirmez (embed.ts'in lazy depth yüklemesiyle aynı ilke).
+   */
+  private tespitPlanla(source: HTMLVideoElement | HTMLCanvasElement): void {
+    if (this.detectPending) return;
+    const nesil = this.nesil;
+    if (!this.detectModelReady) {
+      // Warm the model before capturing a frame; its first load can take seconds.
+      this.detectPending = true;
+      if (this.detectionStatus.phase === 'idle') {
+        this.detectionStatus = { phase: 'loading', error: null };
+      }
+      void import('./detect.ts')
+        .then(({ isitDetectModel }) => isitDetectModel())
+        .then(() => { this.detectModelReady = true; })
+        .catch((error: unknown) => {
+          if (nesil === this.nesil && this.opts.mod === 'nesne') {
+            this.detectionStatus = {
+              phase: 'error',
+              error: error instanceof Error ? error.message : String(error),
+            };
+          }
+        })
+        .finally(() => { this.detectPending = false; });
+      return;
+    }
+    if (!this.detectCanvas) {
+      this.detectCanvas = document.createElement('canvas');
+      this.detectCtx = this.detectCanvas.getContext('2d', { willReadFrequently: true });
+    }
+    const c = this.detectCanvas;
+    const ctx = this.detectCtx;
+    if (!ctx) return;
+    // Tespit tuvali akış tuvalinden BÜYÜK: 128×72'de insan birkaç piksel
+    // kalır, model göremez. Kaynağın en-boyu korunur (ezmek kutuları kaydırır).
+    const sw = source instanceof HTMLVideoElement ? source.videoWidth : source.width;
+    const sh = source instanceof HTMLVideoElement ? source.videoHeight : source.height;
+    if (!(sw > 0) || !(sh > 0)) return;
+    const uzun = 384;
+    const k = uzun / Math.max(sw, sh);
+    const dw = Math.max(1, Math.round(sw * k));
+    const dh = Math.max(1, Math.round(sh * k));
+    if (c.width !== dw || c.height !== dh) {
+      c.width = dw;
+      c.height = dh;
+    }
+    ctx.drawImage(source, 0, 0, dw, dh);
+
+    this.detectPending = true;
+    this.detectCaptureStep = this.stepSayaci;
+    this.detectFlows = [];
+    if (this.detectionStatus.phase === 'idle') {
+      this.detectionStatus = { phase: 'loading', error: null };
+    }
+    void import('./detect.ts')
+      .then(({ algila }) => algila(c, { maxCount: this.opts.detectMaxCount }))
+      .then((tespitler) => {
+        // Kaynak/mod değiştiyse bu sonuç başka bir dünyaya ait.
+        if (nesil !== this.nesil || this.opts.mod !== 'nesne') return;
+        const olcekX = TRACKER_WIDTH / c.width;
+        const olcekY = TRACKER_HEIGHT / c.height;
+        const yeni: TrackedTarget[] = tespitler.map((d) => ({
+          id: 0, // gerçek ID eşleştirmede verilir
+          x: d.x * olcekX,
+          y: d.y * olcekY,
+          w: d.w * olcekX,
+          h: d.h * olcekY,
+          label: d.label,
+          score: d.score,
+        }));
+        // Advance boxes through every flow measured while inference was in flight.
+        const current = this.detectFlows.reduce(
+          (boxes, flow) => boxes.map((box) => moveBoxWithFlow(box, flow)), yeni,
+        );
+        this.lastTargets = tespitleriEsle(current, this.lastTargets, () => this.nextIdCounter++);
+        this.detectionStatus = { phase: 'ready', error: null };
+      })
+      .catch((error: unknown) => {
+        if (nesil !== this.nesil || this.opts.mod !== 'nesne') return;
+        // Keep existing boxes while exposing the failure to the HUD.
+        this.detectionStatus = {
+          phase: 'error',
+          error: error instanceof Error ? error.message : String(error),
+        };
+      })
+      .finally(() => {
+        this.detectCaptureStep = -1;
+        this.detectFlows = [];
+        this.detectPending = false;
+      });
   }
 }
