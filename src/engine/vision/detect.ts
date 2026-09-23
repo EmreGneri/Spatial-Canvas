@@ -48,7 +48,7 @@ interface DetectModel {
     out: unknown, threshold: number, sizes: number[][],
   ) => { boxes: number[][]; classes: number[]; scores: number[] }[] };
   model: { (inputs: Record<string, unknown>): Promise<unknown>; config: { id2label: Record<number, string> } };
-  fromCanvas: (c: HTMLCanvasElement) => unknown;
+  fromCanvas: (c: HTMLCanvasElement | OffscreenCanvas) => unknown;
 }
 
 /** `onceRetry`: eşzamanlı çağrılar tek yüklemede birleşir, hata cache'i
@@ -63,7 +63,7 @@ const yukleDetectModel = onceRetry<DetectModel>(async () => {
     device: 'webgpu',
     dtype: 'fp16',
   })) as unknown as DetectModel['model'];
-  return { proc, model, fromCanvas: (c: HTMLCanvasElement) => tf.RawImage.fromCanvas(c) };
+  return { proc, model, fromCanvas: (c: HTMLCanvasElement | OffscreenCanvas) => tf.RawImage.fromCanvas(c) };
 });
 
 export async function detectKullanilabilir(): Promise<boolean> {
@@ -76,8 +76,9 @@ export async function isitDetectModel(): Promise<void> {
   // Model setup and inference share the GPU queue with live depth.
   await gpuSirasinaGir(async () => {
     const { proc, model, fromCanvas } = await yukleDetectModel();
-    if (typeof document === 'undefined') return;
-    const c = document.createElement('canvas');
+    const c = typeof document === 'undefined'
+      ? new OffscreenCanvas(320, 180)
+      : document.createElement('canvas');
     c.width = 320;
     c.height = 180;
     const ctx = c.getContext('2d');
@@ -94,7 +95,7 @@ export async function isitDetectModel(): Promise<void> {
  * canvas'ın kendi boyutu) — çağıran kendi gösterim uzayına ölçekler.
  */
 export async function algila(
-  source: HTMLCanvasElement,
+  source: HTMLCanvasElement | OffscreenCanvas,
   opts: { threshold?: number; maxCount?: number } = {},
 ): Promise<Detection[]> {
   // A queued inference may wait behind depth; Tracker advances its captured

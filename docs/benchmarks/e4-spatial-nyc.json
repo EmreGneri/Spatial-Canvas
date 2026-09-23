@@ -1,0 +1,15 @@
+{
+  "engine": "Spatial Canvas",
+  "clipSha256": "d9dd01d211534911edea3f08fcb8367086a1bc0234b77072c2735c39bfd54ae4",
+  "frameSetSha256": null,
+  "sample": "Eight playback keyframes starting near 43.7 seconds; exact frames were not saved",
+  "setupSteps": [
+    "Load the raw MP4 in the local app",
+    "Click video → 3B"
+  ],
+  "durationMs": 21374,
+  "splats": 52252,
+  "heldOutPsnrDb": null,
+  "diagnostic": "Scale unavailable: insufficient triangulation; no held-out renderer exists yet",
+  "evidence": "App log: video → 3B: 52.252 splat · ölçek yok (üçgenleme yetersiz — d_pred ölçeği) · 3040 eşleşme · 21374 ms"
+}

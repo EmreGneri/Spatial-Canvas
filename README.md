@@ -4,6 +4,12 @@ Tarayıcıda çalışan mekânsal görsel motor. Fotoğraf → derinlik haritas�
 
 ## Durum
 
+- **Tur 2 / E3–E4 (Emre):** Tracker'ın optik akışı ve nesne tespiti Worker'a
+  taşındı; Worker veya Web Locks olmayan tarayıcıda eski yol kullanılır. Aynı NYC klibinde
+  FPS örnekleri: [E3 ölçümü](docs/benchmarks/E3-tracker.md). Brush
+  karşılaştırmasının ölçülen ve eksik kısımları:
+  [E4 raporu](docs/benchmarks/E4-brush.md).
+
 - **Viral sprint (render katmanı — Zeynep):** **tracker HUD overlay** (motor
   canvas'ının üstünde ayrı 2D canvas — köşe parantez kutuları, LOCK vurgusu,
   ID/koordinat etiketleri, sayaç bloğu; üstteki "tracker" düğmesi), **"canlı
