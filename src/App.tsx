@@ -14,6 +14,7 @@ import { CapturePanel } from './ui/CapturePanel';
 import { MetricsPanel } from './ui/MetricsPanel';
 import { NodeGraphEditor } from './ui/NodeGraphEditor';
 import { TrackerOverlay } from './ui/TrackerOverlay';
+import { Egitim3D } from './ui/Egitim3D';
 import { type TrackedTarget, type TrackerModu } from './engine/vision/tracker';
 import { TrackerClient } from './engine/vision/trackerClient';
 import { isitLiveModel, liveDepthKullanilabilir, startLiveDepth } from './engine/vision/liveDepth';
@@ -132,6 +133,10 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
   /** Tracker HUD overlay açık mı (Gün 2: mock veri — gerçek tracker.ts
    *  bağlantısı akşam sync'inde takılır). */
   const [trackerOn, setTrackerOn] = useState(false);
+  // Gerçek 3DGS eğitimi: son yüklenen video dosyası (kare seçimi dosyanın
+  // kendisini ister, <video> öğesini değil) ve eğitimi süren dosya.
+  const [videoDosya, setVideoDosya] = useState<File | null>(null);
+  const [egitimDosya, setEgitimDosya] = useState<File | null>(null);
   /** Tracker modu: 'ozellik' kontrast kümeleri (model yok) · 'nesne' COCO
    *  tespiti (etiketli kutular). HUD panelindeki seçiciden değişir. */
   const [trackerMod, setTrackerMod] = useState<TrackerModu>('ozellik');
@@ -685,6 +690,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
       return;
     }
     teardownSource(); // önce açık video/stream varsa bırak
+    setVideoDosya(null);
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { width: 640, height: 480 },
@@ -728,6 +734,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
       video.loop = true;
       video.src = url;
       videoRef.current = video;
+      setVideoDosya(file);
       engineRef.current!.mediaType = 'upload';
       await video.play();
       // Tur 12 (şikayet 1): video canlı renk dokusu olarak bağlanır —
@@ -745,6 +752,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
     } else if (file.type.startsWith('image/')) {
       teardownSource(); // canlı döngü varsa dursun, tek kare depth'e geç
       setCameraOn(false);
+      setVideoDosya(null);
       const url = URL.createObjectURL(file);
       engineRef.current!.mediaType = 'upload';
       try {
@@ -873,6 +881,22 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
         >
           video → 3B
         </button>
+        <button
+          style={toolButton}
+          disabled={busy || !videoDosya || !!egitimDosya}
+          onClick={() => {
+            // Canlı derinlik + tespit + eğitim aynı GPU'yu paylaşır; splat.js
+            // bizim GPU kuyruğumuzu bilmez. Kaynağı bırakmak canlı döngüleri
+            // durdurur, tracker kapanınca tespit de durur.
+            teardownSource();
+            setTrackerOn(false);
+            setEgitimDosya(videoDosya);
+            say(`3D eğitim başladı · ${videoDosya!.name}`);
+          }}
+          title={videoDosya ? 'videodan gerçek 3D Gaussian Splat eğit (WebGPU, birkaç dakika)' : 'önce video yükle'}
+        >
+          3D eğit
+        </button>
         <button style={toggleButton(segment, '#2a3')} disabled={busy} onClick={toggleSegment}>
           nesne ayırma: {segment ? 'AÇIK' : 'kapalı'}
         </button>
@@ -994,6 +1018,9 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
             üstünde, WebGL sahnesinin dışında. Kapalıyken hiç mount edilmez,
             rAF döngüsü de çalışmaz. Gün 2 akşam sync: mock veri yerine
             gerçek tracker.ts — kaynak yoksa (fotoğraf modu) boş dizi döner. */}
+        {egitimDosya && (
+          <Egitim3D dosya={egitimDosya} onKapat={() => setEgitimDosya(null)} say={say} />
+        )}
         {trackerOn && (
           <TrackerOverlay
             getTargets={() => trackerTargetsRef.current}
