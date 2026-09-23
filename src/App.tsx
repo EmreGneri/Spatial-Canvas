@@ -16,6 +16,7 @@ import { NodeGraphEditor } from './ui/NodeGraphEditor';
 import { TrackerOverlay } from './ui/TrackerOverlay';
 import { Tracker, type TrackedTarget, type TrackerModu } from './engine/vision/tracker';
 import { isitLiveModel, liveDepthKullanilabilir, startLiveDepth } from './engine/vision/liveDepth';
+import { yetenekRaporu } from './engine/vision/yetenek';
 import {
   applyPreset,
   deleteSlot,
@@ -452,6 +453,11 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
    */
   useEffect(() => {
     let iptal = false;
+    // E2 — yetenek raporu: kapalı olan varsa SEBEBİYLE birlikte söylenir.
+    void yetenekRaporu().then((r) => {
+      if (iptal) return;
+      if (r.sebep) say(`yetenek: ${r.sebep}`);
+    });
     const isit = () => {
       if (iptal) return;
       void liveDepthKullanilabilir().then((varMi) => {
