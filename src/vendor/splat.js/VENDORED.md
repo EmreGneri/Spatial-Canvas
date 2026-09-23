@@ -67,3 +67,24 @@ Kullaniciya "Windows Grafik ayarlarindan tarayiciyi Yuksek performans'a al"
 ipucu gosterilmeli; `adapter.info.vendor` ile entegre GPU tespit edilebilir.
 Ayrica: `sfm/gpumatch.js:93` KENDI cihazini aciyor, oturumun `device-lost`
 olayi o asamayi KAPSAMIYOR - SfM icin ayrica zaman asimi korumasi gerekli.
+
+## RTX 5070 Laptop olcumu (2026-09-24)
+
+Windows Grafik ayarinda uygulama "Yuksek performans"a alindiktan sonra
+adaptor `nvidia / blackwell`. Ayni klip:
+
+| ayar | cikarma | SfM | egitim | Gaussian | holdout PSNR | .ply |
+|---|---|---|---|---|---|---|
+| Intel iGPU, quick, 24 kare, 3k iter | 14 sn | 19 sn | 314 sn | 58 803 | 27.29 | 11.4 MB |
+| RTX, quick, 24 kare, 3k iter | 10 sn | 17 sn | 27 sn | 58 950 | 27.38 | - |
+| RTX, standard, 40 kare, 10k iter | 44 sn | 107 sn | 95 sn | 135 076 | **30.98** | 26.3 MB |
+
+- Egitim RTX'te ~12x hizli (12-15 -> 125-160 iter/sn). SfM hizlanmadi:
+  buyuk kismi islemcide (kayit + BA).
+- `standard` + 40 kare RTX'te GPU'yu COKERTMEDI (Intel'i cokerten ayar).
+- Yogunlastirma (densify) ilk kez 2529. iterasyonda tetiklendi; 3k
+  iterasyonluk kosular bu yuzden hic buyumuyordu.
+- Kalite farki buyuk: holdout +3.6 dB (27.4 -> 31.0). Toplam ~4.2 dk.
+
+Sonuc: katman GPU'ya gore secilmeli. Entegre GPU -> quick/24/3k,
+ayri GPU -> standard/40/10k. `adapter.info.vendor` + ilk olcum bunu secer.
