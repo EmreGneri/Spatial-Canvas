@@ -1037,7 +1037,17 @@ if (entry && entry.material !== this.pointsMaterial) {
    */
   setAutoSway(enabled: boolean, opts?: { amplitudeDeg?: number; speed?: number }) {
     if (opts?.amplitudeDeg !== undefined) this.swayAmplitudeDeg = opts.amplitudeDeg;
-    if (opts?.speed !== undefined) this.swaySpeed = opts.speed;
+    if (opts?.speed !== undefined && opts.speed !== this.swaySpeed) {
+      // FAZ SÜREKLİLİĞİ. Açı sin(swayTime · k · hız); hız değişince swayTime
+      // ölçeklenmezse faz ANINDA sıçrar — ölçüldü (5 sn sway sonrası hız
+      // 1 → 2.5): normal kare adımı 0.06°, hız değişimindeki adım 4.94°
+      // (×82, kamera görünür biçimde zıplıyor). Sway ne kadar uzun açık
+      // kalırsa sıçrama o kadar büyür. swayTime'ı ters oranda ölçeklemek
+      // faz çarpımını (swayTime · hız) korur: sıçrama yok, tempo değişir.
+      // hız = 0 bölen olamaz; o durumda hareket durur, faz olduğu yerde kalır.
+      if (opts.speed > 0) this.swayTime *= this.swaySpeed / opts.speed;
+      this.swaySpeed = opts.speed;
+    }
     if (enabled === this.swayEnabled) return;
     this.swayEnabled = enabled;
     if (enabled) this.rebaseSway();
