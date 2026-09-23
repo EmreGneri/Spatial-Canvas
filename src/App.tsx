@@ -15,7 +15,7 @@ import { MetricsPanel } from './ui/MetricsPanel';
 import { NodeGraphEditor } from './ui/NodeGraphEditor';
 import { TrackerOverlay } from './ui/TrackerOverlay';
 import { Tracker, type TrackedTarget } from './engine/vision/tracker';
-import { liveDepthKullanilabilir, startLiveDepth } from './engine/vision/liveDepth';
+import { isitLiveModel, liveDepthKullanilabilir, startLiveDepth } from './engine/vision/liveDepth';
 import {
   applyPreset,
   deleteSlot,
@@ -385,6 +385,44 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
     luminanceActiveRef.current = false;
     clearTimer();
   }
+
+  /**
+   * CANLI DERİNLİK MODELİNİ BOŞTA ÖNDEN ISIT.
+   *
+   * Ölçüldü: ilk kare 4815 ms (indirme + derleme), sonrakiler 268 ms. Video
+   * yüklenince bu bedel kullanıcının tam baktığı anda ödeniyordu ve ~5 sn
+   * parlaklık vekili görünüyordu. Isıtma boşta koşar; `onceRetry` sayesinde
+   * gerçek kullanım aynı yüklemeye biner (iki kez inmez).
+   *
+   * WebGPU YOKSA ISITILMAZ: o durumda canlı yol zaten açılmıyor, 47 MB'ı
+   * boşuna indirmenin anlamı yok.
+   */
+  useEffect(() => {
+    let iptal = false;
+    const isit = () => {
+      if (iptal) return;
+      void liveDepthKullanilabilir().then((varMi) => {
+        if (iptal || !varMi) return;
+        const t0 = performance.now();
+        void isitLiveModel()
+          .then(() => {
+            if (!iptal) say(`canlı derinlik modeli hazır · ön ısıtma ${Math.round(performance.now() - t0)} ms`);
+          })
+          .catch(() => {
+            /* ısıtma başarısızsa sessiz: gerçek kullanım kendi hatasını raporlar */
+          });
+      });
+    };
+    // DÜZ ZAMANLAYICI, `requestIdleCallback` DEĞİL: ölçüldü — sekme ön planda
+    // değilken rIC hiç tetiklenmiyor (timeout verilse bile), ısıtma da hiç
+    // koşmuyordu. Sabit gecikme her durumda çalışır; 1.5 sn açılış işlerinin
+    // (motor kurulumu, preset) önüne geçmemek için.
+    const id = window.setTimeout(isit, 1500);
+    return () => {
+      iptal = true;
+      clearTimeout(id);
+    };
+  }, []);
 
   /**
    * VİDEO/KAMERA DERİNLİĞİ — parlaklık vekiliyle başlar, MODEL devralır.

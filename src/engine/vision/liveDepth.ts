@@ -1203,6 +1203,45 @@ export interface LiveDepthResult extends DepthResult {
   mediaTime: number;
 }
 
+/**
+ * MODELİ ÖNDEN ISIT (v2 eklemesi — kişisel repodaki sürümde yok).
+ *
+ * Ölçüldü: ilk derinlik karesi 4815 ms, sonrakiler 268 ms. Aradaki fark
+ * model indirme + derleme. Video yüklenince bu bedel tam da kullanıcının
+ * baktığı anda ödeniyor ve ~5 saniye boyunca parlaklık vekili görünüyor.
+ * Boşta önden ısıtılırsa devir teslim ilk karede olur.
+ *
+ * `yukleLiveModel` zaten `onceRetry` — ısıtma ile gerçek kullanım aynı
+ * yüklemede birleşir, iki kez inmez.
+ */
+export async function isitLiveModel(): Promise<void> {
+  await yukleLiveModel();
+  // AĞIRLIĞI YÜKLEMEK YETMİYOR. Ölçüldü (tarayıcı, WebGPU): model yüklemesi
+  // 462 ms, İLK çıkarım 4319 ms, ikinci 157 ms. Aradaki fark WebGPU boru
+  // hattı/shader derlemesidir ve o yalnız gerçek bir çıkarımda olur —
+  // dolayısıyla ısıtma bir kez sahte kare koşmak zorunda.
+  if (typeof document === 'undefined') return;
+  // ŞEKİL ÖNEMLİ: işlemci en-boyu korur, yani girdi tensörünün ŞEKLİ kaynağın
+  // oranına bağlıdır ve WebGPU boru hattı şekle göre derlenir. Kare bir sahte
+  // kareyle ısıtmak ölçüldü — 4319 ms yalnız 987 ms'ye indi, çünkü gerçek
+  // (16:9) video farklı şekil isteyip yeniden derletiyordu. Sahte kare bu
+  // yüzden 16:9'dur: videoların baskın oranı.
+  const c = document.createElement('canvas');
+  c.width = 320;
+  c.height = 180;
+  const ctx = c.getContext('2d');
+  if (!ctx) return;
+  ctx.fillStyle = '#808080';
+  ctx.fillRect(0, 0, c.width, c.height);
+  try {
+    await estimateDepthLive(c);
+  } catch {
+    /* ısıtma başarısızsa sessiz: gerçek kullanım kendi hatasını raporlar */
+  }
+  // Sahte karenin zamansal/stretch/kırpma durumu gerçek kaynağa SIZMASIN.
+  resetLiveDepthState();
+}
+
 export async function estimateDepthLive(
   source: HTMLVideoElement | HTMLCanvasElement,
   opts: LiveDepthOptions = {},
