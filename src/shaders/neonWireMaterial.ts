@@ -114,6 +114,33 @@ const VERTEX = /* glsl */ `
   const float TEX_STEP = 1.0 / ${POSITION_TEXTURE_SIZE.toFixed(1)};
 
   /**
+   * SOBEL KAZANCI (düzeltme — neon modu hiçbir şey çizmiyordu).
+   *
+   * Eski normalizasyon (yalnız 0.125) komşu texel'ler arasında ~1.0'lık bir z
+   * basamağı varsayıyordu: "tam basamak → |g| = 8 → 8 · 0.125 = 1". Bu varsayım
+   * artık geçerli DEĞİL: sampler silüet-oranlı SÜREKLİ bir hacim üretiyor
+   * (Gün B/C), z komşudan komşuya yumuşak akıyor — keskin basamak yok.
+   *
+   * Motorun kendi konum texture'ı geri okunarak ölçüldü (sentetik görsel,
+   * 384×384 grid):
+   *
+   *   z aralığı                     -1.000 .. 0.695   (sözleşmeye uygun)
+   *   en büyük komşu farkı           0.799
+   *   ESKİ ölçekte en güçlü kenar    0.446   ← eşiği (0.1) geçiyor ama
+   *   ESKİ ölçekte ortalama kenar    0.010      ekranda görünmeyecek kadar sönük
+   *
+   * Kenar gücü rengi DOĞRUDAN çarptığı için (tint * uGlowIntensity * vEdge)
+   * bu bant pratikte siyahtı: ekranda en parlak piksel 55/255, 60'ın üstünde
+   * hiç piksel yok. Mod "bozuk" görünüyordu; aslında çiziyordu — görünmeyecek
+   * kadar sönük çiziyordu.
+   *
+   * 16× kazanç ölçülen güçlü-kenar bandını (0.02-0.45) 0.3-1.0 aralığına taşır:
+   * güçlü kenarlar doyar, eşik kolu yeniden anlamlı olur. Aynı ölçümde sonuç:
+   * en parlak piksel 55 → 173, parlak piksel oranı %0 → %0.26.
+   */
+  const float EDGE_GAIN = 16.0;
+
+  /**
    * Sobel'in tek kanallı örneği: KONUM texture'ının z'si (Gün C düzeltmesi).
    * Eskiden depth texture'ı GRID uv'siyle okunuyordu — iki farklı uzay: konum
    * grid'i önem remap'iyle büküktür (sampler.buildImportanceRemap), depth ise
@@ -157,11 +184,14 @@ const VERTEX = /* glsl */ `
     float gx = (tr + 2.0 * mr + br) - (tl + 2.0 * ml + bl);
     float gy = (tl + 2.0 * tm + tr) - (bl + 2.0 * bm + br);
 
-    // 0.125 normalizasyonu: z ±1 sözleşmesinde tam basamak
-    // (komşu farkı ~1) |g| = 8 verir; 8·0.125 = 1 → uEdgeThreshold'un anlamı
-    // ve varsayılanı (0.1) bu ölçekle korunur.
-    float edge = length(vec2(gx, gy)) * 0.125;
-    vEdge = clamp(edge, 0.0, 1.0);
+    // 0.125 · EDGE_GAIN — ölçülen gradyan ölçeğine göre (yukarıdaki not).
+    float edge = min(length(vec2(gx, gy)) * 0.125 * EDGE_GAIN, 1.0);
+    // Parlaklık artık kenar gücüyle DOĞRU ORANTILI değil: eşiği yeni geçen
+    // kenar da çizgi olarak okunacak kadar parlar (eskiden eşik üstü kenarların
+    // çoğu 0.1-0.2 parlaklıkta kalıyordu — "var ama görünmüyor"). Üst uç
+    // eşikten 0.25 sonra doyar; güç farkı hâlâ görünür, ama sönük uç siyaha
+    // düşmez.
+    vEdge = smoothstep(uEdgeThreshold, min(1.0, uEdgeThreshold + 0.25), edge);
 
     // Kenar değilse ELE: nokta merkezi clip hacminin dışına atılır ve boyutu
     // sıfırlanır. Fragment aşamasına hiç gelmez — discard'dan ucuz.
@@ -181,7 +211,11 @@ const VERTEX = /* glsl */ `
 
     // max() kırpması ZORUNLU: kameranın arkasına/üstüne düşen noktalarda
     // -mv.z ~ 0 olur, bölme patlar ve dev noktalar ekranı beyazlatır.
-    gl_PointSize = uPointSize * spriteScale / max(-mv.z, 0.1);
+    // ALT SINIR 1.5 px: varsayılan kalınlık (3) başlangıç mesafesinde (~3.5
+    // birim) 0.86 piksellik sprite veriyordu — kenar çizgisi rasterleştirmede
+    // eriyordu. Kenar zaten seyrek (silüet), bir de yarım piksele düşünce
+    // ekranda hiçbir şey kalmıyordu.
+    gl_PointSize = max(uPointSize * spriteScale / max(-mv.z, 0.1), 1.5);
 
     gl_Position = projectionMatrix * mv;
   }
@@ -257,6 +291,15 @@ const FRAGMENT = /* glsl */ `
     vec3 base = (uHasImage > 0.5 && uUseTextureColor > 0.5)
       ? texture2D(uImageTexture, vUv).rgb
       : uNeonColor;
+
+    // NEON TÜPÜ PARLAKLIĞI: fotoğraf rengi kullanılıyorsa TONU korunur ama
+    // değeri tavana çekilir. Sebep: kenarlar çoğunlukla koyu piksellerde
+    // oturuyor (silüetin dış hattı), çarpım zinciri oradan geçince çizgi
+    // "koyu neon" oluyordu — ölçüldü: fotoğraf renginde en parlak piksel 106,
+    // neon renginde 173. Bölme sonrası ikisi de 163. 0.08 tabanı, tamamen
+    // siyah pikselde bölmenin patlamasını engeller.
+    float bmax = max(base.r, max(base.g, base.b));
+    base = base / max(bmax, 0.08);
 
     // -- ton sapması: taban rengin etrafında, parçacık tohumuna göre --
     // Sapma miktarı uColorVariance ile çarpıldığı için 0'da kayma tam sıfırdır
