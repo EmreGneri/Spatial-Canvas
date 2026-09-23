@@ -7,7 +7,7 @@ import { createPointCloudMaterial, POINTS_PARAMS } from './shaders/pointCloudMat
 import { createAsciiMaterial, ASCII_PARAMS } from './shaders/asciiMaterial';
 import { createNeonWireMaterial, NEON_PARAMS } from './shaders/neonWireMaterial';
 import { createSolidMaterial, SOLID_PARAMS } from './shaders/solidMaterial';
-import { createSplatMaterial, SPLAT_PARAMS } from './shaders/splatMaterial';
+import { createSplatMaterial, SPLAT_FLATTEN, SPLAT_PARAMS } from './shaders/splatMaterial';
 import { createCrystalMaterial, createCrystalSplatMaterial, CRYSTAL_PARAMS } from './shaders/crystalMaterial';
 import { ModeSelector, type RenderMode } from './ui/ModeSelector';
 import { CapturePanel } from './ui/CapturePanel';
@@ -27,7 +27,7 @@ import {
   saveSlot,
   toPreset,
 } from './engine/preset';
-import { exportPNG, exportWebM } from './engine/export';
+import { exportPly, exportPNG, exportWebM } from './engine/export';
 import { buildFusionScene, captureKeyframes } from './engine/vision/videoPipe';
 
 /**
@@ -911,6 +911,30 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
          }}
         >
          PNG
+        </button>
+        {/* E1 — sahneyi standart 3DGS .ply olarak dışa aktar. Üretilen dosya
+            SuperSplat/PlayCanvas gibi görüntüleyicilerde açılır; çıktı
+            uygulamanın içinde hapis kalmaz. Splat yoksa buton çalışmaz. */}
+        <button
+         type="button"
+         style={toolButton}
+         disabled={!engine}
+         title="sahneyi 3D Gaussian Splat (.ply) olarak indir — SuperSplat vb. açar"
+         onClick={() => {
+           const snap = engineRef.current?.gaussianSnapshot();
+           if (!snap) {
+             say('PLY: sahnede splat yok (önce "video → 3B" çalıştır)');
+             return;
+           }
+           try {
+             exportPly({ ...snap, flatten: SPLAT_FLATTEN }, 'spatial-canvas');
+             say(`PLY indirildi · ${snap.count.toLocaleString('tr-TR')} splat`);
+           } catch (e) {
+             say(`PLY HATA: ${e instanceof Error ? e.message : String(e)}`);
+           }
+         }}
+        >
+         PLY
         </button>
         <button
          type="button"
