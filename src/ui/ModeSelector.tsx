@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import type { CSSProperties } from 'react';
 import type { Engine } from '../engine';
 import type { PointCloudMaterial } from '../shaders/pointCloudMaterial';
@@ -114,6 +115,61 @@ export function ModeSelector({
       >
         ↺ sıfırla
       </button>
+      <LivePhotoControls engine={engine} />
     </div>
+  );
+}
+
+/**
+ * "Canlı fotoğraf" paralaks sway (viral sprint, Gün 4 — Zeynep).
+ *
+ * Yeni render modu DEĞİL: `Engine.setAutoSway` kamerayı AÇILDIĞI ANDAKİ
+ * pozun etrafında sallar (Emre, Gün 3-4) — cameraHome'a dokunmaz, elle
+ * sürüklerken durur. Hız kolu sway açıkken de geçer: setAutoSway opts'u
+ * aç/kapa durumu değişmese bile uygular.
+ *
+ * HIZLI PROTOTİP: ad-hoc local state, ParamDef yok, preset'e KAYDOLMAZ
+ * (sprint kararı) — sayfa yenilenince kapalı başlar.
+ */
+function LivePhotoControls({ engine }: { engine: Engine }) {
+  const [on, setOn] = useState(false);
+  const [speed, setSpeed] = useState(1);
+
+  function toggle() {
+    const next = !on;
+    setOn(next);
+    engine.setAutoSway(next, { speed });
+  }
+
+  function changeSpeed(next: number) {
+    setSpeed(next);
+    if (on) engine.setAutoSway(true, { speed: next });
+  }
+
+  return (
+    <>
+      <button
+        type="button"
+        aria-pressed={on}
+        title="canlı fotoğraf: kamera hafifçe salınır (elle sürüklerken durur, kapatınca olduğu yerde kalır)"
+        style={{ ...buttonStyle(on), marginLeft: 8 }}
+        onClick={toggle}
+      >
+        ◍ canlı fotoğraf
+      </button>
+      <label title="salınım hızı" style={{ display: 'flex', gap: 4, alignItems: 'center', color: on ? '#889' : '#556' }}>
+        <input
+          type="range"
+          min={0.3}
+          max={2.5}
+          step={0.1}
+          value={speed}
+          disabled={!on}
+          onChange={(e) => changeSpeed(Number(e.target.value))}
+          style={{ width: 70 }}
+        />
+        <span style={{ fontVariantNumeric: 'tabular-nums' }}>{speed.toFixed(1)}×</span>
+      </label>
+    </>
   );
 }
