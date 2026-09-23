@@ -10,16 +10,11 @@ import { dirname, join } from 'node:path';
 // eskisini indirirse istek 404'e düşer, Vite index.html döndürür ve hata
 // "Unexpected token '<'" olarak görünür (gerçek sebebi gizler).
 const MODEL_REPOS = [
-  {
-    // src/depth.ts — depth estimation
-    repo: 'onnx-community/depth-anything-v2-base',
-    files: [
-      'config.json',
-      'preprocessor_config.json',
-      'onnx/model_quantized.onnx', // WASM path   (~98 MB)
-      'onnx/model_fp16.onnx',      // WebGPU path (~186 MB)
-    ],
-  },
+  // TİCARİ LİSANS NOTU (2026-09-24): `depth-anything-v2-BASE` listeden
+  // ÇIKARILDI — lisansı CC-BY-NC-4.0, yani ticari kullanıma kapalı.
+  // Fotoğraf yolu da artık `-small` (Apache-2.0) kullanıyor; iki tüketici
+  // (fotoğraf + canlı video) tek modelde birleşti, indirme de yarıya indi.
+  // Ölçülen bedel: rölyef −%5…7, ince detay −%16…20, buna karşılık ×1.5-2.3 hız.
   {
     // src/engine/vision/liveDepth.ts — CANLI video derinliği (tempo öncelikli
     // küçük model). Liste eksikti: canlı yol taşındığında bu satır da
@@ -45,12 +40,16 @@ const MODEL_REPOS = [
   },
   {
     // src/engine/reconstruction/segmentation.ts — nesne/arka plan ayırma
-    repo: 'briaai/RMBG-1.4',
+    //
+    // TİCARİ LİSANS: `briaai/RMBG-1.4` BURADAN ÇIKARILDI (2026-09-24). Model
+    // kartı "non-commercial use" diyor; abonelikli üründe ağırlığı servis
+    // etmek dağıtımdır. Yerine MIT lisanslı aynı aile (IS-Net) geldi.
+    // Geri koymak isteyen önce BRIA ile ticari anlaşma yapmalıdır.
+    repo: 'imgly/isnet-general-onnx',
     files: [
       'config.json',
       'preprocessor_config.json',
-      'onnx/model_quantized.onnx', // WASM path   (~42 MB)
-      'onnx/model_fp16.onnx',      // WebGPU path (~84 MB)
+      'onnx/model_fp16.onnx', // WebGPU yolu (~88 MB) — kuantize sürümü yok
     ],
   },
 ];

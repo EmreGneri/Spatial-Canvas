@@ -136,7 +136,19 @@ export function gpuSirasinaGir<T>(is: () => Promise<T>): Promise<T> {
   return sonuc;
 }
 
-const MODEL = 'onnx-community/depth-anything-v2-base';
+/**
+ * FOTOĞRAF YOLU DERİNLİK MODELİ.
+ *
+ * ── LİSANS KISITI (ticari ürün kararı, 2026-09-24) ────────────────────────
+ * `-base` sürümü **CC-BY-NC-4.0** yani TİCARİ KULLANIMA KAPALI; abonelikli
+ * bir üründe kullanılamaz (ağırlıkları kendi sunucumuzdan servis etmek
+ * dağıtım sayılır). `-small` **Apache-2.0** ve ticari kullanıma açıktır.
+ *
+ * Bu seçim kalite değil HUKUK gerekçesiyle yapıldı — kalite farkı ölçülüp
+ * CHANGELOG'a yazılır. Lisanslı bir `-base` anlaşması yapılırsa geri dönmek
+ * tek satırdır.
+ */
+const MODEL = 'onnx-community/depth-anything-v2-small';
 
 // Depth Anything V2 training resolution. The image processor resizes every
 // input to this square, so we letterbox to the same size: the model then sees
