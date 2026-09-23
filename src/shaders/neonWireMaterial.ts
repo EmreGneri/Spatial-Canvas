@@ -38,6 +38,14 @@ export interface NeonWireMaterialUniforms {
   uPointSize: { value: number };
   /** 0..1 — Sobel eşiği; düşükte çok çizgi, yüksekte az */
   uEdgeThreshold: { value: number };
+  /**
+   * 0..1 — GÖRÜNTÜ KONTRASTININ kenarlara katkısı. 0 = yalnız derinlik
+   * kenarları (eski davranış: sadece silüet), 1 = fotoğraftaki kontrast
+   * çizgileri tam ağırlıkla. Derinlik sürekli bir hacim olduğu için tek
+   * başına yalnız siluet veriyor; asıl yapı (pencere, tabela, yüz hatları)
+   * görüntüde.
+   */
+  uTextureEdge: { value: number };
   /** çizgi rengi */
   uNeonColor: { value: THREE.Color };
   /**
@@ -83,6 +91,7 @@ export interface NeonWireMaterialUniforms {
 export const NEON_PARAMS: ParamDef[] = [
   { key: 'uPointSize', label: 'çizgi kalınlığı', min: 1, max: 10, default: 3 },
   { key: 'uEdgeThreshold', label: 'kenar eşiği', min: 0, max: 1, default: 0.1 },
+  { key: 'uTextureEdge', label: 'doku kenarı', min: 0, max: 1, default: 0.6 },
   { key: 'uNeonColor', label: 'neon rengi', min: 0, max: 1, default: 0, kind: 'color' },
   { key: 'uGlowRadius', label: 'Glow Radius', min: 0, max: 1, default: 0 },
   { key: 'uGlowIntensity', label: 'Glow Intensity', min: 0, max: 3, default: 1.5 },
@@ -101,6 +110,11 @@ const VERTEX = /* glsl */ `
   uniform float uPointSize;
   uniform float uEdgeThreshold;
   uniform float uGlowRadius;
+  // Kenar bulma artık görüntüyü de okuyor (aşağıdaki nota bak) — fragment'ta
+  // renk için zaten bağlı olan AYNI texture, aynı grid eşlemesiyle.
+  uniform sampler2D uImageTexture;
+  uniform float uHasImage;
+  uniform float uTextureEdge;
 
   attribute vec2 aUv;
 
@@ -141,6 +155,22 @@ const VERTEX = /* glsl */ `
   const float EDGE_GAIN = 16.0;
 
   /**
+   * GÖRÜNTÜ KENARI KAZANCI — aynı gerekçe, ayrı ölçek.
+   *
+   * Parlaklık Sobel'i de 0.125 ile "komşu texel'ler arası tam 0→1 sıçrama"
+   * varsayar. Gerçek fotoğrafta kontrast birkaç texel'e yayılır. Bina cephesi
+   * test görüntüsünde ölçüldü (ön plan texel'leri, 384×384 grid):
+   *
+   *   medyan 0.000 · %90 0.130 · %97 0.236 · en yüksek 0.430
+   *
+   * Kazançsız hâlde kullanıcı kolu 0.6'dayken %90'lık kenar bile
+   * 0.6 · 0.130 = 0.078 ediyordu — varsayılan eşiğin (0.1) ALTINDA, yani
+   * kol açıkken bile hiçbir doku çizgisi geçmiyordu. 4× kazanç %90'ı 0.52'ye,
+   * %97'yi 0.94'e taşır: kol 0.6'da bile pencere/tabela hatları eşiği geçer.
+   */
+  const float IMAGE_EDGE_GAIN = 4.0;
+
+  /**
    * Sobel'in tek kanallı örneği: KONUM texture'ının z'si (Gün C düzeltmesi).
    * Eskiden depth texture'ı GRID uv'siyle okunuyordu — iki farklı uzay: konum
    * grid'i önem remap'iyle büküktür (sampler.buildImportanceRemap), depth ise
@@ -152,6 +182,43 @@ const VERTEX = /* glsl */ `
    */
   float zAt(vec2 uv) {
     return texture2D(uPositions, clamp(uv, 0.0, 1.0)).z;
+  }
+
+  /** Görüntünün parlaklığı, konumla AYNI grid uv'sinde (sampler.sampleImageGrid
+   *  eşlemesi) — hizalama tanım gereği doğru, ek texture yok. */
+  float lumAt(vec2 uv) {
+    vec3 c = texture2D(uImageTexture, clamp(uv, 0.0, 1.0)).rgb;
+    return dot(c, vec3(0.299, 0.587, 0.114));
+  }
+
+  /** 3×3 Sobel'in büyüklüğü; örnekleyici fonksiyon dışarıdan verilir gibi
+   *  iki kez yazılır (GLSL'de fonksiyon işaretçisi yok). */
+  float sobelZ(vec2 uv, vec2 t) {
+    float tl = zAt(uv + vec2(-t.x,  t.y));
+    float tm = zAt(uv + vec2( 0.0,  t.y));
+    float tr = zAt(uv + vec2( t.x,  t.y));
+    float ml = zAt(uv + vec2(-t.x,  0.0));
+    float mr = zAt(uv + vec2( t.x,  0.0));
+    float bl = zAt(uv + vec2(-t.x, -t.y));
+    float bm = zAt(uv + vec2( 0.0, -t.y));
+    float br = zAt(uv + vec2( t.x, -t.y));
+    float gx = (tr + 2.0 * mr + br) - (tl + 2.0 * ml + bl);
+    float gy = (tl + 2.0 * tm + tr) - (bl + 2.0 * bm + br);
+    return length(vec2(gx, gy)) * 0.125;
+  }
+
+  float sobelLum(vec2 uv, vec2 t) {
+    float tl = lumAt(uv + vec2(-t.x,  t.y));
+    float tm = lumAt(uv + vec2( 0.0,  t.y));
+    float tr = lumAt(uv + vec2( t.x,  t.y));
+    float ml = lumAt(uv + vec2(-t.x,  0.0));
+    float mr = lumAt(uv + vec2( t.x,  0.0));
+    float bl = lumAt(uv + vec2(-t.x, -t.y));
+    float bm = lumAt(uv + vec2( 0.0, -t.y));
+    float br = lumAt(uv + vec2( t.x, -t.y));
+    float gx = (tr + 2.0 * mr + br) - (tl + 2.0 * ml + bl);
+    float gy = (tl + 2.0 * tm + tr) - (bl + 2.0 * bm + br);
+    return length(vec2(gx, gy)) * 0.125;
   }
 
   void main() {
@@ -172,20 +239,27 @@ const VERTEX = /* glsl */ `
     // 3×3 Sobel, parçacığın kendi grid UV'si etrafında; komşu mesafesi GRID
     // texel'i (konum texture'ının adımı).
     vec2 t = vec2(TEX_STEP);
-    float tl = zAt(aUv + vec2(-t.x,  t.y));
-    float tm = zAt(aUv + vec2( 0.0,  t.y));
-    float tr = zAt(aUv + vec2( t.x,  t.y));
-    float ml = zAt(aUv + vec2(-t.x,  0.0));
-    float mr = zAt(aUv + vec2( t.x,  0.0));
-    float bl = zAt(aUv + vec2(-t.x, -t.y));
-    float bm = zAt(aUv + vec2( 0.0, -t.y));
-    float br = zAt(aUv + vec2( t.x, -t.y));
 
-    float gx = (tr + 2.0 * mr + br) - (tl + 2.0 * ml + bl);
-    float gy = (tl + 2.0 * tm + tr) - (bl + 2.0 * bm + br);
-
-    // 0.125 · EDGE_GAIN — ölçülen gradyan ölçeğine göre (yukarıdaki not).
-    float edge = min(length(vec2(gx, gy)) * 0.125 * EDGE_GAIN, 1.0);
+    // İKİ KENAR KAYNAĞI (düzeltme — "neon yalnızca siyah görünüyor"):
+    //
+    // Derinlik tek başına YALNIZCA SİLÜET veriyor. Sampler sürekli bir hacim
+    // ürettiği için (Gün B/C) hacmin içinde keskin z sıçraması yok: tek gerçek
+    // süreksizlik öznenin dış hattı. Ölçüldü (sentetik görsel, ön plan
+    // texel'leri): derinlik kenarı %8.8 — ve neredeyse tamamı dış hatta.
+    // Ekranda ince bir çerçeve, içi bomboş siyah kalıyordu.
+    //
+    // Sahnenin asıl YAPISI (pencere, tabela, yüz hatları, desen) derinlikte
+    // değil GÖRÜNTÜDE. uImageTexture renk için zaten bağlı ve konum grid'iyle
+    // aynı uv'ye eşlenmiş; parlaklığını aynı çekirdekle taramak bedavaya yakın
+    // ve hizalama tanım gereği doğru.
+    //
+    // max(): iki kaynaktan güçlü olan kazanır. Toplamak, ikisinin üst üste
+    // bindiği silüeti iki kez sayıp kalınlaştırırdı.
+    float zEdge = min(sobelZ(aUv, t) * EDGE_GAIN, 1.0);
+    float imgEdge = uHasImage > 0.5
+      ? min(sobelLum(aUv, t) * IMAGE_EDGE_GAIN, 1.0) * uTextureEdge
+      : 0.0;
+    float edge = max(zEdge, imgEdge);
     // Parlaklık artık kenar gücüyle DOĞRU ORANTILI değil: eşiği yeni geçen
     // kenar da çizgi olarak okunacak kadar parlar (eskiden eşik üstü kenarların
     // çoğu 0.1-0.2 parlaklıkta kalıyordu — "var ama görünmüyor"). Üst uç
@@ -338,6 +412,7 @@ export function createNeonWireMaterial(): NeonWireMaterial {
     uPositions: { value: null },
     uPointSize: { value: 3 },
     uEdgeThreshold: { value: 0.1 },
+    uTextureEdge: { value: 0.6 },
     uNeonColor: { value: new THREE.Color(0.2, 1.0, 0.85) },
     // Varsayılanlar pointCloudMaterial/asciiMaterial ile aynı; Engine ilk
     // setPhoto/setObjectSeparation çağrısında üzerine yazar.

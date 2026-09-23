@@ -66,6 +66,31 @@ kalınlık başlangıç mesafesinde 0.86 px'lik sprite veriyordu — çizgi rast
 eriyordu), fotoğraf rengi kullanılırken ton korunup değer tavana çekilir.
 **Sonuç: en parlak piksel 55 → 203, parlak piksel oranı %0 → %0.30.**
 
+**İKİNCİ KÖK NEDEN — "ekran hâlâ neredeyse siyah".** Yukarıdaki düzeltmeden
+sonra çizgiler görünür oldu ama kare hâlâ boştu: yalnız öznenin DIŞ HATTI
+çiziliyordu. Sebep, kenarların tek kaynağı olması — derinlik. Sampler sürekli
+bir hacim ürettiği için hacmin İÇİNDE keskin z sıçraması yok; tek gerçek
+süreksizlik silüet. Sahnenin asıl yapısı (pencere, tabela, desen, yüz hatları)
+derinlikte değil GÖRÜNTÜDE.
+
+`uImageTexture` renk için zaten bağlıydı ve konum grid'iyle aynı uv'ye
+eşlenmiş; parlaklığı aynı Sobel çekirdeğiyle taranır, güçlü olan kaynak kazanır
+(`max`, toplam değil — toplam silüeti iki kez sayıp kalınlaştırırdı). Yeni kol:
+**`uTextureEdge` / "doku kenarı"** (0..1, varsayılan 0.6; 0 = eski davranış,
+yalnız derinlik).
+
+Görüntü Sobel'i de kendi ölçeğini istedi. Bina cephesi test görüntüsünde ön plan
+texel'leri: medyan 0.000 · %90 0.130 · %97 0.236 · en yüksek 0.430. Kazançsız
+hâlde kol 0.6'dayken %90'lık kenar 0.078 ediyordu — eşiğin (0.1) ALTINDA, yani
+kol açıkken bile hiçbir doku çizgisi geçmiyordu. `IMAGE_EDGE_GAIN = 4`.
+
+**Sonuç (aynı cephe görüntüsü): parlak piksel oranı %0.36 → %2.21, en parlak
+piksel 171 → 226.** Artık pencereler, tabela ve cephe hattı tek tek çiziliyor —
+mod gerçekten "neon tel kafes" gibi görünüyor.
+
+`NEON_PARAMS`'a yeni kol eklendi (preset şeması geriye uyumlu: eski preset'lerde
+alan yoksa varsayılan kullanılır). `npm run verify` yeni kolla birlikte 29/29.
+
 **Arayüz** (`src/App.tsx`) — üst şerit 13 kontrole çıkmıştı ve üç ayrı stil bir
 aradaydı (tarayıcı varsayılanı, ad-hoc renkli toggle'lar, PNG/WebM'in koyu
 stili). Hepsi koyu terminal diline çekildi; şerit sarıyor, gruplar ayraçla

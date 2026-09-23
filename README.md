@@ -8,8 +8,9 @@ Tarayıcıda çalışan mekânsal görsel motor. Fotoğraf → derinlik haritas�
   canvas'ının üstünde ayrı 2D canvas — köşe parantez kutuları, LOCK vurgusu,
   ID/koordinat etiketleri, sayaç bloğu; üstteki "tracker" düğmesi), **"canlı
   fotoğraf" paralaks sway** (mod satırındaki düğme + hız kolu, `setAutoSway`),
-  **neon modu düzeltildi** (ekran siyahtı: Sobel ölçeği artık gerçek derinlik
-  verisine göre — en parlak piksel 55 → 203) ve üst araç çubuğu tek görsel dile
+  **neon modu düzeltildi** (ekran siyahtı: kenar ölçeği gerçek
+  derinlik verisine göre + kenarlar artık görüntü kontrastını da okuyor, yeni
+  "doku kenarı" kolu — parlak piksel oranı %0 → %2.2) ve üst araç çubuğu tek görsel dile
   çekildi. İkisi de preset'e kaydolmaz (sprint kararı). `npm run verify` 29/29.
   Detay: [CHANGELOG.md](CHANGELOG.md).
 - **Gün C (denetim turu):** solid modun iki kök hatası düzeltildi — kabuk mesh'i
