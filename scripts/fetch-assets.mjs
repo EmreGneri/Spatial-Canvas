@@ -21,6 +21,29 @@ const MODEL_REPOS = [
     ],
   },
   {
+    // src/engine/vision/liveDepth.ts — CANLI video derinliği (tempo öncelikli
+    // küçük model). Liste eksikti: canlı yol taşındığında bu satır da
+    // eklenmeliydi, yoksa temiz bir clone'da istek 404'e düşer.
+    repo: 'onnx-community/depth-anything-v2-small',
+    files: [
+      'config.json',
+      'preprocessor_config.json',
+      'onnx/model_quantized.onnx', // WASM path
+      'onnx/model_fp16.onnx',      // WebGPU path
+    ],
+  },
+  {
+    // src/engine/vision/detect.ts — nesne tespiti (COCO sınıfları: insan,
+    // araba, köpek, bisiklet...). Tracker HUD etiketleri bundan gelir.
+    repo: 'Xenova/yolos-tiny',
+    files: [
+      'config.json',
+      'preprocessor_config.json',
+      'onnx/model_quantized.onnx',
+      'onnx/model_fp16.onnx',
+    ],
+  },
+  {
     // src/engine/reconstruction/segmentation.ts — nesne/arka plan ayırma
     repo: 'briaai/RMBG-1.4',
     files: [
