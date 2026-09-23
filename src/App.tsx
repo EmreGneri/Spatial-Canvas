@@ -57,12 +57,20 @@ const LUMINANCE_MOTION_GAIN = 6;
  * turuncu = maske tanısı, mavi = tracker HUD.
  */
 const toolButton: CSSProperties = {
-  font: 'inherit',
+  // `font` KISAYOLU DEĞİL: React, aynı render'da kısayol (`font`) ile tekil
+  // alanı (`fontSize`) birlikte güncelleyince uyarı basıyor ve stil
+  // güncellemeleri sıraya bağlı hale geliyor. Aile ayrı, boyut ayrı yazılır.
+  fontFamily: 'inherit',
   fontSize: 12,
   padding: '4px 10px',
   background: '#1a1a22',
   color: '#c8c8d4',
-  border: '1px solid #26262e',
+  // Kenarlık de UZUN yazımla: toggle'lar yalnız `borderColor`'ı değiştiriyor,
+  // taban `border` kısayolu olsaydı React aynı uyarıyı basardı (kısayol ile
+  // tekil alan aynı elemanda karışmamalı).
+  borderWidth: 1,
+  borderStyle: 'solid',
+  borderColor: '#26262e',
   borderRadius: 3,
   cursor: 'pointer',
 };
@@ -800,7 +808,9 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
 
   return (
     <div style={{ padding: 24, display: 'grid', gap: 16, justifyItems: 'start' }}>
-      <h1 style={{ font: 'inherit', fontSize: 18, margin: 0 }}>spatial-canvas · Gün A — ACES + bloom + FXAA + sis (global look)</h1>
+      {/* `font` kısayolu + `fontSize` birlikte kullanılınca React her
+          yeniden çizimde uyarı basıyordu (konsolda onlarca satır). */}
+      <h1 style={{ fontFamily: 'inherit', fontWeight: 'inherit', fontSize: 18, margin: 0 }}>spatial-canvas · Gün A — ACES + bloom + FXAA + sis (global look)</h1>
 
       <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', maxWidth: 640 }}>
         {/* KAYNAK */}
