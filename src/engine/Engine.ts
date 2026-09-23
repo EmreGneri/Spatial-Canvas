@@ -268,6 +268,12 @@ export class Engine {
   /** Çizim sonrası kanca (tracker HUD). Bkz. `setFrameTap`. */
   private frameTap: ((view: HTMLCanvasElement) => void) | null = null;
 
+  /** DÜZ VİDEO: kaynağı 3B'ye çevirmeden gösteren, kameraya bağlı düzlem.
+   *  Bkz. `setFlatVideo`. Kapalıyken hiç kurulmaz. */
+  private flatMesh: THREE.Mesh | null = null;
+  private flatVideoOn = false;
+  private cameraInScene = false;
+
   /**
    * GÃœN 6 (opt): otomatik DPR dÃ¼ÅŸÃ¼rme. FPS sÃ¼rdÃ¼rÃ¼lebilir eÅŸiÄŸin (30) altÄ±na
    * dÃ¼ÅŸerse drawing buffer 384â†’256'ya iner (karede 2.25x daha az piksel);
@@ -380,6 +386,11 @@ export class Engine {
       // GPU'ya taÅŸÄ±nÄ±r â€” yeni kare yÃ¼klendikÃ§e parÃ§acÄ±k renkleri canlÄ± kalÄ±r.
       if (this.videoTexture && this.videoElement) {
         this.videoTexture.needsUpdate = true;
+        // Düzlemin ölçüsü fov/en-boy/video oranına bağlı; üçü de çalışma
+        // anında değişir (pencere boyutu, yeni kaynak, metadata geç gelir).
+        // Her karede yeniden oturtmak birkaç çarpma — ayrı bir olay yolu
+        // kurmaktan ucuz ve kaçak bırakmaz.
+        if (this.flatVideoOn) this.ensureFlatMesh();
       }
       // Okunan konum texture'Ä± her karede deÄŸiÅŸir (ping-pong) â€” render
       // katmanÄ±nÄ±n material'Ä±na push edilir (uPositions sÃ¶zleÅŸmesi).
@@ -599,15 +610,21 @@ setPointsMaterial(material: THREE.Material) {
       const splatMat = this.renderModes.get('splat')?.material;
       if (splatMat) this.splatObject.setMaterial(splatMat);
     }
+    // DÜZ VİDEO her şeyin ÖNÜNDEDİR: açıkken 3B kollarının hepsi gizlenir
+    // (bulut, splat, kabuk). Video yoksa açılmaz, eski davranış aynen sürer.
+    const flatActive = this.flatVideoOn && Boolean(this.videoTexture);
+    const flat = flatActive ? this.ensureFlatMesh() : this.flatMesh;
+    if (flat) flat.visible = flatActive;
     const solidActive = Engine.usesShellMesh(this.renderModeName) && !crystalOnSplat;
     // 'splat' aktif + GaussianBuffer dolu → nokta bulutu gizlenir, splat
     // nesnesi görünür. Buffer boşsa (fotoğraf yüklenmemiş) nokta bulutunda
     // kalınır — solid modunun graceful fallback'iyle aynı desen.
     const splatActive = this.renderModeName === 'splat' && (this.splatObject?.ready ?? false);
-    this.splatObject?.setVisible(splatActive || crystalOnSplat);
-    this.points.visible = !(solidActive && this.solidReady) && !splatActive && !crystalOnSplat;
+    this.splatObject?.setVisible(!flatActive && (splatActive || crystalOnSplat));
+    this.points.visible =
+      !flatActive && !(solidActive && this.solidReady) && !splatActive && !crystalOnSplat;
     if (this.solidMesh) {
-      this.solidMesh.visible = solidActive && this.solidReady;
+      this.solidMesh.visible = !flatActive && solidActive && this.solidReady;
       // Mesh ilk kurulumda o andaki material'a baÄŸlanÄ±r; fotoÄŸraf points
       // modunda yÃ¼klendiyse mesh yanlÄ±ÅŸ material'la kalÄ±r — solid aktifken
       // materiÄŸali her seferinde gÃ¼ncel material'a eÅŸitle.
@@ -1038,6 +1055,74 @@ if (entry && entry.material !== this.pointsMaterial) {
   }
 
   /**
+   * DÜZ VİDEO GÖSTERİMİ — kaynağı 3B'ye çevirmeden, olduğu gibi çizer.
+   *
+   * NEDEN VAR: tracker HUD ekrandaki kareyi izler. 3B bulut her derinlik
+   * güncellemesinde (saniyede birkaç kez) yeniden yerleşir, yani izlenecek
+   * KALICI özellik yoktur — ölçüldü: 74 karede 540'tan fazla ID üretilip
+   * hiçbiri tutunamıyordu. Düz kare bu sorunu kaynağında keser: bina köşesi
+   * saniyelerce aynı yerde durur, hem takip hem hizalama doğal olarak çalışır.
+   *
+   * DÜZLEM KAMERANIN ÇOCUĞUDUR: yörüngeyle (OrbitControls, sway) oynamaz,
+   * ekrana sabit durur — "düz gösterim" tam olarak budur. Bu yüzden kamera
+   * sahneye eklenir (three.js yalnız sahne grafiğinde gezdiği nesneleri
+   * çizer; kamera varsayılan olarak sahnede DEĞİLDİR).
+   *
+   * Video yoksa AÇILMAZ (fotoğraf/sentetik kaynakta gösterecek kare yok) —
+   * solid/splat modlarının graceful fallback deseniyle aynı.
+   */
+  setFlatVideo(enabled: boolean) {
+    this.flatVideoOn = enabled;
+    this.syncRenderVisibility();
+  }
+
+  get flatVideoActive(): boolean {
+    return this.flatVideoOn && Boolean(this.videoTexture);
+  }
+
+  /** Düzlemi (gerekiyorsa) kurar ve kamera görüşüne oturtur. Boyut her
+   *  çağrıda yeniden hesaplanır: fov, en-boy ve video oranı değişebilir. */
+  private ensureFlatMesh(): THREE.Mesh | null {
+    if (!this.videoTexture || !this.videoElement) return this.flatMesh;
+    if (!this.flatMesh) {
+      const material = new THREE.MeshBasicMaterial({
+        map: this.videoTexture,
+        // ACES ton eğrisi 3B sahne içindir; düz gösterimde kaynağın kendi
+        // renkleri beklenir, eğri uygulanırsa video soluk görünür.
+        toneMapped: false,
+        depthTest: false,
+        depthWrite: false,
+      });
+      this.flatMesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), material);
+      this.flatMesh.frustumCulled = false;
+      this.flatMesh.renderOrder = -1;
+      this.camera.add(this.flatMesh);
+    } else {
+      const material = this.flatMesh.material as THREE.MeshBasicMaterial;
+      if (material.map !== this.videoTexture) {
+        material.map = this.videoTexture;
+        material.needsUpdate = true;
+      }
+    }
+    if (!this.cameraInScene) {
+      this.scene.add(this.camera);
+      this.cameraInScene = true;
+    }
+    // Kamera uzayında sabit uzaklık; görüş yüksekliği fov'dan, genişliği
+    // en-boydan gelir. Video oranı bu dikdörtgene SIĞDIRILIR (contain) —
+    // kırpmak kadrajın kenarını yutardı, esnetmek geometriyi yalan söylerdi.
+    const dist = 2;
+    const viewH = 2 * dist * Math.tan(THREE.MathUtils.degToRad(this.camera.fov) / 2);
+    const viewW = viewH * this.camera.aspect;
+    const vw = this.videoElement.videoWidth || 16;
+    const vh = this.videoElement.videoHeight || 9;
+    const k = Math.min(viewW / vw, viewH / vh);
+    this.flatMesh.scale.set(vw * k, vh * k, 1);
+    this.flatMesh.position.set(0, 0, -dist);
+    return this.flatMesh;
+  }
+
+  /**
    * Her karede, çizimden HEMEN SONRA çağrılacak kanca — tracker HUD'un
    * ÇİZİLEN kareyi (motor canvas'ı) okuması için. `null` kancayı kaldırır.
    *
@@ -1421,6 +1506,13 @@ depth,
     this.renderer.setAnimationLoop(null);
     this.resizeObserver.disconnect();
     this.controls.dispose();
+    // Düz video düzlemi Engine'in malı (geometri + material burada üretildi).
+    if (this.flatMesh) {
+      this.camera.remove(this.flatMesh);
+      this.flatMesh.geometry.dispose();
+      (this.flatMesh.material as THREE.Material).dispose();
+      this.flatMesh = null;
+    }
     // Post-pass devre dÄ±ÅŸÄ±yken composer'da deÄŸildir; composer.dispose() onu
     // gÃ¶rmez, GPU kaynaÄŸÄ± bÄ±rakÄ±lmaz. Tek seferlik kurum gereÄŸi iki yol da.
     // GRAIN DISPOSE (düzeltildi): koşul TERSTİ — grain yalnızca composer'da

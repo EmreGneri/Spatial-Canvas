@@ -116,7 +116,39 @@ export function ModeSelector({
         ↺ sıfırla
       </button>
       <LivePhotoControls engine={engine} />
+      <FlatVideoToggle engine={engine} />
     </div>
+  );
+}
+
+/**
+ * DÜZ VİDEO — kaynağı 3B'ye çevirmeden gösterir (`Engine.setFlatVideo`).
+ *
+ * Render modu DEĞİL, gösterim tercihi: açıkken 3B kolları (bulut/splat/
+ * kabuk) gizlenir, kapanınca seçili mod aynen geri gelir. Mod sözleşmesine,
+ * ParamDef'e ve preset'e dokunmaz.
+ *
+ * NE İŞE YARAR: tracker HUD ekrandaki kareyi izler; 3B bulut her derinlik
+ * güncellemesinde yeniden yerleştiği için izlenecek kalıcı özellik kalmıyor.
+ * Düz karede bina köşesi/tabela saniyelerce yerinde durur — kutular gerçek
+ * nesnelere oturur.
+ */
+function FlatVideoToggle({ engine }: { engine: Engine }) {
+  const [on, setOn] = useState(false);
+  return (
+    <button
+      type="button"
+      aria-pressed={on}
+      title="düz video: kaynağı 3B'ye çevirmeden göster (tracker'ın gerçek nesneleri takip etmesi için)"
+      style={{ ...buttonStyle(on), marginLeft: 8 }}
+      onClick={() => {
+        const next = !on;
+        setOn(next);
+        engine.setFlatVideo(next);
+      }}
+    >
+      ▭ düz video
+    </button>
   );
 }
 
