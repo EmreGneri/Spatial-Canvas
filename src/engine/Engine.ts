@@ -257,6 +257,8 @@ export class Engine {
    * korunur). `swayBasePos/Target` yoksa sway kapalıdır (tek doğruluk kaynağı).
    */
   private swayEnabled = false;
+  private swayStartPos: THREE.Vector3 | null = null;
+  private swayStartTarget: THREE.Vector3 | null = null;
   private swayBasePos: THREE.Vector3 | null = null;
   private swayBaseTarget: THREE.Vector3 | null = null;
   private swayTime = 0;
@@ -938,6 +940,8 @@ releasePhoto() {
       this.controls.update();
       // Sway açıksa yeni (home) pozdan devam etsin — bir sonraki applySway
       // çağrısı eski taban'a sıçrayıp "sıfırla"yı görünmez kılmasın.
+      // `rebaseSway` hem salınım tabanını hem geri dönüş çapasını yeni
+      // (home) poza taşır — "sıfırla" sonrası kapatma da oraya döner.
       this.rebaseSway();
     }
   }
@@ -1144,8 +1148,7 @@ if (entry && entry.material !== this.pointsMaterial) {
   /**
    * "Canlı fotoğraf" paralaks sway aç/kapat. AÇILDIĞI ANDAKI kamera pozu
    * temel alınır (`rebaseSway`) — cameraHome'a atlamaz, kullanıcının
-   * kadrajını korur. Kapatınca kamera o an sway'in ürettiği pozda kalır
-   * (sıçrama yok); bir sonraki `applySway` çağrısı olmayacağı için sabitlenir.
+   * kadrajını korur. Kapatınca açılış anındaki poz birebir geri yüklenir.
    */
   setAutoSway(enabled: boolean, opts?: { amplitudeDeg?: number; speed?: number }) {
     if (opts?.amplitudeDeg !== undefined) this.swayAmplitudeDeg = opts.amplitudeDeg;
@@ -1162,8 +1165,17 @@ if (entry && entry.material !== this.pointsMaterial) {
     }
     if (enabled === this.swayEnabled) return;
     this.swayEnabled = enabled;
-    if (enabled) this.rebaseSway();
-    else {
+    if (enabled) {
+      // Çapa ve taban aynı yerden kurulur (rebaseSway ikisini birden yazar).
+      this.rebaseSway();
+    } else {
+      if (this.swayStartPos && this.swayStartTarget) {
+        this.camera.position.copy(this.swayStartPos);
+        this.controls.target.copy(this.swayStartTarget);
+        this.controls.update();
+      }
+      this.swayStartPos = null;
+      this.swayStartTarget = null;
       this.swayBasePos = null;
       this.swayBaseTarget = null;
     }
@@ -1465,6 +1477,13 @@ depth,
     if (!this.swayEnabled) return;
     this.swayBasePos = this.camera.position.clone();
     this.swayBaseTarget = this.controls.target.clone();
+    // GERİ DÖNÜŞ ÇAPASI DA TAZELENİR. Kapatınca kamera "sway açılmadan
+    // önceki" poza döner; ama kullanıcı sway açıkken kadrajı elle
+    // değiştirdiyse (sürükleme, sıfırla) dönülecek yer ARTIK ORASIDIR.
+    // Çapa tazelenmezse kapatma, kullanıcının kendi çevirdiği kadrajı
+    // sessizce atıp dakikalar önceki poza ışınlardı.
+    this.swayStartPos = this.swayBasePos.clone();
+    this.swayStartTarget = this.swayBaseTarget.clone();
     this.swayTime = 0;
   }
 
