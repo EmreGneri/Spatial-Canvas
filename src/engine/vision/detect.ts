@@ -8,7 +8,7 @@
 // Sidecar/uzak servis YOK: model `public/models` içinden yerel yüklenir
 // (projenin CDN'siz kuralı). WebGPU yoksa tespit AÇILMAZ — ölçüldü, wasm
 // yolu canlı tempoyu taşımıyor.
-import { loadTransformers, webgpuKullanilabilir, onceRetry } from '../../depth.ts';
+import { gpuSirasinaGir, loadTransformers, webgpuKullanilabilir, onceRetry } from '../../depth.ts';
 
 const MODEL = 'Xenova/yolos-tiny';
 
@@ -73,21 +73,20 @@ export async function detectKullanilabilir(): Promise<boolean> {
 /** Modeli önden ısıt — ilk çıkarım boru hattı derlemesini de ödediği için
  *  kullanıcının baktığı ana denk gelmesin (liveDepth'teki aynı gerekçe). */
 export async function isitDetectModel(): Promise<void> {
-  const { proc, model, fromCanvas } = await yukleDetectModel();
-  if (typeof document === 'undefined') return;
-  const c = document.createElement('canvas');
-  c.width = 320;
-  c.height = 180;
-  const ctx = c.getContext('2d');
-  if (!ctx) return;
-  ctx.fillStyle = '#808080';
-  ctx.fillRect(0, 0, c.width, c.height);
-  try {
+  // Model setup and inference share the GPU queue with live depth.
+  await gpuSirasinaGir(async () => {
+    const { proc, model, fromCanvas } = await yukleDetectModel();
+    if (typeof document === 'undefined') return;
+    const c = document.createElement('canvas');
+    c.width = 320;
+    c.height = 180;
+    const ctx = c.getContext('2d');
+    if (!ctx) return;
+    ctx.fillStyle = '#808080';
+    ctx.fillRect(0, 0, c.width, c.height);
     const inputs = await proc(fromCanvas(c));
     await model(inputs);
-  } catch {
-    /* ısıtma başarısızsa sessiz: gerçek kullanım kendi hatasını raporlar */
-  }
+  });
 }
 
 /**
@@ -98,27 +97,31 @@ export async function algila(
   source: HTMLCanvasElement,
   opts: { threshold?: number; maxCount?: number } = {},
 ): Promise<Detection[]> {
-  const { proc, model, fromCanvas } = await yukleDetectModel();
-  const inputs = await proc(fromCanvas(source));
-  const out = await model(inputs);
-  const r = proc.post_process_object_detection(
-    out,
-    opts.threshold ?? DETECT_THRESHOLD,
-    [[source.height, source.width]],
-  )[0];
-  const list: Detection[] = [];
-  for (let i = 0; i < r.classes.length; i++) {
-    const [x0, y0, x1, y1] = r.boxes[i];
-    list.push({
-      label: model.config.id2label[r.classes[i]] ?? '?',
-      score: r.scores[i],
-      x: x0,
-      y: y0,
-      w: x1 - x0,
-      h: y1 - y0,
-    });
-  }
-  // Skoru yüksek olan önce: tavan uygulanırsa güçlü tespitler korunur.
-  list.sort((a, b) => b.score - a.score);
-  return opts.maxCount ? list.slice(0, opts.maxCount) : list;
+  // A queued inference may wait behind depth; Tracker advances its captured
+  // boxes through the intervening optical flow before displaying them.
+  return gpuSirasinaGir(async () => {
+    const { proc, model, fromCanvas } = await yukleDetectModel();
+    const inputs = await proc(fromCanvas(source));
+    const out = await model(inputs);
+    const r = proc.post_process_object_detection(
+      out,
+      opts.threshold ?? DETECT_THRESHOLD,
+      [[source.height, source.width]],
+    )[0];
+    const list: Detection[] = [];
+    for (let i = 0; i < r.classes.length; i++) {
+      const [x0, y0, x1, y1] = r.boxes[i];
+      list.push({
+        label: model.config.id2label[r.classes[i]] ?? '?',
+        score: r.scores[i],
+        x: x0,
+        y: y0,
+        w: x1 - x0,
+        h: y1 - y0,
+      });
+    }
+    // Skoru yüksek olan önce: tavan uygulanırsa güçlü tespitler korunur.
+    list.sort((a, b) => b.score - a.score);
+    return opts.maxCount ? list.slice(0, opts.maxCount) : list;
+  });
 }

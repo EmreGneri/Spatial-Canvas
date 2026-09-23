@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
 import { TRACKER_HEIGHT, TRACKER_WIDTH } from '../engine/vision/tracker';
-import type { TrackedTarget } from '../engine/vision/tracker';
+import type { DetectionStatus, TrackedTarget, TrackerModu } from '../engine/vision/tracker';
 
 /**
  * Tracker HUD overlay — render katmanı (Zeynep). Sprint "viral özellik",
@@ -76,17 +76,28 @@ export function TrackerOverlay({
   getTargets,
   sourceWidth = TRACKER_WIDTH,
   sourceHeight = TRACKER_HEIGHT,
+  mod = 'ozellik',
+  onModChange,
+  getDetectionStatus,
+  getGeneration,
 }: {
   /** Her karede çağrılır. Yoksa mock hedefler kullanılır. */
   getTargets?: () => TrackedTarget[];
   /** Hedef koordinatlarının piksel uzayı (varsayılan: tracker çözünürlüğü). */
   sourceWidth?: number;
   sourceHeight?: number;
+  /** 'ozellik' = kontrast kümeleri · 'nesne' = COCO tespiti (etiketli). */
+  mod?: TrackerModu;
+  onModChange?: (m: TrackerModu) => void;
+  getDetectionStatus?: () => DetectionStatus;
+  getGeneration?: () => number;
 }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [settings, setSettings] = useState<HudSettings>(DEFAULT_SETTINGS);
   const [panelOpen, setPanelOpen] = useState(true);
   const [count, setCount] = useState(0);
+  const [detectionStatus, setDetectionStatus] = useState<DetectionStatus>({ phase: 'idle', error: null });
+  const detectionStatusRef = useRef(detectionStatus);
 
   // rAF döngüsü prop/state değişiminde yeniden kurulmasın — son değerler
   // ref'ten okunur.
@@ -94,6 +105,10 @@ export function TrackerOverlay({
   settingsRef.current = settings;
   const getTargetsRef = useRef(getTargets);
   getTargetsRef.current = getTargets;
+  const getDetectionStatusRef = useRef(getDetectionStatus);
+  getDetectionStatusRef.current = getDetectionStatus;
+  const getGenerationRef = useRef(getGeneration);
+  getGenerationRef.current = getGeneration;
   const sourceRef = useRef({ w: sourceWidth, h: sourceHeight });
   sourceRef.current = { w: sourceWidth, h: sourceHeight };
 
@@ -105,6 +120,7 @@ export function TrackerOverlay({
 
     const mock = createMockTargets();
     const states = new Map<number, TrackState>();
+    let lastGeneration = getGenerationRef.current?.();
     let raf = 0;
     let lastCount = -1;
     let lastTime = 0;
@@ -129,6 +145,12 @@ export function TrackerOverlay({
 
       const s = settingsRef.current;
       const src = sourceRef.current;
+      const generation = getGenerationRef.current?.();
+      if (generation !== lastGeneration) {
+        // Source and mode changes must discard ghosts from the previous frame space.
+        states.clear();
+        lastGeneration = generation;
+      }
       const raw = getTargetsRef.current ? getTargetsRef.current() : mock(time, src.w, src.h);
       const minArea = (s.minAreaPct / 100) * src.w * src.h;
       const targets = raw.filter((t) => t.w * t.h >= minArea).slice(0, s.maxTargets);
@@ -139,6 +161,12 @@ export function TrackerOverlay({
       if (targets.length !== lastCount) {
         lastCount = targets.length;
         setCount(targets.length);
+      }
+      const nextStatus = getDetectionStatusRef.current?.();
+      if (nextStatus && (detectionStatusRef.current.phase !== nextStatus.phase ||
+        detectionStatusRef.current.error !== nextStatus.error)) {
+        detectionStatusRef.current = nextStatus;
+        setDetectionStatus(nextStatus);
       }
     };
     raf = requestAnimationFrame(frame);
@@ -154,10 +182,30 @@ export function TrackerOverlay({
       <div style={panelStyle(settings.accent)}>
         <button type="button" onClick={() => setPanelOpen((o) => !o)} style={headerStyle}>
             <span style={{ color: settings.accent }}>●</span> TRACKER · {count}
+            {mod === 'nesne' && detectionStatus.phase === 'idle' ? ' · waiting' : ''}
+            {mod === 'nesne' && detectionStatus.phase === 'loading' ? ' · loading' : ''}
+            {mod === 'nesne' && detectionStatus.phase === 'error' ? ' · error' : ''}
           {getTargets ? '' : ' · mock'} {panelOpen ? '▾' : '▸'}
         </button>
         {panelOpen && (
           <div style={{ display: 'grid', gap: 4, marginTop: 4 }}>
+            {mod === 'nesne' && detectionStatus.phase === 'error' && (
+              <div role="alert" title={detectionStatus.error ?? undefined} style={{ color: '#ff8d8d', fontSize: 11, overflowWrap: 'anywhere' }}>
+                Detection failed. Check WebGPU and local model assets. {detectionStatus.error}
+              </div>
+            )}
+            <Row label="mod">
+              <select
+                value={mod}
+                onChange={(e) => onModChange?.(e.target.value as TrackerModu)}
+                disabled={!onModChange}
+                title="özellik: kontrast noktaları (model yok) · nesne: COCO tespiti (insan, araba, köpek...)"
+                style={selectStyle}
+              >
+                <option value="ozellik">özellik</option>
+                <option value="nesne">nesne</option>
+              </select>
+            </Row>
             <Row label="accent">
               <input type="color" value={settings.accent} onChange={(e) => set('accent', e.target.value)} style={colorStyle} />
             </Row>
@@ -239,6 +287,8 @@ function syncStates(
     prev.y += (t.y - prev.y) * k;
     prev.w += (t.w - prev.w) * k;
     prev.h += (t.h - prev.h) * k;
+    prev.label = t.label;
+    prev.score = t.score;
     prev.lostAt = null; // geri geldi (aynı ID) — hayaletten canlıya döner
   }
 
@@ -296,7 +346,7 @@ function drawHud(
     const h = st.h * sy * grow;
     const cx = (st.x + st.w / 2) * sx;
     const cy = (st.y + st.h / 2) * sy;
-    return { id: st.id, x: cx - w / 2, y: cy - h / 2, w, h, alpha, srcX: st.x + st.w / 2, srcY: st.y + st.h / 2, live: st.lostAt === null };
+    return { id: st.id, x: cx - w / 2, y: cy - h / 2, w, h, alpha, srcX: st.x + st.w / 2, srcY: st.y + st.h / 2, live: st.lostAt === null, label: st.label, score: st.score };
   });
 
   ctx.save();
@@ -384,7 +434,12 @@ function drawHud(
     ctx.textBaseline = 'bottom';
     for (const b of boxes) {
       const isLock = s.lock && b.id === lockId;
-      const text = `${isLock ? 'LOCK ' : ''}#${String(b.id).padStart(2, '0')} ${Math.round(b.srcX)},${Math.round(b.srcY)}`;
+      // NESNE modunda sınıf adı kimlikten ÖNCE gelir: HUD'un cevaplaması
+      // gereken ilk soru "bu ne", ikincisi "hangisi". Özellik modunda sınıf
+      // yoktur, eski biçim (ID + koordinat) aynen korunur.
+      const text = b.label
+        ? `${isLock ? 'LOCK ' : ''}${b.label.toUpperCase()} #${String(b.id).padStart(2, '0')}${b.score ? ` ${Math.round(b.score * 100)}%` : ''}`
+        : `${isLock ? 'LOCK ' : ''}#${String(b.id).padStart(2, '0')} ${Math.round(b.srcX)},${Math.round(b.srcY)}`;
       const tw = ctx.measureText(text).width;
       const lx = Math.min(Math.max(0, b.x), viewW - tw - 4);
       const ly = b.y > 14 ? b.y - 2 : b.y + b.h + 13;
