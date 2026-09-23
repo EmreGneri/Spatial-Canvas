@@ -9,9 +9,27 @@
 import { computeOpticalFlow } from './flow.ts';
 import type { FlowPoint } from './types.ts';
 
-/** Tracker'ın kendi çalışma çözünürlüğü — canlı HUD için yeterli, ucuz. */
-export const TRACKER_WIDTH = 160;
-export const TRACKER_HEIGHT = 90;
+/**
+ * Tracker'ın kendi çalışma çözünürlüğü. 160×90 → 128×72 DÜŞÜRÜLDÜ: kaynak
+ * artık motor canvas'ı, yani kare yakalama GPU→CPU geri okumadır ve
+ * tarayıcıda ölçülen maliyet Node'dakinin çok üstünde çıktı
+ * (`getImageData` tek başına 6.1 ms, akış 8.6 ms). Aynı koşullarda ölçülen
+ * GÖRELİ karşılaştırma:
+ *
+ *   160×90 → 22.6 ms/hesap
+ *   128×72 → 15.6 ms/hesap   (−%31)
+ *
+ * Köşe sayısı bu kararda etkisiz çıktı (100 vs 70: 22.6 vs 21.2 ms) — kaldıraç
+ * çözünürlük, köşe bütçesi değil.
+ *
+ * DÜRÜSTLÜK: bu sayılar rAF'ı kısıtlanmış bir test ortamında alındı, MUTLAK
+ * değer olarak gerçek makineyi temsil etmez; oran güvenilir, "60 Hz bütçesine
+ * (16.7 ms) sığıyor" iddiası DOĞRULANMADI. Gerçek kontrol: tracker açıkken
+ * arayüzdeki fps sayacı. Maliyet hâlâ yüksekse sıradaki kol `everyNFrames`
+ * (3 → 5) ya da hesabı Worker'a taşımak.
+ */
+export const TRACKER_WIDTH = 128;
+export const TRACKER_HEIGHT = 72;
 
 /** Bir HUD kutusu — kaynak (tracker çözünürlüğü) piksel uzayında. */
 export interface TrackedTarget {
@@ -62,8 +80,11 @@ export const TRACKER_DEFAULTS: Required<TrackerOptions> = {
   maxCorners: 100,
   maxTargets: 32,
   minArea: 16,
-  clusterRadius: 28,
-  idMatchRadius: 40,
+  // Yarıçaplar çözünürlükle birlikte ölçeklendi (160→128, ×0.8): 28→22, 40→32.
+  // Ölçeklenmezlerse aynı piksel yarıçapı küçülen karede GÖRECELİ olarak
+  // büyür, kümeler gereğinden fazla birleşir.
+  clusterRadius: 22,
+  idMatchRadius: 32,
 };
 
 /** Nokta kümelerini greedy şekilde birleştirir (tek geçiş, O(n·k)). Her

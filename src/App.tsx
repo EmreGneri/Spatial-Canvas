@@ -14,7 +14,7 @@ import { CapturePanel } from './ui/CapturePanel';
 import { MetricsPanel } from './ui/MetricsPanel';
 import { NodeGraphEditor } from './ui/NodeGraphEditor';
 import { TrackerOverlay } from './ui/TrackerOverlay';
-import { Tracker } from './engine/vision/tracker';
+import { Tracker, type TrackedTarget } from './engine/vision/tracker';
 import {
   applyPreset,
   deleteSlot,
@@ -51,6 +51,9 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
    *  değiştiğinde (teardownSource) sıfırlanır, eski karenin izi sızmasın. */
   const trackerRef = useRef<Tracker | null>(null);
   if (trackerRef.current === null) trackerRef.current = new Tracker();
+  /** Son hesaplanan hedefler. Motorun çizim-sonrası kancasında yazılır,
+   *  overlay'in kendi rAF'ında okunur — iki döngü birbirini beklemez. */
+  const trackerTargetsRef = useRef<TrackedTarget[]>([]);
   const streamRef = useRef<MediaStream | null>(null);
   const timerRef = useRef<number | null>(null);
   const objectUrlRef = useRef<string | null>(null);
@@ -408,6 +411,33 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
   }
 
   /**
+   * Tracker HUD, KAYNAK VİDEOYU değil ÇİZİLEN KAREYİ izler. Ekranda görünen
+   * şey videonun kendisi değil ondan türetilen 3B sahnedir; video piksel
+   * uzayında bulunan hedef ekranda başka yere (boş alana bile) düşüyordu.
+   * Çizilen kare tek uzaydır: kutu gördüğün şeyin üstünde durur ve HUD
+   * fotoğraf/sentetik/splat kaynaklarında da çalışır.
+   *
+   * Kanca motorun çizim döngüsünde, `composer.render()`'dan hemen sonra
+   * koşar (`Engine.setFrameTap` sözleşmesi) — canvas ancak o an okunabilir.
+   * Tracker kendi içinde `everyNFrames` ile seyreltir; kanca her karede
+   * çağrılsa da hesap her karede yapılmaz.
+   */
+  useEffect(() => {
+    const engine = engineRef.current;
+    if (!engine) return;
+    if (!trackerOn) {
+      engine.setFrameTap(null);
+      trackerTargetsRef.current = [];
+      trackerRef.current!.reset();
+      return;
+    }
+    engine.setFrameTap((view) => {
+      trackerTargetsRef.current = trackerRef.current!.step(view);
+    });
+    return () => engine.setFrameTap(null);
+  }, [trackerOn, engine]);
+
+  /**
    * MASKE OVERLAY'İ MOUNT SONRASI ÇİZİLİR (düzeltme). Eskiden toggle
    * fonksiyonunun içinden çizilirdi: overlay canvas'ı `showMask &&` ile
    * koşullu render edildiği için React henüz mount etmemiş oluyor,
@@ -738,14 +768,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
             üstünde, WebGL sahnesinin dışında. Kapalıyken hiç mount edilmez,
             rAF döngüsü de çalışmaz. Gün 2 akşam sync: mock veri yerine
             gerçek tracker.ts — kaynak yoksa (fotoğraf modu) boş dizi döner. */}
-        {trackerOn && (
-          <TrackerOverlay
-            getTargets={() => {
-              const video = videoRef.current;
-              return video ? trackerRef.current!.step(video) : [];
-            }}
-          />
-        )}
+        {trackerOn && <TrackerOverlay getTargets={() => trackerTargetsRef.current} />}
         {showMask && (
           <canvas
             ref={segOverlayRef}

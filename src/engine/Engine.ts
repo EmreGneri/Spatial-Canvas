@@ -265,6 +265,9 @@ export class Engine {
   /** OrbitControls sürüklerken sway duraklar — elle kontrolle çakışmasın. */
   private userInteracting = false;
 
+  /** Çizim sonrası kanca (tracker HUD). Bkz. `setFrameTap`. */
+  private frameTap: ((view: HTMLCanvasElement) => void) | null = null;
+
   /**
    * GÃœN 6 (opt): otomatik DPR dÃ¼ÅŸÃ¼rme. FPS sÃ¼rdÃ¼rÃ¼lebilir eÅŸiÄŸin (30) altÄ±na
    * dÃ¼ÅŸerse drawing buffer 384â†’256'ya iner (karede 2.25x daha az piksel);
@@ -400,6 +403,11 @@ export class Engine {
       }
       this.tickPasses(time / 1000);
       this.composer.render();
+      // ÇİZİM SONRASI KANCA — konumu KRİTİK. `preserveDrawingBuffer` kapalı
+      // olduğu için çizim tamponu yalnızca render ile kompozit arasında
+      // geçerlidir (export.ts'teki aynı kural). Kanca dışarıdan bir rAF
+      // döngüsünde çağrılsaydı boş kare okurdu.
+      this.frameTap?.(this.renderer.domElement);
       this.countFps();
     });
   }
@@ -1027,6 +1035,25 @@ if (entry && entry.material !== this.pointsMaterial) {
   setCameraPose(pose: CameraPose) {
     this.camera.position.set(...pose.position);
     this.controls.target.set(...pose.target);
+  }
+
+  /**
+   * Her karede, çizimden HEMEN SONRA çağrılacak kanca — tracker HUD'un
+   * ÇİZİLEN kareyi (motor canvas'ı) okuması için. `null` kancayı kaldırır.
+   *
+   * Neden kaynak video değil de çizilen kare: ekranda görünen şey videonun
+   * kendisi değil, ondan türetilen 3B sahnenin projeksiyonudur. Video piksel
+   * uzayında bulunan bir hedef ekranda BAŞKA bir yere düşer (boş alana bile) —
+   * HUD kutuları içeriğin üstünde durmaz. Çizilen kareyi izlemek iki uzayı
+   * tek uzaya indirir: kutu, kullanıcının gördüğü şeyin üstünde olur ve HUD
+   * video olmayan kaynaklarda (fotoğraf, splat, sentetik) da çalışır.
+   *
+   * ÇAĞRI ANI SÖZLEŞMESİ: kanca `composer.render()`'dan hemen sonra, aynı
+   * görevde çağrılır — `preserveDrawingBuffer` kapalı olduğu için canvas
+   * yalnızca o an okunabilir (export.ts ile aynı kural).
+   */
+  setFrameTap(tap: ((view: HTMLCanvasElement) => void) | null) {
+    this.frameTap = tap;
   }
 
   /**
