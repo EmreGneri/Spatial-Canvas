@@ -51,7 +51,12 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
   /** Tracker HUD veri üreteci (Emre, engine/vision/tracker.ts) — kaynak
    *  değiştiğinde (teardownSource) sıfırlanır, eski karenin izi sızmasın. */
   const trackerRef = useRef<Tracker | null>(null);
-  if (trackerRef.current === null) trackerRef.current = new Tracker();
+  if (trackerRef.current === null) {
+    trackerRef.current = new Tracker();
+    // Yalnızca dev: konsoldan tracker durumunu ölçmek için (`__engine` ile
+    // aynı desen). Üretim bundle'ında yok.
+    if (import.meta.env.DEV) (window as unknown as { __tracker?: Tracker }).__tracker = trackerRef.current;
+  }
   /** Son hesaplanan hedefler. Motorun çizim-sonrası kancasında yazılır,
    *  overlay'in kendi rAF'ında okunur — iki döngü birbirini beklemez. */
   const trackerTargetsRef = useRef<TrackedTarget[]>([]);
