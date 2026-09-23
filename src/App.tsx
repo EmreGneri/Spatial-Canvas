@@ -45,6 +45,42 @@ const LUMINANCE_SMOOTHING_ALPHA = 0.12;
  */
 const LUMINANCE_MOTION_GAIN = 6;
 
+/**
+ * ARAÇ ÇUBUĞU STİLİ (Gün 5, Zeynep — UI/UX cilası).
+ *
+ * Üst şerit 13 kontrole çıktı ve üç ayrı stille karışıyordu: tarayıcı
+ * varsayılanı (açık gri), ad-hoc renkli toggle'lar ve PNG/WebM'in koyu
+ * stili. Hepsi ModeSelector/ControlPanel'in koyu terminal diline çekildi;
+ * şerit `flexWrap` ile sarıyor (dar pencerede ipucu metni kırpılıyordu).
+ *
+ * Toggle'ların vurgu rengi ANLAM taşır ve değişmedi: yeşil = nesne ayırma,
+ * turuncu = maske tanısı, mavi = tracker HUD.
+ */
+const toolButton: CSSProperties = {
+  font: 'inherit',
+  fontSize: 12,
+  padding: '4px 10px',
+  background: '#1a1a22',
+  color: '#c8c8d4',
+  border: '1px solid #26262e',
+  borderRadius: 3,
+  cursor: 'pointer',
+};
+
+function toggleButton(active: boolean, accent: string): CSSProperties {
+  return active
+    ? { ...toolButton, background: accent, color: '#fff', borderColor: accent }
+    : toolButton;
+}
+
+/** Gruplar arası ince ayraç — şerit sardığında da grupları ayırır. */
+const toolDivider: CSSProperties = {
+  width: 1,
+  alignSelf: 'stretch',
+  background: '#26262e',
+  margin: '0 2px',
+};
+
 export default function App() {  const containerRef = useRef<HTMLDivElement>(null);
   const engineRef = useRef<Engine | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -766,8 +802,10 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
     <div style={{ padding: 24, display: 'grid', gap: 16, justifyItems: 'start' }}>
       <h1 style={{ font: 'inherit', fontSize: 18, margin: 0 }}>spatial-canvas · Gün A — ACES + bloom + FXAA + sis (global look)</h1>
 
-      <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', maxWidth: 640 }}>
+        {/* KAYNAK */}
         <button
+          style={toolButton}
           disabled={busy}
           onClick={() => {
             teardownSource();
@@ -778,39 +816,46 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
         >
           sentetik görsel
         </button>
-        <input
-          type="file"
-          accept="image/*,video/*"
-          disabled={busy}
-          onChange={async (e) => {
-            const file = e.target.files?.[0];
-            if (file) {
-              await handleFile(file);
-              e.target.value = '';
-            }
-          }}
-        />
-        <button disabled={busy} onClick={toggleCamera}>
+        <label style={{ ...toolButton, display: 'inline-flex', gap: 6, alignItems: 'center' }} title="görsel ya da video seç (sürükle-bırak da çalışır)">
+          dosya…
+          <input
+            type="file"
+            accept="image/*,video/*"
+            disabled={busy}
+            style={{ display: 'none' }}
+            onChange={async (e) => {
+              const file = e.target.files?.[0];
+              if (file) {
+                await handleFile(file);
+                e.target.value = '';
+              }
+            }}
+          />
+        </label>
+        <button style={toggleButton(cameraOn, '#357')} disabled={busy} onClick={toggleCamera}>
           {cameraOn ? 'kamerayı kapat' : 'kamera'}
         </button>
+        <span style={toolDivider} />
+        {/* ANALİZ */}
         <button
+          style={toolButton}
           disabled={busy}
           onClick={fuseVideoToSplat}
           title="videodan keyframe yakala → flow + poz + füzyon → 3B splat sahnesi (Gün 7 kablosu)"
         >
           video → 3B
         </button>
-        <button disabled={busy} onClick={toggleSegment} style={segment ? { background: '#2a3', color: '#fff', border: '1px solid #2a3' } : undefined}>
+        <button style={toggleButton(segment, '#2a3')} disabled={busy} onClick={toggleSegment}>
           nesne ayırma: {segment ? 'AÇIK' : 'kapalı'}
         </button>
-        <button disabled={busy} onClick={toggleMaskOverlay} style={showMask ? { background: '#a53', color: '#fff', border: '1px solid #a53' } : undefined}>
+        <button style={toggleButton(showMask, '#a53')} disabled={busy} onClick={toggleMaskOverlay}>
           maskeyi göster: {showMask ? 'AÇIK' : 'kapalı'}
         </button>
         <button
+          style={toggleButton(trackerOn, '#357')}
           disabled={busy}
           onClick={() => setTrackerOn((on) => !on)}
-          title="izleme HUD'u: hedef kutuları motor görüntüsünün üstüne çizilir (Gün 2: mock veri)"
-          style={trackerOn ? { background: '#357', color: '#fff', border: '1px solid #357' } : undefined}
+          title="izleme HUD'u: hedef kutuları motor görüntüsünün üstüne çizilir"
         >
           tracker: {trackerOn ? 'AÇIK' : 'kapalı'}
         </button>
@@ -826,12 +871,11 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
           />
           orijinal renkler
         </label>
-        <span style={{ color: '#667', fontSize: 12 }}>görsel/video sürükle-bırak · tıklayıp döndür · hover = kuvvet</span>
-        <span style={{ color: fps >= 30 ? '#6a6' : '#c66', fontSize: 12, fontVariantNumeric: 'tabular-nums' }}>
-         {fps} fps
-        </span>
+        <span style={toolDivider} />
+        {/* ÇIKTI + DURUM */}
         <button
          type="button"
+         style={toolButton}
          disabled={!engine}
          onClick={() => {
          const canvas = engineRef.current?.renderer.domElement;
@@ -846,12 +890,12 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
           .then(() => say('PNG indirildi'))
           .catch((e) => say(`PNG HATA: ${e instanceof Error ? e.message : String(e)}`));
          }}
-         style={{ fontSize: 12, padding: '3px 10px', background: '#1a1a22', color: '#c8c8d4', border: '1px solid #26262e', borderRadius: 3, cursor: 'pointer' }}
         >
          PNG
         </button>
         <button
          type="button"
+         style={toolButton}
          disabled={!engine}
          onClick={() => {
          const canvas = engineRef.current?.renderer.domElement;
@@ -861,7 +905,6 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
           .then(() => say(`WebM indirildi (${webmSec} sn)`))
           .catch((e) => say(`WebM HATA: ${e instanceof Error ? e.message : String(e)}`));
          }}
-         style={{ fontSize: 12, padding: '3px 10px', background: '#1a1a22', color: '#c8c8d4', border: '1px solid #26262e', borderRadius: 3, cursor: 'pointer' }}
         >
          WebM ({webmSec}sn)
         </button>
@@ -869,12 +912,21 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
          type="button"
          disabled={!engine}
          onClick={() => { setWebmSec(webmSec === 5 ? 10 : webmSec === 10 ? 20 : 5); }}
-         style={{ fontSize: 11, padding: '2px 6px', background: 'none', color: '#667', border: 'none', cursor: 'pointer' }}
+         style={{ ...toolButton, fontSize: 11, padding: '4px 7px', background: 'none', color: '#667', borderColor: 'transparent' }}
          title="süreyi değiştir: 5/10/20 sn"
         >
          ⏱
         </button>
+        <span style={{ color: fps >= 30 ? '#6a6' : '#c66', fontSize: 12, fontVariantNumeric: 'tabular-nums', marginLeft: 'auto' }}>
+         {fps} fps
+        </span>
         </div>
+
+      {/* İpucu şeridi: eskiden butonların ARASINDAydı ve dar pencerede
+          kırpılıyordu — kendi satırına alındı. */}
+      <span style={{ color: '#667', fontSize: 12, marginTop: -8 }}>
+        görsel/video sürükle-bırak · tıklayıp döndür · hover = kuvvet
+      </span>
 
       <div
         ref={containerRef}
