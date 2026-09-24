@@ -428,6 +428,13 @@ değil zSpan darboğaz.
   - **Harmanlama:** fotoğraf ve preset'ler additive kalır; video kaynağında
     Engine point cloud material'ını `NormalBlending`'e alır (yoğun tam kare
     ızgara additive'de beyaza doyuyordu).
+  - **Derinlik sırası:** video kaynağında `depthWrite = true`; fragment
+    shader alfası `VIDEO_ALPHA_CUTOFF` (0.3) altındaki pikselleri atar, kalanı
+    opak çizer. Izgara satır sırasıyla çizildiği için derinlik yazılmazsa
+    kamera dönünce uzak satır yakının üstüne biniyordu. Yarı saydam piksel
+    derinlik yazsaydı arkadaki komşu düşer, koyu benekler kalırdı; bedeli
+    video sprite kenarlarının (nesne ayırma silueti dahil) sertleşmesidir.
+    Fotoğraf `depthWrite = false` + additive kalır.
   - **Kadraj:** dünya yüksekliği sabit 2 değil,
     `2 · 3.5 · tan(fov/2) · min(1, kameraOranı / videoOranı) · 0.94`
     (`contain`). Değer her derinlik karesinde Engine'de hesaplanır.
@@ -438,7 +445,26 @@ değil zSpan darboğaz.
     yay simülasyonunu korur.
   - **Nokta izi:** `uVideoFootprint = 1` iken nokta boyutu ızgaranın ekrandaki
     fiziksel piksel aralığından (DPR, zoom, en-boy) türetilir; fotoğrafta
-    eski `uPointSize / mesafe` formülü değişmez.
+    eski `uPointSize / mesafe` formülü değişmez. `verify-video-point-footprint`
+    kapsamayı 0.3 kesimiyle kanıtlar; varsayılan boyut 6 boşluksuzdur, boşluk
+    eşiği ~3,2'den ~3,9'a çıktı (slider en az 2).
+  - **DPR ölçeği:** fotoğraf, ASCII ve neon nokta boyutu
+    `uDprScale = anlık piksel oranı / başlangıç oranı` ile çarpılır.
+    Uyarlamalı DPR düşünce sprite'lar oturum ortasında büyümez; açılıştaki
+    görünüm değişmez. Video izi zaten fiziksel pikseldedir, çift ölçeklenmez.
+  - **Düz video:** OutputPass ton eğrisini tüm kareye uygular; malzemedeki
+    `toneMapped: false` etkisizdi. Düz video açıkken
+    `renderer.toneMapping = NoToneMapping` (animasyon döngüsü ve `renderFrame`
+    aynı yoldan). Bu modda pozlama kolu etkisizdir (three pozlamayı yalnız
+    ton eğrisi içinde uygular).
+  - **GPU kuyruğu:** segmentasyon (IS-Net) oturum kurulumu ve çıkarımı
+    `segmentation.ts` içinde `gpuSirasinaGir`'e girer; çağıranlar sarmaz
+    (kuyruk yeniden girişli değildir). Eşzamanlı yüklemeler tek oturumda
+    birleşir (`onceRetry`).
+  - **Kaynak nesli:** `teardownSource()` bir nesil sayacını artırır
+    (`src/sourceGuard.ts`). Fotoğraf, dosya, kamera ve canlı derinlik yolları
+    her `await` sonrası nesli kontrol eder; bayat kamera akışı hemen
+    durdurulur, bayat fotoğraf sonucu hiçbir şey yazmaz.
   - **Zaman:** aralık yumuşatması çıkarım sayısına değil medya zamanına
     bağlıdır (yarı ömür 450 ms aralık, 500 ms ön plan stretch'i). Sahne
     kesmesi, seek/döngü ve 1,5 sn'yi aşan zaman sıçraması durumu sıfırlar.
@@ -502,6 +528,15 @@ media → depth → particles → renderer → feedback → output
   **Aynı material'ı tekrar takma yasak** (setPointsMaterial eskisini dispose
   eder; ascii material'ın atlas'ı dispose kancasıyla bırakılırdı) — setGraph
   yalnızca farklı material'da takas yapar.
+
+- **Canlı uniform tek doğruluk kaynağıdır (2026-09-24).** Sağ panel ve reset
+  uniform'lara doğrudan yazar; graf editörü her uygulamadan önce düğüm
+  parametrelerini canlı değerlerden yeniler (`liveGraph` = `toPreset`
+  yenilemesi, `src/ui/nodeGraphSync.ts`), editörde düzenlenen düğüm en son
+  uygulanır. Renderer düğümünün parametreleri yalnız kendi modunun
+  material'ına uygulanır. Renk uniform'ları yerinde güncellenir (`.set`),
+  `THREE.Color` nesnesi değiştirilmez. Düğümler silinemez
+  (`deletable: false`); kenarlar tek tek silinir.
 
 ## Node Graph UI (Gün 5)
 
@@ -1057,6 +1092,9 @@ ayrıca bir sözleşme değişikliği gerekmez.
 - Eski D.1b WebGL surfel rasterizasyonu ile 3DGS eğitim renderer'ının
   eşitliği iddia edilmez. Pozdan serbest çizim/coverage isteği eski surfel
   hattının fotometrik önerisine aittir; 3DGS eğitimi için ön koşul değildir.
+- **GPU kilidi (2026-09-24):** splat.js bizim GPU kuyruğumuzu bilmez. Eğitim
+  sürerken hızlı 3B harita paneli çalışamaz; panel çalışırken `3D eğit`
+  başlayamaz.
 
 ## Model ve Runtime
 
@@ -1070,6 +1108,16 @@ ayrıca bir sözleşme değişikliği gerekmez.
   `assets/test-clips/` altındadır.
 - Gerçek 3DGS eğitim kodu `src/vendor/splat.js/` altında sabitlenmiştir;
   görüntü kareleri kullanıcının yerel dosyasından gelir.
+- **Önbellek (vercel.json):** URL'si içerik değişince değişmeyen `/ort/*` ve
+  `/models/*` `max-age=0, must-revalidate`; Vite'ın içerik karmalı
+  `/assets/*` dosyaları 1 yıl `immutable`. `onnxruntime-web` tam sürüme
+  sabitlidir (`@huggingface/transformers`'ın beklediği gece sürümü); JS ile
+  WASM uyuşmazlığı böylece önlenir.
+- **Lisans bildirimi:** `npm run build`, `scripts/gen-third-party-notices.mjs`
+  ile `public/THIRD_PARTY_NOTICES.txt` üretir: üretim npm paketleri,
+  vendored splat.js ve mediabunny (MPL-2.0), sunulan model ağırlıkları
+  (kaynak URL'leriyle). `Xenova/yolos-tiny`'nin kendi etiketi yoktur; lisansı
+  temel modeli `hustvl/yolos-tiny` (Apache-2.0) üzerinden atfedilir.
 - `numThreads = 1` (COOP/COEP gerekmez). WebGPU yolu `model_fp16.onnx` + jsep build.
 - Yükleme/çıkarım süreleri her kurulumda ölçülür (`console.time` → log).
 

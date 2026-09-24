@@ -3,6 +3,35 @@
 Sözleşmeye dokunan her değişiklik buraya yazılır (`ARCHITECTURE.md` kuralı: sessiz sapma yok).
 En yeni üstte.
 
+## 2026-09-24 — İnceleme düzeltmeleri: GPU güvenliği ve render/arayüz durumu
+
+- Fotoğraf segmentasyonu GPU kuyruğunun dışındaydı; video oynarken fotoğraf
+  bırakılınca iki WebGPU oturumu çakışabiliyordu. Kuyruğa giriş
+  `segmentation.ts` içine taşındı, eşzamanlı model yüklemesi tek oturumda
+  birleşir. Eğitim sürerken hızlı 3B harita, harita çalışırken `3D eğit`
+  kilitlidir.
+- Kaynak değişiminde eski async yollar artık yazmaz (nesil sayacı): kameraya
+  çift tıklama iki akış açmaz, bayat fotoğraf sonucu yeni kaynağı ezmez,
+  sürükle-bırak `busy`'ye bakar. Açılamayan dosya (HEVC `.MOV`, HEIC) log'a
+  ne yapılacağını yazar; yarım kaynak bırakılır, aynı dosya yeniden seçilebilir.
+- `onnxruntime-web` tam sürüme sabitlendi; `/ort` ve `/models` artık
+  `immutable` önbellekte değil, karmalı `/assets` öyle. Build
+  `THIRD_PARTY_NOTICES.txt` üretir (npm paketleri, splat.js, mediabunny,
+  model ağırlıkları).
+- Graf editörü ile sağ panel aynı değer için çakışmaz: panelde değişen değer
+  graf kenarı kesilince geri dönmez; renderer parametresi başka modun
+  material'ına sızmaz. Renk seçiciler reset sonrası çalışır. Grafta düğüm
+  silinemez; Backspace artık düğümün bütün kenarlarını silmiyor.
+- Düz video ton eğrisinden geçmez (önce beyaz ~227/255'e iniyordu); bu modda
+  pozlama kolu etkisizdir. Fotoğraf/ASCII/neon nokta boyutu uyarlamalı DPR
+  düşünce büyümez (`uDprScale`). Canlı videoda derinlik yazılır ve 0.3 alfa
+  kesimi uygulanır: kamera dönünce uzak nokta yakının üstüne binmez; bedeli
+  sert video sprite kenarlarıdır, boşluk eşiği ~3,9 nokta boyutuna çıktı.
+- Yeni doğrulamalar: `verify-seg-queue`, `verify-source-guard`,
+  `verify-release-hygiene`, `verify-graph-params`; `verify-live-engine-integration`
+  ve `verify-video-point-footprint` genişletildi. Tarayıcıda gözle kontrol
+  henüz yapılmadı.
+
 ## 2026-09-24 — Deploy: modeller build'de, `public/` yalnız yayınlanacak dosyalar
 
 - Git'ten Vercel deploy'unda model yoktu: `vercel.json` yalnız `vite build`
