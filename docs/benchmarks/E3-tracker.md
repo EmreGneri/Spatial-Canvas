@@ -1,6 +1,6 @@
 # E3 · Tracker Worker FPS kontrolü
 
-Yerel geliştirme sunucusu, aynı `public/nyc.mp4` klibi, düz video görünümü,
+Yerel geliştirme sunucusu, aynı `assets/test-clips/nyc.mp4` klibi, düz video görünümü,
 özellik modu. Canlı derinlik modeli devraldıktan sonra arayüzdeki 1 saniyelik
 motor FPS sayacı okundu. Ana iş parçacığı karşılaştırması için
 `?trackerBackend=main` yalnız geliştirme yapısında etkin; normal yol Worker.

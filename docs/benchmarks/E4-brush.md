@@ -7,7 +7,7 @@ Brush ile iki sütunlu karşılaştırma tamamlanmadı; bu tablo hız/kalite
 üstünlüğü kanıtı olarak kullanılmaz. Yeni protokol
 [yol haritasında](../yol-haritasi.md).
 
-Klip: `public/nyc.mp4`, SHA-256 `d9dd01d211534911edea3f08fcb8367086a1bc0234b77072c2735c39bfd54ae4`.
+Klip: `assets/test-clips/nyc.mp4`, SHA-256 `d9dd01d211534911edea3f08fcb8367086a1bc0234b77072c2735c39bfd54ae4`.
 
 | Ölçüt | Spatial Canvas `video → 3B` | Brush |
 |---|---:|---:|
@@ -41,5 +41,5 @@ kontrol eder; kare kümesi hash'i eşleşmeden kalite üstünlüğü yazmaz. Bru
 koşusu JSON'u verildiğinde rapor yeniden üretilir:
 
 ```powershell
-node scripts/compare-brush.mjs public/nyc.mp4 docs/benchmarks/e4-spatial-nyc.json <brush-run.json>
+node scripts/compare-brush.mjs assets/test-clips/nyc.mp4 docs/benchmarks/e4-spatial-nyc.json <brush-run.json>
 ```
