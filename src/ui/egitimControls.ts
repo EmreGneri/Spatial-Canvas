@@ -37,7 +37,9 @@ export function flyAxes(keys: ReadonlySet<string>): FlyAxes {
 /**
  * Translate without rotating: forward/right follow the camera (R rows 2 and 0,
  * COLMAP x right, z forward), vertical follows world up so rising never drifts
- * sideways on a tilted view. The centre stays inside `radius` of `pivot`.
+ * sideways on a tilted view. The centre stays inside `radius` of `pivot`; a
+ * camera already outside (orbit zooms out further) may only move inward, so
+ * entering fly mode never snaps the pose.
  */
 export function flyStep(k: GsKamera, axes: FlyAxes, distance: number, pivot: Vec3, radius: number, up: Vec3): GsKamera {
   const len = Math.hypot(axes.forward, axes.right, axes.vertical);
@@ -47,7 +49,8 @@ export function flyStep(k: GsKamera, axes: FlyAxes, distance: number, pivot: Vec
   const next = [0, 1, 2].map((i) =>
     C[i] + s * (axes.forward * k.R[6 + i] + axes.right * k.R[i] + axes.vertical * up[i]) - pivot[i]);
   const d = Math.hypot(...next);
-  const scale = d > radius ? radius / d : 1;
+  const limit = Math.max(radius, Math.hypot(C[0] - pivot[0], C[1] - pivot[1], C[2] - pivot[2]));
+  const scale = d > limit ? limit / d : 1;
   const C2 = next.map((v, i) => pivot[i] + v * scale);
   const t = [0, 1, 2].map((r) => -(k.R[r * 3] * C2[0] + k.R[r * 3 + 1] * C2[1] + k.R[r * 3 + 2] * C2[2]));
   return { ...k, t };
