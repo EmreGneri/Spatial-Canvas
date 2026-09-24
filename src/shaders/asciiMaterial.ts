@@ -55,6 +55,8 @@ export interface AsciiMaterialUniforms {
   uPointSize: { value: number };
   /** 0..1 — aUv hash tohumuyla boyut saçılması; 0 = hepsi eşit boyutta */
   uSizeJitter: { value: number };
+  /** Renderer pixel ratio / startup ratio (Engine). Keeps glyphs steady under adaptive DPR. */
+  uDprScale: { value: number };
   /** karakter rengi */
   uColor: { value: THREE.Color };
   /** hücre arkasındaki dolgu rengi */
@@ -158,6 +160,7 @@ const VERTEX = /* glsl */ `
   uniform sampler2D uPositions;
   uniform float uPointSize;
   uniform float uSizeJitter;
+  uniform float uDprScale;
 
   attribute vec2 aUv;
 
@@ -194,7 +197,9 @@ const VERTEX = /* glsl */ `
 
     // max() kırpması ZORUNLU: kameranın arkasına/üstüne düşen noktalarda
     // -mv.z ~ 0 olur, bölme patlar ve dev karakterler ekranı doldurur.
-    gl_PointSize = uPointSize * jitter / max(-mv.z, 0.1);
+    // Physical pixels: the DPR scale keeps glyphs from growing when adaptive
+    // DPR lowers the pixel ratio.
+    gl_PointSize = uPointSize * jitter * uDprScale / max(-mv.z, 0.1);
 
     gl_Position = projectionMatrix * mv;
   }
@@ -287,6 +292,8 @@ export function createAsciiMaterial(): AsciiMaterial {
     uCharSet: { value: toChars(CHAR_SETS[0].chars).length },
     uPointSize: { value: 16 },
     uSizeJitter: { value: 0 },
+    // 1 outside Engine: the startup size, unchanged.
+    uDprScale: { value: 1 },
     uColor: { value: new THREE.Color(0.85, 0.95, 0.85) },
     uBgColor: { value: new THREE.Color(0.02, 0.02, 0.04) },
     uBgOpacity: { value: 0 },
