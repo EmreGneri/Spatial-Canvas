@@ -8,9 +8,8 @@
 // KORUMALAR (ölçüldü, bkz. src/vendor/splat.js/VENDORED.md):
 // - Katman GPU'ya göre: `standard` + 40 kare Intel iGPU'yu çökertti
 //   (DXGI_ERROR_DEVICE_HUNG); RTX'te geçti ve +3.6 dB verdi.
-// - SfM eşleştirici KENDİ cihazını açar; oturumun `device-lost` olayı onu
-//   kapsamaz ve çökmede söz HİÇ dönmez. Bekçi: ilerleme olayı kesilirse
-//   dürüst hata fırlatılır, UI sonsuza dek "çalışıyor" demez.
+// - SfM GPU eşleştiricisi oturum cihazını kullanır. Sürücü sıfırlanmasında
+//   GPU sözü yine asılı kalabilir; ilerleme bekçisi bunu kullanıcıya bildirir.
 
 export interface EgitimAyari {
   tier: 'quick' | 'standard';
@@ -64,22 +63,35 @@ export async function ayarSec(): Promise<EgitimAyari> {
 
 /** SfM çökmesinde söz hiç dönmez: `sonHareket` `ms`'den uzun sessiz kalırsa
  *  dürüst hata. İlerleme olayı gelen her iş için geçerli. */
-function bekcili<T>(p: Promise<T>, sonHareket: () => number, ms: number, asama: string): Promise<T> {
+export function bekcili<T>(
+  p: Promise<T>, sonHareket: () => number, ms: number, asama: string, signal?: AbortSignal,
+): Promise<T> {
   return new Promise((res, rej) => {
+    let settled = false;
+    const finish = (settle: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearInterval(id);
+      signal?.removeEventListener('abort', onAbort);
+      settle();
+    };
+    const onAbort = () => finish(() => rej(new DOMException('3D training cancelled', 'AbortError')));
     const id = setInterval(() => {
       if (performance.now() - sonHareket() > ms) {
-        clearInterval(id);
-        rej(new Error(
-          `${asama}: ${Math.round(ms / 1000)} sn ilerleme yok — GPU büyük ihtimalle sıfırlandı. ` +
-          'Sayfayı yenile; tekrarlarsa tarayıcıyı yeniden başlat.',
-        ));
+        finish(() => rej(new Error(
+          `${asama}: ${Math.round(ms / 1000)} sn ilerleme yok — işlem durmuş olabilir. ` +
+          'Eğitimi yeniden başlat; tekrarlarsa sayfayı yenile.',
+        )));
       }
     }, 1000);
-    p.then((v) => { clearInterval(id); res(v); }, (e) => { clearInterval(id); rej(e); });
+    signal?.addEventListener('abort', onAbort, { once: true });
+    if (signal?.aborted) onAbort();
+    p.then((v) => finish(() => res(v)), (e) => finish(() => rej(e)));
   });
 }
 
 export interface EgitimOlaylari {
+  ayar?(ayar: EgitimAyari): void;
   asama(metin: string): void;
   metrik(m: EgitimMetrik): void;
   bitti(m: EgitimMetrik | null): void;
@@ -110,68 +122,122 @@ export async function egitimBaslat(
   canvas: HTMLCanvasElement,
   olay: EgitimOlaylari,
   ayar?: EgitimAyari,
+  signal?: AbortSignal,
 ): Promise<Egitim> {
+  signal?.throwIfAborted();
   const secilen = ayar ?? await ayarSec();
+  signal?.throwIfAborted();
+  olay.ayar?.(secilen);
   // Dinamik: splat.js (+ mediabunny) yalnız eğitime basılınca iner.
   // @ts-expect-error vendored JS, tip dosyası yok
   const sj = await import('../../vendor/splat.js/index.js');
+  signal?.throwIfAborted();
   let son = performance.now();
   const hareket = () => { son = performance.now(); };
 
   olay.asama('kareler seçiliyor');
-  const ex = await sj.extractSharpFrames(video, {
+  const ex = await bekcili<{ frames: { source: Blob; name: string; t: number }[] }>(sj.extractSharpFrames(video, {
     maxFrames: secilen.maxFrames,
+    signal,
+    backgroundSafe: true,
     onProgress: (p: { stage: string; done: number; total: number }) => {
+      hareket();
       olay.asama(`kareler seçiliyor ${p.done}/${p.total}`);
     },
-  });
+  }), () => son, 90_000, 'kareler seçiliyor', signal);
+  signal?.throwIfAborted();
 
   const s = sj.createSession({
     maxIters: secilen.maxIters,
     holdout: 'auto',
     sfm: sj.solveTierOpts(secilen.tier),
   });
+  let closed = false;
+  let trainWatch: ReturnType<typeof setInterval> | null = null;
+  const clearWatch = () => {
+    if (trainWatch !== null) clearInterval(trainWatch);
+    trainWatch = null;
+  };
+  const close = () => {
+    if (closed) return;
+    closed = true;
+    clearWatch();
+    signal?.removeEventListener('abort', close);
+    s.pause();
+    s.dispose();
+  };
+  signal?.addEventListener('abort', close, { once: true });
+  if (signal?.aborted) {
+    close();
+    signal.throwIfAborted();
+  }
   let sonMetrik: EgitimMetrik | null = null;
   s.on('stage', (e: { stage: string; done?: number; total?: number }) => {
+    if (closed) return;
     hareket();
     olay.asama(`${e.stage} ${e.done ?? ''}/${e.total ?? ''}`);
   });
   s.on('log', hareket);
-  s.on('metrics', (m: EgitimMetrik) => { hareket(); sonMetrik = m; olay.metrik(m); });
+  s.on('metrics', (m: EgitimMetrik) => {
+    if (closed) return;
+    hareket(); sonMetrik = m; olay.metrik(m);
+  });
   s.on('event', (e: { kind: string }) => {
-    if (e.kind === 'train-complete') olay.bitti(sonMetrik);
-    if (e.kind === 'device-lost') olay.hata(new Error('GPU cihazı kayboldu — eğitim durdu. Sayfayı yenile.'));
+    if (closed) return;
+    if (e.kind === 'train-complete') { clearWatch(); olay.bitti(sonMetrik); }
+    if (e.kind === 'device-lost') {
+      olay.hata(new Error('GPU cihazı kayboldu — eğitim durdu. Sayfayı yenile.'));
+      close();
+    }
+    if (e.kind === 'train-error') {
+      olay.hata((e as { error?: Error }).error ?? new Error('Eğitim döngüsü durdu'));
+      close();
+    }
   });
 
   const BEKCI_MS = 90_000;
   try {
-    await bekcili(s.load(ex.frames), () => son, BEKCI_MS, 'kareler yükleniyor');
-    await bekcili(s.solve(), () => son, BEKCI_MS, 'kamera pozu (SfM)');
-    await bekcili(s.seed(), () => son, BEKCI_MS, 'Gaussian tohumlama');
+    await bekcili(s.load(ex.frames, { signal }), () => son, BEKCI_MS, 'kareler yükleniyor', signal);
+    await bekcili(s.solve({ signal }), () => son, BEKCI_MS, 'kamera pozu (SfM)', signal);
+    await bekcili(s.seed(), () => son, BEKCI_MS, 'Gaussian tohumlama', signal);
+    signal?.throwIfAborted();
   } catch (e) {
-    try { s.dispose(); } catch { /* cihaz zaten gitmiş olabilir */ }
+    try { close(); } catch { /* the GPU may already be gone */ }
     throw e;
   }
 
-  // Başlangıç kamerası: ilk eğitim karesinin pozu, kanvas çözünürlüğüne ölçekli.
-  const meta: GsKamera = s.trainer.camMeta[0];
-  const olcek = canvas.width / meta.w;
-  canvas.height = Math.round(meta.h * olcek);
-  const kamera = kameraOlcekle(meta, olcek);
-  s.view.attach(canvas);
-  s.view.setCamera(kamera);
+  try {
+    // Başlangıç kamerası: ilk eğitim karesinin pozu, kanvas çözünürlüğüne ölçekli.
+    const meta: GsKamera = s.trainer.camMeta[0];
+    const olcek = canvas.width / meta.w;
+    canvas.height = Math.round(meta.h * olcek);
+    const kamera = kameraOlcekle(meta, olcek);
+    s.view.attach(canvas);
+    s.view.setCamera(kamera);
 
-  const e: Egitim = {
-    ayar: secilen,
-    kapat: () => { s.pause(); s.dispose(); },
-    plyBlob: () => s.exportPlyBlob(),
-    kamera,
-    pivot: bakisMerkezi(s.recon.cams, medyanNokta(s.recon.points.map((p: { X: Vec3 }) => p.X))),
-    yukari: s._camerasUp(),
-    kameraAyarla: (k) => { e.kamera = k; s.view.setCamera(k); },
-  };
-  s.start();
-  return e;
+    const e: Egitim = {
+      ayar: secilen,
+      kapat: close,
+      plyBlob: () => s.exportPlyBlob(),
+      kamera,
+      pivot: bakisMerkezi(s.recon.cams, medyanNokta(s.recon.points.map((p: { X: Vec3 }) => p.X))),
+      yukari: s._camerasUp(),
+      kameraAyarla: (k) => { e.kamera = k; s.view.setCamera(k); },
+    };
+    signal?.throwIfAborted();
+    s.start();
+    trainWatch = setInterval(() => {
+      if (closed || !s.training) { clearWatch(); return; }
+      if (performance.now() - son > BEKCI_MS) {
+        olay.hata(new Error('Eğitim 90 sn ilerlemedi — GPU veya arka sekme zamanlayıcısı durmuş olabilir. Eğitimi yeniden başlat.'));
+        close();
+      }
+    }, 1000);
+    return e;
+  } catch (error) {
+    close();
+    throw error;
+  }
 }
 
 export function kameraOlcekle(m: GsKamera, k: number): GsKamera {

@@ -5,7 +5,11 @@ Commit: 88efe9aaf32279b0b9bcb781ea0deb4d60c49dff
 Lisans: MIT (LICENSE dosyasi)
 Indirme: 2026-09-23
 
-DEGISTIRILMEDI. Guncellemek icin ayni komutu yeni commit ile kos.
+Yerel degisiklikler (2026-09-24): `session.js` arka sekmede rAF/Worker
+zamanlayici yedegi, gorunur egitim hatasi, gec gelen GPU aygitini birakma ve
+temiz dispose; `sfm/sfm.js` iptalde Worker havuzlarini sonlandirir; `io/video.js`
+iptal sinyali ve arka sekmede durmayan seek tabanli element yedegi. Guncellerken bu yamalari yeni
+upstream commit uzerine yeniden uygula veya upstream karsiligini kontrol et.
 
 ## Lisanslar (ticari kullanim denetimi, 2026-09-24)
 
@@ -34,7 +38,7 @@ zayif GPU'da bu cagri TDR sinirini asiyor.
 KORUMA (entegrasyonda uygulanacak, kod DEGISTIRMEDEN):
 1. Varsayilan `quick` katmani (3900 ozellik, oktav 0) - cift basina ~4x az is.
 2. Kare tavani (<= 24).
-3. `device.lost` izlenir; kayipta kullaniciya DURUSTCE soylenir, asili kalinmaz.
+3. `device.lost` ve ilerleme izlenir; kayipta kullaniciya sebep soylenir.
 4. Egitim sirasinda bizim GPU islerimiz (canli derinlik, tespit) durdurulur -
    splat.js bizim Web Locks kuyrugumuzu bilmiyor.
 
@@ -65,8 +69,9 @@ Windows'ta `powerPreference: 'high-performance'` istense bile Intel'i verdi
 (olculdu). splat.js zaten high-performance istiyor - sorun kodda degil.
 Kullaniciya "Windows Grafik ayarlarindan tarayiciyi Yuksek performans'a al"
 ipucu gosterilmeli; `adapter.info.vendor` ile entegre GPU tespit edilebilir.
-Ayrica: `sfm/gpumatch.js:93` KENDI cihazini aciyor, oturumun `device-lost`
-olayi o asamayi KAPSAMIYOR - SfM icin ayrica zaman asimi korumasi gerekli.
+Ayrica: bugunku `session.solve()` GPU eslestiriciye oturum cihazini gecer;
+bir surucu kaybinda WebGPU sozu yine donmeyebilir. SfM icin ayri ilerleme
+bekcisi ve iptal sinyali gerekir.
 
 ## RTX 5070 Laptop olcumu (2026-09-24)
 
