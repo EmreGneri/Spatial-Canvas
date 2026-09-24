@@ -193,7 +193,7 @@ export function Egitim3D({ dosya, onKapat, say }: { dosya: File; onKapat(): void
         width={960}
         height={540}
         tabIndex={0}
-        style={{ width: '100%', height: '100%', objectFit: 'contain', cursor: 'grab', touchAction: 'none', outline: 'none' }}
+        style={{ width: '100%', height: '100%', objectFit: 'contain', cursor: 'grab', touchAction: 'none' }}
         onKeyDown={(ev) => {
           if (!ucus || ev.ctrlKey || ev.metaKey || ev.altKey) return;
           heldKeys.current.add(ev.code);

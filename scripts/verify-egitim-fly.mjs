@@ -29,6 +29,13 @@ near(Math.hypot(...kameraMerkezi(flyStep(k0, { forward: 1, right: 1, vertical: 0
 k = flyStep(k0, { forward: -1, right: 0, vertical: 0 }, 1000, pivot, 10, up);
 near(Math.hypot(...kameraMerkezi(k).map((v, i) => v - pivot[i])), 10, 'bounded by radius');
 assert.equal(flyStep(k0, { forward: 0, right: 0, vertical: 0 }, 5, pivot, 10, up), k0, 'no input, same camera');
+// Entering fly mode after an orbit zoom-out (camera at 2x radius) must not snap inward;
+// moving further out is blocked, moving back in is free.
+const far = { ...k0, t: [0, 0, 15] }; // centre (0, 0, -15): 20 from pivot, radius 10
+const dist = (m) => Math.hypot(...kameraMerkezi(m).map((v, i) => v - pivot[i]));
+near(dist(flyStep(far, { forward: 1, right: 0, vertical: 0 }, 1, pivot, 10, up)), 19, 'outside: step in, no snap');
+near(dist(flyStep(far, { forward: -1, right: 0, vertical: 0 }, 1, pivot, 10, up)), 20, 'outside: cannot go further out');
+near(dist(flyStep(far, { forward: 0, right: 1, vertical: 0 }, 3, pivot, 10, up)), 20, 'outside: strafe keeps distance');
 
 // Look-around rotates in place: the centre does not move, yaw turns the view.
 k = lookAround(k0, up, 0.3, 0);
