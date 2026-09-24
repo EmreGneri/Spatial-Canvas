@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { egitimBaslat, kameraMerkezi, yorunge, type Egitim, type EgitimMetrik } from '../engine/reconstruction/egitim3dgs';
-import { bindWheelZoom, boundedZoomFactor } from './egitimControls';
+import { bindWheelZoom, boundedZoomFactor, flyAxes, flyRadius, flyStep, lookAround } from './egitimControls';
 import { egitimGpuHint } from './egitimGpuHint';
 
 /**
@@ -12,6 +12,13 @@ export function Egitim3D({ dosya, onKapat, say }: { dosya: File; onKapat(): void
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const egitimRef = useRef<Egitim | null>(null);
   const homeDistanceRef = useRef(0);
+  const homeCameraRef = useRef<Egitim['kamera'] | null>(null);
+  // Free-fly is opt-in; orbit stays the default. The ref lets the wheel and
+  // pointer handlers read the mode without re-binding.
+  const [ucus, setUcus] = useState(false);
+  const ucusRef = useRef(false);
+  ucusRef.current = ucus;
+  const heldKeys = useRef(new Set<string>());
   const [started, setStarted] = useState(false);
   const [subjectOnly, setSubjectOnly] = useState(false);
   const [asama, setAsama] = useState('başlıyor');
@@ -45,6 +52,7 @@ export function Egitim3D({ dosya, onKapat, say }: { dosya: File; onKapat(): void
       // An abort may win just as setup resolves; do not attach a closed session.
       if (iptal) { e.kapat(); return; }
       egitimRef.current = e;
+      homeCameraRef.current = e.kamera;
       const center = kameraMerkezi(e.kamera);
       homeDistanceRef.current = Math.hypot(...center.map((value, i) => value - e.pivot[i]));
     }).catch((e: unknown) => {
@@ -63,8 +71,12 @@ export function Egitim3D({ dosya, onKapat, say }: { dosya: File; onKapat(): void
   const surukle = useRef<{ x: number; y: number } | null>(null);
   const dondur = (yaw: number, pitch: number, yakin = 1) => {
     const e = egitimRef.current;
-    if (e) e.kameraAyarla(yorunge(e.kamera, e.pivot, e.yukari, yaw, pitch, yakin));
+    if (!e) return;
+    e.kameraAyarla(ucusRef.current
+      ? lookAround(e.kamera, e.yukari, yaw, pitch)
+      : yorunge(e.kamera, e.pivot, e.yukari, yaw, pitch, yakin));
   };
+  const ucusYaricapi = (e: Egitim) => flyRadius(homeDistanceRef.current, e.yaricap);
 
   useEffect(() => {
     // The preflight view has no canvas; attach the wheel listener after Start.
@@ -73,12 +85,46 @@ export function Egitim3D({ dosya, onKapat, say }: { dosya: File; onKapat(): void
     return bindWheelZoom(canvas, (factor) => {
       const e = egitimRef.current;
       if (!e) return;
+      if (ucusRef.current) {
+        // Orbit zoom toward a pivot the camera may no longer face would feel
+        // random; in free-fly the wheel dollies along the view instead.
+        const radius = ucusYaricapi(e);
+        e.kameraAyarla(flyStep(e.kamera, { forward: factor < 1 ? 1 : -1, right: 0, vertical: 0 },
+          Math.abs(Math.log(factor)) * radius * 0.1, e.pivot, radius, e.yukari));
+        return;
+      }
       const center = kameraMerkezi(e.kamera);
       const distance = Math.hypot(...center.map((value, i) => value - e.pivot[i]));
       const bounded = boundedZoomFactor(distance, homeDistanceRef.current, factor);
       e.kameraAyarla(yorunge(e.kamera, e.pivot, e.yukari, 0, 0, bounded));
     });
   }, [started]);
+
+  useEffect(() => {
+    if (!ucus) return;
+    const keys = heldKeys.current;
+    let last = performance.now();
+    let frame = requestAnimationFrame(function tick(now) {
+      // Clamp dt so a backgrounded tab does not teleport the camera on return.
+      const dt = Math.min(0.1, (now - last) / 1000);
+      last = now;
+      const e = egitimRef.current;
+      const axes = flyAxes(keys);
+      if (e && (axes.forward || axes.right || axes.vertical)) {
+        const radius = ucusYaricapi(e);
+        const boost = keys.has('ShiftLeft') || keys.has('ShiftRight') ? 3 : 1;
+        e.kameraAyarla(flyStep(e.kamera, axes, radius * 0.25 * boost * dt, e.pivot, radius, e.yukari));
+      }
+      frame = requestAnimationFrame(tick);
+    });
+    return () => { cancelAnimationFrame(frame); keys.clear(); };
+  }, [ucus]);
+
+  function gorunumuSifirla() {
+    const e = egitimRef.current;
+    heldKeys.current.clear();
+    if (e && homeCameraRef.current) e.kameraAyarla(homeCameraRef.current);
+  }
 
   async function plyIndir() {
     const e = egitimRef.current;
@@ -146,9 +192,18 @@ export function Egitim3D({ dosya, onKapat, say }: { dosya: File; onKapat(): void
         ref={canvasRef}
         width={960}
         height={540}
-        style={{ width: '100%', height: '100%', objectFit: 'contain', cursor: 'grab', touchAction: 'none' }}
+        tabIndex={0}
+        style={{ width: '100%', height: '100%', objectFit: 'contain', cursor: 'grab', touchAction: 'none', outline: 'none' }}
+        onKeyDown={(ev) => {
+          if (!ucus || ev.ctrlKey || ev.metaKey || ev.altKey) return;
+          heldKeys.current.add(ev.code);
+          if (/^Key[WASDQE]$/.test(ev.code)) ev.preventDefault();
+        }}
+        onKeyUp={(ev) => { heldKeys.current.delete(ev.code); }}
+        onBlur={() => heldKeys.current.clear()}
         onPointerDown={(ev) => {
           if (ev.button !== 0) return;
+          ev.currentTarget.focus();
           surukle.current = { x: ev.clientX, y: ev.clientY };
           ev.currentTarget.setPointerCapture(ev.pointerId);
         }}
@@ -167,11 +222,20 @@ export function Egitim3D({ dosya, onKapat, say }: { dosya: File; onKapat(): void
           {hata
             ? <b style={{ color: '#e66' }}>HATA: {hata}</b>
             : bitti
-              ? `bitti · ${metrik?.splats.toLocaleString('tr-TR')} Gaussian · test ${subjectOnly ? 'özne ' : ''}PSNR ${metrik?.psnrHold?.toFixed(1) ?? '?'} · sürükle = döndür`
+              ? `bitti · ${metrik?.splats.toLocaleString('tr-TR')} Gaussian · test ${subjectOnly ? 'özne ' : ''}PSNR ${metrik?.psnrHold?.toFixed(1) ?? '?'} · ${ucus ? 'WASD gez · Q/E alçal/yüksel · Shift hızlı · sürükle = bak' : 'sürükle = döndür'}`
               : metrik
                 ? `eğitim ${metrik.iter}/${gpu?.iter} · ${metrik.itersPerSec} iter/sn · ${metrik.splats.toLocaleString('tr-TR')} Gaussian`
                 : asama}
         </span>
+        <button
+          style={dugme}
+          aria-pressed={ucus}
+          title="Açıkken WASD ile sahnede yürü, Q/E ile alçal/yüksel, sürükleyerek etrafa bak"
+          onClick={() => { setUcus((on) => !on); canvasRef.current?.focus(); }}
+        >
+          {ucus ? 'yörüngeye dön' : 'serbest gezin (WASD)'}
+        </button>
+        <button style={dugme} onClick={gorunumuSifirla}>görünümü sıfırla</button>
         {bitti && gpu?.entegre && (
           <button style={dugme} onClick={devamEt} title="Aynı sahnede 4.000 iterasyon daha; kalite etkisi videoya göre değişir">
             sürdür +4.000 (deneysel)
