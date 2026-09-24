@@ -77,7 +77,7 @@ Model ve runtime CDN'den gelmez; tamamen yereldir. `public/models` ve `public/or
 | Komut | Ne yapar |
 |---|---|
 | `npm run dev` | Vite dev server |
-| `npm run build` / `preview` | `fetch:assets` + production build / önizleme |
+| `npm run build` / `preview` | `fetch:assets` + lisans bildirimi + production build / önizleme |
 | `npm run typecheck` | `tsc --noEmit` |
 | `npm run fetch:assets` | Model + ORT dosyalarını vendor eder; listede olmayanları siler |
 | `npm run verify` | Fotoğraf, video, render, export ve 3DGS kamera matematiği dahil sözleşme kontrolleri |
