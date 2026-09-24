@@ -1062,6 +1062,12 @@ ayrıca bir sözleşme değişikliği gerekmez.
 
 - Depth Anything V2 Small, YOLOS Tiny, IS-Net ve ORT runtime dosyaları
   `public/` içindedir; CDN yok. `npm run fetch:assets` ile yeniden üretilir.
+- **`public/` = yayınlanan dosyalar (2026-09-24).** Vite `public/`'i olduğu gibi
+  `dist/`'e kopyalar. `npm run build` önce `fetch:assets` çalıştırır; betik
+  `public/models` ve `public/ort`'u listesinin birebir aynası yapar (listede
+  olmayan ağırlık silinir, lisansı kapalı eski modeller dağıtıma sızmaz) ve
+  `public/` içinde video varsa build'i durdurur. Test klipleri
+  `assets/test-clips/` altındadır.
 - Gerçek 3DGS eğitim kodu `src/vendor/splat.js/` altında sabitlenmiştir;
   görüntü kareleri kullanıcının yerel dosyasından gelir.
 - `numThreads = 1` (COOP/COEP gerekmez). WebGPU yolu `model_fp16.onnx` + jsep build.

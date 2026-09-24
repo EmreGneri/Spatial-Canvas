@@ -6,7 +6,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
+    "build": "npm run fetch:assets && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "fetch:assets": "node scripts/fetch-assets.mjs",

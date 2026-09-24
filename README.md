@@ -68,14 +68,18 @@ npm run dev
 
 Model ve runtime CDN'den gelmez; tamamen yereldir. `public/models` ve `public/ort` silinirse `npm run fetch:assets` ile yeniden üretilir.
 
+`public/` build'de olduğu gibi `dist/`'e kopyalanıp yayınlanır. Bu yüzden `fetch:assets` onu listenin birebir aynası tutar: listede olmayan model dosyalarını siler, `public/` içinde video bulursa durur. Test klipleri `assets/test-clips/`'e konur (gitignore'lı; dev sunucusu `/assets/test-clips/...` yolundan verir).
+
+**Deploy (Vercel):** `vercel.json` `npm run build` çalıştırır; build önce `fetch:assets` ile modelleri HuggingFace'ten indirir (~180 MB; bu makinede temiz kopyada 1 dk 19 sn sürdü).
+
 ## Scripts
 
 | Komut | Ne yapar |
 |---|---|
 | `npm run dev` | Vite dev server |
-| `npm run build` / `preview` | Production build / önizleme |
+| `npm run build` / `preview` | `fetch:assets` + production build / önizleme |
 | `npm run typecheck` | `tsc --noEmit` |
-| `npm run fetch:assets` | Model + ORT dosyalarını vendor eder |
+| `npm run fetch:assets` | Model + ORT dosyalarını vendor eder; listede olmayanları siler |
 | `npm run verify` | Fotoğraf, video, render, export ve 3DGS kamera matematiği dahil sözleşme kontrolleri |
 
 ## Mimari

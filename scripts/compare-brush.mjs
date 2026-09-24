@@ -3,7 +3,7 @@ import { createReadStream, readFileSync, writeFileSync, mkdirSync } from 'node:f
 import { basename, dirname, resolve } from 'node:path';
 
 const ROOT = resolve(import.meta.dirname, '..');
-const clipPath = resolve(ROOT, process.argv[2] ?? 'public/nyc.mp4');
+const clipPath = resolve(ROOT, process.argv[2] ?? 'assets/test-clips/nyc.mp4');
 const spatialPath = resolve(ROOT, process.argv[3] ?? 'docs/benchmarks/e4-spatial-nyc.json');
 const brushPath = process.argv[4] ? resolve(ROOT, process.argv[4]) : null;
 const outputPath = resolve(ROOT, 'eval-out/e4-comparison.md');

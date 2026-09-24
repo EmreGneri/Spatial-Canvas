@@ -1,8 +1,9 @@
-// Fetches the depth model weights and vendors the onnxruntime-web WASM runtime
-// into public/, which is gitignored. Run after a fresh clone/install:
+// Fetches the model weights and vendors the onnxruntime-web WASM runtime into
+// public/, which is gitignored. `npm run build` runs this first: Vite copies
+// public/ verbatim into dist/, so public/ must hold exactly what may ship.
 //   npm run fetch:assets
-import { mkdir, writeFile, copyFile, stat } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { mkdir, writeFile, copyFile, stat, readdir, rm, rmdir } from 'node:fs/promises';
+import { dirname, extname, join, relative, sep } from 'node:path';
 
 // Her tüketici kendi modelini ister; ikisi de aynı dtype eşlemesini kullanır:
 // wasm → q8 (model_quantized.onnx), webgpu → fp16 (model_fp16.onnx).
@@ -66,6 +67,41 @@ const mb = (n) => (n / 1024 / 1024).toFixed(2).padStart(7) + ' MB';
 
 const exists = (p) => stat(p).then(() => true, () => false);
 
+// A test clip left in public/ would be deployed with the site (personal
+// footage, hundreds of MB). Stop before the build can pick it up.
+const MEDIA_EXTENSIONS = new Set(['.mp4', '.mov', '.m4v', '.webm', '.mkv', '.avi']);
+const strayMedia = (await readdir('public', { recursive: true }).catch(() => []))
+  .filter((file) => MEDIA_EXTENSIONS.has(extname(file).toLowerCase()));
+if (strayMedia.length) {
+  console.error('public/ contains video files that would be deployed with the site:');
+  for (const file of strayMedia) console.error(`  public/${file}`);
+  console.error('Move them to assets/test-clips/ (gitignored; the dev server serves it at /assets/test-clips/).');
+  process.exit(1);
+}
+
+/**
+ * Deletes every file under `dir` that is not in `keep` (paths relative to
+ * `dir`), then any directory left empty. Weights dropped from the lists above
+ * otherwise stay on disk and keep shipping, e.g. the non-commercial
+ * RMBG-1.4 and depth-anything-v2-base.
+ */
+async function mirror(dir, keep) {
+  const entries = await readdir(dir, { recursive: true, withFileTypes: true }).catch(() => []);
+  for (const entry of entries) {
+    if (entry.isDirectory()) continue;
+    const path = join(entry.parentPath, entry.name);
+    const rel = relative(dir, path).split(sep).join('/');
+    if (keep.has(rel)) continue;
+    await rm(path, { force: true });
+    console.log(`  removed  ${dir}/${rel} (not in the fetch list)`);
+  }
+  // Deepest first, so a parent becomes empty before it is tried.
+  const dirs = entries.filter((e) => e.isDirectory()).map((e) => join(e.parentPath, e.name));
+  for (const path of dirs.sort((a, b) => b.length - a.length)) {
+    await rmdir(path).catch(() => {}); // only succeeds when empty
+  }
+}
+
 // Var olan dosya atlanır: indirme yarıda kesilirse komutu tekrar çalıştırmak
 // kaldığı yerden devam eder.
 for (const { repo, files } of MODEL_REPOS) {
@@ -88,3 +124,6 @@ for (const file of ORT_FILES) {
   await copyFile(src, join('public/ort', file));
   console.log(`${mb((await stat(src)).size)}  ort/${file}`);
 }
+
+await mirror('public/models', new Set(MODEL_REPOS.flatMap(({ repo, files }) => files.map((f) => `${repo}/${f}`))));
+await mirror('public/ort', new Set(ORT_FILES));

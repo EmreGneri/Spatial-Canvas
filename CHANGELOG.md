@@ -3,6 +3,23 @@
 Sözleşmeye dokunan her değişiklik buraya yazılır (`ARCHITECTURE.md` kuralı: sessiz sapma yok).
 En yeni üstte.
 
+## 2026-09-24 — Deploy: modeller build'de, `public/` yalnız yayınlanacak dosyalar
+
+- Git'ten Vercel deploy'unda model yoktu: `vercel.json` yalnız `vite build`
+  çalıştırıyordu, `public/models` ve `public/ort` gitignore'lı. Her model isteği
+  404'e düşüyordu. `npm run build` artık önce `fetch:assets` çalıştırır.
+- Yerel build'in ters sorunu vardı: `dist` 754 MB'tı; listeden çıkarılmış ve
+  ticari kullanıma kapalı `briaai/RMBG-1.4` ile `depth-anything-v2-base`
+  ağırlıklarını ve kişisel test videolarını içeriyordu. `fetch-assets` artık
+  `public/models` ve `public/ort`'u listenin birebir aynası tutar ve
+  `public/` içinde video bulursa build'i durdurur.
+- Test klipleri `public/`'ten `assets/test-clips/`'e taşındı; dev sunucusu
+  aynı dosyaları `/assets/test-clips/...` yolundan verir.
+- Doğrulama: `public/` olmayan temiz kopyada `npm run build` 1 dk 19 sn'de
+  geçti, 11 model dosyası indi. `dist` 754 MB'tan 253 MB'a indi. `vite preview`
+  modelleri doğru tip ve boyutla sundu; kaldırılan RMBG yolu yalnız SPA
+  fallback'ini döndürdü.
+
 ## 2026-09-24 — Canlı video: kadraj, nokta izi ve zamanlama
 
 - Video bulutu sabit 2 birim yerine kameraya `contain` ölçeğiyle sığar (%94).
