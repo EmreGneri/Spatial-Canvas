@@ -25,16 +25,37 @@ function findLicenseFile(dir) {
   return match ? join(dir, match) : null;
 }
 
+// A word-wrapped license body still puts "copyright" as the first word of a
+// physical line when the sentence break happens to fall there -- Apache-2.0's
+// "...as indicated by a / copyright notice that is included..." and MIT's
+// "...THE AUTHORS OR / COPYRIGHT HOLDERS BE LIABLE..." both do this. Starting
+// with the word is not enough; a real attribution line names a year or a
+// holder right after "Copyright"/"(c)"/"©", never a clause-continuation word
+// like "notice" or "holders". Apache's own appendix template line
+// ("Copyright [yyyy] [name of copyright owner]") also starts like a real one
+// but is the unfilled placeholder, not an actual notice -- rejected too.
+const CLAUSE_CONTINUATION = /^(notice|notices|holder|holders|owner|owners|license|licence|law|laws|protection|statement|symbol|and|or|is|shall|must|line)\b/i;
+const TEMPLATE_PLACEHOLDER = /[[{](?:yyyy|name)/i;
+
+function isAttributionLine(line) {
+  const trimmed = line.trim();
+  if (TEMPLATE_PLACEHOLDER.test(trimmed)) return false;
+  const m = /^(?:copyright|©)\s*(?:\(c\)|\(C\)|©)?\s*(.*)$/i.exec(trimmed);
+  if (!m) return false;
+  const rest = m[1].trim();
+  if (!rest) return false;
+  return !CLAUSE_CONTINUATION.test(rest);
+}
+
 // Pulls just the copyright line(s) out of a LICENSE file rather than
 // reproducing the whole (often boilerplate MIT/BSD/ISC) text for every one
 // of ~90 packages -- real text either way, just not the full license body.
+// Prints nothing when no genuine attribution line is found (e.g. a plain
+// Apache-2.0 template copy never names a holder) rather than a fragment.
 function copyrightNotice(licensePath) {
   const text = readFileSync(licensePath, 'utf8');
   const lines = text.split(/\r?\n/);
-  // Match only a line that IS a copyright statement (starts with the word),
-  // not Apache-2.0's boilerplate "Licensor shall mean the copyright owner..."
-  // definition, which contains the word but names no one.
-  const start = lines.findIndex((l) => /^copyright\b/i.test(l.trim()));
+  const start = lines.findIndex(isAttributionLine);
   if (start === -1) return null;
   const out = [];
   for (let i = start; i < lines.length && out.length < 5; i++) {
@@ -87,7 +108,7 @@ lines.push('  License: MIT');
 lines.push('');
 lines.push(readFileSync('src/vendor/splat.js/LICENSE', 'utf8').trim().split(/\r?\n/).map((l) => `  ${l}`).join('\n'));
 lines.push('');
-lines.push('vendor/mediabunny.min.mjs (bundled inside splat.js, unmodified from upstream)');
+lines.push('src/vendor/splat.js/vendor/mediabunny.min.mjs (bundled inside splat.js, unmodified from upstream)');
 lines.push('  Source: https://github.com/Vanilagy/mediabunny');
 lines.push('  License: MPL-2.0');
 lines.push('  Copyright (c) 2026-present, Vanilagy and contributors');
