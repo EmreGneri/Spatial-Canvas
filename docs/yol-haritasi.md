@@ -1,147 +1,103 @@
-# Yol Haritası — viral sprint sonrası, lansman öncesi
+# Lansman yol haritası
 
-Tarih: 2026-09-23 · Branch: `feat/splat-render`
+Güncellendi: 2026-09-24 · Dal: `feat/splat-render`
 
-Bu dosya ikimiz içindir. Sprint bitti, elimizde çalışan bir motor var; buradan
-sonrası **eksikleri kapatmak**, sonra **tanıtım**. Sıra bilerek böyle: tanıtımın
-ön şartı dışarı çıkarılabilir bir çıktı ve tıklanabilir bir link.
+Bu dosya ileriye dönük iş sırasıdır. Geçmiş ölçümler ve kararlar `CHANGELOG.md`,
+`docs/benchmarks/` ve `src/vendor/splat.js/VENDORED.md` içinde kalır. Bir işin
+kodda bulunması, kullanıcı akışının veya yayın kabulünün geçtiği anlamına gelmez.
 
-## Neredeyiz — dürüst tespit
+## Bugünkü ürün: üç ayrı yol
 
-Piyasa araştırması (2026-09) iki şeyi netleştirdi:
+| Yol | Girdi → çıktı | Motor | Durum |
+|---|---|---|---|
+| Fotoğraf | Fotoğraf → derinlik → stilize 3B görünüm | `Engine`, Depth Anything V2 Small, IS-Net | Çalışıyor; cihaz ve tarayıcı QA'sı sürüyor |
+| `video → 3B` | Video keyframe'leri → poz/derinlik füzyonu → surfel sahne | `videoPipe.ts`, `GaussianBuffer`, WebGL | Hızlı önizleme; gerçek 3DGS eğitimi değil |
+| `3D eğit` | Video → keskin kareler → SfM → tohum → WebGPU 3DGS eğitimi → `.ply` | `egitim3dgs.ts`, vendored `splat.js` | Uygulamaya bağlı; gerçek eğitim ve ayrı rasterizer |
 
-1. **"Tarayıcıda, bulutsuz" tek başına farkımız değil.** Brush (Rust + WebGPU,
-   açık kaynak) tarayıcıda gerçek 3DGS EĞİTİMİ yapıyor. Ama girdi olarak
-   COLMAP pozları + görüntü ZIP'i istiyor.
-2. **Gerçek farkımız ön işlemenin olmaması.** Video ver, sonucu gör. Bir de
-   rekonstrüksiyon araçlarının vermediği stilize çıktı (ASCII/neon/crystal/
-   tracker HUD).
+`3D eğit` sahnesi ana motorun `GaussianBuffer`'ına çevrilmez. Eski surfel
+renderer'ı anizotropik Gaussian ölçeklerini, dönüşünü ve SH rengini kayıpsız
+taşıyamaz. Eğitim görüntüsü ve `.ply` çıktısı `splat.js` yolundadır.
 
-Buna karşılık en büyük zayıflığımız: **splat'larımız optimize edilmiyor.**
-`fuseVideoFrames` poz + derinlik + renkten splat YERLEŞTİRİYOR; fotometrik
-optimizasyon yok. Yani çıktı "renkli nokta bulutu" kalitesinde. Gerçek 3DGS
-ile yan yana konursa fark anında görülür. Tur 3 bunu kısmen kapatmayı hedefler.
+## Önceki turların gerçek durumu
 
-Diğer bilinen eksikler: `.ply`/`.splat` export yok · WebGPU yoksa sessizce
-parlaklık vekiline düşüyoruz · CV ana thread'de (16-23 ms/hesap karesi) ·
-mobil düzen yok · paylaşılabilir çıktı akışı ham · metrik ölçek yok
-(ARCHITECTURE D.8 zaten bildiriyor).
+| İş | Durum | Kanıt / açık nokta |
+|---|---|---|
+| E1 · surfel `.ply` export | Kodlandı | `src/engine/export.ts`, `verify-ply.mjs`; `3D eğit` ayrıca kendi `.ply` çıktısını verir |
+| E2 · WebGPU/canlı derinlik/tespit raporu | Kodlandı | `vision/yetenek.ts`; rapor henüz 3DGS eğitiminin kullanılabilirliğini açıklamıyor |
+| E3 · tracker CV + tespit Worker | Kodlandı, ölçüldü | [E3 FPS ölçümü](benchmarks/E3-tracker.md); Web Locks yoksa ana iş parçacığına döner |
+| E4 · Brush karşılaştırması | **Tamamlanmadı** | [Eski surfel koşusu](benchmarks/E4-brush.md) yalnız `video → 3B` içindir; Brush süresi ve ortak kalite ölçümü yok |
+| Z1 · paylaşılabilir çıktı | Kısmi | PNG/WebM ve iki ayrı `.ply` indirme yolu var; 3DGS sonucunu tek linkle paylaşma akışı yok |
+| Z2 · yetenek uyarısı | Kısmi | Sebep uygulama günlüğüne yazılıyor; eğitim için kullanıcıya görünür ön kontrol yok |
+| Z3 · mobil düzen | Açık | Ana sahne 640×420, node editörü 640 px sabit; gerçek telefon kabulü yapılmadı |
+| Z4 · karşılaştırma sunumu | Bekliyor | Önce karşılaştırılabilir E4 verisi üretilmeli |
 
----
+Eski Tur 3'teki renk/opaklık artığı dağıtma ve `renderFromPose` sözleşmesi,
+**surfel yoluna özgü bir öneriydi**. Gerçek 3DGS eğitimi artık var; bu öneri
+3DGS kalitesi için kritik yol değildir. Surfel yoluna ayrı yatırım kararı
+verilmedikçe uygulanmaz.
 
-## Tur 1 — bağımsız, paralel
+## Sıradaki iş sırası
 
-### E1 · `.ply` export  (Emre, `src/engine/export.ts`)
-GaussianBuffer'ı standart 3DGS `.ply` formatına yaz.
-Dönüşümler: opaklık → logit · ölçek → log · renk → SH DC katsayısı ·
-normal + ölçek → quaternion (format quaternion ister, bizde normal var).
+### 1. Eğitimi yayın için sağlamlaştır — Emre + Zeynep
 
-**Kabul ölçütü:** dosya SuperSplat'ta açılıyor ve sahne tanınabilir duruyor.
-Bu doğrulanmadan "bitti" denmez.
+- **Emre:** Sabit, yeniden dağıtılabilir test klibiyle Intel ve NVIDIA
+  koşularını kaydet: kare sayısı, GPU, aşama süreleri, Gaussian sayısı, eğitim
+  ve ayrılmış kare PSNR, `.ply` boyutu. Var olan geliştirici ölçümleri
+  [vendor kaydında](../src/vendor/splat.js/VENDORED.md); yayın kapısı için
+  uygulama içi koşu ve çıktı dosyası da saklanmalı.
+- **Emre:** `kapat`/hata yaşam döngüsünü tamamla. Bugün SfM sürerken görünümü
+  kapatmak işlemi hemen iptal etmiyor; 90 saniyelik ilerleme bekçisi hata
+  gösterse bile alttaki işi durdurmuyor. İptal veya cihaz kaybından sonra GPU
+  kaynaklarının bırakıldığı ölçülmeli.
+- **Zeynep:** Eğitimin WebGPU ön kontrolünü, seçilen GPU/ayar katmanını,
+  aşamaları, iptal sonucunu ve kurtarma yolunu kullanıcıya açık göster.
+- **Ortak kabul:** İki GPU sınıfında video yükle → `3D eğit` → tamamlanma →
+  döndürme → `.ply` indirme uçtan uca geçer; hata/iptal sonrası tekrar koşu
+  sayfa yenilemeden güvenle başlar veya neden başlayamadığı söylenir.
 
-### Z1 · Paylaşılabilir çıktı akışı  (Zeynep, `src/ui/`)
-Tek tık: kaydet → indir. Kayıt sırasında görsel geri bildirim, süre seçimi,
-çıktıya opsiyonel küçük proje imzası.
-`export.ts`'in mevcut API'si yeterli — E1'i beklemez.
+### 2. Tek ziyaretçiye anlaşılır demo ve paylaşım — Zeynep + Emre
 
-**Kabul ölçütü:** kullanıcı 3 tıkta paylaşılabilir dosya alıyor.
+- **Zeynep:** Fotoğraf, hızlı `video → 3B` ve gerçek `3D eğit` seçeneklerini
+  süre ve çıktı farkıyla adlandır. Mobil sahne/araç çubuğu düzenini gerçek
+  telefonda test et. 3DGS için indirmenin yanı sıra paylaşılabilir önizleme
+  akışını tasarla.
+- **Emre:** Canlı demo build'inde gereken model ağırlıkları ve WebGPU yolunu
+  temiz kurulumdan doğrula; örnek sahneyi kayıt istemeden hemen göster.
+- **Ortak kabul:** İlk ziyaretçi örnek sonucu 5 saniye içinde görür; kendi
+  videosuyla eğitimin dakika ölçeğinde süreceği baştan anlaşılır. Telefon,
+  WebGPU'suz tarayıcı ve model yükleme hatası için açık durum mesajı vardır.
 
-### E2 · Yetenek raporu  (Emre, `src/depth.ts` / `liveDepth.ts`)
-Tek fonksiyon, tek doğruluk kaynağı:
+### 3. E4'ü yeni 3DGS yolu için yeniden ölç — Emre; sunum Zeynep
 
-```ts
-{ webgpu: boolean; canliDerinlik: 'acik'|'kapali'; tespit: 'acik'|'kapali'; sebep: string|null }
-```
+- **Uçtan uca deney:** İki ürüne aynı ham klibi ver; Brush'ın
+  [resmî girdi sözleşmesi](https://github.com/ArthurBrussee/brush/blob/main/README.md)
+  COLMAP veya Nerfstudio veri kümesi istediği için onun poz/kare hazırlığını
+  da toplam süreye ve gerçek kurulum adımlarına kat. Spatial Canvas'ın
+  otomatik kare seçimi ve SfM'si kendi süresine dahildir.
+- **Eğitim/kalite deneyi:** Aynı seçilmiş kareler, kamera pozları ve ayrılmış
+  test kareleriyle ikinci, sabit veri kümesi hazırla. Mevcut `3D eğit` UI'ı
+  dışarıdan poz almıyor; bu deney için `splat.js` oturumunun hazır
+  rekonstrüksiyon girişini kullanan ölçüm düzeneği gerekir. Böylece poz
+  çözümündeki fark eğitim kalitesiyle karışmaz.
+- Her koşuda cihaz, çözünürlük, kareler, iterasyon/kalite hedefi, hazırlık
+  adımları, eğitim süresi, `.ply` boyutu ve aynı ayrılmış karelerde aynı
+  çözünürlük/renk uzayında PSNR kaydet. Uçtan uca süreyi, hazırlığı ve
+  yalnız eğitimi ayrı sütunlarda raporla.
+- [Eski E4 tablosu](benchmarks/E4-brush.md) yalnız surfel önizlemenin tarihsel
+  ölçümü olarak kalır; 21.374 ms / 52.252 splat değerleri 3DGS satırına
+  taşınmaz. Eş koşu yokken hız veya kalite üstünlüğü iddia edilmez.
+- **Kabul:** Tekrarlanabilir komutlar ve ham ölçüm dosyalarıyla iki sütun
+  doldurulur; Zeynep aynı veriden README/demo görseli üretir.
 
-### Z2 · Yetenek uyarısı arayüzü  (Zeynep, `src/ui/`)
-E2'nin raporunu kullanıcıya göster: "Tarayıcın WebGPU desteklemiyor → canlı
-derinlik kapalı, parlaklık vekili çalışıyor." Sessiz bozulma biter.
-Arayüz tarafı sahte raporla önden yazılabilir (Gün 1'deki mock deseni).
+### 4. Yayın kapısı — ortak QA
 
----
+- Temiz kurulum (`npm install`, `npm run fetch:assets`, `npm run verify`,
+  `npm run typecheck`, `npm run build`) ve gerçek tarayıcı/GPU denemeleri geçer.
+- Güncel model ve vendored kod lisansları dağıtılan dosyalar üzerinden
+  yeniden denetlenir; demo dağıtımı ve model ağırlıklarının sunumu netleşir.
+- README, mimari sözleşme ve ekran görüntüleri gerçek iki video yolunu ve
+  sınırlamalarını anlatır. Canlı link çalışır; ardından kısa demo videosu ve
+  duyuru hazırlanır.
 
-## Tur 2 — Tur 1 bitince
-
-### E3 · CV + tespiti Worker'a taşı  (Emre, `src/engine/vision/`)
-Ölçüldü: tracker hesap karesi 16-23 ms, ana thread'de; tespit de aynı yerde.
-Worker'a taşınca jank biter, tespit derinlikle GPU kuyruğunda çekişmez.
-
-**Kabul ölçütü:** tracker açık/kapalı fps farkı ölçülür, öncesi/sonrası
-tabloya yazılır.
-
-### Z3 · Mobil düzen  (Zeynep, `src/ui/`)
-Şu an sabit 640×420 tuval + 13 kontrollü şerit — telefonda kullanılamaz.
-Gündelik yakalamanın çoğu telefonda oluyor.
-
-**Kabul ölçütü:** gerçek telefonda tek elle kullanılabiliyor.
-
-### E4 · Karşılaştırma ölçümü  (Emre, `scripts/`)
-Aynı klip üzerinde biz vs Brush: toplam süre, kurulum adımı sayısı, çıktı
-kalitesi. Rakamlar üretilir.
-
-### Z4 · Karşılaştırmanın sunumu  (Zeynep)
-E4'ün rakamlarını yan yana görsel tabloya çevir — README, ileride landing.
-
----
-
-## Tur 3 — birlikte: kısa fotometrik iyileştirme
-
-**Kapsam, baştan dürüstçe:** gerçek 3DGS eğitimi YAPMIYORUZ. O, türevlenebilir
-rasterizasyon + milyonlarca parametreye Adam demek; WebGL hattımızda gerçekçi
-değil. Yaptığımız: geometriyi dondurup **renk/opaklığı gerçek karelere göre
-yeniden oturtmak** ve işe yaramayan splat'ları budamak. Görünür kazanç
-çoğunlukla buradan gelir (yıkanmış renk, hayalet, çöp splat) ve türev
-gerektirmez.
-
-**Fikir:** her keyframe için mevcut splat'ları O KARENIN POZUNDAN çiz →
-gerçek kareyle farkı al → farkı splat'lara geri dağıtıp rengini/opaklığını
-düzelt → 2-3 tur tekrarla.
-
-### Emre
-- Düzeltme döngüsü: keyframe gezme, tur sayısı, zaman bütçesi, iptal.
-- Artık hesabı: çizilen kare ile gerçek kare farkı, piksel başına hata.
-- Güncelleme kuralı: splat merkezini kareye izdüşür, çevresindeki artığı oku,
-  rengi/opaklığı o yöne ufak adımla it. Adım boyu + kelepçe.
-- Budama: hiç katkı vermeyen splat'ları at.
-- Ölçüm: held-out keyframe üzerinde PSNR öncesi/sonrası → `eval-out/report.json`
-  (D.5 şeması zaten var).
-
-### Zeynep
-- **Poz-serbest offscreen çizim** — bugün render etkileşimli kameraya bağlı.
-  Verilen herhangi bir pozdan, verilen çözünürlükte render target'a çizen yol.
-  **KRİTİK YOL: bu iş olmadan Emre başlayamaz.**
-- **Aynı matematik garantisi:** offscreen çizim ekrandakiyle birebir aynı
-  rasterizasyonu kullanmalı. Farklıysa başka bir renderer'a göre optimize
-  edilir, ekranda başka şey görünür.
-- Kapsama çıktısı: hangi splat hangi pikseli ne ağırlıkla boyadı.
-- Fark görünümü: yan yana + hata ısı haritası (hem hata ayıklama aracı hem
-  tanıtım görseli).
-
-### Ortak sözleşme — kod yazmadan önce imzalanır
-```ts
-renderFromPose(pose, w, h) -> { color: Uint8Array; coverage: Float32Array | null }
-```
-- Zeynep sağlar, Emre tüketir.
-- Güncelleme YALNIZ mevcut GaussianBuffer yazma yolundan geçer (Emre yazar,
-  Zeynep okur). Yeni texture kanalı imzasız açılmaz.
-- Bütçe: toplam ≤2 sn, iptal edilebilir, etkileşimli fps düşmemeli.
-- **Başarı ölçütü baştan kararlaştırılır:** held-out karede PSNR en az X dB
-  artmalı.
-
-**Risk:** gerçek geri yayılım olmadan artığı splat'a dağıtmak bir
-YAKLAŞIMDIR. Ölçüm kazanç göstermezse üst üste hack yığma — dur, mimariyi
-sorgula (3 başarısız düzeltme kuralı).
-
----
-
-## Sonra: demo zinciri
-
-1. Canlı link — küçük modelle ayrı "demo build" (model ağırlıkları ~120 MB ve
-   gitignore'lu; CDN yok kuralı yalnız demo build'de gevşer).
-2. README'nin işveren/ziyaretçi sürümü: tek cümle + GIF + link, teknik günlük
-   aşağı iner.
-3. 60-90 sn demo videosu.
-4. Show HN + Reels/TikTok + r/GaussianSplatting.
-
-Kural: her tanıtım tek bir linke gitsin ve o link **kayıt istemeden 5 saniyede
-sonuç göstersin.**
+**Yayın kararı:** Bu kapılar geçmeden “her cihazda gerçek 3DGS” veya Brush'tan
+daha hızlı/kaliteli olduğumuz söylenmez. Ölçülen GPU ve klip açıkça belirtilir.

@@ -34,9 +34,10 @@ const sameFrames = !!(brush && spatial.frameSetSha256 &&
 const fmt = (value, unit = '') => value == null ? 'ölçülmedi' : `${value}${unit}`;
 
 const lines = [
-  '# E4 · Aynı klip karşılaştırması',
+  '# E4 · Kısmi aynı klip ölçümü',
   '',
   `Klip: \`${basename(clipPath)}\` · SHA-256 \`${clipHash}\``,
+  `Spatial yol: ${spatial.pipeline ?? 'belirtilmedi'}. Brush yol: ${brush?.pipeline ?? 'ölçülmedi'}.`,
   '',
   '| Ölçüt | Spatial Canvas | Brush |',
   '|---|---:|---:|',

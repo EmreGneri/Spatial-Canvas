@@ -12,12 +12,18 @@ v0.4 — Gün 6: PNG/WebM export modülü (`src/engine/export.ts`), embed modu (
 İki katmanın birbirine güvenli bağlanabilmesi için yazıldı.
 Değişiklik tartışılır, yazılır, imzalanır. Sessiz sapma yok.
 
+**Güncel kapsam (2026-09-24):** D.1–D.8, `Engine` içindeki surfel/füzyon
+yolunun sözleşmesidir. Uygulamaya ayrıca gerçek WebGPU 3DGS eğitimi eklendi;
+ayrı veri ve render yolu D.9'da tanımlanır. Eski tarihli ölçüm paragrafları
+yeni eğitim yolunun sonucu sayılmaz.
+
 ## Katman Bölüşümü
 
 | Katman | Sahip | Klasör |
 |---|---|---|
 | Veri katmanı: depth, GPGPU parçacık sistemi, node graph, preset serileştirme, export | Emre | `src/engine/` |
-| Render katmanı: tüm GLSL shader'lar, pass zinciri, 3 render modu | Zeynep | `src/shaders/`, `src/ui/` |
+| Render katmanı: GLSL shader'lar, pass zinciri, stilize render modları | Zeynep | `src/shaders/`, `src/ui/` |
+| Gerçek 3DGS: SfM, WebGPU eğitim, ayrı rasterizer ve `.ply` | Emre + vendored `splat.js` | `src/engine/reconstruction/egitim3dgs.ts`, `src/vendor/splat.js/` |
 | Ortak sözleşme | ikisi birlikte | `ARCHITECTURE.md` |
 
 ## Texture Sözleşmesi
@@ -199,7 +205,7 @@ RenderPass → FXAA → Feedback → ChroAber → Bloom → Grain/Vignette → O
 
 ## Siluet Sözleşmesi (`reconstruction/silhouette.ts`)
 
-Nesne maskesi (`segmentation.ts`, RMBG) verildiğinde:
+Nesne maskesi (`segmentation.ts`, bugün IS-Net) verildiğinde:
 
 - **MASKE OTORİTEDİR (adaylık):** aday koşulu YALNIZCA `mask ≥ 0.5`'tir; depth
   eşiği (`SILHOUETTE_BIN_LO` = 0.05) devre dışıdır. Eskiden kesişim aranıyordu
@@ -232,7 +238,7 @@ Nesne maskesi (`segmentation.ts`, RMBG) verildiğinde:
 `estimateDepth`'in stretch / sobel / eğim sınırlayıcı aşamaları hangi "ön plan"
 tanımını kullanır:
 
-- **RMBG özne maskesi OTORİTEDİR.** `estimateDepth(source, { subjectMask })`
+- **Özne maskesi OTORİTEDİR.** `estimateDepth(source, { subjectMask })`
   verildiğinde üç aşama da bu maskeyi kullanır; maske depth çıktısına
   `resampleBilinear` ile ölçeklenir (1024 vs 518 — ikisi de letterbox karesinin
   iç kırpımı, aynı görsel alan).
@@ -323,13 +329,14 @@ davranışına döner (testlerin kullandığı kaçış kapısı).
 
 ## Dejenere Maske Koruması (`App.tsx`, Gün E — bulgu 9)
 
-RMBG bazı karelerde **her pikseli ön plan** döndürüyor (ölçüldü: ayna
+Eski RMBG modeli bazı karelerde **her pikseli ön plan** döndürüyordu (ölçüldü: ayna
 selfie'sinde ortalama-ton dolgusuyla %100). Böyle bir maske hiçbir şey ayırmaz
 ama ZARAR verir: stretch aralığı sahnenin tamamına açılır (özne bandı yine
 sıkışır) ve siluet AND'i arka planı elemez. Boş maske koruması zaten vardı;
 artık **ön plan oranı > %92 olan maske de atlanır** ve depth maskesiz koşar.
-Eşik gerekçesi: gerçek bir özne kadrajı doldursa bile RMBG kenarlarda 0
-bırakır; %92 üstü pratikte "model pes etti" demektir.
+Eşik gerekçesi: gerçek bir özne kadrajı doldursa bile maske kenarlarda 0
+bırakır; %92 üstü pratikte "model pes etti" demektir. Eşik eski modelde
+ölçülmüştü; IS-Net için yeniden doğrulama yayın öncesi açık iştir.
 
 ## zSpan Sözleşmesi (`sampler.ts`, Gün E — bulgu 4)
 
@@ -499,7 +506,7 @@ gider, düğüm parametreleri graf params'ında yaşar.
   temizlik: Z hesabı 3×3 box blur'dan geçen depth'i örnekler ve ekstrüzyon
   `depthScale` (0.7) ile sönümlenir (kavis ölçeklenmez); siluet/remap/kaide ham
   depth'ten beslenir. Fotoğraf yüklenişinde segmentasyon otomatik çalışır
-  (RMBG maskesi siluete AND edilir) — arka plan büstü yastığa çevirmez.
+  (IS-Net maskesi siluete AND edilir) — arka plan büstü yastığa çevirmez.
 - **Gün C — kabuk sözleşmesi üç madde kazandı (üçü de HATA düzeltmesi):**
   1. **Dikey hiza:** köşe satırı `remap.yOf`'a SATIR koordinatı (üstten alta,
      `t = j/N`) verir; dünya/uv `v = 1 − t` ayrı hesaplanır. Eskiden `v`
@@ -984,18 +991,45 @@ ayrıca bir sözleşme değişikliği gerekmez.
   → dünya splat'ları + keyframeIndex; `fuseVideoFrames`: video köprüsü —
   yoğun depth/rgb haritalarını alır). Sentetik yörüngede doğrulandı
   (verify-fusion.mjs: ölçek 0.3691 vs 1/2.7, konum RMS 3.14e-3, ATE 2.99e-3).
-- **Gün 7 KABLOSU (kullanıcı kararı: "şimdi bağla"):** `src/engine/vision/
-  videoPipe.ts` köprünün CANLI ucudur — `captureKeyframes` (rVFC, zaman
-  kapılı 8 kare, 256×192) + `buildFusionScene` (flow → chainPoseTrack →
+- **Gün 7 KABLOSU (ilk sürüm kaydı):** `src/engine/vision/
+  videoPipe.ts` köprünün canlı ucudur — `captureKeyframes` (rVFC, zaman
+  kapılı 8 kare) + `buildFusionScene` (flow → chainPoseTrack →
   fuseVideoFrames → `fitBufferToCamera` kamera uyumu) + App.tsx `video → 3B`
-  butonu → `Engine.setGaussians` → splat modu. Dürüstlük kayıtları:
-  video yolunda yoğun derinlik = luminance (model yalnız tek fotoğrafta),
-  şekil fiziği üçgenlemeden (öz/ölçek gerçektir), fit kopya üzerinde sunum
-  ölçeğidir (kaynak buffer bozulmaz). verify-videopipe.mjs ile ölçüldü.
+  butonu → `Engine.setGaussians` → splat modu. **Güncel uygulama farkları:**
+  keyframe boyutu 384×288'dir; `CapturePanel` dosyayı seek ile klibe yayarak
+  örnekler. `buildFusionScene` varsayılan olarak Depth Anything derinliğini dener ve
+  başarısız olursa luminance vekiline döner; `diagnostics.derinlikKaynagi`
+  kullanılan kaynağı bildirir. Bu yolun ölçeği üçgenleme başarısızsa metrik
+  değildir. Fit yalnız sunum kopyasına uygulanır. `verify-videopipe.mjs` ve
+  `verify-video-depth.mjs` ilgili sözleşmeleri denetler.
+
+### D.9 · Gerçek 3DGS eğitim yolunun sınırı
+
+- `App.tsx` içindeki `3D eğit`, yüklenen **video dosyasını**
+  `egitim3dgs.ts`'ye verir. `splat.js` keskin kareleri seçer; SfM kamera
+  pozları/seyrek noktalar üretir; `GSTrainer` WebGPU üzerinde anizotropik
+  Gaussian konum, ölçek, dönüş, opaklık ve SH renk parametrelerini optimize
+  eder. Eğitimden ayrılan kare için PSNR raporlanır.
+- Eğitim çıktısı D.1'deki `gSplatA/B/C` veya `Engine.setGaussians` yoluna
+  yazılmaz. Ayrı `SessionView` aynı `splat.js` rasterizer'ıyla çizer;
+  `exportPlyBlob` standart 3DGS `.ply` dosyası üretir. Ana araç çubuğundaki
+  `PLY` düğmesi D.1 surfel sahnesinindir; eğitim görünümündeki `.ply indir`
+  düğmesi eğitilmiş sahnenindir.
+- GPU profili uygulamada NVIDIA için `standard`/40 kare/10.000 iterasyon,
+  diğer adaptörlerde `quick`/24 kare/3.000 iterasyondur. Bu yalnız ölçülmüş
+  Intel ve RTX davranışına dayalı temkinli seçimdir; diğer cihazlarda kalite
+  veya başarı garantisi değildir. Sayılar ve klip
+  `src/vendor/splat.js/VENDORED.md` içinde tutulur.
+- Eski D.1b WebGL surfel rasterizasyonu ile 3DGS eğitim renderer'ının
+  eşitliği iddia edilmez. Pozdan serbest çizim/coverage isteği eski surfel
+  hattının fotometrik önerisine aittir; 3DGS eğitimi için ön koşul değildir.
 
 ## Model ve Runtime
 
-- Depth modeli + ORT wasm: `public/` içinde, CDN yok. `npm run fetch:assets` ile yeniden üretilir.
+- Depth Anything V2 Small, YOLOS Tiny, IS-Net ve ORT runtime dosyaları
+  `public/` içindedir; CDN yok. `npm run fetch:assets` ile yeniden üretilir.
+- Gerçek 3DGS eğitim kodu `src/vendor/splat.js/` altında sabitlenmiştir;
+  görüntü kareleri kullanıcının yerel dosyasından gelir.
 - `numThreads = 1` (COOP/COEP gerekmez). WebGPU yolu `model_fp16.onnx` + jsep build.
 - Yükleme/çıkarım süreleri her kurulumda ölçülür (`console.time` → log).
 

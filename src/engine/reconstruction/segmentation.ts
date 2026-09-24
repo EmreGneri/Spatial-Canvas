@@ -38,9 +38,9 @@
  * resampleBilinear ile ölçekler — iki aşamanın letterbox yuvarlama farkları
  * (518 vs 1024) burada dengelenir.
  *
- * TUR 10 (mask): ham RMBG çıktısı sert 0.5 eşiğiyle kesilmez — önce
+ * TUR 10 (mask): ham model çıktısı sert 0.5 eşiğiyle kesilmez — önce
  * MASK_DILATE_RADIUS (4px) morfolojik genişletme, sonra MASK_FEATHER_RADIUS
- * (2px) kenar yumuşatma uygulanır. RMBG'nin öznenin İÇİNE düşen < 0.5
+ * (2px) kenar yumuşatma uygulanır. Modelin öznenin İÇİNE düşen < 0.5
  * hataları (yüz/el kenarı delikleri) güven marjıyla ön plan adayı olmaya
  * devam eder; uzak arka plan 0 kalır (perde koruması sürer — AND eşiği aynı).
  */
@@ -130,7 +130,7 @@ export async function segmentForeground(
   }
   // TUR 10: sert kesim yerine dilate + feather — yüz/el kenarı delikleri
   // güven marjıyla kapanır; perde koruması (AND eşiği) değişmez.
-  // GÜN E (bulgu 12): önce kopuk parçaları düşür (özneye bitişik OLMAYAN RMBG
+  // GÜN E (bulgu 12): önce kopuk parçaları düşür (özneye bitişik OLMAYAN model
   // hataları — kapı kasası, zemin), sonra dilate + tüy.
   const mask = dilateAndFeatherMask(keepLargestComponent(raw, lb.w, lb.h), lb.w, lb.h);
   return { mask, width: lb.w, height: lb.h };

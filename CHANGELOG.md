@@ -3,6 +3,21 @@
 Sözleşmeye dokunan her değişiklik buraya yazılır (`ARCHITECTURE.md` kuralı: sessiz sapma yok).
 En yeni üstte.
 
+## 2026-09-24 — Güncel 3DGS sözleşmesi ve lansman planı
+
+- `docs/yol-haritasi.md` yeniden yazıldı: fotoğraf, surfel `video → 3B` ve
+  gerçek `3D eğit` ayrı ürün yolları olarak tanımlandı. Eski sezgisel
+  fotometrik Tur 3, 3DGS için gerekli iş listesinden çıkarıldı.
+- `ARCHITECTURE.md` D.9, vendored `splat.js` eğitim/veri/render sınırını ve
+  ana motorun `GaussianBuffer`'ından ayrılığını kaydeder. Video füzyonunun
+  bugünkü Depth Anything varsayılanı ve luminance geri düşüşü yazıldı.
+- README'deki `-base` model, sabit eski model boyutları/test sayısı ve E4'ün
+  yeni 3DGS karşılaştırması gibi okunabilecek anlatımı düzeltildi. E4 kaydı
+  tarihsel surfel ölçümü olarak işaretlendi; Brush hücreleri boş kalır.
+- `verify-depth.mjs` ve `verify-curtain.mjs`, dağıtımdan çıkarılmış
+  Depth Anything Base / RMBG yerine ürünün Small / IS-Net modellerini
+  çalıştırır. Tam doğrulama zinciri artık güncel ağırlıkları sınar.
+
 ## 2026-09-23 — Tur 2 E3/E4 (Emre): Worker tracker ve karşılaştırma zemini
 
 - Tracker'ın optik akış/kümeleme hesabı ile YOLOS nesne tespiti Worker'a

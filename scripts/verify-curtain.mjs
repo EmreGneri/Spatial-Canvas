@@ -1,8 +1,8 @@
 // Tur 9+10+11 görsel doğrulama: GERÇEK büst fotoğrafında perde/çanak YOK mu ve
 // arka plan noktaları TEK buffer üzerinde siluet deliğini dolduruyor mu?
 //
-// Gerçek uygulama yolunun birebir kopyası (Node): fotoğraf → letterbox(1024²,
-// kare kaynakta saf resize) → RMBG mask → DİLATE + TÜY (Tur 10: segmentation.ts
+// Uygulama yolunun Node eşdeğeri: fotoğraf → letterbox(1024²,
+// kare kaynakta saf resize) → IS-Net mask → DİLATE + TÜY (Tur 10: segmentation.ts
 // ile aynı post-process) → letterbox(518²) → depth → normalize (0..1, 1 =
 // yakın) → maske resampleBilinear(518²) → sampleVolumePositions +
 // sampleImageGrid (foregroundMask ile). "nesne ayırma AÇIK" yoludur.
@@ -30,19 +30,18 @@
 //   node scripts/verify-curtain.mjs [fotoğraf yolu]
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
+import * as ort from 'onnxruntime-web';
 import {
-  AutoImageProcessor,
   env,
   pipeline,
   RawImage,
-  SegformerForSemanticSegmentation,
 } from '@huggingface/transformers';
 import {
   BACKDROP_OPACITY,
   sampleImageGrid,
   sampleVolumePositions,
 } from '../src/engine/reconstruction/sampler.ts';
-import { dilateAndFeatherMask, resampleBilinear } from '../src/engine/reconstruction/silhouette.ts';
+import { dilateAndFeatherMask, keepLargestComponent, resampleBilinear } from '../src/engine/reconstruction/silhouette.ts';
 // GÜN E (bulgu 3): derinlik son-işleme A/B'si gerçek fotoğrafta ölçülür.
 import { applyForegroundStretch, foregroundMask, limitDepthSlope } from '../src/depth.ts';
 
@@ -58,7 +57,7 @@ const DEFAULT_IMG = fileURLToPath(new URL('../assets/thumbnail.jpg', import.meta
 const IMG = process.argv[2] ?? DEFAULT_IMG;
 const N = 384; // parçacık grid'i
 const DEPTH_SIZE = 518; // depth-anything-v2 eğitim boyutu (depth.ts)
-const MASK_SIZE = 1024; // RMBG eğitim boyutu (segmentation.ts)
+const MASK_SIZE = 1024; // IS-Net eğitim boyutu (segmentation.ts)
 const MASK_SIZE_HALF = MASK_SIZE / 2;
 
 import { existsSync } from 'node:fs';
@@ -147,21 +146,32 @@ console.log(`görsel        : ${IMG} (${image.width}×${image.height})`);
 const imgW = image.width;
 const imgH = image.height;
 
-// --- 1. RMBG mask (segmentation.ts yolu: letterbox 1024² → _call({input})) ---
-const segModel = await SegformerForSemanticSegmentation.from_pretrained('briaai/RMBG-1.4', {
-  device: 'cpu',
-  dtype: 'q8',
-});
-const segProc = await AutoImageProcessor.from_pretrained('briaai/RMBG-1.4');
+// --- 1. IS-Net mask (segmentation.ts yolu: letterbox 1024² → ORT input/output) ---
+ort.env.wasm.numThreads = 1;
+const segModel = await ort.InferenceSession.create(
+  './public/models/imgly/isnet-general-onnx/onnx/model_fp16.onnx',
+  { executionProviders: ['wasm'] },
+);
 const segIn = await image.resize(MASK_SIZE, MASK_SIZE);
 const t1 = performance.now();
-const processed = await segProc(segIn);
-const segRes = await segModel._call({ input: processed.pixel_values });
-// TUR 10: segmentation.ts ile birebir — RMBG çıktısı sert kesilmez, dilate
+const nMask = MASK_SIZE * MASK_SIZE;
+const tensor = new Float32Array(3 * nMask);
+const segRgb = segIn.data;
+for (let i = 0; i < nMask; i++) {
+  tensor[i] = (segRgb[i * 3] - 128) / 256;
+  tensor[nMask + i] = (segRgb[i * 3 + 1] - 128) / 256;
+  tensor[2 * nMask + i] = (segRgb[i * 3 + 2] - 128) / 256;
+}
+const segRes = await segModel.run({
+  input: new ort.Tensor('float32', tensor, [1, 3, MASK_SIZE, MASK_SIZE]),
+});
+// TUR 10: segmentation.ts ile birebir — IS-Net çıktısı sert kesilmez, dilate
 // (4px) + tüy (2px) uygulanır: yüz/el kenarı delikleri güven marjıyla kapanır.
-const mask = dilateAndFeatherMask(segRes.output.data, MASK_SIZE, MASK_SIZE);
+const mask = dilateAndFeatherMask(
+  keepLargestComponent(segRes.output.data, MASK_SIZE, MASK_SIZE), MASK_SIZE, MASK_SIZE,
+);
 assert.equal(mask.length, MASK_SIZE * MASK_SIZE, 'maske 1024²');
-console.log(`rmbg          : ${Math.round(performance.now() - t1)} ms`);
+console.log(`is-net        : ${Math.round(performance.now() - t1)} ms`);
 let fgCount = 0;
 for (const v of mask) if (v >= 0.5) fgCount++;
 const fgRatio = fgCount / mask.length;
@@ -169,7 +179,7 @@ assert.ok(fgRatio > 0.02 && fgRatio < 0.98, `maske özneyi ayırıyor (ön plan 
 console.log(`maske         : ön plan %${(fgRatio * 100).toFixed(1)} (${fgCount}/${mask.length})`);
 
 // --- 2. depth (depth.ts yolu: letterbox 518² → pipeline → normalize) ---
-const estimator = await pipeline('depth-estimation', 'onnx-community/depth-anything-v2-base', {
+const estimator = await pipeline('depth-estimation', 'onnx-community/depth-anything-v2-small', {
   device: 'cpu',
   dtype: 'q8',
 });
@@ -235,7 +245,7 @@ const maskD = resampleBilinear(mask, MASK_SIZE, MASK_SIZE, DEPTH_SIZE, DEPTH_SIZ
   applyForegroundStretch(blind, foregroundMask(blind, DEPTH_SIZE, DEPTH_SIZE), DEPTH_SIZE, DEPTH_SIZE);
   const blindOut = limitDepthSlope(blind, DEPTH_SIZE, DEPTH_SIZE, null);
 
-  // maske-farkında (bugünkü): RMBG maskesi + bölge-ayrık limiter
+  // maske-farkında (bugünkü): IS-Net maskesi + bölge-ayrık limiter
   const aware = Float32Array.from(depth);
   applyForegroundStretch(aware, maskD, DEPTH_SIZE, DEPTH_SIZE);
   const inside = limitDepthSlope(aware, DEPTH_SIZE, DEPTH_SIZE, maskD);
@@ -314,7 +324,7 @@ const maskD = resampleBilinear(mask, MASK_SIZE, MASK_SIZE, DEPTH_SIZE, DEPTH_SIZ
     `kenar aşınması: siluet halkası (${RING} px) — maske-kör ${eBlind.n} px × ort ${eBlind.avg.toFixed(3)} · maske-farkında ${eAware.n} px${eAware.n ? ` × ort ${eAware.avg.toFixed(3)}` : ''}`,
   );
   console.log(
-    `maske sızması : depth-türevli sahte maskeye giren özne-dışı piksel %${((100 * leak) / subjN).toFixed(0)} (RMBG maskesinde %0)`,
+    `maske sızması : depth-türevli sahte maskeye giren özne-dışı piksel %${((100 * leak) / subjN).toFixed(0)} (IS-Net maskesinde %0)`,
   );
 
   // BU GÖRSELDE YÖN ASSERT EDİLMEZ — gerekçe ölçümle yazıldı, gevşetme değil:

@@ -1,5 +1,6 @@
 {
   "engine": "Spatial Canvas",
+  "pipeline": "legacy video → 3B surfel fusion",
   "clipSha256": "d9dd01d211534911edea3f08fcb8367086a1bc0234b77072c2735c39bfd54ae4",
   "frameSetSha256": null,
   "sample": "Eight playback keyframes starting near 43.7 seconds; exact frames were not saved",

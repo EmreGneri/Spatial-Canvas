@@ -1,14 +1,18 @@
 # spatial-canvas
 
-Tarayıcıda çalışan mekânsal görsel motor. Fotoğraf → derinlik haritası (Depth-Anything-V2, tamamen yerel — aktif model `src/depth.ts` içindeki `MODEL` sabiti, bugün `-base`) → 3D uzay → parçacık/ASCII/neon/solid render modları. TouchDesigner benzeri node tabanlı akış ve tek satır embed hedefleniyor. Ses/müzik girdisi **yok** — proje tamamen görsel.
+Tarayıcıda çalışan mekânsal görsel motor. Fotoğraf yolu Depth Anything V2 Small ile derinlik ve stilize render üretir. Video için iki ayrı seçenek vardır: `video → 3B` keyframe füzyonundan hızlı bir surfel sahne kurar; `3D eğit` keskin karelerden SfM ve WebGPU ile gerçek 3D Gaussian Splatting eğitimi yapar. Eğitim sahnesi vendored `splat.js` rasterizer'ında görüntülenir ve `.ply` olarak indirilir. Ses/müzik girdisi yoktur.
 
 ## Durum
 
+- **Güncel ürün ayrımı (2026-09-24):** `video → 3B` surfel önizleme,
+  `3D eğit` gerçek 3DGS eğitimidir. İkinci yolun GPU'ya göre ayarları ve
+  ölçülmüş koşuları [vendor kaydında](src/vendor/splat.js/VENDORED.md).
+  Yayın öncesi açık işler [yol haritasında](docs/yol-haritasi.md).
 - **Tur 2 / E3–E4 (Emre):** Tracker'ın optik akışı ve nesne tespiti Worker'a
   taşındı; Worker veya Web Locks olmayan tarayıcıda eski yol kullanılır. Aynı NYC klibinde
-  FPS örnekleri: [E3 ölçümü](docs/benchmarks/E3-tracker.md). Brush
-  karşılaştırmasının ölçülen ve eksik kısımları:
-  [E4 raporu](docs/benchmarks/E4-brush.md).
+  FPS örnekleri: [E3 ölçümü](docs/benchmarks/E3-tracker.md). Eski
+  [E4 raporu](docs/benchmarks/E4-brush.md) yalnız surfel önizlemenin kısmi
+  ölçümüdür; yeni 3DGS yolu için Brush karşılaştırması tamamlanmadı.
 
 - **Viral sprint (render katmanı — Zeynep):** **tracker HUD overlay** (motor
   canvas'ının üstünde ayrı 2D canvas — köşe parantez kutuları, LOCK vurgusu,
@@ -17,7 +21,7 @@ Tarayıcıda çalışan mekânsal görsel motor. Fotoğraf → derinlik haritas�
   **neon modu düzeltildi** (ekran siyahtı: kenar ölçeği gerçek
   derinlik verisine göre + kenarlar artık görüntü kontrastını da okuyor, yeni
   "doku kenarı" kolu — parlak piksel oranı %0 → %2.2) ve üst araç çubuğu tek görsel dile
-  çekildi. İkisi de preset'e kaydolmaz (sprint kararı). `npm run verify` 29/29.
+  çekildi. İkisi de preset'e kaydolmaz (sprint kararı).
   Detay: [CHANGELOG.md](CHANGELOG.md).
 - **Gün C (denetim turu):** solid modun iki kök hatası düzeltildi — kabuk mesh'i
   dikey ters kuruluyordu ve ön yüzün sarımı içe dönük olduğu için fotoğraf
@@ -44,13 +48,15 @@ Tarayıcıda çalışan mekânsal görsel motor. Fotoğraf → derinlik haritas�
 - **Gün 2 (veri katmanı):** depth → 3D point cloud (konumlar shader'da `positionTexture`'dan okunur), perspektif kamera + OrbitControls, sürükle-bırak görsel/video, canlı kamera (luminance yolu). Hata düzeltmeleri ve sözleşme değişikliği: [CHANGELOG.md](CHANGELOG.md).
 - **Gün 6 (export + embed):** PNG/WebM export (`src/engine/export.ts`), `<spatial-canvas>` custom element embed modu (`src/embed.ts`), lazy depth model yükleme, WebGL fallback. Aynı bundle'dan ayrı build girişi (`vite.config.ts` → `rollupOptions.input.embed`).
 - **Gün 3 (veri katmanı):** GPGPU parçacık simülasyonu — 147k parçacık ping-pong render target'larda, yay + fare kuvvet alanı (itme / çekim / vortex), kare hızından bağımsız zaman adımı, FPS sayacı, `vercel.json`. `positionTexture` artık her karede GPU'da yeniden hesaplanıyor.
-- Depth inference doğrulandı (`scripts/verify-depth.mjs`, Node WASM yolu): model yükleme **345 ms**, 512×512 çıkarım **334 ms** (q8, tek thread). Tarayıcıda ilk yükleme WASM derlemesiyle daha yüksek olur — log'da ölçülür.
+- Derinlik modelinin yerel Node/WASM yolu `scripts/verify-depth.mjs` ile
+  doğrulanır. Eski tek koşu süreleri yeni `-small` model için performans
+  garantisi değildir; kendi cihazında yeniden ölç.
 
 ## Kurulum
 
 ```bash
 npm install
-npm run fetch:assets   # model ağırlıkları + ORT runtime'ı public/'e indirir (~120 MB, gitignore'lı)
+npm run fetch:assets   # güncel model ağırlıkları + ORT runtime'ı public/'e indirir (gitignore'lı)
 npm run dev
 ```
 
@@ -64,21 +70,23 @@ Model ve runtime CDN'den gelmez; tamamen yereldir. `public/models` ve `public/or
 | `npm run build` / `preview` | Production build / önizleme |
 | `npm run typecheck` | `tsc --noEmit` |
 | `npm run fetch:assets` | Model + ORT dosyalarını vendor eder |
-| `npm run verify` | Sözleşme kontrolleri: position texture (z ortalı, y-flip, opaklık) + depth modeli offline |
+| `npm run verify` | Fotoğraf, video, render, export ve 3DGS kamera matematiği dahil sözleşme kontrolleri |
 
 ## Mimari
 
 - **Veri katmanı** (`src/engine/`) — Emre: depth pipeline, GPGPU parçacık sistemi, node graph, preset serileştirme, export.
-- **Render katmanı** (`src/shaders/`, `src/ui/`) — Zeynep: GLSL shader'lar, pass zinciri, 4 render modu, arayüz.
+- **Render katmanı** (`src/shaders/`, `src/ui/`) — Zeynep: GLSL shader'lar, pass zinciri, stilize render modları, arayüz.
+- **Gerçek 3DGS yolu** (`src/engine/reconstruction/egitim3dgs.ts`, `src/vendor/splat.js/`) — videodan SfM + WebGPU eğitim ve ayrı görüntüleyici; ana `GaussianBuffer` sözleşmesini kullanmaz.
 - **Sözleşme:** [ARCHITECTURE.md](ARCHITECTURE.md) — texture formatları, y-flip politikası, koordinat uzayı, preset şeması. İki katman birbirine yalnızca bu sözleşme üzerinden bağlanır.
 - **Ne değişti:** [CHANGELOG.md](CHANGELOG.md) — repoyu yeni çektiysen buradan başla. Diğer katmanı etkileyen her düzeltme, gerekçesiyle birlikte orada.
 
 ## Model Dosyaları (public/models)
 
-| Dosya | Boyut | Yol |
-|---|---|---|
-| `model_quantized.onnx` | 26 MB | WASM (varsayılan) |
-| `model_fp16.onnx` | 47 MB | WebGPU (`device: 'webgpu'`) |
+`fetch:assets` fotoğraf/canlı derinlik için `depth-anything-v2-small`, nesne
+tespiti için `yolos-tiny`, nesne ayırma için `isnet-general-onnx` indirir.
+Etkin model listesi ve dosya adları [fetch-assets.mjs](scripts/fetch-assets.mjs)
+içindedir. `depth-anything-v2-base` ve `RMBG-1.4` dağıtım listesinden
+çıkarılmıştır. `3D eğit` bu modeller yerine vendored `splat.js` kodunu kullanır.
 
 ## Notlar
 

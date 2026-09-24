@@ -1,8 +1,15 @@
-# E4 · Spatial Canvas / Brush karşılaştırması
+# E4 · eski surfel yolunun kısmi ölçümü
+
+**Tarihsel kayıt (2026-09-23):** Aşağıdaki Spatial Canvas sayıları yalnız
+`video → 3B` keyframe füzyonu/surfel yolunundur. 2026-09-24'te eklenen
+`3D eğit` gerçek 3DGS yolunun süresi, splat sayısı veya PSNR'ı değildir.
+Brush ile iki sütunlu karşılaştırma tamamlanmadı; bu tablo hız/kalite
+üstünlüğü kanıtı olarak kullanılmaz. Yeni protokol
+[yol haritasında](../yol-haritasi.md).
 
 Klip: `public/nyc.mp4`, SHA-256 `d9dd01d211534911edea3f08fcb8367086a1bc0234b77072c2735c39bfd54ae4`.
 
-| Ölçüt | Spatial Canvas | Brush |
+| Ölçüt | Spatial Canvas `video → 3B` | Brush |
 |---|---:|---:|
 | Ham MP4 ile başlama | Evet | Hayır; COLMAP veya Nerfstudio veri kümesi gerekir |
 | Bu koşuda yapılan kurulum adımı | 2 (MP4 yükle, `video → 3B`) | Ölçülmedi |
@@ -21,8 +28,10 @@ eğitim girdisi olarak COLMAP veya Nerfstudio veri kümesi istiyor. Resmi
 geçici dizine indirildi ve `brush_app.exe --help` başarıyla çalıştı; bu
 makinede aynı klibin pozlu görüntü veri kümesi bulunmadı. Aynı MP4'ün farklı kareleriyle
 iki süreyi yan yana yazmak, ya da Brush'ın yayımlanmış başka bir sahne PSNR'ını
-bu klibin sonucu gibi göstermek geçersiz olur. Tur 3'teki pozdan offscreen
-çizim olmadan Spatial Canvas için ayrılmış kare PSNR'ı da hesaplanamaz.
+bu klibin sonucu gibi göstermek geçersiz olur. Bu **eski surfel koşusunda**
+ayrılmış kare çizimi olmadığı için PSNR hesaplanmadı. Yeni `3D eğit` yolu
+kendi renderer'ında ayrılmış kare PSNR'ı hesaplıyor; onun koşuları bu
+tablodaki değerlerle karıştırılmamalı.
 
 Tekrarlanabilir tam karşılaştırma için aynı keyframe görüntülerini ve kamera
 pozlarını bir kez dışa aktarın, kare kümesini SHA-256 ile sabitleyin, Brush'ı
