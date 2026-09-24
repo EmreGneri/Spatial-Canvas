@@ -45,6 +45,8 @@ export interface PointCloudMaterialUniforms {
   uVideoWorldHeight: { value: number };
   /** Source video width / height; horizontal grid spacing grows for wide video. */
   uVideoAspect: { value: number };
+  /** Renderer pixel ratio / startup ratio (Engine). Keeps photo sprites steady under adaptive DPR. */
+  uDprScale: { value: number };
   /** 0..1 — aUv hash tohumuyla boyut saçılması; 0 = hepsi eşit boyutta */
   uSizeJitter: { value: number };
   /**
@@ -144,6 +146,7 @@ const VERTEX = /* glsl */ `
   uniform float uVideoReferenceDistance;
   uniform float uVideoWorldHeight;
   uniform float uVideoAspect;
+  uniform float uDprScale;
   uniform float uSizeJitter;
   uniform float uExtrusionDepth;
   uniform float uNormalScale;
@@ -238,7 +241,10 @@ const VERTEX = /* glsl */ `
 
     // max() kırpması ZORUNLU: kameranın arkasına/üstüne düşen noktalarda
     // -mv.z ~ 0 olur, bölme patlar ve dev noktalar ekranı beyazlatır.
-    float legacySize = uPointSize * jitter / max(-mv.z, 0.1);
+    // gl_PointSize is physical pixels; the DPR scale keeps the sprite's
+    // on-screen size under adaptive DPR. The video path below already derives
+    // from uViewportHeightPx (physical) and must not be scaled again.
+    float legacySize = uPointSize * jitter * uDprScale / max(-mv.z, 0.1);
     // Video pixels form a regular grid in screen space. A fixed world-space
     // point size leaves holes as DPR or zoom changes, especially behind the
     // camera plane where legacySize shrinks. Match the projected grid pitch
@@ -289,6 +295,12 @@ const FRAGMENT = /* glsl */ `
 
   /** Arka düzleme oturan parçacık bu oranda karartılır (0.5 = %50 koyu). */
   const float EXTRUSION_SHADE = 0.5;
+  /**
+   * Live video writes depth (Engine), so a fragment either occludes fully or
+   * not at all. The kept disc still reaches the grid cell corner for every
+   * softness/jitter slider value (verify-video-point-footprint).
+   */
+  const float VIDEO_ALPHA_CUTOFF = 0.3;
 
   void main() {
     // Tur 12 (şikayet 4): nesne ayırma AÇIK iken arka plan parçacıkları
@@ -311,6 +323,12 @@ const FRAGMENT = /* glsl */ `
     // off, the entire captured frame stays opaque when a mask appears.
     alpha *= (uVideoFootprint > 0.5 && uObjectSeparation < 0.5)
       ? 1.0 : vOpacity;
+    // A see-through fragment that writes depth would hide the neighbour drawn
+    // after it and let the clear colour through, so video keeps no fringe.
+    if (uVideoFootprint > 0.5) {
+      if (alpha < VIDEO_ALPHA_CUTOFF) discard;
+      alpha = 1.0;
+    }
 
     // Renk (Tur 12 — şikayet 3): uUseTextureColor AÇIK ve doku varsa parçacık
     // kendi pikselinin RGB'sini alır (fotoğraf grid'i ya da canlı video);
@@ -382,6 +400,8 @@ export function createPointCloudMaterial(): PointCloudMaterial {
     uVideoReferenceDistance: { value: 3.5 },
     uVideoWorldHeight: { value: 2 },
     uVideoAspect: { value: 1 },
+    // 1 outside Engine (embed, tests): the startup size, unchanged.
+    uDprScale: { value: 1 },
     uSizeJitter: { value: 0.3 },
     // 0 = kapalı: mevcut görünüm ve kayıtlı preset'ler aynen korunur.
     uExtrusionDepth: { value: 0 },
@@ -419,7 +439,8 @@ export function createPointCloudMaterial(): PointCloudMaterial {
     fragmentShader: FRAGMENT,
     transparent: true,
     // Keep depth writes off: an additive cloud would clip the particles behind
-    // it, and a video grid would get hard holes from nearer soft particles.
+    // it. Engine.pushSharedUniforms turns them on for live video only, whose
+    // fragment path cuts the soft edge so no see-through fragment writes.
     depthWrite: false,
     // Default for photos and presets. Engine.pushSharedUniforms owns the
     // per-source switch to NormalBlending for live video.

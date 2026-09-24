@@ -107,7 +107,7 @@ assert.equal(uniformUpdates, 1, 'video point footprint must follow viewport resi
 // Dense video points need alpha blending, but photos and presets were tuned
 // for the additive glow. The switch must follow the source both ways.
 const blendEngine = Object.create(Engine.prototype);
-blendEngine.pointsMaterial = { blending: THREE.AdditiveBlending, uniforms: {
+blendEngine.pointsMaterial = { blending: THREE.AdditiveBlending, depthWrite: false, uniforms: {
   uImageTexture: { value: null }, uHasImage: { value: 0 }, uVideoFootprint: { value: 0 },
 } };
 blendEngine.renderModes = new Map();
@@ -117,10 +117,105 @@ blendEngine.videoTexture = { image: {} };
 blendEngine.pushSharedUniformsAll();
 assert.equal(blendEngine.pointsMaterial.blending, THREE.NormalBlending,
   'live video must not accumulate its dense grid additively');
+// The grid draws in row order, not depth order: without depth writes a far
+// row drawn later paints over a near one while orbiting.
+assert.equal(blendEngine.pointsMaterial.depthWrite, true,
+  'live video points must occlude the points behind them');
 blendEngine.videoTexture = null;
 blendEngine.pushSharedUniformsAll();
 assert.equal(blendEngine.pointsMaterial.blending, THREE.AdditiveBlending,
   'photos must keep the additive point cloud look');
+assert.equal(blendEngine.pointsMaterial.depthWrite, false,
+  'additive photo glow must not clip the particles behind it');
+
+// OutputPass tonemaps the whole composed frame, so the flat plane's
+// toneMapped:false never reached the screen. Both render paths (the animation
+// loop via pushLookUniforms, and renderFrame for export) must drop ACES
+// while flat video shows and restore it for the 3D scene.
+const { createLookUniforms } = await import('../src/shaders/look.ts');
+const toneEngine = Object.create(Engine.prototype);
+toneEngine.look = createLookUniforms();
+toneEngine.renderModes = new Map();
+toneEngine.pointsMaterial = { uniforms: {} };
+toneEngine.renderer = { toneMapping: THREE.ACESFilmicToneMapping, toneMappingExposure: 1 };
+toneEngine.simulation = { positionTexture: null };
+const renderedToneMapping = [];
+toneEngine.composer = { render() { renderedToneMapping.push(toneEngine.renderer.toneMapping); } };
+toneEngine.flatVideoOn = true;
+toneEngine.videoTexture = { image: {} };
+toneEngine.renderFrame();
+assert.equal(renderedToneMapping.at(-1), THREE.NoToneMapping,
+  'exported flat video must keep the source colors');
+toneEngine.flatVideoOn = false;
+toneEngine.renderFrame();
+assert.equal(renderedToneMapping.at(-1), THREE.ACESFilmicToneMapping,
+  'the 3D scene keeps the ACES curve');
+toneEngine.flatVideoOn = true;
+toneEngine.pushLookUniforms();
+assert.equal(toneEngine.renderer.toneMapping, THREE.NoToneMapping,
+  'the per-frame look update must switch the curve off for flat video');
+toneEngine.videoTexture = null;
+toneEngine.pushLookUniforms();
+assert.equal(toneEngine.renderer.toneMapping, THREE.ACESFilmicToneMapping,
+  'flat mode without a video shows the 3D scene, so ACES stays');
+// The flat plane's visibility and the tone curve both follow flatVideoActive,
+// so a source switch must re-sync visibility after the new texture is bound;
+// otherwise flat mode shows the 3D cloud without ACES (or a dead plane).
+const sourceEngine = Object.create(Engine.prototype);
+sourceEngine.videoElement = null;
+sourceEngine.videoTexture = null;
+sourceEngine.imageColorTexture = null;
+sourceEngine.releasePhoto = () => {};
+sourceEngine.pushSharedUniformsAll = () => {};
+const syncedWithVideo = [];
+sourceEngine.syncRenderVisibility = () => syncedWithVideo.push(Boolean(sourceEngine.videoTexture));
+sourceEngine.setVideoSource({ videoWidth: 16, videoHeight: 9 });
+assert.equal(syncedWithVideo.at(-1), true, 'visibility must see the newly bound video');
+sourceEngine.setVideoSource(null);
+assert.equal(syncedWithVideo.at(-1), false, 'visibility must see the video is gone');
+
+// Photo, ASCII and neon sprite sizes are physical pixels. When adaptive DPR
+// drops the pixel ratio they must shrink with it, or sprites grow on screen.
+const dprMaterial = () => ({ uniforms: {
+  uImageTexture: { value: null }, uHasImage: { value: 0 }, uDprScale: { value: 1 },
+} });
+const dprScaleEngine = Object.create(Engine.prototype);
+dprScaleEngine.adaptiveDpr = true;
+dprScaleEngine.initialDpr = 2;
+dprScaleEngine.currentDpr = 2;
+dprScaleEngine.lowFpsCount = 0;
+dprScaleEngine.highFpsCount = 0;
+dprScaleEngine.renderer = {
+  setPixelRatio() {},
+  getPixelRatio: () => dprScaleEngine.currentDpr,
+  domElement: { parentElement: { clientWidth: 640, clientHeight: 420 } },
+  setSize() {},
+  getDrawingBufferSize(out) { return out.set(640 * dprScaleEngine.currentDpr, 420 * dprScaleEngine.currentDpr); },
+};
+dprScaleEngine.camera = { aspect: 1, updateProjectionMatrix() {} };
+dprScaleEngine.composer = { setPixelRatio() {}, setSize() {} };
+dprScaleEngine.grainPass = { uniforms: { uResolution: { value: new THREE.Vector2() } } };
+dprScaleEngine.viewportPx = new THREE.Vector2();
+dprScaleEngine.imageColorTexture = null;
+dprScaleEngine.videoTexture = null;
+dprScaleEngine.pointsMaterial = dprMaterial();
+dprScaleEngine.renderModes = new Map([
+  ['points', { material: dprScaleEngine.pointsMaterial }],
+  ['ascii', { material: dprMaterial() }],
+  ['neon', { material: dprMaterial() }],
+]);
+const dprScales = () => [...dprScaleEngine.renderModes.values()]
+  .map((entry) => entry.material.uniforms.uDprScale.value);
+dprScaleEngine.fps = 20;
+dprScaleEngine.adaptResolution();
+assert.equal(dprScaleEngine.currentDpr, 1.5);
+assert.deepEqual(dprScales(), [0.75, 0.75, 0.75],
+  'a DPR drop must shrink physical-pixel sprites by the same ratio');
+dprScaleEngine.fps = 60;
+dprScaleEngine.adaptResolution();
+dprScaleEngine.adaptResolution();
+assert.equal(dprScaleEngine.currentDpr, 2);
+assert.deepEqual(dprScales(), [1, 1, 1], 'recovering DPR restores the startup size');
 
 // Video never has a shell, so Crystal takes the early shell fallback. The
 // deferred Gaussian bridge must still be rebuilt before Crystal draws it.
@@ -135,4 +230,4 @@ crystalEngine.setPointsMaterial(crystalMaterial);
 assert.equal(crystalEngine.refreshCount, 1,
   'Crystal on video must not show stale or empty Gaussian data');
 
-console.log('OK live engine projection, synchronization, blending, and inactive splat work');
+console.log('OK live engine projection, synchronization, blending, depth, tone mapping, DPR scale, and inactive splat work');

@@ -36,6 +36,8 @@ export interface NeonWireMaterialUniforms {
   uPositions: { value: THREE.Texture | null };
   /** 1..10 — kenar noktalarının boyutu */
   uPointSize: { value: number };
+  /** Renderer pixel ratio / startup ratio (Engine). Keeps lines steady under adaptive DPR. */
+  uDprScale: { value: number };
   /** 0..1 — Sobel eşiği; düşükte çok çizgi, yüksekte az */
   uEdgeThreshold: { value: number };
   /**
@@ -108,6 +110,7 @@ export type NeonWireMaterial = THREE.ShaderMaterial & {
 const VERTEX = /* glsl */ `
   uniform sampler2D uPositions;
   uniform float uPointSize;
+  uniform float uDprScale;
   uniform float uEdgeThreshold;
   uniform float uGlowRadius;
   // Kenar bulma artık görüntüyü de okuyor (aşağıdaki nota bak) — fragment'ta
@@ -289,7 +292,9 @@ const VERTEX = /* glsl */ `
     // birim) 0.86 piksellik sprite veriyordu — kenar çizgisi rasterleştirmede
     // eriyordu. Kenar zaten seyrek (silüet), bir de yarım piksele düşünce
     // ekranda hiçbir şey kalmıyordu.
-    gl_PointSize = max(uPointSize * spriteScale / max(-mv.z, 0.1), 1.5);
+    // Physical pixels: the DPR scale keeps lines from thickening when adaptive
+    // DPR lowers the pixel ratio. The 1.5 px floor stays a raster floor.
+    gl_PointSize = max(uPointSize * spriteScale * uDprScale / max(-mv.z, 0.1), 1.5);
 
     gl_Position = projectionMatrix * mv;
   }
@@ -411,6 +416,8 @@ export function createNeonWireMaterial(): NeonWireMaterial {
   const uniforms: NeonWireMaterialUniforms = {
     uPositions: { value: null },
     uPointSize: { value: 3 },
+    // 1 outside Engine: the startup size, unchanged.
+    uDprScale: { value: 1 },
     uEdgeThreshold: { value: 0.1 },
     uTextureEdge: { value: 0.6 },
     uNeonColor: { value: new THREE.Color(0.2, 1.0, 0.85) },

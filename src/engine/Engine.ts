@@ -293,12 +293,15 @@ export class Engine {
    */
   adaptiveDpr = true;
   private currentDpr = 0;
+  /** Pixel ratio at startup; physical-pixel sprite sizes are tuned against it. */
+  private initialDpr = 1;
   private lowFpsCount = 0;
   private highFpsCount = 0;
 
   constructor(container: HTMLElement) {
     this.renderer = new THREE.WebGLRenderer({ antialias: false });
     this.currentDpr = Math.min(window.devicePixelRatio || 1, MAX_DPR);
+    this.initialDpr = this.currentDpr;
     this.renderer.setPixelRatio(this.currentDpr);
     container.appendChild(this.renderer.domElement);
 
@@ -455,6 +458,9 @@ export class Engine {
   renderFrame() {
     const uPositions = (this.pointsMaterial as THREE.ShaderMaterial).uniforms?.['uPositions'];
     if (uPositions) uPositions.value = this.simulation.positionTexture;
+    // Same output state as the loop (tone curve, exposure) even when the loop
+    // is suspended or the flat toggle changed since the last frame.
+    this.pushLookUniforms();
     this.composer.render();
   }
 
@@ -468,6 +474,11 @@ const exposure = this.look.uExposure.value;
     if (this.renderer.toneMappingExposure !== exposure) {
       this.renderer.toneMappingExposure = exposure;
     }
+    // OutputPass applies renderer.toneMapping to the whole composed frame, so
+    // the flat plane's toneMapped:false alone cannot keep ACES off the video
+    // (white came out near 227/255). The curve is only for the 3D scene.
+    const toneMapping = this.flatVideoActive ? THREE.NoToneMapping : THREE.ACESFilmicToneMapping;
+    if (this.renderer.toneMapping !== toneMapping) this.renderer.toneMapping = toneMapping;
     const fogDensity = this.look.uFogDensity.value;
     // Renk köprüde THREE.Color örneği olarak yaşar; material uniform'ları da
     // Color bekler. getHex() number döndürür ve uniform3fv onu çeviremez —
@@ -705,9 +716,20 @@ setPointsMaterial(material: THREE.Material) {
       // Blending is render state, not part of the shader program, so this
       // switch needs no recompile. Photos keep the tuned additive glow.
       material.blending = this.videoTexture ? THREE.NormalBlending : THREE.AdditiveBlending;
+      // The grid draws in row order, not depth order, so without depth writes
+      // a far row painted later covers a near one while orbiting. The shader
+      // cuts the video sprite's soft edge so only opaque fragments write.
+      // Additive photos stay depth-free: they would clip the glow behind them.
+      material.depthWrite = Boolean(this.videoTexture);
     }
     if (u['uViewportHeightPx']) {
       u['uViewportHeightPx'].value = this.viewportPx.y;
+    }
+    // Photo/ASCII/neon sizes are physical pixels tuned at the startup ratio.
+    // Adaptive DPR ends in resize() -> here, so sprites keep their on-screen
+    // size instead of growing when the ratio drops.
+    if (u['uDprScale']) {
+      u['uDprScale'].value = this.currentDpr / this.initialDpr;
     }
     if (u['uVideoReferenceDistance']) {
       u['uVideoReferenceDistance'].value = DEFAULT_CAMERA_DISTANCE;
@@ -774,6 +796,10 @@ setPointsMaterial(material: THREE.Material) {
       this.releasePhoto();
     }
     this.pushSharedUniformsAll();
+    // releasePhoto synced visibility before the new texture was bound. Flat
+    // plane visibility and the tone curve (pushLookUniforms) both follow
+    // flatVideoActive, so re-sync against the final source.
+    this.syncRenderVisibility();
   }
 
   /** Resume raw video color if model depth gives up and luminance takes over. */
@@ -1179,6 +1205,8 @@ if (entry && entry.material !== this.pointsMaterial) {
         map: this.videoTexture,
         // ACES ton eğrisi 3B sahne içindir; düz gösterimde kaynağın kendi
         // renkleri beklenir, eğri uygulanırsa video soluk görünür.
+        // OutputPass tonemaps the composed frame after this, so the actual
+        // switch lives in pushLookUniforms.
         toneMapped: false,
         depthTest: false,
         depthWrite: false,
