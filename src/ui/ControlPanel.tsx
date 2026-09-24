@@ -242,6 +242,7 @@ export function ControlPanel({
   look,
   mode,
   setMode,
+  syncKey = 0,
 }: {
   grain: GrainPassUniforms;
 points: PointCloudMaterial;
@@ -263,6 +264,11 @@ points: PointCloudMaterial;
   mode: RenderMode;
   /** Preset mod değiştirdiğinde çağrılır; takas Engine'den geçer. */
   setMode?: (mode: RenderMode) => void;
+  /**
+   * Bumped by the owner when something outside this panel rewrote uniforms
+   * ("↺ sıfırla", graph editor, graph preset). Same reason as `revision`.
+   */
+  syncKey?: number;
 }) {
   const firstHeading: CSSProperties = { ...headingStyle, borderTop: 'none', paddingTop: 0 };
 
@@ -278,7 +284,7 @@ points: PointCloudMaterial;
       <strong style={firstHeading}>Presets</strong>
       <PresetSection targets={targets} onApplied={() => setRevision((r) => r + 1)} />
 
-      <Fragment key={revision}>
+      <Fragment key={`${revision}:${syncKey}`}>
         {mode === 'points' && (
           <>
             <strong style={headingStyle}>Point Cloud</strong>
