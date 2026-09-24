@@ -1102,7 +1102,12 @@ if (entry && entry.material !== this.pointsMaterial) {
         applyParams(GRAIN_PARAMS, this.grainUniforms, node.params);
 } else if (node.type === 'renderer') {
         const entry = this.renderModes.get(this.renderModeName);
-        if (entry) {
+        // Renderer params belong to params.mode. If that mode was unknown and
+        // the current one was kept above, they must not land here: modes share
+        // uniform names (uPointSize, uNearColor, ...) and would leak.
+        const sameMode =
+          node.params.mode === undefined || String(node.params.mode) === this.renderModeName;
+        if (entry && sameMode) {
           const uniforms = (entry.material as THREE.ShaderMaterial).uniforms as Record<
             string,
             THREE.IUniform

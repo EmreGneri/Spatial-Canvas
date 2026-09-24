@@ -8,14 +8,11 @@ import {
   MarkerType,
   addEdge,
   applyEdgeChanges,
-  applyNodeChanges,
   useNodesState,
   useEdgesState,
   type Connection,
   type Edge,
   type EdgeChange,
-  type Node,
-  type NodeChange,
   type NodeProps,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
@@ -36,6 +33,7 @@ import { LOOK_PARAMS } from '../shaders/look';
 import { POINTS_PARAMS } from '../shaders/pointCloudMaterial';
 import { ASCII_PARAMS } from '../shaders/asciiMaterial';
 import { SOLID_PARAMS } from '../shaders/solidMaterial';
+import { liveGraph, setParam, toRfNodes, type SpatialNodeType } from './nodeGraphSync';
 
 /**
  * NODE GRAPH EDITÖRÜ (Gün 5 — veri katmanının UI'ı, Emre).
@@ -82,15 +80,6 @@ function nodeDefs(type: NodeType, mode?: unknown): ParamDef[] {
   return [];
 }
 
-interface SpatialNodeData {
-  nodeType: NodeType;
-  paramCount: number;
-  /** React Flow, node.data'yı Record<string, unknown> bekler. */
-  [key: string]: unknown;
-}
-
-type SpatialNodeType = Node<SpatialNodeData>;
-
 function SpatialNode({ data, selected }: NodeProps<SpatialNodeType>) {
   const meta = NODE_META[data.nodeType];
   return (
@@ -121,15 +110,6 @@ function SpatialNode({ data, selected }: NodeProps<SpatialNodeType>) {
 /** Modül düzeyi sabit — React Flow her render'da nodeTypes nesnesi istemez. */
 const nodeTypes = { spatial: SpatialNode };
 
-function toRfNodes(graph: Graph): SpatialNodeType[] {
-  return graph.nodes.map((n, i) => ({
-    id: n.id,
-    type: 'spatial',
-    position: { x: 24 + i * 150, y: 130 },
-    data: { nodeType: n.type, paramCount: Object.keys(n.params).length },
-  }));
-}
-
 function toRfEdges(graph: Graph): Edge[] {
   return graph.edges.map((e, i) => ({
     id: `e${i}`,
@@ -147,11 +127,14 @@ export function NodeGraphEditor({
   engine,
   graphTick,
   onRenderModeChange,
+  onParamsApplied,
 }: {
   engine: Engine;
   graphTick: number;
   /** Editörden mod değişti — App UI state'ini senkronlamak için. */
   onRenderModeChange?: (mode: EditorRenderMode) => void;
+  /** A node param edit rewrote uniforms; ControlPanel must re-read them. */
+  onParamsApplied?: () => void;
 }) {
   // useNodesState lazy init almaz; engine.currentGraph ilk render'da sabittir.
   const initialNodes = useMemo(() => toRfNodes(engine.currentGraph), [engine]);
@@ -163,9 +146,12 @@ export function NodeGraphEditor({
   /** Editör durumundan graf kurar ve engine'e verir — tek doğruluk kaynağı. */
   const syncToEngine = useCallback(
     (ns: SpatialNodeType[], es: Edge[]) => {
+      // Live params, not the stored ones: an edge change must not undo what
+      // ControlPanel wrote to the uniforms since the last graph apply.
+      const live = liveGraph(engine);
       const graph: Graph = {
         nodes: ns.map((n) => {
-          const source = engine.currentGraph.nodes.find((gn) => gn.id === n.id);
+          const source = live.nodes.find((gn) => gn.id === n.id);
           return {
             id: n.id,
             type: source?.type ?? 'output',
@@ -217,13 +203,8 @@ export function NodeGraphEditor({
     [edges],
   );
 
-  // Düğüm silme v1'de desteklenmiyor (graf şemasında düğüm seti sabittir) —
-  // klavyeyle düğüm silme isteklerini yut; kenar silme ise engine'e işler.
-  const onNodesChanges = useCallback((changes: NodeChange<SpatialNodeType>[]) => {
-    const filtered = changes.filter((c) => c.type !== 'remove');
-    if (filtered.length) setNodes((nds) => applyNodeChanges(filtered, nds));
-  }, [setNodes]);
-
+  // Node deletion is not supported (fixed node set): toRfNodes marks nodes
+  // deletable: false, so the delete key only ever removes selected edges.
   const onEdgesChanges = useCallback(
     (changes: EdgeChange[]) => {
       const removed = changes.some((c) => c.type === 'remove');
@@ -236,11 +217,11 @@ export function NodeGraphEditor({
 
   /** Seçili düğümün parametresini değiştirir: graf params'ı + engine, birlikte. */
   function setNodeParam(nodeId: string, key: string, value: number | string) {
-    const graph = engine.currentGraph;
-    const node = graph.nodes.find((n) => n.id === nodeId);
+    const graph = liveGraph(engine);
+    const node = setParam(graph, nodeId, key, value);
     if (!node) return;
-    node.params = { ...node.params, [key]: value };
     engine.setGraph(graph);
+    onParamsApplied?.();
     setNodes((nds) =>
       nds.map((n) =>
         n.id === nodeId ? { ...n, data: { ...n.data, paramCount: Object.keys(node.params).length } } : n,
@@ -255,7 +236,8 @@ export function NodeGraphEditor({
     setSelectedId(null);
   }
 
-  const selected = engine.currentGraph.nodes.find((n) => n.id === selectedId);
+  // Live values so the panel shows what ControlPanel / reset last wrote.
+  const selected = selectedId ? liveGraph(engine).nodes.find((n) => n.id === selectedId) : undefined;
 
   return (
     <div style={{ display: 'grid', gap: 8, width: 640 }}>
@@ -276,7 +258,7 @@ export function NodeGraphEditor({
         <ReactFlow
           nodes={nodes}
           edges={edges}
-          onNodesChange={onNodesChanges}
+          onNodesChange={onNodesChange}
           onEdgesChange={onEdgesChanges}
           onConnect={onConnect}
           isValidConnection={isValidConnection}

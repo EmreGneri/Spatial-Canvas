@@ -177,6 +177,10 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
   const [webmSec, setWebmSec] = useState(5);
   /** Editör dışından graf kurulduğunda (preset yükleme) editörü tazele. */
   const [graphTick, setGraphTick] = useState(0);
+  /** ControlPanel caches uniform values at mount; bump after reset / graph
+   *  apply so it re-reads them instead of showing stale numbers. */
+  const [panelTick, setPanelTick] = useState(0);
+  const refreshPanel = () => setPanelTick((t) => t + 1);
   /** Son yüklenen fotoğraf kaynağı — nesne ayırma sonradan açılırsa RMBG'yi
    *  yeniden çalıştırmak için saklanır (Tur 12: buton canlı shader'a bağlı). */
   const lastPhotoRef = useRef<HTMLCanvasElement | HTMLImageElement | null>(null);
@@ -1267,8 +1271,8 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
           />
         )}
       </div>
-      {engine && <ModeSelector engine={engine} materials={materials} mode={mode} onChange={changeMode} onReset={() => say('sıfırlandı: efektler, look ve kamera başlangıç değerlerinde (görsel korundu)')} />}
-      {engine && <NodeGraphEditor engine={engine} graphTick={graphTick} onRenderModeChange={changeMode} />}
+      {engine && <ModeSelector engine={engine} materials={materials} mode={mode} onChange={changeMode} onReset={() => { say('sıfırlandı: efektler, look ve kamera başlangıç değerlerinde (görsel korundu)'); refreshPanel(); }} />}
+      {engine && <NodeGraphEditor engine={engine} graphTick={graphTick} onRenderModeChange={changeMode} onParamsApplied={refreshPanel} />}
       {/* GÜN 6-7 (render şeridi): capture akışı + metrik paneli. İkisi de
           kendi durumunu tutar; Engine'e yalnızca imzalı API'den yazarlar
           (setGaussians / setPoseTrack / setSelectedKeyframe). */}
@@ -1288,7 +1292,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
           </div>
         </div>
       )}
-      {engine && <PresetControls engine={engine} say={say} onGraphChanged={() => setGraphTick((t) => t + 1)} />}
+      {engine && <PresetControls engine={engine} say={say} onGraphChanged={() => { setGraphTick((t) => t + 1); refreshPanel(); }} />}
       {engine && <ForceControls engine={engine} />}
       <pre style={{ margin: 0, color: '#8ab', whiteSpace: 'pre-wrap' }}>{log.join('\n')}</pre>
       {engine && (
@@ -1306,6 +1310,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
           crystal={materials.crystal}
           setMode={changeMode}
           mode={mode}
+          syncKey={panelTick}
         />
       )}
     </div>

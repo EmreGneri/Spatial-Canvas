@@ -70,7 +70,11 @@ export function applyParams(
     if (!uniform) continue;
     if (def.kind === 'color') {
       if (typeof value === 'string') {
-        uniform.value = parseColor(value);
+        // In place: ControlPanel's ColorInput and the material keep a reference
+        // to this THREE.Color. Swapping the object would leave the picker
+        // editing an orphan after reset / graph apply.
+        if (uniform.value instanceof THREE.Color) uniform.value.set(parseColor(value));
+        else uniform.value = parseColor(value);
         applied++;
       }
     } else if (typeof value === 'number') {
