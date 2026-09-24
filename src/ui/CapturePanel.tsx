@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 import type { Engine } from '../engine';
 import { buildFusionScene, VIDEO_FOV_Y } from '../engine/vision/videoPipe';
@@ -112,10 +112,19 @@ export function CapturePanel({
   engine,
   setMode,
   onLog,
+  disabled = false,
+  onRunningChange,
 }: {
   engine: Engine;
   setMode: (mode: RenderMode) => void;
   onLog?: (line: string) => void;
+  /** 3DGS eğitimi (App.tsx `egitimDosya`) sürerken AÇIK: bu panel de kendi
+   *  Depth Anything çıkarımını WebGPU'da koşar, splat.js ile aynı cihazı
+   *  paylaşır (VENDORED.md koruma 4) — eşzamanlı koşmak yasak. */
+  disabled?: boolean;
+  /** App'e bu panelin bir yakalama sürdürüp sürdürmediğini bildirir — "3D
+   *  eğit" bu panel işlerken başlayamaz (karşılıklı kilit). */
+  onRunningChange?: (running: boolean) => void;
 }) {
   const [stage, setStage] = useState<Stage>('idle');
   const [progress, setProgress] = useState('');
@@ -127,6 +136,10 @@ export function CapturePanel({
   const [running, setRunning] = useState(false);
   const runInProgress = useRef(false);
 
+  useEffect(() => {
+    onRunningChange?.(running);
+  }, [running, onRunningChange]);
+
   const say = useCallback(
     (line: string) => {
       onLog?.(line);
@@ -136,7 +149,7 @@ export function CapturePanel({
 
   const run = useCallback(
     async (file: File) => {
-      if (runInProgress.current) return;
+      if (runInProgress.current || disabled) return;
       runInProgress.current = true;
       setRunning(true);
       setError(null);
@@ -230,7 +243,7 @@ export function CapturePanel({
         setRunning(false);
       }
     },
-    [engine, maxFrames, setMode, say, showTraj],
+    [engine, maxFrames, setMode, say, showTraj, disabled],
   );
 
   const kfCount = engine.keyframeCount;
@@ -243,12 +256,12 @@ export function CapturePanel({
         Bu alan üstteki videodan bağımsız bir klipten yaklaşık splat haritası üretir. “3D eğit” ile yapılan 3DGS eğitimi değildir.
       </div>
 
-      <label style={{ ...buttonStyle, display: 'inline-block', textAlign: 'center' }}>
+      <label style={{ ...buttonStyle, display: 'inline-block', textAlign: 'center', opacity: disabled ? 0.5 : 1 }}>
         {running ? 'işleniyor…' : 'video seç'}
         <input
           type="file"
           accept="video/*"
-          disabled={running}
+          disabled={running || disabled}
           style={{ display: 'none' }}
           onChange={(e) => {
             const f = e.target.files?.[0];
@@ -257,6 +270,9 @@ export function CapturePanel({
           }}
         />
       </label>
+      {disabled && (
+        <div style={{ color: '#dc6' }}>3D eğitim sürüyor — bitince kullanılabilir</div>
+      )}
 
       <label style={{ display: 'flex', gap: 6, alignItems: 'center', color: '#889' }}>
         keyframe
@@ -266,7 +282,7 @@ export function CapturePanel({
           max={20}
           step={1}
           value={maxFrames}
-          disabled={running}
+          disabled={running || disabled}
           onChange={(e) => setMaxFrames(Number(e.target.value))}
           style={{ flex: 1 }}
         />

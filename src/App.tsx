@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
-import { estimateDepth, gpuSirasinaGir, loadDepthModel, luminanceHeightMap, resetLuminanceState } from './depth';
+import { estimateDepth, loadDepthModel, luminanceHeightMap, resetLuminanceState } from './depth';
 import { segmentForeground } from './engine/reconstruction/segmentation';
 import { Engine } from './engine';
 import { ControlPanel } from './ui/ControlPanel';
@@ -152,6 +152,12 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
   // kendisini ister, <video> öğesini değil) ve eğitimi süren dosya.
   const [videoDosya, setVideoDosya] = useState<File | null>(null);
   const [egitimDosya, setEgitimDosya] = useState<File | null>(null);
+  // CapturePanel (hızlı 3B harita) kendi Depth Anything çıkarımını koşar —
+  // splat.js eğitimiyle aynı WebGPU cihazını paylaşır. İkisi eşzamanlı
+  // koşarsa DXGI_ERROR_DEVICE_HUNG riski var (VENDORED.md koruma 4); bu
+  // yüzden ikisi karşılıklı kilitlenir. CapturePanel kendi running durumunu
+  // buraya bildirir.
+  const [captureRunning, setCaptureRunning] = useState(false);
 
   useEffect(() => {
     engine?.setSuspended(egitimDosya !== null);
@@ -591,7 +597,10 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
       const ctx = canvas.getContext('2d');
       if (!ctx) { maskBusy = false; maskUnavailable = true; return; }
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-      void gpuSirasinaGir(() => segmentForeground(canvas))
+      // segmentForeground kendi içinde GPU sırasına girer (segmentation.ts) —
+      // burada ikinci kez sarmalamak kuyruğu KİLİTLERDİ (yeniden girişli
+      // değil, depth.ts:~112).
+      void segmentForeground(canvas)
         .then((result) => {
           if (iptal || videoRef.current !== video || revision !== maskRevision) return;
           let foreground = 0;
@@ -1039,7 +1048,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
         </button>
         <button
           style={toolButton}
-          disabled={busy || !videoDosya || !!egitimDosya}
+          disabled={busy || !videoDosya || !!egitimDosya || captureRunning}
           onClick={() => {
             // Canlı derinlik + tespit + eğitim aynı GPU'yu paylaşır; splat.js
             // bizim GPU kuyruğumuzu bilmez. Kaynağı bırakmak canlı döngüleri
@@ -1049,7 +1058,13 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
             setEgitimDosya(videoDosya);
             say(`3D eğitim başladı · ${videoDosya!.name}`);
           }}
-          title={videoDosya ? 'videodan gerçek 3D Gaussian Splat eğit (WebGPU, birkaç dakika)' : 'önce video yükle'}
+          title={
+            captureRunning
+              ? 'hızlı 3B harita sürüyor — bitince eğitilebilir'
+              : videoDosya
+                ? 'videodan gerçek 3D Gaussian Splat eğit (WebGPU, birkaç dakika)'
+                : 'önce video yükle'
+          }
         >
           3D eğit
         </button>
@@ -1207,7 +1222,13 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
       {engine && (
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-start' }}>
           <div style={{ minWidth: 260, flex: '1 1 260px' }}>
-            <CapturePanel engine={engine} setMode={changeMode} onLog={say} />
+            <CapturePanel
+              engine={engine}
+              setMode={changeMode}
+              onLog={say}
+              disabled={!!egitimDosya}
+              onRunningChange={setCaptureRunning}
+            />
           </div>
           <div style={{ minWidth: 260, flex: '1 1 260px' }}>
             <MetricsPanel />

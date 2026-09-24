@@ -52,10 +52,14 @@
 // doğrudur ve webgpu yoktur.
 import * as ort from 'onnxruntime-web/webgpu';
 import { dilateAndFeatherMask, keepLargestComponent } from './silhouette.ts';
+import { gpuSirasinaGir, onceRetry } from '../../depth.ts';
 
 // ORT runtime yerel — CDN yok (depth.ts ile aynı sözleşme). Aynı ORT örneği
 // olduğu için değerler idempotent: depth.ts önce çalışsa bile aynı sonuç.
-ort.env.wasm.wasmPaths = import.meta.env.DEV ? '/node_modules/onnxruntime-web/dist/' : '/ort/';
+// `import.meta.env` Vite'a özgüdür (depth.ts:76 ile aynı gerekçe) — Node bu
+// modülü import edebilsin diye opsiyonel zincirlemeyle okunur.
+const VITE_DEV = (import.meta as { env?: { DEV?: boolean } }).env?.DEV === true;
+ort.env.wasm.wasmPaths = VITE_DEV ? '/node_modules/onnxruntime-web/dist/' : '/ort/';
 ort.env.wasm.numThreads = 1;
 
 /** Model yolu — yerel, `public/models` altında (`npm run fetch:assets`). */
@@ -78,15 +82,29 @@ export type SegmentationResult = {
 };
 
 let segSession: ort.InferenceSession | null = null;
+/**
+ * Kurulum GPU SIRASINDAN geçer (depth.ts:gpuSirasinaGir — canlı derinlik
+ * döngüsüyle aynı kuyruk, bkz. dosya üstü ticari lisans notu + depth.ts:85-118
+ * için: iki ORT WebGPU oturumu eşzamanlı kurulunca `getBindGroupLayout`
+ * hatası). `onceRetry` ile sarılır: eşzamanlı çağrılar TEK kuruluma birleşir,
+ * `loadDepthModel`in `yukleEstimator`iyle AYNI desen (device İLK çağrıda
+ * bağlanır, `segSession` başarı sonrası kalıcı memoize eder).
+ */
+let yukleSession: (() => Promise<ort.InferenceSession>) | null = null;
 
 export async function loadSegmentationModel(device: 'wasm' | 'webgpu' = 'webgpu') {
   if (segSession) return segSession;
   // WebGPU tercih edilir. Ağırlık fp16 olduğu için wasm yolunda desteklenmeyen
   // op'a düşülebilir; o durumda hata YUTULMAZ, çağırana bildirilir — sessiz
   // bozulma yasağı (bkz. vision/yetenek.ts).
-  segSession = await ort.InferenceSession.create(MODEL_PATH, {
-    executionProviders: device === 'webgpu' ? ['webgpu', 'wasm'] : ['wasm'],
-  });
+  yukleSession ??= onceRetry(() =>
+    gpuSirasinaGir(() =>
+      ort.InferenceSession.create(MODEL_PATH, {
+        executionProviders: device === 'webgpu' ? ['webgpu', 'wasm'] : ['wasm'],
+      }),
+    ),
+  );
+  segSession = await yukleSession();
   return segSession;
 }
 
@@ -113,9 +131,15 @@ export async function segmentForeground(
     tensor[n + i] = (px[i * 4 + 1] - NORM_MEAN) / NORM_STD;
     tensor[2 * n + i] = (px[i * 4 + 2] - NORM_MEAN) / NORM_STD;
   }
-  const result = await session.run({
-    input: new ort.Tensor('float32', tensor, [1, 3, MODEL_INPUT_SIZE, MODEL_INPUT_SIZE]),
-  });
+  // Çıkarım da SIRAYA GİRER — kurulumla aynı kuyruk, aynı gerekçe. Yükleme
+  // ayrı bir kuyruk turu olarak YUKARIDA bitti (`await loadSegmentationModel`);
+  // burası kuyruğa AYRI ve ARDIŞIK girer, iç içe DEĞİL (kuyruk yeniden girişli
+  // değil — depth.ts:112).
+  const result = await gpuSirasinaGir(() =>
+    session.run({
+      input: new ort.Tensor('float32', tensor, [1, 3, MODEL_INPUT_SIZE, MODEL_INPUT_SIZE]),
+    }),
+  );
   const tOut = result.output;
   const [batch, ch, , outW] = tOut.dims as [number, number, number, number];
   if (batch !== 1 || ch !== 1) {
