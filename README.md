@@ -14,6 +14,16 @@ kümesine aittir; yüklediğiniz videonun canlı kalite puanı değildir.
   `3D eğit` gerçek 3DGS eğitimidir. İkinci yolun GPU'ya göre ayarları ve
   ölçülmüş koşuları [vendor kaydında](src/vendor/splat.js/VENDORED.md).
   Yayın öncesi açık işler [yol haritasında](docs/yol-haritasi.md).
+- **3D eğitim seçenekleri:** `3D eğit` açılınca tam sahne varsayılandır.
+  “Yalnız özneyi eğit” seçilirse seçilen her kareye IS-Net maskesi hazırlanır;
+  hazırlık uzar. Az sayıdaki geçersiz maskeli kare atlanır; en az %70 ve
+  en az 8 güvenilir kare kalmazsa açık hata verilir. Bu seçeneğin kalite kazancı
+  henüz ölçülmedi. Intel entegre GPU saptanırsa Windows'ta tarayıcıyı
+  “Yüksek performans”a alma adımları gösterilir. İlk 3.000 iterasyon bitince
+  aynı sahnede 4.000 iterasyon sürdürme seçeneği deneysel olarak sunulur;
+  SfM ve Gaussian tohumlama yeniden yapılmaz. Tek Intel iGPU / St George
+  denemesinde ayrılmış kare PSNR'si 27,1 → 27,9 dB oldu (+397 sn); başka
+  klip ve cihazlarda kazanç garantisi değildir.
 - **Tur 2 / E3–E4 (Emre):** Tracker'ın optik akışı ve nesne tespiti Worker'a
   taşındı; Worker veya Web Locks olmayan tarayıcıda eski yol kullanılır. Aynı NYC klibinde
   FPS örnekleri: [E3 ölçümü](docs/benchmarks/E3-tracker.md). Eski
@@ -96,7 +106,8 @@ Model ve runtime CDN'den gelmez; tamamen yereldir. `public/models` ve `public/or
 tespiti için `yolos-tiny`, nesne ayırma için `isnet-general-onnx` indirir.
 Etkin model listesi ve dosya adları [fetch-assets.mjs](scripts/fetch-assets.mjs)
 içindedir. `depth-anything-v2-base` ve `RMBG-1.4` dağıtım listesinden
-çıkarılmıştır. `3D eğit` bu modeller yerine vendored `splat.js` kodunu kullanır.
+çıkarılmıştır. `3D eğit` SfM ve Gaussian eğitimi için vendored `splat.js`
+kullanır; isteğe bağlı “Yalnız özneyi eğit” seçeneği ayrıca IS-Net kullanır.
 
 ## Notlar
 

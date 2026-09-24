@@ -11,14 +11,19 @@
 // - SfM GPU eşleştiricisi oturum cihazını kullanır. Sürücü sıfırlanmasında
 //   GPU sözü yine asılı kalabilir; ilerleme bekçisi bunu kullanıcıya bildirir.
 
+import { segmentForeground } from './segmentation.ts';
+import { prepareSubjectFrames } from './subjectTrainingMasks.ts';
+
 export interface EgitimAyari {
   tier: 'quick' | 'standard';
   maxFrames: number;
   maxIters: number;
   /** `vendor / architecture` — kullanıcıya hangi GPU'da koştuğu söylenir. */
   gpu: string;
-  /** Entegre GPU şüphesi: UI "yüksek performans" ipucu gösterir. */
+  /** Conservative quick preset for all adapters without an RTX measurement. */
   zayifGpu: boolean;
+  /** Intel vendor was positively identified; unknown adapters must not trigger an iGPU warning. */
+  entegreGpu: boolean;
 }
 
 export interface EgitimMetrik {
@@ -44,7 +49,7 @@ export interface GsKamera {
 
 type Vec3 = [number, number, number];
 
-interface GpuAdapterLike { info?: { vendor?: string; architecture?: string } }
+interface GpuAdapterLike { info?: { vendor?: string; architecture?: string; device?: string; description?: string } }
 type GpuLike = { requestAdapter(o?: object): Promise<GpuAdapterLike | null> };
 
 export async function ayarSec(): Promise<EgitimAyari> {
@@ -55,10 +60,15 @@ export async function ayarSec(): Promise<EgitimAyari> {
   const arch = a.info?.architecture ?? '?';
   // ponytail: yalnız iki GPU ölçüldü (Intel iGPU, RTX 5070). NVIDIA dışı her
   // şey temkinli katmana düşer; AMD/Apple ölçülünce buraya eklenir.
-  const guclu = vendor === 'nvidia';
+  const guclu = vendor.toLowerCase() === 'nvidia';
+  const intelIdentity = `${arch} ${a.info?.device ?? ''} ${a.info?.description ?? ''}`;
+  // Intel also sells discrete Arc GPUs; vendor alone cannot identify an iGPU.
+  const entegreGpu = vendor.toLowerCase().includes('intel')
+    && /gen-12lp|iris|uhd graphics|hd graphics/i.test(intelIdentity)
+    && !/arc/i.test(intelIdentity);
   return guclu
-    ? { tier: 'standard', maxFrames: 40, maxIters: 10000, gpu: `${vendor} / ${arch}`, zayifGpu: false }
-    : { tier: 'quick', maxFrames: 24, maxIters: 3000, gpu: `${vendor} / ${arch}`, zayifGpu: true };
+    ? { tier: 'standard', maxFrames: 40, maxIters: 10000, gpu: `${vendor} / ${arch}`, zayifGpu: false, entegreGpu }
+    : { tier: 'quick', maxFrames: 24, maxIters: 3000, gpu: `${vendor} / ${arch}`, zayifGpu: true, entegreGpu };
 }
 
 /** SfM çökmesinde söz hiç dönmez: `sonHareket` `ms`'den uzun sessiz kalırsa
@@ -98,10 +108,32 @@ export interface EgitimOlaylari {
   hata(e: Error): void;
 }
 
+/** A short quick run ends before the first refinement can grow its seed.
+ * Four more thousand iterations put the next refinement inside the extended
+ * growth window (measured first refinement: ~2529; cadence: 2500). Quality
+ * improvement is experimental until a held-out run is measured. */
+export const IGPU_CONTINUE_ITERS = 4000;
+
+export function egitimDevamEt(
+  session: { training: boolean; continueFor(moreIters: number): number },
+  ayar: EgitimAyari,
+  moreIters = IGPU_CONTINUE_ITERS,
+): number {
+  if (!Number.isSafeInteger(moreIters) || moreIters <= 0) {
+    throw new RangeError('Additional iterations must be a positive integer');
+  }
+  if (session.training) throw new Error('Training is already running');
+  const target = session.continueFor(moreIters);
+  ayar.maxIters = target;
+  return target;
+}
+
 export interface Egitim {
   ayar: EgitimAyari;
   /** Eğitimi durdurur ve GPU kaynaklarını bırakır. */
   kapat(): void;
+  /** Resume the same Gaussian trainer after its first completed budget. */
+  devamEt(moreIters?: number): number;
   plyBlob(): Promise<Blob>;
   /** Serbest kamera; `ciz` kanvası bu kamerayla çizer. */
   kamera: GsKamera;
@@ -123,6 +155,7 @@ export async function egitimBaslat(
   olay: EgitimOlaylari,
   ayar?: EgitimAyari,
   signal?: AbortSignal,
+  options?: { subjectOnly?: boolean },
 ): Promise<Egitim> {
   signal?.throwIfAborted();
   const secilen = ayar ?? await ayarSec();
@@ -153,6 +186,7 @@ export async function egitimBaslat(
     sfm: sj.solveTierOpts(secilen.tier),
   });
   let closed = false;
+  let complete = false;
   let trainWatch: ReturnType<typeof setInterval> | null = null;
   const clearWatch = () => {
     if (trainWatch !== null) clearInterval(trainWatch);
@@ -184,7 +218,7 @@ export async function egitimBaslat(
   });
   s.on('event', (e: { kind: string }) => {
     if (closed) return;
-    if (e.kind === 'train-complete') { clearWatch(); olay.bitti(sonMetrik); }
+    if (e.kind === 'train-complete') { complete = true; clearWatch(); olay.bitti(sonMetrik); }
     if (e.kind === 'device-lost') {
       olay.hata(new Error('GPU cihazı kayboldu — eğitim durdu. Sayfayı yenile.'));
       close();
@@ -196,12 +230,51 @@ export async function egitimBaslat(
   });
 
   const BEKCI_MS = 90_000;
+  let releaseMasks: (() => void) | null = null;
+  let maskAbort: AbortController | null = null;
+  const armTrainWatch = () => {
+    clearWatch();
+    trainWatch = setInterval(() => {
+      if (closed || !s.training) { clearWatch(); return; }
+      if (performance.now() - son > BEKCI_MS) {
+        olay.hata(new Error('Eğitim 90 sn ilerlemedi — GPU veya arka sekme zamanlayıcısı durmuş olabilir. Eğitimi yeniden başlat.'));
+        close();
+      }
+    }, 1000);
+  };
   try {
-    await bekcili(s.load(ex.frames, { signal }), () => son, BEKCI_MS, 'kareler yükleniyor', signal);
+    let trainingFrames = ex.frames;
+    if (options?.subjectOnly) {
+      // Masks run before SfM allocates its training GPU device. The IS-Net
+      // inference uses the app's WebGPU queue; nesting it inside a GPU job
+      // would deadlock because that queue is deliberately non-reentrant.
+      maskAbort = new AbortController();
+      const maskSignal = signal
+        ? AbortSignal.any([signal, maskAbort.signal])
+        : maskAbort.signal;
+      const prepared = await bekcili(
+        prepareSubjectFrames(ex.frames, segmentForeground, maskSignal, (done, total, skipped) => {
+          hareket();
+          olay.asama(`nesne maskeleri ${done}/${total}${skipped ? ` · ${skipped} atlandı` : ''}`);
+        }),
+        () => son, BEKCI_MS, 'nesne maskeleri', maskSignal,
+      );
+      trainingFrames = prepared.frames;
+      releaseMasks = prepared.release;
+      olay.asama(`nesne maskeleri hazır · ${prepared.frames.length}/${ex.frames.length} kare · ` +
+        `${prepared.skipped} atlandı`);
+    }
+    await bekcili(s.load(trainingFrames, { signal }), () => son, BEKCI_MS, 'kareler yükleniyor', signal);
+    // decodeFrames has copied the matte into each Frame.alpha; releasing the
+    // temporary canvases here keeps 24-40 high-resolution masks out of RAM.
+    releaseMasks?.();
+    releaseMasks = null;
     await bekcili(s.solve({ signal }), () => son, BEKCI_MS, 'kamera pozu (SfM)', signal);
     await bekcili(s.seed(), () => son, BEKCI_MS, 'Gaussian tohumlama', signal);
     signal?.throwIfAborted();
   } catch (e) {
+    maskAbort?.abort();
+    releaseMasks?.();
     try { close(); } catch { /* the GPU may already be gone */ }
     throw e;
   }
@@ -218,6 +291,20 @@ export async function egitimBaslat(
     const e: Egitim = {
       ayar: secilen,
       kapat: close,
+      devamEt: (moreIters) => {
+        if (closed) throw new Error('Training session is closed');
+        if (!complete) throw new Error('Training has not finished yet');
+        complete = false;
+        try {
+          const target = egitimDevamEt(s, secilen, moreIters);
+          hareket();
+          armTrainWatch();
+          return target;
+        } catch (error) {
+          complete = true;
+          throw error;
+        }
+      },
       plyBlob: () => s.exportPlyBlob(),
       kamera,
       pivot: bakisMerkezi(s.recon.cams, medyanNokta(s.recon.points.map((p: { X: Vec3 }) => p.X))),
@@ -226,13 +313,7 @@ export async function egitimBaslat(
     };
     signal?.throwIfAborted();
     s.start();
-    trainWatch = setInterval(() => {
-      if (closed || !s.training) { clearWatch(); return; }
-      if (performance.now() - son > BEKCI_MS) {
-        olay.hata(new Error('Eğitim 90 sn ilerlemedi — GPU veya arka sekme zamanlayıcısı durmuş olabilir. Eğitimi yeniden başlat.'));
-        close();
-      }
-    }, 1000);
+    armTrainWatch();
     return e;
   } catch (error) {
     close();

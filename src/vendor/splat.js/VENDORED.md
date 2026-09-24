@@ -93,3 +93,27 @@ adaptor `nvidia / blackwell`. Ayni klip:
 
 Sonuc: katman GPU'ya gore secilmeli. Entegre GPU -> quick/24/3k,
 ayri GPU -> standard/40/10k. `adapter.info.vendor` + ilk olcum bunu secer.
+
+## Intel iGPU uzerinde ayni oturumda devam egitimi (olculdu, 2026-09-24)
+
+Klip: `assets/test-clips/yay-100derece-stgeorge.mp4`; adaptor:
+`intel / gen-12lp`; varsayilan `quick`, 24 kare. Uygulamadaki deneysel
+`surdur +4.000` dugmesi ayni splat.js oturumunu kullanir. Kare secimi, SfM
+ve Gaussian tohumlama tekrarlanmaz. Asagidaki holdout degerleri arayuzun
+tek ondaliga yuvarladigi degerlerdir:
+
+| asama | toplam sure | Gaussian | holdout PSNR |
+|---|---:|---:|---:|
+| 3.000 iterasyon | 397 sn | 58 803 | 27.1 dB |
+| ayni oturumda 7.000 iterasyon | 794 sn | 67 624 | 27.9 dB |
+
+Fark: +397 sn, +8 821 Gaussian ve +0.8 dB. Devamdan sonra `.ply` disari
+aktarma da arayuzde basarili oldu. Ilk 3k kosusunda buyume olmadi; devam
+kosusunda yaklasik 5.220. iterasyonda Gaussian sayisi 58 803'ten 67 624'e
+cikti. 4k ek iterasyon, 2.500 iterasyonluk sonraki refine olayini 7k
+ufkunun %75'lik buyume penceresine sokar. 3k ek iterasyon bu pencereden
+sonra gelen refine nedeniyle buyumeyi tetiklemezdi. Bu **tek klipte tek
+deneme**; farkli videolarda kalite artisi
+garanti degildir. Varsayilan 3k korunur ve devam dugmesi deneysel kalir.
+Yukaridaki 27.1 dB, onceki tabloda kaydedilen 27.29 dB'den ayri bir
+calistirmanin yuvarlanmis sonucudur.

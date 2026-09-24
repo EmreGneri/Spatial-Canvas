@@ -3,6 +3,31 @@
 Sözleşmeye dokunan her değişiklik buraya yazılır (`ARCHITECTURE.md` kuralı: sessiz sapma yok).
 En yeni üstte.
 
+## 2026-09-24 — 3D eğitim: GPU yönlendirmesi ve isteğe bağlı kalite yolları
+
+- Intel Iris/UHD gibi tanınan entegre GPU'da eğitim paneli, Windows Grafik
+  ayarlarından tarayıcıyı “Yüksek performans”a alma ve tarayıcıyı yeniden
+  başlatma adımlarını gösterir. Intel Arc, AMD ve bilinmeyen adaptörler için
+  entegre GPU uyarısı verilmez. Katman seçimi ölçülmüş NVIDIA/Intel yollarıyla
+  sınırlı kalır.
+- Intel iGPU'da güvenli 24 kare / 3.000 iterasyon varsayılanı korunur. Eğitim
+  tamamlanınca aynı oturumda +4.000 iterasyon sürdürme seçeneği gelir; kare
+  çıkarımı, SfM ve Gaussian tohumlama tekrarlanmaz. Tek St George / Intel
+  `gen-12lp` koşusunda ayrılmış kare PSNR 27,1 → 27,9 dB, Gaussian sayısı
+  58.803 → 67.624 oldu; ek süre 397 sn. Bu tek klip ölçümü olduğu için
+  seçenek deneysel kalır.
+- “Yalnız özneyi eğit” eğitim panelinde ayrı, varsayılanı kapalı bir seçenektir.
+  Seçilen her kare için IS-Net yumuşak maskesi eğitimden önce hazırlanır;
+  tam RGB SfM'ye kalır, maske kayıp hesabına ayrı verilir. Boş/geçersiz
+  maskeli kareler atlanır; seçilenlerin en az %70'i ve en az 8 kare kalmazsa
+  açık hata gösterilir. Tam sahneye sessiz dönüş yoktur. İptal ve geçici
+  bitmap/canvas temizliği doğrulandı. St George tarayıcı denemesinde 24 kareden
+  21'i maskelendi, 3'ü atlandı ve vendored yükleyici SfM özellik aşamasına
+  geçti. Maskeli ve tam sahne PSNR
+  değerleri farklı piksel kümelerinde hesaplandığı için doğrudan kıyaslanmaz.
+- Yeni doğrulamalar: `verify-egitim-gpu-selection`, `verify-egitim-gpu-hint`,
+  `verify-egitim-continue`, `verify-egitim-subject-mask`.
+
 ## 2026-09-24 — İnceleme düzeltmeleri: GPU güvenliği ve render/arayüz durumu
 
 - Fotoğraf segmentasyonu GPU kuyruğunun dışındaydı; video oynarken fotoğraf
