@@ -12,9 +12,15 @@ En yeni üstte.
   büyütülüyor, z büyümüyordu. 16:9 büst (518×291) ölçümü: özne genişliği
   1.216 → 2.216 (×1.82), yükseklik ×1.56, z/x 0.40 → 0.21. Her render modu
   aynı konum texture'ını okuduğu için hepsinde görülüyordu.
-- Regresyon: `verify-sampler`, `verify-positions` (özne dünya genişliği
-  siluetle %5 içinde, z/x > 0.35). `verify-mesh` remap vakaları kolu açıkça
-  açar. Eval `importanceSampling` kolu açık değer verdiği için etkilenmez.
+- Uygulama çağrısı: `Engine.setDepth` fotoğraf konumlarına açıkça
+  `importanceSampling: false` verir (eskiden `!videoTexture` = fotoğrafta
+  açık; varsayılan değişikliği buraya ulaşmıyordu). Renk dolumları ve kabuk
+  mesh varsayılanla (kapalı) aynı remap'i paylaşır.
+- Regresyon: `verify-photo-geometry` (yeni) — kütüphane varsayılanı ve
+  gerçek `Engine.setDepth` fotoğraf yolu: özne dünya genişliği siluetle %5
+  içinde, z/x > 0.35, renk kayması 0 (her parçacığın rengi kendi pikseli).
+  `verify-mesh` remap vakaları kolu açıkça açar. Eval `importanceSampling`
+  kolu açık değer verdiği için etkilenmez.
 
 ## 2026-09-24 — 3D eğitim: GPU yönlendirmesi ve isteğe bağlı kalite yolları
 

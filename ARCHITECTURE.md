@@ -120,7 +120,9 @@ yeni eğitim yolunun sonucu sayılmaz.
   büst, 518×291): özne genişliği 1.216 → 2.216 (×1.82), z/x 0.40 → 0.21;
   her render modunda "basık ve yayık" büst. Splat yarıçapı/normalleri ve
   nokta boyutu düzgün grid aralığını varsaydığından fotoğraf yolu remap'siz
-  koşar (video zaten öyleydi). Kol yalnız eval/lab ölçümü için açılır.
+  koşar: `Engine.setDepth` konumlara açıkça `false` verir, renk dolumları ve
+  kabuk varsayılanla aynı remap'i paylaşır (video zaten öyleydi). Kol yalnız
+  eval/lab ölçümü için açılır.
 
 ## GPGPU Simülasyon (Gün 3 — Emre)
 
