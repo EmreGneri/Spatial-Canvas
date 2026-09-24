@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { POINTS_DEPTH_RANGE } from '../engine/buffers';
+import { POINTS_DEPTH_RANGE, POSITION_TEXTURE_SIZE } from '../engine/buffers';
 import type { ParamDef } from '../engine/params';
 
 /**
@@ -35,6 +35,16 @@ export interface PointCloudMaterialUniforms {
   uPositions: { value: THREE.Texture | null };
   /** 2..20 — birim mesafedeki nokta boyutu (piksel) */
   uPointSize: { value: number };
+  /** 1 for live video; keeps photo and synthetic point sizing unchanged at 0. */
+  uVideoFootprint: { value: number };
+  /** Drawing-buffer height in physical pixels, including device pixel ratio. */
+  uViewportHeightPx: { value: number };
+  /** Reference distance used by full-frame video perspective compensation. */
+  uVideoReferenceDistance: { value: number };
+  /** Height in world units used by the full-frame video sampler. */
+  uVideoWorldHeight: { value: number };
+  /** Source video width / height; horizontal grid spacing grows for wide video. */
+  uVideoAspect: { value: number };
   /** 0..1 — aUv hash tohumuyla boyut saçılması; 0 = hepsi eşit boyutta */
   uSizeJitter: { value: number };
   /**
@@ -129,6 +139,11 @@ export type PointCloudMaterial = THREE.ShaderMaterial & {
 const VERTEX = /* glsl */ `
   uniform sampler2D uPositions;
   uniform float uPointSize;
+  uniform float uVideoFootprint;
+  uniform float uViewportHeightPx;
+  uniform float uVideoReferenceDistance;
+  uniform float uVideoWorldHeight;
+  uniform float uVideoAspect;
   uniform float uSizeJitter;
   uniform float uExtrusionDepth;
   uniform float uNormalScale;
@@ -223,7 +238,25 @@ const VERTEX = /* glsl */ `
 
     // max() kırpması ZORUNLU: kameranın arkasına/üstüne düşen noktalarda
     // -mv.z ~ 0 olur, bölme patlar ve dev noktalar ekranı beyazlatır.
-    gl_PointSize = uPointSize * jitter / max(-mv.z, 0.1);
+    float legacySize = uPointSize * jitter / max(-mv.z, 0.1);
+    // Video pixels form a regular grid in screen space. A fixed world-space
+    // point size leaves holes as DPR or zoom changes, especially behind the
+    // camera plane where legacySize shrinks. Match the projected grid pitch
+    // and keep a small rasterization floor for sub-pixel grid spacing.
+    float referenceDistance = max(uVideoReferenceDistance, 0.1);
+    float xyScale = max((referenceDistance - z) / referenceDistance, 0.0);
+    float gridPitchPx = uViewportHeightPx * projectionMatrix[1][1]
+      * max(uVideoWorldHeight, 0.0) * 0.5 * xyScale
+      / (${POSITION_TEXTURE_SIZE}.0 * max(-mv.z, 0.1));
+    // The grid is square but a wide frame has a larger horizontal world step.
+    // Size each sprite to cover the larger projected gap. Video jitter is
+    // deliberately mild so a few small sprites cannot open vertical stripes.
+    float projectedGridPitchPx = gridPitchPx * max(1.0, uVideoAspect);
+    float zoomScale = max(referenceDistance - z, 0.0) / max(-mv.z, 0.1);
+    float videoSize = max(2.5 * zoomScale,
+      2.85 * projectedGridPitchPx * mix(1.0, jitter, 0.2))
+      * (uPointSize / 6.0);
+    gl_PointSize = mix(legacySize, videoSize, step(0.5, uVideoFootprint));
 
     gl_Position = projectionMatrix * mv;
   }
@@ -235,6 +268,7 @@ const FRAGMENT = /* glsl */ `
   uniform sampler2D uImageTexture;
   uniform float uHasImage;
   uniform float uObjectSeparation;
+  uniform float uVideoFootprint;
   uniform float uUseTextureColor;
   uniform float uSoftness;
   uniform float uBrightness;
@@ -273,7 +307,10 @@ const FRAGMENT = /* glsl */ `
 
     // Opaklık (Tur 11): ön plan 1.0, arka plan noktaları 0.4 — iki katman
     // tek buffer'da, tek draw call; mantık hatası yok, w doğrudan alpha.
-    alpha *= vOpacity;
+    // A video mask labels foreground for object separation. With separation
+    // off, the entire captured frame stays opaque when a mask appears.
+    alpha *= (uVideoFootprint > 0.5 && uObjectSeparation < 0.5)
+      ? 1.0 : vOpacity;
 
     // Renk (Tur 12 — şikayet 3): uUseTextureColor AÇIK ve doku varsa parçacık
     // kendi pikselinin RGB'sini alır (fotoğraf grid'i ya da canlı video);
@@ -284,11 +321,11 @@ const FRAGMENT = /* glsl */ `
       ? img.rgb
       : mix(uFarColor, uNearColor, vDepth);
     // OKLÜZYON: çukurlar (göz boşluğu, çene altı, kol-gövde arası) kararır —
-    // additive bulutta hacmi okutan en güçlü ipucu. uAoStrength = 0 → nötr.
+    // bulutta hacmi okutan en güçlü ipucu. uAoStrength = 0 → nötr.
     col *= mix(1.0, img.a, uAoStrength);
     // Tur 12 (şikayet 4): nesne ayırma KAPALI iken arka plan pikselleri
     // derinlikle karartılır (×0.4) — parlak duvar büstü yutmasın.
-    if (uObjectSeparation < 0.5 && vOpacity < 0.5) col *= 0.4;
+    if (uVideoFootprint < 0.5 && uObjectSeparation < 0.5 && vOpacity < 0.5) col *= 0.4;
 
     // SAHTE GÖLGELENDİRME: içeri itilen parçacık kararır. Yan duvarlar boyunca
     // ön yüzeyden arkaya doğru sürekli bir gradyan oluşur — hacmi okutan şey
@@ -300,7 +337,7 @@ const FRAGMENT = /* glsl */ `
     // çarpılır; düz yüzey tam aydınlık, ışığa yönelen kavisler gölgelenir.
     // Arka plan duvarı (w < 0.5) ve içeri itilen parçacıklar da ışık alır —
     // profil kesiti okunur. 0.5 altı yumuşak geçiş (ışık sıfırlanmaz, yüzey
-    // kararmaz): zift siyah delikler oluşmaz (additive + siyah = boşluk).
+    // kararmaz): zift siyah delikler oluşmaz.
     if (uLightStrength > 0.001) {
       vec3 n = normalize(vNormal);
       float ndl = dot(n, normalize(uLightDir));
@@ -317,7 +354,7 @@ const FRAGMENT = /* glsl */ `
       float nv = clamp(abs(dot(n, v)), 0.0, 1.0);
       float fres = pow(1.0 - nv, 1.0 + uFresnelStrength * 5.0);
       if (vOpacity < 0.5) fres *= 0.35; // duvar kenar parlaması sönük
-      col += vec3(fres * uFresnelStrength * 2.0); // additive: kenar aydınlanır
+      col += vec3(fres * uFresnelStrength * 2.0); // kenar aydınlanır
     }
 
     col *= uBrightness;
@@ -328,8 +365,9 @@ const FRAGMENT = /* glsl */ `
     float fogF = 1.0 - exp(-uFogDensity * uFogDensity * vViewDepth * vViewDepth);
     col = mix(col, uFogColor, fogF);
 
-    // AdditiveBlending (src = SrcAlpha, dst = One): ekrana eklenen katkı
-    // col * alpha olur, yumuşak kenar doğal olarak sönümlenir.
+    // Photos use AdditiveBlending (src = SrcAlpha, dst = One): the soft edge
+    // fades naturally. Engine switches live video to NormalBlending, because
+    // its dense full-frame grid would otherwise accumulate to white.
     gl_FragColor = vec4(col, alpha);
   }
 `;
@@ -339,6 +377,11 @@ export function createPointCloudMaterial(): PointCloudMaterial {
   const uniforms: PointCloudMaterialUniforms = {
     uPositions: { value: null },
     uPointSize: { value: 6 },
+    uVideoFootprint: { value: 0 },
+    uViewportHeightPx: { value: 0 },
+    uVideoReferenceDistance: { value: 3.5 },
+    uVideoWorldHeight: { value: 2 },
+    uVideoAspect: { value: 1 },
     uSizeJitter: { value: 0.3 },
     // 0 = kapalı: mevcut görünüm ve kayıtlı preset'ler aynen korunur.
     uExtrusionDepth: { value: 0 },
@@ -375,9 +418,11 @@ export function createPointCloudMaterial(): PointCloudMaterial {
     vertexShader: VERTEX,
     fragmentShader: FRAGMENT,
     transparent: true,
-    // Additive bulutta derinlik yazılırsa arkadaki parçacıklar kırpılır ve
-    // yığılma kaybolur; test açık kalır, yazma kapalı.
+    // Keep depth writes off: an additive cloud would clip the particles behind
+    // it, and a video grid would get hard holes from nearer soft particles.
     depthWrite: false,
+    // Default for photos and presets. Engine.pushSharedUniforms owns the
+    // per-source switch to NormalBlending for live video.
     blending: THREE.AdditiveBlending,
   });
 

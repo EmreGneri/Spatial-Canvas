@@ -36,6 +36,15 @@ Eski Tur 3'teki renk/opaklık artığı dağıtma ve `renderFromPose` sözleşme
 3DGS kalitesi için kritik yol değildir. Surfel yoluna ayrı yatırım kararı
 verilmedikçe uygulanmaz.
 
+Canlı video derinliği ayrı bir önizleme hattıdır. Modelin yakaladığı karenin
+renkleri artık aynı derinlik sonucuyla çizilir; maskesiz manzarada portre
+silueti kullanılmaz ve başlangıç kamerasındaki perspektif korunur. `gs-test.mp4`
+ile gözlenen canlı derinlik hızı yaklaşık 3–4 güncelleme/sn; renk ve geometri
+birlikte ilerlediği için nokta görünümü videonun doğal kare hızından düşük
+tempoda yenilenir. Sonraki kalite işi yakalama/çıkarım/Engine yükleme sürelerini
+ayrı ölçmek, hareketli sahneye uygun derinlik yeniden kullanımı geliştirmek ve
+farklı kliplerde görüntü kabulünü tekrarlamaktır.
+
 ## Sıradaki iş sırası
 
 ### 1. Eğitimi yayın için sağlamlaştır — Emre + Zeynep
@@ -45,10 +54,10 @@ verilmedikçe uygulanmaz.
   ve ayrılmış kare PSNR, `.ply` boyutu. Var olan geliştirici ölçümleri
   [vendor kaydında](../src/vendor/splat.js/VENDORED.md); yayın kapısı için
   uygulama içi koşu ve çıktı dosyası da saklanmalı.
-- **Emre:** `kapat`/hata yaşam döngüsünü tamamla. Bugün SfM sürerken görünümü
-  kapatmak işlemi hemen iptal etmiyor; 90 saniyelik ilerleme bekçisi hata
-  gösterse bile alttaki işi durdurmuyor. İptal veya cihaz kaybından sonra GPU
-  kaynaklarının bırakıldığı ölçülmeli.
+- **Emre:** İptal, arka sekme zamanlayıcısı, eğitim ilerleme bekçisi ve kanvas
+  temizliği kodlandı. Farklı tarayıcı ve GPU'larda sekme değiştirme, SfM
+  sırasında kapatma ve cihaz kaybından sonra tekrar koşma davranışı gerçek
+  donanımda ölçülmeli; tarayıcı kapanırsa eğitim oturumu kalıcı değildir.
 - **Zeynep:** Eğitimin WebGPU ön kontrolünü, seçilen GPU/ayar katmanını,
   aşamaları, iptal sonucunu ve kurtarma yolunu kullanıcıya açık göster.
 - **Ortak kabul:** İki GPU sınıfında video yükle → `3D eğit` → tamamlanma →

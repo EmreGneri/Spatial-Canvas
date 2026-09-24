@@ -39,8 +39,10 @@ yeni eğitim yolunun sonucu sayılmaz.
 - **AO KANALI (Gün C):** renk grid'inin alpha'sı `sampler.computeAoMap`
   çıktısıdır (depth farkından çukur kapanması, `[0.35, 1]`). Ek texture yoktur:
   render material'ları aynı örneklemede `.a`'yı `uAoStrength` ile tüketir.
-  Video kaynağında `uImageTexture` canlı `VideoTexture`'dır ve alpha = 1
-  olduğundan AO kendiliğinden nötrdür. `uAoStrength = 0` → görünüm değişmez.
+  Video kaynağında `uImageTexture` ilk model karesine kadar canlı
+  `VideoTexture`'dır; sonra modelin işlediği karenin renk grid'i olur
+  (2026-09-24). İkisinde de alpha = 1 (`skipAo`), AO kendiliğinden nötrdür.
+  `uAoStrength = 0` → görünüm değişmez.
 - **y-flip tek yerde çözülür:** texture upload'u (`src/engine/buffers.ts`, `flipY = true`).
   Sonuç: `v = 1` → görselin **üstü**. Shader'larda, UV'lerde, CPU'da flip **yoktur**.
 - Normalize etmek veri katmanının işi: Zeynep ham veri beklemez, hep 0..1 alır.
@@ -414,6 +416,38 @@ değil zSpan darboğaz.
   kırpılı) — durgun bölge kararlı, hareketli bölge gecikmesiz.
 - Solid modu fotoğraf-only kalır: video/kamera kabuk üretmez, nokta bulutuna
   düşülür ve sebebi log'a yazılır (`Engine.solidAvailable`).
+- **Canlı model derinliği (2026-09-24, `vision/liveDepth.ts`).** Yukarıdaki
+  luminance yolu artık yalnız model gelene kadar geçici önizlemedir; WebGPU
+  varsa `startLiveDepth` Depth Anything V2 Small ile devralır. Video için
+  sözleşme:
+  - **Tam kare izdüşüm (`fullFrame`, `sampler.ts`):** önem örneklemesi ve
+    siluet dalı yok; `z = clamp((d − 0.5) · 2, −1, 1)`, xy `(3.5 − z) / 3.5`
+    ile ölçeklenir ki başlangıç kamerasından kare birebir hizalı görünsün.
+    Maske geometriyi DEĞİŞTİRMEZ, yalnız w (opaklık) sınıflandırır; canlı
+    video derinliği de maskesiz hesaplanır (`maskeAl` verilmez).
+  - **Harmanlama:** fotoğraf ve preset'ler additive kalır; video kaynağında
+    Engine point cloud material'ını `NormalBlending`'e alır (yoğun tam kare
+    ızgara additive'de beyaza doyuyordu).
+  - **Kadraj:** dünya yüksekliği sabit 2 değil,
+    `2 · 3.5 · tan(fov/2) · min(1, kameraOranı / videoOranı) · 0.94`
+    (`contain`). Değer her derinlik karesinde Engine'de hesaplanır.
+  - **Renk:** modelin işlediği karenin RGB'si aynı `setDepth` çağrısıyla renk
+    grid'ine yazılır; nokta bulutu sonraki video karesiyle boyanmaz.
+  - **Konum:** video home'u her karede doğrudan tohumlanır (`seedFrom`,
+    hız = 0). Yay takibinin aşımı rengi şekilden ayırıyordu. Fotoğraf yolu
+    yay simülasyonunu korur.
+  - **Nokta izi:** `uVideoFootprint = 1` iken nokta boyutu ızgaranın ekrandaki
+    fiziksel piksel aralığından (DPR, zoom, en-boy) türetilir; fotoğrafta
+    eski `uPointSize / mesafe` formülü değişmez.
+  - **Zaman:** aralık yumuşatması çıkarım sayısına değil medya zamanına
+    bağlıdır (yarı ömür 450 ms aralık, 500 ms ön plan stretch'i). Sahne
+    kesmesi, seek/döngü ve 1,5 sn'yi aşan zaman sıçraması durumu sıfırlar.
+    Canlı videoda özne kırpması yapılmaz (kırpık tahmin kadraja yayılıp arka
+    plan uyduruyordu).
+  - **Splat köprüsü:** video derinliği Splat/Crystal modu dışında 147k
+    Gaussian'ı yeniden üretmez; kirli bayrak mod girişinde ve
+    `gaussianSnapshot` içinde tazelenir. Yakalanan sahne (`setGaussians`)
+    kaynak değişene kadar köprü tarafından ezilmez.
 
 ## Render Parametre Sözleşmesi (Gün 4)
 

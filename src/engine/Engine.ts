@@ -10,6 +10,7 @@ import {
   createDepthTexture,
   fillImageColorTexture,
   fillPositionsFromDepth,
+  POINTS_WORLD_HEIGHT,
   POSITION_TEXTURE_SIZE,
 } from './buffers';
 import { createPointsCloud } from './points';
@@ -52,6 +53,8 @@ import { buildShellMesh, type ShellMeshData } from './reconstruction/mesh.ts';
 import type { CameraPose, MediaType } from './preset';
 
 const MAX_DPR = 2;
+const DEFAULT_CAMERA_DISTANCE = 3.5;
+const VIDEO_VIEWPORT_FILL = 0.94;
 
 /**
  * Pass sÃ¶zleÅŸmesi (ARCHITECTURE.md): Engine pass iÃ§lerine dokunmaz; her pass
@@ -97,6 +100,8 @@ export class Engine {
    */
   private videoElement: HTMLVideoElement | null = null;
   private videoTexture: THREE.VideoTexture | null = null;
+  private videoWorldHeight = POINTS_WORLD_HEIGHT;
+  private videoAspect = 1;
 
   /**
    * Nesne ayÄ±rma (Tur 12 â€” ÅŸikayet 4): AÃ‡IK iken shader'lar arka plan
@@ -148,6 +153,7 @@ export class Engine {
    */
   private lastFgMask: Float32Array | null = null;
   private lastFrameTime = 0;
+  private suspended = false;
   private frameCount = 0;
   private lastFpsSample = 0;
   /** Her saniye gÃ¼ncellenir â€” FPS geÃ§idi (384 â†’ 256 kararÄ±) buna bakar. */
@@ -205,6 +211,9 @@ export class Engine {
    * bir kurulumda (embed) üç 384² texture + 147k instance boşuna ayrılmasın.
    */
   private splatObject: SplatObject | null = null;
+  /** A captured scene owns the splat textures until the media source changes. */
+  private gaussianSource: 'point-cloud' | 'authored' = 'point-cloud';
+  private gaussiansDirty = false;
   /** CPU sıralama yolu (radix = tam, bucket = yaklaşık). SPLAT_PARAMS dışı kol. */
   private splatSortModeName: SplatSortMode = 'radix';
   /** Sıralama kapısı: bu opaklığın altındaki splat hiç çizilmez. */
@@ -246,7 +255,7 @@ export class Engine {
   } | null = null;
   /** Kamera başlangıç pozu (kurulumdaki konum + hedef). */
   private cameraHome = {
-    pos: new THREE.Vector3(0, 0, 3.5),
+    pos: new THREE.Vector3(0, 0, DEFAULT_CAMERA_DISTANCE),
     target: new THREE.Vector3(0, 0, 0),
   };
 
@@ -311,7 +320,7 @@ export class Engine {
     this.simulation = createSimulation(this.renderer, this.simType);
 
     this.camera = new THREE.PerspectiveCamera(60, 1, 0.1, 100);
-    this.camera.position.set(0, 0, 3.5);
+    this.camera.position.set(0, 0, DEFAULT_CAMERA_DISTANCE);
 
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.enableDamping = true;
@@ -378,6 +387,7 @@ export class Engine {
     this.setupMouse();
 
     this.renderer.setAnimationLoop((time) => {
+      if (this.suspended) return;
       // SimÃ¼lasyon kare hÄ±zÄ±ndan baÄŸÄ±msÄ±z olsun: 60 fps'te 1. Sekme arka plana
       // dÃ¼ÅŸÃ¼p dÃ¶ndÃ¼ÄŸÃ¼nde dev bir dt gelir, kÄ±rpÄ±lmazsa bulut patlar.
       const dt = this.lastFrameTime ? (time - this.lastFrameTime) / 1000 : 1 / 60;
@@ -423,6 +433,13 @@ export class Engine {
       this.frameTap?.(this.renderer.domElement);
       this.countFps();
     });
+  }
+
+  /** Leave GPU time to WebGPU training while its view covers this canvas. */
+  setSuspended(suspended: boolean) {
+    this.suspended = suspended;
+    this.lastFrameTime = 0;
+    if (suspended) this.fps = 0;
   }
 
   /**
@@ -516,10 +533,14 @@ setPointsMaterial(material: THREE.Material) {
       // Takas YAPILMAZ — yalnızca mod adı ve görünürlük güncellenir; bulut
       // arkada son sağlam material'ıyla durur (buffer boşsa ona düşülür).
       this.renderModeName = 'splat';
+      if (this.gaussiansDirty) this.refreshGaussians();
       this.splatObject?.bindTextures(material);
       this.syncRenderVisibility();
       return;
     }
+    // Crystal without a shell (always the case for video) draws the Gaussian
+    // bridge, so refresh it before the shell fallback below returns early.
+    if (name === 'crystal' && this.gaussiansDirty) this.refreshGaussians();
     if (Engine.usesShellMesh(name) && !this.solidReady) {
       // FotoÄŸraf yok â†’ kabuk yok. Solid material'Ä± nokta bulutuna takmak
       // uv/normal attribute eksikliÄŸinden kÄ±rÄ±k render eder; material takasÄ±
@@ -658,7 +679,7 @@ setPointsMaterial(material: THREE.Material) {
       THREE.IUniform
     >;
     if (!u?.['uImageTexture']) return;
-    const image = this.videoTexture ?? this.imageColorTexture;
+    const image = this.imageColorTexture ?? this.videoTexture;
     u['uImageTexture'].value = image;
     u['uHasImage'].value = image ? 1 : 0;
     // GÜN 2 (Z2.2) — SAHNE RENGİ: crystal'ın Gün 5 kırılması için arkadaki
@@ -678,6 +699,24 @@ setPointsMaterial(material: THREE.Material) {
     }
     if (u['uUseTextureColor']) {
       u['uUseTextureColor'].value = this.useTextureColor ? 1 : 0;
+    }
+    if (u['uVideoFootprint']) {
+      u['uVideoFootprint'].value = this.videoTexture ? 1 : 0;
+      // Blending is render state, not part of the shader program, so this
+      // switch needs no recompile. Photos keep the tuned additive glow.
+      material.blending = this.videoTexture ? THREE.NormalBlending : THREE.AdditiveBlending;
+    }
+    if (u['uViewportHeightPx']) {
+      u['uViewportHeightPx'].value = this.viewportPx.y;
+    }
+    if (u['uVideoReferenceDistance']) {
+      u['uVideoReferenceDistance'].value = DEFAULT_CAMERA_DISTANCE;
+    }
+    if (u['uVideoWorldHeight']) {
+      u['uVideoWorldHeight'].value = this.videoWorldHeight;
+    }
+    if (u['uVideoAspect']) {
+      u['uVideoAspect'].value = this.videoAspect;
     }
   }
 
@@ -713,9 +752,15 @@ setPointsMaterial(material: THREE.Material) {
    */
   setVideoSource(video: HTMLVideoElement | null) {
     if (video === this.videoElement) return;
+    this.gaussianSource = 'point-cloud';
+    this.gaussiansDirty = true;
     this.videoTexture?.dispose();
     this.videoTexture = null;
     this.videoElement = video;
+    if (!video) {
+      this.videoWorldHeight = POINTS_WORLD_HEIGHT;
+      this.videoAspect = 1;
+    }
     if (video) {
       // Yeni video geliyor â€” eski fotoÄŸraf pikselleri hayalet olarak kalmasÄ±n.
       this.releasePhoto();
@@ -725,7 +770,17 @@ setPointsMaterial(material: THREE.Material) {
       tex.magFilter = THREE.NearestFilter;
       tex.generateMipmaps = false;
       this.videoTexture = tex;
+    } else if (this.imageColorTexture) {
+      this.releasePhoto();
     }
+    this.pushSharedUniformsAll();
+  }
+
+  /** Resume raw video color if model depth gives up and luminance takes over. */
+  clearVideoFrameColor() {
+    if (!this.videoTexture || !this.imageColorTexture) return;
+    this.imageColorTexture.dispose();
+    this.imageColorTexture = null;
     this.pushSharedUniformsAll();
   }
 
@@ -776,6 +831,9 @@ releasePhoto() {
    */
   private refreshGaussians() {
     if (!this.splatObject) return;
+    // Live depth may continue while a captured scene is displayed. Rebuilding
+    // the bridge here would replace that scene with a single-frame point grid.
+    if (this.gaussianSource === 'authored') return;
     // Depth yoksa home texture sıfırdır: doldurulursa 147k splat orijinde
     // üst üste yığılır ve `splatAvailable` YALAN söyler (mod seçilebilir
     // görünür, ekranda tek leke çıkar). Veri gelene kadar buffer boş kalır,
@@ -788,6 +846,7 @@ releasePhoto() {
       POSITION_TEXTURE_SIZE,
     );
     this.splatObject.syncFromTextures(count);
+    this.gaussiansDirty = false;
     this.syncRenderVisibility();
   }
 
@@ -798,6 +857,8 @@ releasePhoto() {
    */
   setGaussians(data: GaussianBufferData | null) {
     if (!this.splatObject) return;
+    this.gaussianSource = data ? 'authored' : 'point-cloud';
+    this.gaussiansDirty = false;
     if (!data) {
       this.splatObject.syncFromTextures(0, null);
       this.syncRenderVisibility();
@@ -817,6 +878,7 @@ releasePhoto() {
    * sahnede splat yok (fotoğraf modu, füzyon koşmamış).
    */
   gaussianSnapshot(): { a: Float32Array; b: Float32Array; c: Uint8Array; count: number } | null {
+    if (this.gaussiansDirty) this.refreshGaussians();
     const obj = this.splatObject;
     if (!obj || obj.count <= 0) return null;
     const t = obj.textures;
@@ -1228,6 +1290,7 @@ if (entry && entry.material !== this.pointsMaterial) {
     foregroundMask?: Float32Array,
     maskWidth?: number,
     maskHeight?: number,
+    videoFrame?: { data: Uint8ClampedArray; width: number; height: number },
   ) {
     // Nesne maskesi (segmentation.ts) depth ile aynÄ± boyutta deÄŸilse (letterbox
     // yuvarlama farklarÄ±) depth boyutuna yeniden Ã¶rneklenir â€” siluet AND koÅŸulu
@@ -1280,9 +1343,23 @@ if (entry && entry.material !== this.pointsMaterial) {
     // sÄ±fÄ±rlanÄ±r ve fareyle yapÄ±lan deformasyon sÃ¼rekli silinir.
     // GÃœN 6 (madde 4): video/kamera kaynaÄŸÄ±nda (dynamicHome) home %80 yeni
     // %20 eski ile yazÄ±lÄ±r â€” parÃ§acÄ±k ataleti korunur, titreme sÃ¶ner.
+    const videoWorldHeight = this.videoTexture
+      ? 2 * DEFAULT_CAMERA_DISTANCE * Math.tan(THREE.MathUtils.degToRad(this.camera.fov) / 2)
+        * Math.min(1, this.camera.aspect / (width / height)) * VIDEO_VIEWPORT_FILL
+      : undefined;
+    if (videoWorldHeight !== undefined) {
+      this.videoWorldHeight = videoWorldHeight;
+      this.videoAspect = width / height;
+      if (this.renderModes) this.pushSharedUniformsAll();
+    }
     fillPositionsFromDepth(this.homeTexture, data, width, height, {
       foregroundMask: mask,
-      blend: this.dynamicHome ? 0.8 : 1,
+      blend: this.videoTexture ? 1 : this.dynamicHome ? 0.8 : 1,
+      // Raw VideoTexture is sampled at aUv. Its color cannot follow the
+      // importance remap used by photos' precomputed color grid.
+      importanceSampling: !this.videoTexture,
+      fullFrame: this.videoTexture ? { cameraDistance: DEFAULT_CAMERA_DISTANCE } : undefined,
+      worldHeight: videoWorldHeight,
     });
     // TUR 11: fotoÄŸraf yÃ¼klÃ¼yse parÃ§acÄ±k renklerini de aynÄ± grid/remap ile
     // doldur (setPhoto'dan Ã¶nce setDepth gelirse texture boÅŸ kalÄ±r â€” renkler
@@ -1308,7 +1385,25 @@ data,
         }),
       );
     }
-    if (this.seeded) {
+    if (this.videoTexture && videoFrame) {
+      const { data: rgba, width: frameWidth, height: frameHeight } = videoFrame;
+      const rgb = new Float32Array(frameWidth * frameHeight * 3);
+      for (let i = 0, j = 0; i < rgba.length; i += 4, j += 3) {
+        rgb[j] = rgba[i] / 255;
+        rgb[j + 1] = rgba[i + 1] / 255;
+        rgb[j + 2] = rgba[i + 2] / 255;
+      }
+      if (!this.imageColorTexture) {
+        this.imageColorTexture = createImageColorTexture();
+        this.pushSharedUniformsAll();
+      }
+      fillImageColorTexture(this.imageColorTexture, rgb, frameWidth, frameHeight,
+        data, width, height, { importanceSampling: false, skipAo: true });
+    }
+    if (this.videoTexture) {
+      this.simulation.seedFrom(this.homeTexture);
+      this.seeded = true;
+    } else if (this.seeded) {
       this.simulation.setHome(this.homeTexture);
     } else {
       this.simulation.seedFrom(this.homeTexture);
@@ -1317,7 +1412,11 @@ data,
     // SPLAT köprüsü: GaussianBuffer home + renk grid'inden türer, ikisi de
     // yukarıda tazelendi. Splat modu kayıtlı değilse (splatObject null) bu
     // çağrı bedavadır.
-    this.refreshGaussians();
+    if (this.videoTexture && this.renderModeName !== 'splat' && this.renderModeName !== 'crystal') {
+      this.gaussiansDirty = true;
+    } else {
+      this.refreshGaussians();
+    }
   }
 
 /** Renderers read the normalized R32F depth map through this contract. */
@@ -1341,6 +1440,7 @@ data,
    * shader'lar varsayÄ±lan derinlik rampasÄ±na dÃ¼ÅŸer.
    */
   setPhoto(source: HTMLCanvasElement | HTMLImageElement) {
+    this.gaussianSource = 'point-cloud';
     // Tur 12: eski renk Ã¶nbelleÄŸi tamamen temizlenir (hayalet yok).
     this.releasePhoto();
     const width = source instanceof HTMLCanvasElement ? source.width : source.naturalWidth;
@@ -1471,6 +1571,7 @@ depth,
       if (this.currentDpr > 1) {
         this.currentDpr = Math.max(1, this.currentDpr * 0.75);
         this.renderer.setPixelRatio(this.currentDpr);
+        this.composer.setPixelRatio(this.currentDpr);
         this.resize(); // drawing buffer + composer + grain uResolution
         this.lowFpsCount = 0;
         console.log(`[engine] DPR ${this.renderer.getPixelRatio().toFixed(2)} â€” dÃ¼ÅŸÃ¼k FPS (${this.fps})`);
@@ -1481,6 +1582,7 @@ depth,
       if (this.highFpsCount >= 2 && this.currentDpr < maxDpr) {
         this.currentDpr = Math.min(maxDpr, this.currentDpr / 0.75);
         this.renderer.setPixelRatio(this.currentDpr);
+        this.composer.setPixelRatio(this.currentDpr);
         this.resize();
         this.highFpsCount = 0;
         console.log(`[engine] DPR ${this.renderer.getPixelRatio().toFixed(2)} â€” toparlandÄ± (${this.fps})`);
@@ -1538,6 +1640,7 @@ depth,
     // Splat Jacobian'ı da DRAWING BUFFER ölçeğinde çalışır: CSS pikseli
     // verilirse DPR > 1'de elipsler yarı boyutta çizilir (yüzey delinir).
     this.renderer.getDrawingBufferSize(this.viewportPx);
+    this.pushSharedUniformsAll();
   }
 
   dispose() {

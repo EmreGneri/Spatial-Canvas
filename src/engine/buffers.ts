@@ -100,6 +100,10 @@ export interface PositionFillOptions {
    * Varsayılan açık.
    */
   importanceSampling?: boolean;
+  /** Preserve video UVs and depth regardless of segmentation mask. */
+  fullFrame?: { cameraDistance: number };
+  /** Override the default point cloud height for video frame fitting. */
+  worldHeight?: number;
   /**
    * GÜN 6 (video 3D — madde 4): home texture güncelleme yumuşaklığı (0..1).
    * 1 = toptan yaz (varsayılan), <1 = eski home verisiyle karıştır: yeni =
@@ -131,11 +135,12 @@ export function fillPositionsFromDepth(
   const data = tex.image.data as Float32Array;
   const xyz = sampleVolumePositions(depth, depthWidth, depthHeight, {
     gridSize: n,
-    worldHeight: POINTS_WORLD_HEIGHT,
+    worldHeight: opts.worldHeight ?? POINTS_WORLD_HEIGHT,
     depthRange: POINTS_DEPTH_RANGE,
     curvature: opts.curvature ?? VOLUME_CURVATURE,
     foregroundMask: opts.foregroundMask,
     importanceSampling: opts.importanceSampling !== false,
+    fullFrame: opts.fullFrame,
   });
   const blend = opts.blend ?? 1;
   if (blend >= 1) {
@@ -190,6 +195,8 @@ export interface ImageColorFillOptions {
    * renkler parçacıklardan kayar. Opsiyonel.
    */
   foregroundMask?: Float32Array;
+  /** Live video has no room for the photo-only AO pass on every frame. */
+  skipAo?: boolean;
 }
 
 /**
@@ -218,12 +225,12 @@ export function fillImageColorTexture(
   const grid = sampleImageGrid(rgb, imgWidth, imgHeight, depth, depthWidth, depthHeight, sampleOpts);
   // ALPHA = bakılı oklüzyon (Gün C): aynı remap, aynı hizalama. Render
   // shader'ları .a'yı AO çarpanı olarak tüketir (uAoStrength); ek texture yok.
-  const ao = sampleAoGrid(depth, depthWidth, depthHeight, sampleOpts);
+  const ao = opts.skipAo ? null : sampleAoGrid(depth, depthWidth, depthHeight, sampleOpts);
   for (let o = 0, k = 0, a = 0; o < data.length; o += 4, k += 3, a++) {
     data[o] = Math.round(grid[k] * 255);
     data[o + 1] = Math.round(grid[k + 1] * 255);
     data[o + 2] = Math.round(grid[k + 2] * 255);
-    data[o + 3] = Math.round(Math.min(1, Math.max(0, ao[a])) * 255);
+    data[o + 3] = ao ? Math.round(Math.min(1, Math.max(0, ao[a])) * 255) : 255;
   }
   tex.needsUpdate = true;
 }

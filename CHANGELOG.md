@@ -3,6 +3,95 @@
 Sözleşmeye dokunan her değişiklik buraya yazılır (`ARCHITECTURE.md` kuralı: sessiz sapma yok).
 En yeni üstte.
 
+## 2026-09-24 — Canlı video: kadraj, nokta izi ve zamanlama
+
+- Video bulutu sabit 2 birim yerine kameraya `contain` ölçeğiyle sığar (%94).
+  Eski yükseklik görüntü alanının dikeyde yalnız ~%49,5'ini kaplıyordu.
+- Video nokta boyutu ızgaranın ekrandaki fiziksel piksel aralığından türetilir
+  (DPR, zoom, en-boy). Varsayılan 6'da gökyüzündeki dikey çizgiler kapandı.
+  Fotoğrafın nokta boyutu formülü değişmedi.
+- Video konumları her derinlik karesinde yeni hedefe doğrudan oturur. Yay
+  takibi sabit bir adımda ~%55 aşım yapıyor, şekli renkten ayırıyordu.
+  Fotoğrafta yay etkileşimi korunur.
+- Maske video geometrisini değiştirmez: izdüşüm de derinlik son işlemesi de
+  maskesiz aynıdır; maske yalnız nesne ayırma açıkken opaklığı etkiler. Döngüde
+  maske korunur, yalnız kullanıcı seek'i yeniler. Duraklatılmış videoda gelen
+  maske son derinlikle hemen uygulanır. Video segmentasyonu yalnız nesne ayırma
+  açıkken koşar; önceden kapalıyken bile GPU kuyruğunu işgal ediyordu.
+- Derinlik aralığı yumuşatması çıkarım hızına değil medya zamanına bağlıdır
+  (yarı ömür 450/500 ms). Sahne kesmesi, seek/döngü ve zaman sıçraması durumu
+  sıfırlar. Canlı videoda kırpık özne tahmini artık kadraja yayılmaz.
+- Point Cloud'dayken video derinliği 147.456 Gaussian'ı her karede yeniden
+  üretmez; köprü Splat/Crystal'a geçişte veya dışa aktarımda tazelenir.
+  Crystal'a video üzerinde geçişte de tazelenir (kabuk olmadığı için erken
+  dönüş yenilemeyi atlıyordu). Composer piksel oranı uyarlamalı DPR ile
+  eşitlenir. Geliştirme modundaki tohum kontrolü (senkron GPU okuması) yalnız
+  ilk tohumlamada koşar; video her karede tohumladığı için ölçümü bozuyordu.
+- Log satırı kare yaşını gösterir. Tarayıcı denemesi (Intel iGPU): gs-test.mp4
+  322×154, nyc.mp4 280×154; kare yaşı 120–230 ms, Engine'e CPU yüklemesi
+  ~20 ms. Güncelleme hızı model çıkarımına bağlı kalır.
+- Yeni regresyonlar: `verify-video-geometry`, `verify-video-point-footprint`,
+  `verify-live-temporal-range`, `verify-live-engine-integration`.
+
+## 2026-09-24 — Canlı video nokta bulutu hizalaması
+
+- Ham video dokusunun düz UV'si ile önem örneklemesine göre bükülmüş derinlik
+  UV'si ayrışıyordu. Video için aynı düz UV kullanılır; maskesiz manzara artık
+  portre siluetinden kesilmez.
+- Tam kare video noktaları başlangıç kamerasına göre geri izdüşürülür. Yakın
+  binalar büyüyüp uzak gökyüzü daralarak kareyi parçalamaz.
+- Modelin işlediği karenin RGB anlık görüntüsü derinlikle birlikte renk grid'ine
+  yüklenir. Nokta bulutu sonraki video karesinin rengiyle boyanmaz; düz video
+  modu akıcı orijinal videoyu göstermeye devam eder.
+- Video kaynağında Point Cloud normal alfa harmanlama kullanır; yoğun tam kare
+  ızgara additive'de beyaza doyuyordu. Fotoğraf ve preset'ler additive kalır. `verify-video-color-alignment` geometri, perspektif,
+  tam kare opaklığı ve renk girdisini regresyona bağlar.
+- `gs-test.mp4` tarayıcı denemesinde karenin rengi ve geometrisi görsel olarak
+  hizalı; canlı derinlik yaklaşık 3,6 Hz. Bu tek klipteki gözlemdir.
+
+## 2026-09-24 — Video önizleme ve değerlendirme panelleri
+
+- Hızlı 3B haritanın ayrı video kullandığı ve gerçek 3DGS eğitimi olmadığı
+  arayüzde açıklanır. Boş splat çıktısı başarı sayılmaz; eşzamanlı yakalamalar
+  ve geç kalan dosya sonuçları sahneyi değiştiremez.
+- Metrik paneli çevrimdışı deney raporunun kaynağını, veri kümesini ve bölmesini
+  gösterir. Bu sayıların kullanıcının yüklediği videoya ait olmadığı açıklanır;
+  hatalı rapor satırları reddedilir.
+- Yakalanan Gaussian sahnesi artık sonraki canlı derinlik güncellemesinde
+  nokta bulutu köprüsüyle ezilmez. Yeni medya kaynağı seçilince köprü yeniden
+  etkinleşir.
+- Canlı derinlik ön ısıtma ile yarışmaz; hızlı cihazda çözünürlük kontrollü
+  yükselir, yavaşlarsa geri döner. Video için maske yalnız güvenilir bir ön plan
+  bulunduğunda kullanılır ve GPU kuyruğunda gerektiğinde yenilenir. Devreden
+  çıkan parlaklık kare geri çağrısı iptal edilir.
+- `public/gs-test.mp4` ile 4 keyframe'de 25.429 splat üretildi; 3 poz hatası
+  ve çözülemeyen ölçek arayüzde göründü. Aynı 4K klipte canlı derinlik
+  yaklaşık 1,4–4,3 Hz gözlendi; %3 alanlı maske güvenilmez sayılıp atlandı.
+  Bu ölçüm tek cihaz/klip gözlemidir, genel kalite veya gecikme kabulü değildir.
+
+## 2026-09-24 — 3DGS kod incelemesi: iptal ve GPU ömrü
+
+- SfM'nin özellik ve eşleşme Worker havuzları iptal veya hata durumunda
+  sonlandırılır. Kapatma artık bekleyen SfM sözünü de iptal eder.
+- Yükleme sırasında kare çözme de iptal sinyalini izler; açılmış bit eşlem
+  kaynakları hata veya iptalde bırakılır.
+- GPU aygıtı oturum kapandıktan sonra açılırsa hemen bırakılır; kapanmış
+  oturum SfM'ye devam etmez.
+- Bu durumlar için `verify-egitim-sfm-cancel`,
+  `verify-egitim-gpu-lifecycle` ve `verify-egitim-frame-cancel` eklendi.
+
+## 2026-09-24 — 3DGS etkileşim ve eğitim yaşam döngüsü
+
+- Eğitim kanvasında fare tekerleği sayfayı kaydırmadan yakınlaştırır; yakınlık
+  pivotun içinden geçmeyecek şekilde sınırlanır. İşaretçi iptali sürüklemeyi
+  sonlandırır ve PLY indirme hatası arayüzde görünür.
+- Eğitim zamanlayıcısı Worker açılamayan arka sekmelerde zamanlayıcıya düşer;
+  döngü hataları ve 90 saniyelik ilerleme kesilmesi kullanıcıya bildirilir.
+- Kare çıkarma ve SfM iptal sinyali alır; kapatma WebGPU kanvasını bırakır.
+  Eğitim kaplaması açıkken alttaki WebGL motoru GPU işi yapmaz.
+- `verify-egitim-scheduler`, `verify-egitim-cancel`, `verify-egitim-wheel` ve
+  `verify-egitim-seek` bu davranışları doğrulama zincirine ekler.
+
 ## 2026-09-24 — Güncel 3DGS sözleşmesi ve lansman planı
 
 - `docs/yol-haritasi.md` yeniden yazıldı: fotoğraf, surfel `video → 3B` ve

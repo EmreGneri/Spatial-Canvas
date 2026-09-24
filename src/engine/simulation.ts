@@ -261,6 +261,7 @@ export function createSimulation(
    * çizmiyor demektir (klasik sebep: quad sahneye eklenmemiş) — bu hata
    * ekranda "tek nokta" olarak görünür ve typecheck/build yakalamaz.
    */
+  let seedChecked = false;
   function assertSeeded() {
     const buffer = new Float32Array(4);
     renderer.readRenderTargetPixels(posRead, POSITION_TEXTURE_SIZE >> 1, POSITION_TEXTURE_SIZE >> 1, 1, 1, buffer);
@@ -299,7 +300,12 @@ export function createSimulation(
       uniforms.uPos.value = posRead.texture;
       uniforms.uVel.value = velRead.texture;
       releaseTarget();
-      if (import.meta.env.DEV) assertSeeded();
+      // Live video seeds on every depth frame; a synchronous GPU readback
+      // each time would stall dev rendering and skew measured rates.
+      if (import.meta.env.DEV && !seedChecked) {
+        seedChecked = true;
+        assertSeeded();
+      }
     },
 
     step() {
