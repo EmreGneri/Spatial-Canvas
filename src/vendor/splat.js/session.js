@@ -136,6 +136,7 @@ export class Session {
     this.model = null;      // seed() result: { data, n, center, radius }
     this.trainer = null;
     this.gpu = null;
+    this._lifetime = new AbortController();
     this.holdout = -1;
     this.testCams = [];
     this.training = false;
@@ -154,16 +155,34 @@ export class Session {
   _log(m) { this._em.emit('log', m); }
   _stage(e) { this._em.emit('stage', e); }
 
+  async _ensureGpu(signal = this._lifetime.signal) {
+    if (this._disposed || signal?.aborted) throw new DOMException('Session disposed', 'AbortError');
+    if (!this.gpu) {
+      const gpu = await createGpu({ device: this.opts.device });
+      if (this._disposed || signal?.aborted) {
+        if (gpu.owned) gpu.dispose();
+        throw new DOMException('Session disposed', 'AbortError');
+      }
+      this.gpu = gpu;
+      gpu.onLost = (info) => this._deviceLost(info);
+    }
+    return this.gpu;
+  }
+
   /** Decode photographs into Frames. files: File[]/Blob[]/{source,name}[]
    *  360 equirectangular panos (2:1 aspect) are detected here and sliced
    *  into six-face cubemap rigs — the solver then treats each pano as ONE
    *  camera pose and the trainer sees ordinary pinhole faces. */
-  async load(files) {
+  async load(files, extra = {}) {
+    const signal = AbortSignal.any([this._lifetime.signal, ...(extra.signal ? [extra.signal] : [])]);
+    signal.throwIfAborted();
     this._stage({ stage: 'decode', done: 0, total: files.length });
-    const { prepared, rigs, focalNative, faceSize } = await this._slicePanos(files);
-    this.frames = await decodeFrames(prepared, {
-      ...this.opts.frames, log: (m) => this._log(m),
+    const { prepared, rigs, focalNative, faceSize } = await this._slicePanos(files, signal);
+    const frames = await decodeFrames(prepared, {
+      ...this.opts.frames, signal, log: (m) => this._log(m),
     });
+    signal.throwIfAborted();
+    this.frames = frames;
     this._stage({ stage: 'decode', done: this.frames.length, total: files.length });
     if (this.frames.length < 2) throw new Error('need at least 2 decodable images');
     if (rigs) {
@@ -180,13 +199,15 @@ export class Session {
   /** Detect equirect panos in the input and slice them into rig faces.
    *  Detection reads image HEADERS only (probeImageSize) — a normal photo
    *  set pays nothing here; panos are decoded once, sliced, released. */
-  async _slicePanos(files) {
+  async _slicePanos(files, signal) {
     const meta = [];
     let panos = 0, sized = 0, maxW = 0;
     for (const f of files) {
+      signal?.throwIfAborted();
       const src = f && f.source !== undefined ? f.source : f;
       const name = (f && f.name) || (src && src.name) || `image_${meta.length}`;
       const dims = await probeImageSize(src);
+      signal?.throwIfAborted();
       const pano = !!dims && isEquirect(dims.w, dims.h);
       if (dims) sized++;
       if (pano) { panos++; maxW = Math.max(maxW, dims.w); }
@@ -203,9 +224,13 @@ export class Session {
     const prepared = [], rigs = [];
     let f = 0, rigId = 0;
     for (const b of meta) {
+      signal?.throwIfAborted();
       const bmp = await createImageBitmap(b.src);
-      const sl = sliceEquirect(bmp, size);
-      bmp.close?.();
+      let sl;
+      try {
+        signal?.throwIfAborted();
+        sl = sliceEquirect(bmp, size);
+      } finally { bmp.close?.(); }
       f = sl.f;
       const base = b.name.replace(/\.[^.]+$/, '');
       sl.faces.forEach((cv, k) => {
@@ -225,6 +250,8 @@ export class Session {
   /** Structure from motion: camera poses + sparse points from the frames. */
   async solve(extra = {}) {
     const opts = { ...this.opts.sfm, ...extra };
+    opts.signal = AbortSignal.any([this._lifetime.signal, ...(opts.signal ? [opts.signal] : [])]);
+    opts.signal.throwIfAborted();
     if (this.rigInfo && !opts.rigs) {
       opts.rigs = this.rigInfo;
       opts.focalPx = opts.focalPx ?? this.rigFocalPx;
@@ -276,11 +303,8 @@ export class Session {
     }
     // the GPU matcher shares the session device (created here rather than at
     // seed) — it carries the raised buffer limits big feature sets need
-    if (!this.gpu) {
-      this.gpu = await createGpu({ device: this.opts.device });
-      this.gpu.onLost = (info) => this._deviceLost(info);
-    }
-    this.recon = await runSfM(
+    await this._ensureGpu(opts.signal);
+    const recon = await runSfM(
       this.frames,
       (m) => this._log(m),
       (imgIdx, x, y) => this.frames[imgIdx].sampleColor(x, y),
@@ -290,6 +314,8 @@ export class Session {
         onEvent: (e) => { this._stage(e); if (opts.onEvent) opts.onEvent(e); },
         debug: (d) => { this._debug = d; if (opts.debug) opts.debug(d); },
       });
+    opts.signal.throwIfAborted();
+    this.recon = recon;
     if (undistortFrames(this.frames, this.recon)) {
       this._log(`undistorted training images (k1 ${this.recon.k1.toFixed(4)}, k2 ${this.recon.k2.toFixed(4)})`);
     }
@@ -446,8 +472,7 @@ export class Session {
     }
     this._log(`initialized ${this.model.n} Gaussians (scene radius ${this.model.radius.toFixed(2)})`);
 
-    if (!this.gpu) this.gpu = await createGpu({ device: this.opts.device });
-    this.gpu.onLost = (info) => this._deviceLost(info);
+    await this._ensureGpu();
     const gi = this.gpu.info || {};
     // opts.shHorizontal: SH evaluated on the view direction's horizontal part only —
     // the up axis is the cameras' dominant up (minus each R's second row)
@@ -463,7 +488,9 @@ export class Session {
       ...this.opts.trainer, ...extra.trainer,
       gpu: this.gpu,
     };
-    this.trainer = await GSTrainer.create(trainerOpts);
+    const trainer = await GSTrainer.create(trainerOpts);
+    this._lifetime.signal.throwIfAborted();
+    this.trainer = trainer;
     this._log(`GPU: ${gi.vendor || 'unknown'} ${gi.architecture || ''} — ` +
       `${this.trainer.tileGrad ? 'tile-shared' : 'direct'} gradient accumulation`);
 
@@ -630,8 +657,7 @@ export class Session {
     const radius = opts.sceneRadius ?? this.recon?.sceneRadius ?? 10;
     this.model = { data: gaussians.data, n: gaussians.n, radius, dc: gaussians.dc };
 
-    if (!this.gpu) this.gpu = await createGpu({ device: this.opts.device });
-    this.gpu.onLost = (info) => this._deviceLost(info);
+    await this._ensureGpu();
     const shUp2 = this.opts.shHorizontal && this.recon?.cams?.length ? this._camerasUp() : null;
     const trainerOpts = {
       maxIters: this.opts.maxIters ?? 60000,
@@ -644,7 +670,9 @@ export class Session {
       gpu: this.gpu,
     };
     if (gaussians.shK != null) trainerOpts.shDeg = { 0: 0, 3: 1, 8: 2, 15: 3 }[gaussians.shK] ?? trainerOpts.shDeg;
-    this.trainer = await GSTrainer.create(trainerOpts);
+    const trainer = await GSTrainer.create(trainerOpts);
+    this._lifetime.signal.throwIfAborted();
+    this.trainer = trainer;
 
     let cams = [];
     if (!opts.viewOnly) {
@@ -777,34 +805,65 @@ export class Session {
 
   _ensureScheduler() {
     if (this._sched) return;
-    // Hidden tabs AND occluded windows get their rAF throttled; worker
-    // messages are not. The worker tick drives the loop whenever a scheduled
-    // frame is >150ms late.
+    // Hidden tabs and occluded windows can suspend rAF. Worker ticks are the
+    // primary fallback; a timer still advances training if blob workers are
+    // blocked by CSP or unavailable in the host browser.
     let tickWorker = null;
-    try {
-      const src = 'setInterval(() => postMessage(0), 33);';
-      tickWorker = new Worker(URL.createObjectURL(new Blob([src], { type: 'text/javascript' })));
-    } catch { /* no Worker: rAF only */ }
+    let workerUrl = null;
+    if (typeof Worker === 'function') {
+      try {
+        const src = 'setInterval(() => postMessage(0), 33);';
+        workerUrl = URL.createObjectURL(new Blob([src], { type: 'text/javascript' }));
+        tickWorker = new Worker(workerUrl);
+      } catch {
+        if (workerUrl) URL.revokeObjectURL(workerUrl);
+        workerUrl = null;
+      }
+    }
     this._framePending = false;
     this._frameScheduledAt = 0;
     const runFrame = () => {
-      if (!this._framePending) return;
+      if (!this._framePending || this._disposed) return;
       this._framePending = false;
+      if (this._fallbackTimer) clearTimeout(this._fallbackTimer);
+      this._fallbackTimer = null;
       // a readback rejecting mid-flight (device loss) must not become an
-      // unhandled rejection — the loop stops, the device-lost event explains
-      this._frameLoop().catch((e) => this._log(`frame loop: ${(e && e.message) || e}`));
+      // unhandled rejection or leave the UI showing an endless training run.
+      this._frameLoop().catch((e) => {
+        if (this._disposed) return;
+        this.training = false;
+        const error = e instanceof Error ? e : new Error(String(e));
+        this._log(`frame loop: ${error.message}`);
+        this._em.emit('event', { kind: 'train-error', error });
+      });
     };
     if (tickWorker) {
       tickWorker.onmessage = () => {
         if (this._framePending && this.training &&
             performance.now() - this._frameScheduledAt > 150) runFrame();
       };
+      tickWorker.onerror = () => {
+        tickWorker.terminate();
+        this._sched.tickWorker = null;
+        if (workerUrl) URL.revokeObjectURL(workerUrl);
+        this._sched.workerUrl = null;
+        if (this._framePending && !this._fallbackTimer) this._fallbackTimer = setTimeout(runFrame, 250);
+      };
     }
     this._sched = {
-      runFrame, tickWorker,
+      runFrame, tickWorker, workerUrl,
       raf: typeof requestAnimationFrame === 'function'
         ? (fn) => requestAnimationFrame(fn) : (fn) => setTimeout(fn, 16),
     };
+    if (typeof document !== 'undefined') {
+      this._onVisibility = () => {
+        if (document.visibilityState === 'visible') {
+          this.view._dirty = true;
+          if (!this.training && this.trainer) this._scheduleFrame();
+        }
+      };
+      document.addEventListener('visibilitychange', this._onVisibility);
+    }
     this._frameCount = 0;
     this._lastStats = performance.now();
     this._itersAtStats = 0;
@@ -812,20 +871,23 @@ export class Session {
   }
 
   _scheduleFrame() {
+    if (this._disposed || this._framePending) return;
     this._framePending = true;
     this._frameScheduledAt = performance.now();
     this._sched.raf(this._sched.runFrame);
+    this._fallbackTimer = setTimeout(this._sched.runFrame, 250);
   }
 
   async _frameLoop() {
     const trainer = this.trainer;
-    if (!trainer || !trainer.camMeta || this._lost) return;
+    if (!trainer || !trainer.camMeta || this._lost || this._disposed) return;
     this._frameCount++;
 
     if (this.training && trainer.iter >= this._maxIters()) {
       this.training = false;
       this._log(`training complete at ${trainer.iter} iterations`);
       await this._emitMetrics(true);
+      if (this._disposed) return;
       // emitted AFTER the final readback: listeners typically call metrics()
       // right away, which must not interleave with ours on the staging buffer
       this._camDriftDone();
@@ -863,6 +925,7 @@ export class Session {
         // submitted meanwhile would be silently rewound by that write-back,
         // and the six snapshots would come from six different iterations
         const r = await trainer.refine();
+        if (this._disposed) return;
         if (this.perf) {
           this.perf.marks.push({ t: Math.round(r0), kind: 'refine', iter: trainer.iter,
             ms: Math.round(performance.now() - r0), moved: r.moved, grown: r.grown });
@@ -879,11 +942,14 @@ export class Session {
       if (now - this._lastStats > (this._statsGap ?? 2000)) {
         const m0 = performance.now();
         await this._emitMetrics();
+        if (this._disposed) return;
         tMet = performance.now() - m0;
       }
 
       const v0 = performance.now();
-      this.view._tick(this._frameCount, this.training);
+      if (typeof document === 'undefined' || document.visibilityState !== 'hidden') {
+        this.view._tick(this._frameCount, this.training);
+      }
       const tView = performance.now() - v0;
 
       // Deep pipelining: keep a RING of fences in flight, not one. Safari
@@ -901,6 +967,7 @@ export class Session {
       // (phones run 2: the compositor shares the GPU with training, and
       // 4 x 0.4s of queued dispatches is the "whole system stalls" feel)
       if (this._fences.length > (this.opts.fenceRing ?? 4)) await this._fences.shift();
+      if (this._disposed) return;
       const tStall = performance.now() - s0;
 
       // adapt the batch to the measured cadence (steady-state ~= GPU time of
@@ -927,7 +994,7 @@ export class Session {
       await trainer.device.queue.onSubmittedWorkDone();
       this._fences.length = 0;
     }
-    if (this.training || this.view._dirty) this._scheduleFrame();
+    if (!this._disposed && (this.training || this.view._dirty)) this._scheduleFrame();
   }
 
   /** serialize every metric readback: they share the trainer's staging
@@ -1065,9 +1132,18 @@ export class Session {
   }
 
   dispose() {
+    if (this._disposed) return;
+    this._disposed = true;
+    this._lifetime.abort();
     this.training = false;
-    if (this._sched && this._sched.tickWorker) this._sched.tickWorker.terminate();
+    this._framePending = false;
+    if (this._fallbackTimer) clearTimeout(this._fallbackTimer);
+    if (this._sched?.tickWorker) this._sched.tickWorker.terminate();
+    if (this._sched?.workerUrl) URL.revokeObjectURL(this._sched.workerUrl);
+    if (this._onVisibility) document.removeEventListener('visibilitychange', this._onVisibility);
+    this.view.detach();
     if (this.gpu && this.gpu.owned) this.gpu.dispose();
+    this.gpu = null;
     this.trainer = null;
   }
 }
@@ -1093,6 +1169,14 @@ class SessionView {
     });
     this._dirty = true;
     if (!this.s.training) this.s._ensureScheduler(), this.s._scheduleFrame();
+  }
+
+  detach() {
+    try { this.ctx?.unconfigure(); } catch { /* device loss may already have invalidated it */ }
+    this.canvas = null;
+    this.ctx = null;
+    this.camera = null;
+    this._dirty = false;
   }
 
   /** Point the camera at training frame i (exact pose + intrinsics). Returns

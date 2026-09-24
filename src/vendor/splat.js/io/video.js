@@ -44,6 +44,8 @@
  * @property {number} [outlierSensitivity=0.6]  0 = off; a frame is dropped when its focus < (1 - s·0.5) × neighbour median
  * @property {number} [jpegQuality=0.95]
  * @property {'auto'|'webcodecs'|'element'} [engine='auto']
+ * @property {AbortSignal} [signal] stop decoding when the host closes the job
+ * @property {boolean} [backgroundSafe=false] use seeks instead of video-frame callbacks on the element fallback
  * @property {'longest'|'all'} [shots='longest'] edited clips: reconstruct one continuous take (default) or keep every shot
  * @property {'sharp'|'uniform'} [pick='sharp']  'uniform' takes frames at a fixed rate (`uniformFps`) with no sharpness selection — a control for the selector
  * @property {number} [uniformFps=3]
@@ -434,13 +436,31 @@ function defaultMaxFrames() {
 
 // ---------------------------------------------------------------- decode
 
-const until = (el, ev, err = 'error') => new Promise((res, rej) => {
+const until = (el, ev, err = 'error', signal = null) => new Promise((res, rej) => {
   const ok = () => { cleanup(); res(); };
   const bad = (e) => { cleanup(); rej(new Error(`video ${err}: ${(e && e.message) || 'decode failed'}`)); };
-  const cleanup = () => { el.removeEventListener(ev, ok); el.removeEventListener('error', bad); };
+  const abort = () => { cleanup(); rej(new DOMException('Video extraction cancelled', 'AbortError')); };
+  const cleanup = () => {
+    el.removeEventListener(ev, ok);
+    el.removeEventListener('error', bad);
+    signal?.removeEventListener('abort', abort);
+  };
   el.addEventListener(ev, ok, { once: true });
   el.addEventListener('error', bad, { once: true });
+  signal?.addEventListener('abort', abort, { once: true });
+  if (signal?.aborted) abort();
 });
+
+/** A seek to the current time does not emit `seeked` in Chromium. */
+export async function seekTo(video, time, signal = null) {
+  if (signal?.aborted) throw new DOMException('Video extraction cancelled', 'AbortError');
+  if (Math.abs(video.currentTime - time) < 1e-4) {
+    if (video.readyState < 2) await until(video, 'loadeddata', 'error', signal);
+    return;
+  }
+  video.currentTime = time;
+  await until(video, 'seeked', 'error', signal);
+}
 
 function mkCanvas(w, h) {
   if (typeof OffscreenCanvas !== 'undefined') return new OffscreenCanvas(w, h);
@@ -488,7 +508,7 @@ function drawRotated(ctx, frame, cw, ch, rot) {
  *  sequentially from the packet list, so the second half of the take
  *  collapses onto the first (skulli.mp4, 2026-09-11: 4628 packets, 2314
  *  frames, "ends" at 46 of 93 s). */
-async function runDecoder(MB, track, startPacket, onFrame) {
+async function runDecoder(MB, track, startPacket, onFrame, signal = null) {
   const cfg = await track.getDecoderConfig();
   const queue = [];
   let err = null, stop = false, pumping = null;
@@ -499,7 +519,10 @@ async function runDecoder(MB, track, startPacket, onFrame) {
     try {
       while (queue.length) {
         const f = queue.shift();
-        try { if (!stop && (await onFrame(f)) === false) stop = true; }
+        try {
+          if (signal?.aborted) throw new DOMException('Video extraction cancelled', 'AbortError');
+          if (!stop && (await onFrame(f)) === false) stop = true;
+        }
         catch (e) { err = err || e; stop = true; }
         finally { f.close(); }
       }
@@ -510,6 +533,7 @@ async function runDecoder(MB, track, startPacket, onFrame) {
   const sink = new MB.EncodedPacketSink(track);
   try {
     for await (const p of sink.packets(startPacket)) {
+      if (signal?.aborted) throw new DOMException('Video extraction cancelled', 'AbortError');
       if (err) throw err;
       if (stop) break;
       dec.decode(p.toEncodedVideoChunk());
@@ -570,7 +594,7 @@ async function extractWebCodecs(file, opts, log, onProgress) {
   };
   const psink = new MB.EncodedPacketSink(track);
   const firstPacket = await psink.getFirstPacket();
-  await runDecoder(MB, track, firstPacket, scanOne);
+  await runDecoder(MB, track, firstPacket, scanOne, opts.signal);
   onProgress({ stage: 'scan', done: frames.length, total: frames.length });
   if (frames.length < 2) throw new Error('could not decode frames from this video');
   if (frames.length !== total) {
@@ -612,7 +636,7 @@ async function extractWebCodecs(file, opts, log, onProgress) {
         if (ti >= times.length) return false;
       }
       return true;
-    });
+    }, opts.signal);
   }
   for (const { blob, t } of blobs) out.push({ source: blob, name: `frame_${String(out.length + 1).padStart(5, '0')}.jpg`, t });
   if (out.length < times.length) log(`captured ${out.length} of ${times.length} winners (decoder skipped the rest)`);
@@ -621,15 +645,19 @@ async function extractWebCodecs(file, opts, log, onProgress) {
 
 /** Fallback: <video> element scan at ~10 samples/s, same scorer/selector. */
 async function extractElement(file, opts, log, onProgress) {
+  const signal = opts.signal;
+  const checkAbort = () => {
+    if (signal?.aborted) throw new DOMException('Video extraction cancelled', 'AbortError');
+  };
   const sps = 10;
   const url = URL.createObjectURL(file);
   const video = document.createElement('video');
   video.muted = true; video.playsInline = true; video.preload = 'auto'; video.src = url;
   try {
-    await until(video, 'loadedmetadata');
+    await until(video, 'loadedmetadata', 'error', signal);
     if (!isFinite(video.duration)) {
-      video.currentTime = 1e9; await until(video, 'seeked');
-      video.currentTime = 0; await until(video, 'seeked');
+      await seekTo(video, 1e9, signal);
+      await seekTo(video, 0, signal);
     }
     const duration = video.duration;
     const vw = video.videoWidth, vh = video.videoHeight;
@@ -652,23 +680,26 @@ async function extractElement(file, opts, log, onProgress) {
         thumbs.push({ t, index: frames.length - 1, canvas: tc });
       }
     };
-    if (typeof video.requestVideoFrameCallback === 'function') {
+    // A hidden tab may stop delivering video-frame callbacks indefinitely.
+    // The app opts into seeks so the fallback decoder can keep advancing.
+    if (typeof video.requestVideoFrameCallback === 'function' && !opts.backgroundSafe) {
       video.playbackRate = 3;
       let lastT = -1, finished = false;
       const onFrame = (_now, meta) => {
         if (finished) return;
+        if (signal?.aborted) { finished = true; video.pause(); return; }
         const t = meta.mediaTime;
         if (t - lastT >= 1 / sps - 1e-3) { lastT = t; scoreNow(t); onProgress({ stage: 'scan', done: Math.min(frames.length, totalSamples), total: totalSamples }); }
         video.requestVideoFrameCallback(onFrame);
       };
       video.requestVideoFrameCallback(onFrame);
       await video.play();
-      await until(video, 'ended', 'playback error');
+      await until(video, 'ended', 'playback error', signal);
       finished = true; video.pause();
     } else {
       for (let k = 0; k < totalSamples; k++) {
-        video.currentTime = Math.min(duration - 0.001, k / sps);
-        await until(video, 'seeked');
+        checkAbort();
+        await seekTo(video, Math.min(duration - 0.001, k / sps), signal);
         scoreNow(video.currentTime);
         onProgress({ stage: 'scan', done: k + 1, total: totalSamples });
       }
@@ -682,8 +713,8 @@ async function extractElement(file, opts, log, onProgress) {
     const capCtx = capCv.getContext('2d');
     const out = [];
     for (let i = 0; i < picks.length; i++) {
-      video.currentTime = frames[picks[i]].t;
-      await until(video, 'seeked');
+      checkAbort();
+      await seekTo(video, frames[picks[i]].t, signal);
       capCtx.drawImage(video, 0, 0, vw, vh);
       const blob = await toBlob(capCv, opts.jpegQuality ?? 0.95);
       out.push({ source: blob, name: `frame_${String(i + 1).padStart(5, '0')}.jpg`, t: frames[picks[i]].t });
@@ -712,7 +743,7 @@ export async function extractSharpFrames(file, opts = {}) {
     try {
       return await extractWebCodecs(file, opts, log, onProgress);
     } catch (e) {
-      if (engine === 'webcodecs' || e.message === 'cancelled') throw e;   // a cancelled review is not a decoder failure
+      if (engine === 'webcodecs' || e.name === 'AbortError' || e.message === 'cancelled') throw e;
       log(`WebCodecs path unavailable (${e.message}) — using the <video> element`);
     }
   }

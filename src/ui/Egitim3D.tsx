@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react';
-import { egitimBaslat, yorunge, type Egitim, type EgitimMetrik } from '../engine/reconstruction/egitim3dgs';
+import { egitimBaslat, kameraMerkezi, yorunge, type Egitim, type EgitimMetrik } from '../engine/reconstruction/egitim3dgs';
+import { bindWheelZoom, boundedZoomFactor } from './egitimControls';
 
 /**
  * GERÇEK 3DGS EĞİTİM GÖRÜNÜMÜ — motor alanının üstüne bindirilir.
@@ -12,10 +13,12 @@ import { egitimBaslat, yorunge, type Egitim, type EgitimMetrik } from '../engine
 export function Egitim3D({ dosya, onKapat, say }: { dosya: File; onKapat(): void; say(m: string): void }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const egitimRef = useRef<Egitim | null>(null);
+  const homeDistanceRef = useRef(0);
   const [asama, setAsama] = useState('başlıyor');
   const [metrik, setMetrik] = useState<EgitimMetrik | null>(null);
   const [bitti, setBitti] = useState(false);
   const [hata, setHata] = useState<string | null>(null);
+  const [plyBusy, setPlyBusy] = useState(false);
   const [gpu, setGpu] = useState<{ ad: string; zayif: boolean; iter: number } | null>(null);
   // App'in `say`'ı her render'da yeni fonksiyon: effect bağımlılığı olursa
   // her render eğitimi baştan başlatır. Ref üzerinden çağrılır.
@@ -24,8 +27,10 @@ export function Egitim3D({ dosya, onKapat, say }: { dosya: File; onKapat(): void
 
   useEffect(() => {
     let iptal = false;
+    const controller = new AbortController();
     const t0 = performance.now();
     egitimBaslat(dosya, canvasRef.current!, {
+      ayar: (selected) => { if (!iptal) setGpu({ ad: selected.gpu, zayif: selected.zayifGpu, iter: selected.maxIters }); },
       asama: (m) => { if (!iptal) setAsama(m); },
       metrik: (m) => { if (!iptal) setMetrik(m); },
       bitti: (m) => {
@@ -35,16 +40,18 @@ export function Egitim3D({ dosya, onKapat, say }: { dosya: File; onKapat(): void
           `${m?.splats.toLocaleString('tr-TR') ?? '?'} Gaussian · test PSNR ${m?.psnrHold?.toFixed(1) ?? '?'}`);
       },
       hata: (e) => { if (!iptal) setHata(e.message); },
-    }).then((e) => {
-      // SfM ortasında kapatılırsa iş yarıda kesilemez; bitince hemen bırakılır.
+    }, undefined, controller.signal).then((e) => {
+      // An abort may win just as setup resolves; do not attach a closed session.
       if (iptal) { e.kapat(); return; }
       egitimRef.current = e;
-      setGpu({ ad: e.ayar.gpu, zayif: e.ayar.zayifGpu, iter: e.ayar.maxIters });
+      const center = kameraMerkezi(e.kamera);
+      homeDistanceRef.current = Math.hypot(...center.map((value, i) => value - e.pivot[i]));
     }).catch((e: unknown) => {
       if (!iptal) setHata(e instanceof Error ? e.message : String(e));
     });
     return () => {
       iptal = true;
+      controller.abort();
       egitimRef.current?.kapat();
       egitimRef.current = null;
     };
@@ -58,16 +65,38 @@ export function Egitim3D({ dosya, onKapat, say }: { dosya: File; onKapat(): void
     if (e) e.kameraAyarla(yorunge(e.kamera, e.pivot, e.yukari, yaw, pitch, yakin));
   };
 
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    return bindWheelZoom(canvas, (factor) => {
+      const e = egitimRef.current;
+      if (!e) return;
+      const center = kameraMerkezi(e.kamera);
+      const distance = Math.hypot(...center.map((value, i) => value - e.pivot[i]));
+      const bounded = boundedZoomFactor(distance, homeDistanceRef.current, factor);
+      e.kameraAyarla(yorunge(e.kamera, e.pivot, e.yukari, 0, 0, bounded));
+    });
+  }, []);
+
   async function plyIndir() {
     const e = egitimRef.current;
-    if (!e) return;
-    const url = URL.createObjectURL(await e.plyBlob());
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `${dosya.name.replace(/\.[^.]+$/, '')}-3dgs.ply`;
-    a.click();
-    URL.revokeObjectURL(url);
-    sayRef.current('3DGS .ply indirildi');
+    if (!e || plyBusy) return;
+    setPlyBusy(true);
+    try {
+      const url = URL.createObjectURL(await e.plyBlob());
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${dosya.name.replace(/\.[^.]+$/, '')}-3dgs.ply`;
+      a.click();
+      window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+      sayRef.current('3DGS .ply indirildi');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setHata(`PLY dışa aktarılamadı: ${message}`);
+      sayRef.current(`3DGS PLY HATA: ${message}`);
+    } finally {
+      setPlyBusy(false);
+    }
   }
 
   const yuzde = metrik && gpu ? Math.min(100, (metrik.iter / gpu.iter) * 100) : 0;
@@ -79,7 +108,11 @@ export function Egitim3D({ dosya, onKapat, say }: { dosya: File; onKapat(): void
         width={960}
         height={540}
         style={{ width: '100%', height: '100%', objectFit: 'contain', cursor: 'grab', touchAction: 'none' }}
-        onPointerDown={(ev) => { surukle.current = { x: ev.clientX, y: ev.clientY }; ev.currentTarget.setPointerCapture(ev.pointerId); }}
+        onPointerDown={(ev) => {
+          if (ev.button !== 0) return;
+          surukle.current = { x: ev.clientX, y: ev.clientY };
+          ev.currentTarget.setPointerCapture(ev.pointerId);
+        }}
         onPointerMove={(ev) => {
           const s = surukle.current;
           if (!s) return;
@@ -87,7 +120,8 @@ export function Egitim3D({ dosya, onKapat, say }: { dosya: File; onKapat(): void
           surukle.current = { x: ev.clientX, y: ev.clientY };
         }}
         onPointerUp={() => { surukle.current = null; }}
-        onWheel={(ev) => dondur(0, 0, ev.deltaY > 0 ? 1.1 : 1 / 1.1)}
+        onPointerCancel={() => { surukle.current = null; }}
+        onLostPointerCapture={() => { surukle.current = null; }}
       />
       <div style={serit}>
         <span style={{ flex: 1 }}>
@@ -99,7 +133,7 @@ export function Egitim3D({ dosya, onKapat, say }: { dosya: File; onKapat(): void
                 ? `eğitim ${metrik.iter}/${gpu?.iter} · ${metrik.itersPerSec} iter/sn · ${metrik.splats.toLocaleString('tr-TR')} Gaussian`
                 : asama}
         </span>
-        {bitti && <button style={dugme} onClick={plyIndir}>.ply indir</button>}
+        {bitti && <button style={dugme} disabled={plyBusy} onClick={plyIndir}>{plyBusy ? 'PLY hazırlanıyor…' : '.ply indir'}</button>}
         <button style={dugme} onClick={onKapat}>kapat</button>
       </div>
       {!bitti && !hata && <div style={{ ...cubuk, width: `${yuzde}%` }} />}

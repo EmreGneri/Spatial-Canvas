@@ -70,6 +70,25 @@ export const solveTierOpts = (name) => ({ ...(SOLVE_TIERS[name] || SOLVE_TIERS.s
 
 const tick = () => new Promise((r) => setTimeout(r, 0));
 
+// Worker jobs can outlive the UI unless abort also rejects the pending pool.
+// Cleanup belongs in finally so a worker error cannot strand its siblings.
+async function runWorkerPool(count, makeWorker, signal, start) {
+  let onAbort;
+  const workers = [];
+  try {
+    for (let i = 0; i < count; i++) workers.push(makeWorker());
+    await new Promise((resolve, reject) => {
+      onAbort = () => reject(new DOMException('SfM aborted', 'AbortError'));
+      signal?.addEventListener('abort', onAbort, { once: true });
+      if (signal?.aborted) { onAbort(); return; }
+      start(workers, resolve, reject);
+    });
+  } finally {
+    signal?.removeEventListener('abort', onAbort);
+    workers.forEach((worker) => worker.terminate());
+  }
+}
+
 class UnionFind {
   constructor(n) {
     this.p = new Int32Array(n);
@@ -381,11 +400,11 @@ async function runSfMOnce(images, log, sampleColor, opts = {}) {
     // SIFT extraction is ~1s/image of pure CPU — run it on a worker pool
     const t0f = performance.now();
     const nW = Math.min(opts.workers || 8, Math.max(2, (navigator.hardwareConcurrency || 4) - 2));
-    const workers = Array.from({ length: nW },
-      () => new Worker(new URL('./featworker.js', import.meta.url), { type: 'module' }));
     const results = new Array(n);
     let doneF = 0;
-    await new Promise((resolve, reject) => {
+    await runWorkerPool(nW,
+      () => new Worker(new URL('./featworker.js', import.meta.url), { type: 'module' }),
+      signal, (workers, resolve, reject) => {
       let next = 0;
       const feed = (wk) => {
         if (next >= n) return;
@@ -413,7 +432,6 @@ async function runSfMOnce(images, log, sampleColor, opts = {}) {
       };
       workers.forEach(feed);
     });
-    workers.forEach((w) => w.terminate());
     for (let i = 0; i < n; i++) {
       const f = results[i];
       f.sift = true;
@@ -477,10 +495,10 @@ async function runSfMOnce(images, log, sampleColor, opts = {}) {
       };
       if (typeof Worker !== 'undefined' && opts.workers !== false) {
         const nW = Math.min(opts.workers || 8, Math.max(2, (navigator.hardwareConcurrency || 4) - 2));
-        const workers = Array.from({ length: nW },
-          () => new Worker(new URL('./featworker.js', import.meta.url), { type: 'module' }));
         let doneR = 0;
-        await new Promise((resolve, reject) => {
+        await runWorkerPool(nW,
+          () => new Worker(new URL('./featworker.js', import.meta.url), { type: 'module' }),
+          signal, (workers, resolve, reject) => {
           let next = 0;
           const feed = (wk) => {
             if (next >= starved.length) return;
@@ -502,7 +520,6 @@ async function runSfMOnce(images, log, sampleColor, opts = {}) {
           };
           workers.forEach(feed);
         });
-        workers.forEach((w) => w.terminate());
       } else {
         for (const id of starved) {
           const f = detectSift(images[id].gray, images[id].fw, images[id].fh,
@@ -597,12 +614,12 @@ async function runSfMOnce(images, log, sampleColor, opts = {}) {
   const useWorkers = typeof Worker !== 'undefined' && opts.workers !== false && opts.pairWorkers !== false && jobs.length > 32;
   if (useWorkers) {
     const nW = Math.min(opts.workers || 8, Math.max(2, (navigator.hardwareConcurrency || 4) - 2));
-    const workers = Array.from({ length: nW },
-      () => new Worker(new URL('./pairworker.js', import.meta.url), { type: 'module' }));
     const BATCH = 24;
     let next = 0, doneJobs = 0;
     const seedOf = (pi) => 24680 + pi * 7919;
-    await new Promise((resolve, reject) => {
+    await runWorkerPool(nW,
+      () => new Worker(new URL('./pairworker.js', import.meta.url), { type: 'module' }),
+      signal, (workers, resolve, reject) => {
       const feed = (wk) => {
         if (next >= jobs.length) return;
         const slice = jobs.slice(next, next + BATCH);
@@ -620,7 +637,6 @@ async function runSfMOnce(images, log, sampleColor, opts = {}) {
       };
       workers.forEach(feed);
     });
-    workers.forEach((w) => w.terminate());
   } else {
     for (let q = 0; q < jobs.length; q++) {
       const jb = jobs[q];
