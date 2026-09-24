@@ -94,7 +94,7 @@ export interface ShellMeshOptions {
   depthScale?: number;
   /** Elipsoit kavis şiddeti (α). 0 = düz. Varsayılan 0.1. */
   curvature?: number;
-  /** Önem remap'i — sampleVolumePositions ile BİREBİR aynı ayar (hizalama). Varsayılan açık. */
+  /** Önem remap'i — sampleVolumePositions ile BİREBİR aynı ayar (hizalama). Varsayılan KAPALI. */
   importanceSampling?: boolean;
   /** Ön plan maskeesi (segmentation çıktısı) — siluete AND edilir. Opsiyonel. */
   foregroundMask?: Float32Array | null;
@@ -155,7 +155,7 @@ export function buildShellMesh(
   const halfH = (opts.worldHeight ?? DEFAULT_WORLD_HEIGHT) / 2;
   const halfW = (width / height) * halfH;
   const remap =
-    opts.importanceSampling === false
+    opts.importanceSampling !== true
       ? null
       : buildImportanceRemap(depth, width, height, opts.foregroundMask ?? null);
   const sil = buildSilhouette(depth, width, height, opts.foregroundMask ?? null);

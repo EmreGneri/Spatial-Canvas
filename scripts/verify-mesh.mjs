@@ -238,7 +238,7 @@ assert.ok(
 census(maskedNoRemap, 'maske sol yarı (remap kapalı)');
 // (b) remap AÇIK — örnekleme yoğunluğu ön plana kayar (parçacık paritesi);
 // köşe sayısı farklıdır, su geçirmezlik + z sözleşmesi korunmalı.
-const masked = buildShellMesh(flat60, W, H, { curvature: 0.1, foregroundMask: fg }) ?? assert.fail('masked null');
+const masked = buildShellMesh(flat60, W, H, { curvature: 0.1, foregroundMask: fg, importanceSampling: true }) ?? assert.fail('masked null');
 census(masked, 'maske sol yarı (remap açık)');
 assert.ok(masked.positions.length / 6 > halfCols * S, `remap açıkken ön plana yoğunlaşma (K = ${masked.positions.length / 6})`);
 for (let t = 2; t < masked.positions.length; t += 6) {
@@ -257,7 +257,7 @@ assert.ok(
 );
 
 // --- 7. determinizm: aynı girdi → birebir aynı çıktı ---
-const again = buildShellMesh(flat60, W, H, { curvature: 0.1, foregroundMask: fg }) ?? assert.fail('determinizm null');
+const again = buildShellMesh(flat60, W, H, { curvature: 0.1, foregroundMask: fg, importanceSampling: true }) ?? assert.fail('determinizm null');
 assert.equal(JSON.stringify(again.positions), JSON.stringify(masked.positions), 'deterministik positions');
 assert.equal(JSON.stringify(again.uvs), JSON.stringify(masked.uvs), 'deterministik uvs');
 assert.equal(JSON.stringify(again.normals), JSON.stringify(masked.normals), 'deterministik normals');

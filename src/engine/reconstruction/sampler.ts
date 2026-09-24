@@ -173,7 +173,14 @@ export interface VolumeSampleOptions {
    * Opsiyonel (segmentation.ts çıktısı).
    */
   foregroundMask?: Float32Array;
-  /** Önem tabanlı örnekleme (sadece örnekleme koordinatını büker, grid sürekliliği bozulmaz). Varsayılan açık. */
+  /**
+   * Önem tabanlı örnekleme — OPT-IN (varsayılan KAPALI). The remap bends only
+   * the SAMPLING coordinate; world xy stays on the uniform grid. A dense
+   * (important) region therefore gets MAGNIFIED in x/y while z is unchanged:
+   * a centered photo bust came out ~1.8x wider and half as deep relative to
+   * its width in every render mode. Downstream (splat radius/normals, point
+   * size) assumes uniform grid spacing, so geometry-true output needs it off.
+   */
   importanceSampling?: boolean;
   /** A video is a complete scene; its mask affects opacity but never geometry. */
   fullFrame?: { cameraDistance: number };
@@ -235,7 +242,7 @@ export function sampleVolumePositions(
     return out;
   }
   const remap =
-    opts.importanceSampling === false
+    opts.importanceSampling !== true
       ? null
       : buildImportanceRemap(depth, depthWidth, depthHeight, opts.foregroundMask ?? null);
   // Siluet: delik doldurma + gradyan kesme + bileşen analizi + satır dolgusu
@@ -439,7 +446,7 @@ export function sampleImageGrid(
   const n = grid * grid;
   const out = new Float32Array(n * 3);
   const remap =
-    opts.importanceSampling === false
+    opts.importanceSampling !== true
       ? null
       : buildImportanceRemap(depth, depthW, depthH, opts.foregroundMask ?? null);
   // Depth koordinatını fotoğraf uzayına ölçekle: aspect aynı olduğundan
@@ -538,7 +545,7 @@ export function sampleAoGrid(
   const out = new Float32Array(grid * grid);
   const ao = computeAoMap(depth, depthW, depthH);
   const remap =
-    opts.importanceSampling === false
+    opts.importanceSampling !== true
       ? null
       : buildImportanceRemap(depth, depthW, depthH, opts.foregroundMask ?? null);
   for (let j = 0; j < grid; j++) {

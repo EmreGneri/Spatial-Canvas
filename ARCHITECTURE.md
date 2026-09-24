@@ -114,6 +114,13 @@ yeni eğitim yolunun sonucu sayılmaz.
   Renk grid'i (sampleImageGrid) AYNI maskeyi almalıdır — hizalama kuralı:
   setDepth'te işlenen maske `Engine.lastFgMask`'ta saklanır, setPhoto onu
   kullanır. fgMask boyut uyumsuzluğu RangeError'dur (sessiz sapma yok).
+  **2026-09-25: varsayılan KAPALI (opt-in, `importanceSampling: true`).**
+  Remap yalnız örnekleme koordinatını büker, dünya xy'si düzgün grid'de
+  kalır — yoğun bölge (özne) x/y'de BÜYÜTÜLÜR, z büyümez. Ölçüm (16:9
+  büst, 518×291): özne genişliği 1.216 → 2.216 (×1.82), z/x 0.40 → 0.21;
+  her render modunda "basık ve yayık" büst. Splat yarıçapı/normalleri ve
+  nokta boyutu düzgün grid aralığını varsaydığından fotoğraf yolu remap'siz
+  koşar (video zaten öyleydi). Kol yalnız eval/lab ölçümü için açılır.
 
 ## GPGPU Simülasyon (Gün 3 — Emre)
 
