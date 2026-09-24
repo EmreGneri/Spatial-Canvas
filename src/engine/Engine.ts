@@ -1388,9 +1388,11 @@ if (entry && entry.material !== this.pointsMaterial) {
     fillPositionsFromDepth(this.homeTexture, data, width, height, {
       foregroundMask: mask,
       blend: this.videoTexture ? 1 : this.dynamicHome ? 0.8 : 1,
-      // Raw VideoTexture is sampled at aUv. Its color cannot follow the
-      // importance remap used by photos' precomputed color grid.
-      importanceSampling: !this.videoTexture,
+      // No importance remap for photos either: it bends only the sampling
+      // coordinate while world xy stays on the grid, which magnified the
+      // subject in x/y but not z (flat, wide bust). Photo color fills and
+      // the shell mesh below use the same off default, so they stay aligned.
+      importanceSampling: false,
       fullFrame: this.videoTexture ? { cameraDistance: DEFAULT_CAMERA_DISTANCE } : undefined,
       worldHeight: videoWorldHeight,
     });
