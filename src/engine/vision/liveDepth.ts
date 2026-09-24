@@ -10,6 +10,7 @@ import {
   onceRetry,
   smoothDepthSteps,
   SOBEL_RELIEF_DEFAULT,
+  STRETCH_RANGE_ALPHA,
   trimmedRange,
   webgpuKullanilabilir,
   type DepthResult,
@@ -78,6 +79,11 @@ export const LIVE_INPUT_SIZE = 154;
  * baglamina tasiniyor.
  */
 export const LIVE_PLAYBACK_MAX_INPUT = 252;
+// 252px can cost ~2.7x as much as 154px. Probe only when even that estimate
+// remains under the 300ms live-frame budget; a failed trial runs just once.
+const LIVE_QUALITY_PROBE_MS = 80;
+const LIVE_QUALITY_DOWNGRADE_MS = 300;
+const LIVE_QUALITY_FAST_FRAMES = 4;
 
 /**
  * Secilen kalitenin O ANDA kullanilacak hali.
@@ -88,6 +94,37 @@ export const LIVE_PLAYBACK_MAX_INPUT = 252;
 export function canliGirdiBoyutu(secilen: number, duraklatildi: boolean): number {
   if (!Number.isFinite(secilen) || secilen <= 0) return LIVE_INPUT_SIZE;
   return duraklatildi ? secilen : Math.min(secilen, LIVE_PLAYBACK_MAX_INPUT);
+}
+
+export interface LiveQualityState {
+  size: number;
+  fastFrames: number;
+  highFrames: number;
+  triedHigher: boolean;
+}
+
+export function createLiveQualityState(): LiveQualityState {
+  return { size: LIVE_INPUT_SIZE, fastFrames: 0, highFrames: 0, triedHigher: false };
+}
+
+/** A paused frame has no playback lag, so use the higher input once. */
+export function liveQualityInputSize(state: LiveQualityState, paused: boolean): number {
+  return paused ? LIVE_PLAYBACK_MAX_INPUT : state.size;
+}
+
+/** Probe better detail only when inference plus depth upload has spare time. */
+export function advanceLiveQuality(state: LiveQualityState, frameMs: number): LiveQualityState {
+  if (!Number.isFinite(frameMs) || frameMs < 0) return state;
+  if (state.size === LIVE_INPUT_SIZE) {
+    if (state.triedHigher) return state;
+    const fastFrames = frameMs <= LIVE_QUALITY_PROBE_MS ? state.fastFrames + 1 : 0;
+    if (fastFrames < LIVE_QUALITY_FAST_FRAMES) return { ...state, fastFrames };
+    return { size: LIVE_PLAYBACK_MAX_INPUT, fastFrames: 0, highFrames: 0, triedHigher: true };
+  }
+  // The first 252px inference may compile a new WebGPU shader shape.
+  if (state.highFrames === 0) return { ...state, highFrames: 1 };
+  if (frameMs > LIVE_QUALITY_DOWNGRADE_MS) return { ...state, size: LIVE_INPUT_SIZE };
+  return { ...state, highFrames: state.highFrames + 1 };
 }
 
 /**
@@ -371,8 +408,33 @@ export function kirpmaIzgarasi(
  * kaynak değişiminde `resetLiveDepthState()` ile sıfırlanır.
  */
 const LIVE_RANGE_ALPHA = 0.15;
+const LIVE_RANGE_HALF_LIFE_MS = 450;
+const LIVE_STRETCH_HALF_LIFE_MS = 500;
+const LIVE_SCENE_CUT_LUMA_THRESHOLD = 0.25;
 let liveLo: number | null = null;
 let liveHi: number | null = null;
+let liveLastMediaTime: number | null = null;
+
+/** A physical half-life keeps the range response independent of inference Hz. */
+function timedRangeAlpha(elapsedMs: number | null, halfLifeMs: number, fallback: number): number {
+  if (elapsedMs === null) return fallback;
+  // A repeated paused frame can still be reprocessed after a mask or quality
+  // change. It must not silently freeze the old range at alpha = 0.
+  const effectiveMs = elapsedMs > 0 ? elapsedMs : 250;
+  return 1 - Math.pow(0.5, effectiveMs / halfLifeMs);
+}
+
+function isSceneCut(previous: Float32Array | null | undefined, current: Float32Array | null): boolean {
+  if (!previous || !current || previous.length !== current.length) return false;
+  let changed = 0;
+  let count = 0;
+  const stride = Math.max(1, Math.floor(current.length / 2048));
+  for (let i = 0; i < current.length; i += stride) {
+    changed += Math.abs(current[i] - previous[i]);
+    count++;
+  }
+  return changed / count > LIVE_SCENE_CUT_LUMA_THRESHOLD;
+}
 
 /**
  * ÖN PLAN STRETCH ARALIĞI — kareler arası taşınır (2026-08-30).
@@ -394,6 +456,7 @@ export function resetLiveDepthState() {
   liveStateGeneration++;
   liveLo = null;
   liveHi = null;
+  liveLastMediaTime = null;
   // Kırpma kutusu da bırakılır: seek/döngü sonrası özne başka yerde olabilir
   // ve histerezis eski kutuyu inatla tutup modele yanlış bölgeyi gösterirdi.
   sonKirpmaKutusu = null;
@@ -416,10 +479,10 @@ export function resetLiveDepthState() {
  * normalize edilmiş kare zaten 0..1'dir, EMA sabit uçları görür ve hiçbir şey
  * yapmaz. İlk sürümde tam bu hata yapıldı; `verify-live-depth [15]` yakaladı.
  */
-function kararliNormalize(data: Float32Array): Float32Array {
+function kararliNormalize(data: Float32Array, alpha = LIVE_RANGE_ALPHA): Float32Array {
   const { lo, hi } = trimmedRange(data, 1);
-  liveLo = liveLo === null ? lo : liveLo + LIVE_RANGE_ALPHA * (lo - liveLo);
-  liveHi = liveHi === null ? hi : liveHi + LIVE_RANGE_ALPHA * (hi - liveHi);
+  liveLo = liveLo === null ? lo : liveLo + alpha * (lo - liveLo);
+  liveHi = liveHi === null ? hi : liveHi + alpha * (hi - liveHi);
   const span = liveHi - liveLo || 1;
   const out = new Float32Array(data.length);
   for (let i = 0; i < data.length; i++) {
@@ -982,6 +1045,7 @@ export function depthResultFromTensor(
   mask: Float32Array | null = null,
   lum: Float32Array | null = null,
   sourceWindow: KirpmaKutusu | null = null,
+  mediaTime?: number,
 ): DepthResult {
   const height = dims[dims.length - 2];
   const width = dims[dims.length - 1];
@@ -992,7 +1056,20 @@ export function depthResultFromTensor(
   }
   // %1 histogram kırpması + kareler arası KARARLI aralık TEK adımda (ham veri
   // üzerinde — bkz. kararliNormalize), sonra kalite aşamaları.
-  const kararli = kararliNormalize(data);
+  // A cut has no valid correspondence with the prior frame. Reset the range
+  // before normalizing, otherwise the first frame of the new scene inherits
+  // the previous scene's depth scale for several seconds.
+  if (isSceneCut(canliZamansal.previousLuminance, lum)) resetLiveDepthState();
+  const validTime = Number.isFinite(mediaTime) ? mediaTime! : null;
+  const elapsedMs = validTime !== null && liveLastMediaTime !== null
+    ? (validTime - liveLastMediaTime) * 1000 : null;
+  if (elapsedMs !== null && (elapsedMs < -1 || elapsedMs > 1500)) resetLiveDepthState();
+  const rangeElapsedMs = validTime !== null && liveLastMediaTime !== null
+    ? (validTime - liveLastMediaTime) * 1000 : null;
+  const rangeAlpha = timedRangeAlpha(rangeElapsedMs, LIVE_RANGE_HALF_LIFE_MS, LIVE_RANGE_ALPHA);
+  canliStretchAralik.alpha = timedRangeAlpha(rangeElapsedMs, LIVE_STRETCH_HALF_LIFE_MS,
+    STRETCH_RANGE_ALPHA);
+  const kararli = kararliNormalize(data, rangeAlpha);
   // ZAMANSAL FİLTRE ZİNCİRİN BAŞINDA — ölçümle seçilen yer. Titreşimin
   // %87'si (varyans payı) piksel bazlı, yani model çıktısının KENDİSİNDEN
   // geliyor; kaynağında bastırılırsa sonraki aşamalar temiz alan üzerinde
@@ -1002,7 +1079,20 @@ export function depthResultFromTensor(
   zamansalYumusat(kararli, canliZamansal, undefined, undefined, {
     luminance: lum, width, height, sourceWindow,
   });
-  return { data: postProcessLiveDepth(kararli, width, height, mask, lum), width, height };
+  const processed = postProcessLiveDepth(kararli, width, height, mask, lum);
+  if (validTime !== null) liveLastMediaTime = validTime;
+  return { data: processed, width, height };
+}
+
+/** A live video needs a depth estimate for the entire visible frame. */
+export function chooseLiveCrop(
+  mask: Float32Array | null,
+  width: number,
+  height: number,
+  previous: KirpmaKutusu | null,
+  isVideo: boolean,
+): KirpmaKutusu | null {
+  return mask && !isVideo ? canliKirpmaKutusu(mask, width, height, previous) : null;
 }
 
 /** Sürücünün ihtiyaç duyduğu her şey — çıkarım ENJEKTE edilir (model olmadan
@@ -1054,7 +1144,6 @@ export function startLiveDepthDriver(opts: LiveDepthDriverOptions): () => void {
       let sonuc: DepthResult | null = null;
       try {
         sonuc = await opts.infer();
-        ardisikHata = 0;
       } catch (err) {
         if (!aktif) break;
         ardisikHata++;
@@ -1073,7 +1162,20 @@ export function startLiveDepthDriver(opts: LiveDepthDriverOptions): () => void {
         await gecikme(bosBeklemeMs);
         continue;
       }
-      opts.onDepth(sonuc);
+      try {
+        opts.onDepth(sonuc);
+        ardisikHata = 0;
+      } catch (err) {
+        if (!aktif) break;
+        ardisikHata++;
+        opts.onError?.(err, ardisikHata);
+        if (ardisikHata >= maxErrors) {
+          aktif = false;
+          break;
+        }
+        await gecikme(bosBeklemeMs);
+        continue;
+      }
       await gecikme(0);
     }
   })();
@@ -1164,6 +1266,8 @@ const yukleLiveModel = onceRetry<LiveModel>(async () => {
 /** Kare yakalama tuvali — kare başına yeni canvas/context açmak GC üretir. */
 let grabCanvas: HTMLCanvasElement | null = null;
 let grabCtx: CanvasRenderingContext2D | null = null;
+let colorFrameCanvas: HTMLCanvasElement | null = null;
+let colorFrameCtx: CanvasRenderingContext2D | null = null;
 /**
  * Luminance tamponu HAVUZLANIR: 384×491'lik yakalamada 188k float (~0.75 MB),
  * saniyede ~7 kare — havuzsuz hâli sürekli çöp üretir. `depth.ts`'in luminance
@@ -1178,9 +1282,8 @@ const havuz = (buf: Float32Array | null, n: number) =>
 /**
  * Tek karelik canlı derinlik.
  *
- * Fotoğraf yolundaki `estimateDepth`'in aksine özne kırpma çıkarımı, ön plan
- * stretch'i, sobel rölyefi ve eğim sınırlayıcı YOKTUR — hepsi tek kare kalitesi
- * için ve canlı yolun tempo bütçesini yerdi. Burada yalnız çıkarım + normalize.
+ * Fotoğraf yolunun ikinci model geçişi canlı videoda yapılmaz. Maske varsa
+ * tek geçişli özne kırpma ve maskeye bağlı son işleme uygulanır.
  */
 export interface LiveDepthOptions {
   /** Discard obsolete work before it can mutate temporal normalization. */
@@ -1201,7 +1304,31 @@ export interface LiveDepthResult extends DepthResult {
   /** End-to-end frame processing time, excluding initial model loading. */
   inferenceMs: number;
   mediaTime: number;
+  /** RGB from the same decoded frame as depth; never read the advancing video later. */
+  colorFrame?: ImageData;
 }
+
+/** Keep shader warmup and live inference from mutating one shared model state concurrently. */
+export function createLiveWarmupGate() {
+  let pending: Promise<void> | null = null;
+  return {
+    run(task: () => Promise<void>): Promise<void> {
+      if (pending) return pending;
+      const work = Promise.resolve().then(task);
+      pending = work;
+      void work.finally(() => {
+        if (pending === work) pending = null;
+      }).catch(() => {});
+      return work;
+    },
+    wait(): Promise<void> {
+      return pending ?? Promise.resolve();
+    },
+  };
+}
+
+const liveWarmup = createLiveWarmupGate();
+let activeLiveDrivers = 0;
 
 /**
  * MODELİ ÖNDEN ISIT (v2 eklemesi — kişisel repodaki sürümde yok).
@@ -1215,31 +1342,35 @@ export interface LiveDepthResult extends DepthResult {
  * yüklemede birleşir, iki kez inmez.
  */
 export async function isitLiveModel(): Promise<void> {
-  await yukleLiveModel();
-  // AĞIRLIĞI YÜKLEMEK YETMİYOR. Ölçüldü (tarayıcı, WebGPU): model yüklemesi
-  // 462 ms, İLK çıkarım 4319 ms, ikinci 157 ms. Aradaki fark WebGPU boru
-  // hattı/shader derlemesidir ve o yalnız gerçek bir çıkarımda olur —
-  // dolayısıyla ısıtma bir kez sahte kare koşmak zorunda.
-  if (typeof document === 'undefined') return;
-  // ŞEKİL ÖNEMLİ: işlemci en-boyu korur, yani girdi tensörünün ŞEKLİ kaynağın
-  // oranına bağlıdır ve WebGPU boru hattı şekle göre derlenir. Kare bir sahte
-  // kareyle ısıtmak ölçüldü — 4319 ms yalnız 987 ms'ye indi, çünkü gerçek
-  // (16:9) video farklı şekil isteyip yeniden derletiyordu. Sahte kare bu
-  // yüzden 16:9'dur: videoların baskın oranı.
-  const c = document.createElement('canvas');
-  c.width = 320;
-  c.height = 180;
-  const ctx = c.getContext('2d');
-  if (!ctx) return;
-  ctx.fillStyle = '#808080';
-  ctx.fillRect(0, 0, c.width, c.height);
-  try {
-    await estimateDepthLive(c);
-  } catch {
-    /* ısıtma başarısızsa sessiz: gerçek kullanım kendi hatasını raporlar */
-  }
-  // Sahte karenin zamansal/stretch/kırpma durumu gerçek kaynağa SIZMASIN.
-  resetLiveDepthState();
+  return liveWarmup.run(async () => {
+    await yukleLiveModel();
+    // Once a video has started, its first real frame should compile the shader.
+    if (activeLiveDrivers > 0) return;
+    // AĞIRLIĞI YÜKLEMEK YETMİYOR. Ölçüldü (tarayıcı, WebGPU): model yüklemesi
+    // 462 ms, İLK çıkarım 4319 ms, ikinci 157 ms. Aradaki fark WebGPU boru
+    // hattı/shader derlemesidir ve o yalnız gerçek bir çıkarımda olur —
+    // dolayısıyla ısıtma bir kez sahte kare koşmak zorunda.
+    if (typeof document === 'undefined') return;
+    // ŞEKİL ÖNEMLİ: işlemci en-boyu korur, yani girdi tensörünün ŞEKLİ kaynağın
+    // oranına bağlıdır ve WebGPU boru hattı şekle göre derlenir. Kare bir sahte
+    // kareyle ısıtmak ölçüldü — 4319 ms yalnız 987 ms'ye indi, çünkü gerçek
+    // (16:9) video farklı şekil isteyip yeniden derletiyordu. Sahte kare bu
+    // yüzden 16:9'dur: videoların baskın oranı.
+    const c = document.createElement('canvas');
+    c.width = 320;
+    c.height = 180;
+    const ctx = c.getContext('2d');
+    if (!ctx) return;
+    ctx.fillStyle = '#808080';
+    ctx.fillRect(0, 0, c.width, c.height);
+    try {
+      await estimateDepthLive(c);
+    } catch {
+      /* ısıtma başarısızsa sessiz: gerçek kullanım kendi hatasını raporlar */
+    }
+    // Sahte karenin zamansal/stretch/kırpma durumu gerçek kaynağa SIZMASIN.
+    resetLiveDepthState();
+  });
 }
 
 export async function estimateDepthLive(
@@ -1258,10 +1389,12 @@ export async function estimateDepthLive(
   const vw = source instanceof HTMLVideoElement ? source.videoWidth : source.width;
   const vh = source instanceof HTMLVideoElement ? source.videoHeight : source.height;
 
-  // ÖZNE KIRPMA — modelin özneyi yakından görmesi için (bkz. canliKirpmaKutusu).
-  // Maske yoksa kutu da yoktur: kırpacak bilgi yok, tam kare çizilir.
+  // Live video uses a full-frame model prediction. Extending a cropped
+  // subject prediction across the unseen scene fabricated background depth.
+  // Canvas callers can still use the subject crop for single-frame quality.
   const sm = opts.subjectMask;
-  const kutu = sm ? canliKirpmaKutusu(sm.data, sm.width, sm.height, sonKirpmaKutusu) : null;
+  const kutu = chooseLiveCrop(sm?.data ?? null, sm?.width ?? 0, sm?.height ?? 0,
+    sonKirpmaKutusu, source instanceof HTMLVideoElement);
   sonKirpmaKutusu = kutu;
   const kx = kutu ? kutu.x * vw : 0;
   const ky = kutu ? kutu.y * vh : 0;
@@ -1281,6 +1414,23 @@ export async function estimateDepthLive(
     canvas.height = h;
   }
   grabCtx!.drawImage(source, kx, ky, kw, kh, 0, 0, w, h);
+  let colorFrame: ImageData | undefined;
+  if (source instanceof HTMLVideoElement) {
+    if (!colorFrameCanvas) {
+      colorFrameCanvas = document.createElement('canvas');
+      colorFrameCtx = colorFrameCanvas.getContext('2d', { willReadFrequently: true });
+    }
+    if (colorFrameCtx) {
+      const size = liveGrabSize(vw, vh);
+      if (colorFrameCanvas.width !== size.w || colorFrameCanvas.height !== size.h) {
+        colorFrameCanvas.width = size.w;
+        colorFrameCanvas.height = size.h;
+      }
+      // Both draws happen in this one synchronous task, before model inference.
+      colorFrameCtx.drawImage(source, 0, 0, size.w, size.h);
+      colorFrame = colorFrameCtx.getImageData(0, 0, size.w, size.h);
+    }
+  }
 
   // Mikro rölyef luminance'ı — kare zaten çizili, yalnız okuma + dönüşüm.
   let kareLum: Float32Array | null = null;
@@ -1329,9 +1479,10 @@ export async function estimateDepthLive(
       : resampleBilinear(sm.data, sm.width, sm.height, gw, gh)
     : null;
   return {
-    ...depthResultFromTensor([gh, gw], gomulu.data, maske, lum, kutu),
+    ...depthResultFromTensor([gh, gw], gomulu.data, maske, lum, kutu, mediaTime),
     inferenceMs: performance.now() - started,
     mediaTime,
+    colorFrame,
   };
 }
 
@@ -1364,11 +1515,18 @@ export function startLiveDepth(
 ): () => void {
   const maxErrors = 3;
   resetLiveDepthState();
+  activeLiveDrivers++;
   let active = true;
+  let qualityState = createLiveQualityState();
+  const autoQuality = opts.girdi === undefined && opts.girdiAl === undefined;
+  const inputSize = () => canliGirdiBoyutu(
+    opts.girdiAl?.() ?? opts.girdi ?? liveQualityInputSize(qualityState, video.paused),
+    video.paused,
+  );
   let revision = 0;
   let frameTime = video.currentTime;
   let processedTime = Number.NaN;
-  let processedSize = opts.girdiAl?.() ?? opts.girdi ?? LIVE_INPUT_SIZE;
+  let processedSize = inputSize();
   let processedMask = opts.maskeAl?.() ?? null;
   let frameCallback: number | null = null;
   const invalidate = (reason: 'seek' | 'loop') => {
@@ -1419,7 +1577,9 @@ export function startLiveDepth(
   };
   if (hasFrameCallback) frameCallback = video.requestVideoFrameCallback(presented);
   const cleanup = () => {
+    if (!active) return;
     active = false;
+    activeLiveDrivers--;
     video.removeEventListener('seeking', seeking);
     video.removeEventListener('seeked', seeked);
     if (frameCallback !== null) {
@@ -1429,6 +1589,10 @@ export function startLiveDepth(
   };
   const stopDriver = startLiveDepthDriver({
     infer: async () => {
+      // Warmup may be compiling the same model shape when a video is opened.
+      // If warmup fails, live inference gets its own normal retry path.
+      await liveWarmup.wait().catch(() => {});
+      if (!active) return null;
       if (video.readyState < 2 || video.seeking) return null;
       if (!hasFrameCallback) {
         if (video.currentTime < frameTime - 0.001) {
@@ -1439,11 +1603,12 @@ export function startLiveDepth(
         }
         frameTime = video.currentTime;
       }
-      const size = opts.girdiAl?.() ?? opts.girdi ?? LIVE_INPUT_SIZE;
+      const size = inputSize();
       const mask = opts.maskeAl?.() ?? null;
       if (mask !== processedMask) {
         processedMask = mask;
         processedTime = Number.NaN;
+        resetLiveDepthState();
         // A mask arriving while a model call is in flight changes the
         // post-processing contract. Invalidate that call instead of allowing
         // its maskless result to publish (or surface as a real GPU error).
@@ -1467,7 +1632,7 @@ export function startLiveDepth(
       // mutate temporal state or an obsolete error can spend the retry budget.
       // Ordinary playback advancement still accepts completed depth frames.
       const isCurrent = () => active && capturedRevision === revision
-        && size === (opts.girdiAl?.() ?? opts.girdi ?? LIVE_INPUT_SIZE)
+        && size === inputSize()
         && mask === (opts.maskeAl?.() ?? null);
       try {
         return await estimateDepthLive(video, {
@@ -1482,7 +1647,14 @@ export function startLiveDepth(
         throw error;
       }
     },
-    onDepth: (result) => onDepth(result as LiveDepthResult),
+    onDepth: (result) => {
+      const depth = result as LiveDepthResult;
+      const uploadStart = performance.now();
+      onDepth(depth);
+      if (autoQuality && !video.paused) {
+        qualityState = advanceLiveQuality(qualityState, depth.inferenceMs + performance.now() - uploadStart);
+      }
+    },
     onError: (err, ardisik) => {
       opts.onError?.(err, ardisik);
       if (ardisik >= maxErrors) {

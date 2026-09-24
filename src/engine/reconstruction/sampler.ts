@@ -175,6 +175,8 @@ export interface VolumeSampleOptions {
   foregroundMask?: Float32Array;
   /** Önem tabanlı örnekleme (sadece örnekleme koordinatını büker, grid sürekliliği bozulmaz). Varsayılan açık. */
   importanceSampling?: boolean;
+  /** A video is a complete scene; its mask affects opacity but never geometry. */
+  fullFrame?: { cameraDistance: number };
 }
 
 /**
@@ -202,6 +204,36 @@ export function sampleVolumePositions(
   const range = opts.depthRange ?? DEFAULT_DEPTH_RANGE;
   const curvature = opts.curvature ?? DEFAULT_CURVATURE;
   const out = new Float32Array(n * 4);
+  if (opts.fullFrame) {
+    const cameraDistance = opts.fullFrame.cameraDistance;
+    const videoMask = opts.foregroundMask?.length === depthWidth * depthHeight
+      ? opts.foregroundMask : null;
+    if (!(cameraDistance > range / 2)) {
+      throw new Error('Full-frame camera distance must exceed the depth range');
+    }
+    for (let j = 0; j < grid; j++) {
+      const v = 1 - (j + 0.5) / grid;
+      const y = (j + 0.5) / grid * depthHeight - 0.5;
+      for (let i = 0; i < grid; i++) {
+        const u = (i + 0.5) / grid;
+        const x = u * depthWidth - 0.5;
+        const offset = (j * grid + i) * 4;
+        const z = Math.min(1, Math.max(-1,
+          (sampleBilinear(depth, depthWidth, depthHeight, x, y) - 0.5) * range));
+        // Perspective division uses cameraDistance - z. Undo it here so the
+        // original video frame stays aligned from the reference camera.
+        const xyScale = (cameraDistance - z) / cameraDistance;
+        out[offset] = (u - 0.5) * 2 * halfW * xyScale;
+        out[offset + 1] = (v - 0.5) * 2 * halfH * xyScale;
+        out[offset + 2] = z;
+        out[offset + 3] = videoMask
+          ? (sampleBilinear(videoMask, depthWidth, depthHeight, x, y) >= 0.5
+            ? 1 : BACKDROP_OPACITY)
+          : 1;
+      }
+    }
+    return out;
+  }
   const remap =
     opts.importanceSampling === false
       ? null
