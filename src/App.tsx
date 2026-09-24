@@ -35,6 +35,7 @@ import {
 } from './engine/preset';
 import { exportPly, exportPNG, exportWebM } from './engine/export';
 import { buildFusionScene, captureKeyframes } from './engine/vision/videoPipe';
+import { captureGeneration, sourceErrorMessage } from './sourceGuard';
 
 /**
  * Video/kamera luminance yolunda temporal smoothing katsayısı (kalite kararı):
@@ -115,6 +116,10 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
   const luminanceFrameRef = useRef<{ video: HTMLVideoElement; id: number } | null>(null);
   const videoMaskRequestRef = useRef<(() => void) | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  /** Bumped by teardownSource; async source paths bail out once it moves (sourceGuard.ts). */
+  const sourceGenRef = useRef(0);
+  /** getUserMedia in flight: cameraOn flips only after the stream plays, so it cannot block a second click. */
+  const cameraStartingRef = useRef(false);
   const timerRef = useRef<number | null>(null);
   const objectUrlRef = useRef<string | null>(null);
   const [engine, setEngine] = useState<Engine | null>(null);
@@ -264,6 +269,9 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
    * durdurur.
    */
   function teardownSource() {
+    // Every pending async source path (photo inference, camera prompt, video
+    // decode, live-depth start) sees this and stops before writing anything.
+    sourceGenRef.current++;
     clearTimer();
     luminanceActiveRef.current = false;
     cancelLuminanceFrame();
@@ -302,9 +310,13 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
 
   async function run(source: HTMLCanvasElement | HTMLImageElement) {
     setBusy(true);
+    // Captured after the caller's teardownSource. A stale result must not
+    // write depth, mask, photo or segmentation settings over a newer source.
+    const isCurrent = captureGeneration(sourceGenRef);
     try {
       const t0 = performance.now();
       await loadDepthModel();
+      if (!isCurrent()) return;
       say(`model yüklendi            ${Math.round(performance.now() - t0)} ms`);
 
       // Nesne/arka plan ayırma (RMBG): fotoğraflarda OTOMATİK — Gün B temizlik
@@ -328,6 +340,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
       const t2 = performance.now();
       try {
         const seg = await segmentForeground(source);
+        if (!isCurrent()) return;
         // Güvenlik: boş maske (sentetik/soyut görsel) kullanılmaz — AND tüm
         // silueti sıfırlar, mesh null'a düşer, parçacıklar ölür.
         // GÜN E (bulgu 9): boş maske kadar TÜM KAREYİ kaplayan maske de
@@ -360,6 +373,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
           engineRef.current!.setObjectSeparation(false);
         }
       } catch (err) {
+        if (!isCurrent()) return;
         say(`nesne ayırma atlandı (${err instanceof Error ? err.message : String(err)}) — maske olmadan devam`);
         updateSegment(false);
         engineRef.current!.setObjectSeparation(false);
@@ -371,6 +385,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
         source,
         mask ? { subjectMask: { data: mask, width: maskW, height: maskH } } : {},
       );
+      if (!isCurrent()) return;
       say(
         `çıkarım                  ${Math.round(performance.now() - t1)} ms  (${depth.width}x${depth.height})` +
           (mask ? ' · özne maskesi kullanıldı' : ' · maskesiz'),
@@ -385,8 +400,9 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
       if (maskOverlayOnRef.current) drawMaskOverlay();
       say('depth → engine · point cloud konumları positionTexture\'dan okunur');
     } catch (err) {
-      say(`HATA: ${err instanceof Error ? err.message : String(err)}`);
+      if (isCurrent()) say(`HATA: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
+      // Cleared even when stale: skipping it would leave the source controls locked.
       setBusy(false);
     }
   }
@@ -549,6 +565,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
    * GPU cost would make live depth less responsive.
    */
   function startVideoDepth(video: HTMLVideoElement, label: string) {
+    const isCurrent = captureGeneration(sourceGenRef);
     startLuminanceLoop(video, label);
     let iptal = false;
     let videoMask: { data: Float32Array; width: number; height: number } | null = null;
@@ -638,7 +655,9 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
       iptal = true;
     };
     void liveDepthKullanilabilir().then((varMi) => {
-      if (iptal || videoRef.current !== video) return;
+      // A stale start must not install a driver: its stop function would
+      // replace the newer source's without ever being called.
+      if (iptal || !isCurrent()) return;
       if (!varMi) {
         say('canlı derinlik: WebGPU yok — parlaklık vekiliyle devam');
         return;
@@ -855,13 +874,23 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
       say('kamera kapatıldı');
       return;
     }
+    // Permission prompt still open: a second getUserMedia would open a second
+    // stream that nothing ever stops (camera light stays on).
+    if (cameraStartingRef.current) return;
+    cameraStartingRef.current = true;
     teardownSource(); // önce açık video/stream varsa bırak
     setVideoDosya(null);
+    const isCurrent = captureGeneration(sourceGenRef);
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { width: 640, height: 480 },
         audio: false,
       });
+      if (!isCurrent()) {
+        // Another source took over during the prompt; this stream is not ours to keep.
+        stream.getTracks().forEach((t) => t.stop());
+        return;
+      }
       streamRef.current = stream;
       const video = document.createElement('video');
       video.muted = true;
@@ -869,6 +898,8 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
       video.srcObject = stream;
       videoRef.current = video;
       await video.play();
+      // teardownSource already stopped this stream via streamRef.
+      if (!isCurrent()) return;
       setCameraOn(true);
       engineRef.current!.mediaType = 'camera';
       // Tur 12 (şikayet 1): kamera da canlı renk dokusu olarak bağlanır —
@@ -884,50 +915,70 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
       startVideoDepth(video, 'kamera');
       say('kamera açık · canlı luminance height map');
     } catch (err) {
+      // Stale: play() was aborted by the newer source's teardown; nothing to report.
+      if (!isCurrent()) return;
+      // A failed play() leaves the stream open; release it so the light goes off.
+      teardownSource();
       say(`HATA kamera: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      cameraStartingRef.current = false;
     }
   }
 
   async function handleFile(file: File) {
-    if (file.type.startsWith('video/')) {
-      teardownSource();
-      setCameraOn(false);
-      const url = URL.createObjectURL(file);
-      objectUrlRef.current = url;
-      const video = document.createElement('video');
-      video.muted = true;
-      video.playsInline = true;
-      video.loop = true;
-      video.src = url;
-      videoRef.current = video;
-      setVideoDosya(file);
-      engineRef.current!.mediaType = 'upload';
-      await video.play();
-      // Tur 12 (şikayet 1): video canlı renk dokusu olarak bağlanır —
-      // resimden videoya geçişte parçacık renklerinde resim hayaleti kalmaz.
-      lastPhotoRef.current = null;
-      lastDepthRef.current = null;
-      maskLoadedRef.current = false;
-      // Gün 8: fotoğraf maskesi bu kaynakta geçersiz — nesne ayırma canlı
-      // shader bayrağıyla birlikte kapatılır (UI "AÇIK" yalanı söylemesin).
-      updateSegment(false);
-      engineRef.current!.setObjectSeparation(false);
-      engineRef.current!.setVideoSource(video);
-      say(`video yüklendi · ${file.name} · model gelene kadar geçici parlaklık önizlemesi`);
-      startVideoDepth(video, 'video');
-    } else if (file.type.startsWith('image/')) {
-      teardownSource(); // canlı döngü varsa dursun, tek kare depth'e geç
-      setCameraOn(false);
-      setVideoDosya(null);
-      const url = URL.createObjectURL(file);
-      engineRef.current!.mediaType = 'upload';
-      try {
-        await run(await loadImage(url));
-      } finally {
-        URL.revokeObjectURL(url);
-      }
-    } else {
+    const isVideo = file.type.startsWith('video/');
+    if (!isVideo && !file.type.startsWith('image/')) {
       say(`desteklenmiyor: ${file.type || file.name}`);
+      return;
+    }
+    teardownSource(); // canlı döngü varsa dursun
+    setCameraOn(false);
+    setVideoDosya(null);
+    engineRef.current!.mediaType = 'upload';
+    const isCurrent = captureGeneration(sourceGenRef);
+    const url = URL.createObjectURL(file);
+    try {
+      if (isVideo) {
+        objectUrlRef.current = url; // teardownSource revokes it
+        const video = document.createElement('video');
+        video.muted = true;
+        video.playsInline = true;
+        video.loop = true;
+        video.src = url;
+        videoRef.current = video;
+        await video.play();
+        if (!isCurrent()) return;
+        // A container whose video codec is unsupported can still "play" its
+        // audio track; without a picture there is nothing to reconstruct.
+        if (video.videoWidth === 0) throw new Error('görüntü izi çözülemedi');
+        setVideoDosya(file);
+        // Tur 12 (şikayet 1): video canlı renk dokusu olarak bağlanır —
+        // resimden videoya geçişte parçacık renklerinde resim hayaleti kalmaz.
+        lastPhotoRef.current = null;
+        lastDepthRef.current = null;
+        maskLoadedRef.current = false;
+        // Gün 8: fotoğraf maskesi bu kaynakta geçersiz — nesne ayırma canlı
+        // shader bayrağıyla birlikte kapatılır (UI "AÇIK" yalanı söylemesin).
+        updateSegment(false);
+        engineRef.current!.setObjectSeparation(false);
+        engineRef.current!.setVideoSource(video);
+        say(`video yüklendi · ${file.name} · model gelene kadar geçici parlaklık önizlemesi`);
+        startVideoDepth(video, 'video');
+      } else {
+        const image = await loadImage(url);
+        if (!isCurrent()) return;
+        await run(image); // tek kare depth; run kendi hatasını raporlar
+      }
+    } catch (err) {
+      // Stale: the newer source's teardown aborted this one; it owns the UI now.
+      if (!isCurrent()) return;
+      // HEVC .MOV / HEIC land here. Drop the half-opened source and the stored
+      // file so "3D eğit" is not offered for a video that cannot play.
+      teardownSource();
+      setVideoDosya(null);
+      say(sourceErrorMessage(file, err));
+    } finally {
+      if (!isVideo) URL.revokeObjectURL(url);
     }
   }
 
@@ -1024,12 +1075,12 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
             accept="image/*,video/*"
             disabled={busy || !!egitimDosya}
             style={{ display: 'none' }}
-            onChange={async (e) => {
+            onChange={(e) => {
               const file = e.target.files?.[0];
-              if (file) {
-                await handleFile(file);
-                e.target.value = '';
-              }
+              // Reset first: picking the same file again must fire onChange
+              // even when this attempt fails.
+              e.target.value = '';
+              if (file) void handleFile(file);
             }}
           />
         </label>
@@ -1180,9 +1231,11 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
         onDragOver={(e) => e.preventDefault()}
         onDrop={(e) => {
           e.preventDefault();
-          if (egitimDosya) return;
+          // Same gate as the file input: a drop during photo processing would
+          // tear down the source that run() is still writing into.
+          if (busy || egitimDosya) return;
           const file = e.dataTransfer.files?.[0];
-          if (file) handleFile(file);
+          if (file) void handleFile(file);
         }}
         style={{ width: 640, height: 420, border: '1px solid #222', background: '#000', position: 'relative' }}
       >
@@ -1486,7 +1539,8 @@ function loadImage(src: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
     const img = new Image();
     img.onload = () => resolve(img);
-    img.onerror = reject;
+    // onerror hands over a bare Event ("[object Event]"); give the log a reason.
+    img.onerror = () => reject(new Error('görsel çözülemedi'));
     img.src = src;
   });
 }
