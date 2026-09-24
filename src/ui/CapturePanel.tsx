@@ -72,6 +72,7 @@ export interface CaptureStats {
   /** Hizalama artığının RMS'i — çözüldü ama KÖTÜ çözüldüyse burada görünür. */
   scaleRmse: number | null;
   ms: number;
+  depthSource: 'midas' | 'luminance' | 'unknown';
 }
 
 /**
@@ -104,7 +105,7 @@ function judgeScale(stats: CaptureStats | null): { ok: boolean; text: string } {
         `${(rmse / Math.abs(a)).toFixed(1)}× katı — uydurma veriyi açıklamıyor, metrik DEĞİL`,
     };
   }
-  return { ok: true, text: `a=${a.toFixed(4)} b=${b.toFixed(4)} · rmse=${rmse.toFixed(4)}` };
+  return { ok: true, text: `bağıl ölçek a=${a.toFixed(4)} b=${b.toFixed(4)} · rmse=${rmse.toFixed(4)} (gerçek metre değil)` };
 }
 
 export function CapturePanel({
@@ -123,8 +124,8 @@ export function CapturePanel({
   const [selected, setSelected] = useState<number | null>(null);
   const [showTraj, setShowTraj] = useState(true);
   const [maxFrames, setMaxFrames] = useState(8);
-  const videoRef = useRef<HTMLVideoElement | null>(null);
-  const urlRef = useRef<string | null>(null);
+  const [running, setRunning] = useState(false);
+  const runInProgress = useRef(false);
 
   const say = useCallback(
     (line: string) => {
@@ -135,23 +136,26 @@ export function CapturePanel({
 
   const run = useCallback(
     async (file: File) => {
+      if (runInProgress.current) return;
+      runInProgress.current = true;
+      setRunning(true);
       setError(null);
       setStats(null);
       setStage('decoding');
       setProgress(file.name);
       const t0 = performance.now();
+      let url: string | null = null;
+      let video: HTMLVideoElement | null = null;
       try {
-        if (urlRef.current) URL.revokeObjectURL(urlRef.current);
-        const url = URL.createObjectURL(file);
-        urlRef.current = url;
-        const video = document.createElement('video');
-        video.src = url;
-        video.muted = true;
-        video.playsInline = true;
-        videoRef.current = video;
+        url = URL.createObjectURL(file);
+        const sourceVideo = document.createElement('video');
+        video = sourceVideo;
+        sourceVideo.src = url;
+        sourceVideo.muted = true;
+        sourceVideo.playsInline = true;
         await new Promise<void>((resolve, reject) => {
-          video.onloadeddata = () => resolve();
-          video.onerror = () => reject(new Error('video açılamadı (codec?)'));
+          sourceVideo.onloadeddata = () => resolve();
+          sourceVideo.onerror = () => reject(new Error('video açılamadı (codec?)'));
         });
         setStage('capturing');
         setProgress(`0 / ${maxFrames} keyframe`);
@@ -173,12 +177,14 @@ export function CapturePanel({
 
         setStage('solving');
         setProgress('optik akış → poz → füzyon');
-        // Senkron ve ağır: bir kare bekleyip UI'ın "solving" durumunu
-        // boyamasına izin ver, yoksa kullanıcı donmuş sanır.
-        await new Promise((r) => requestAnimationFrame(() => r(null)));
+        // Yield without depending on animation frames, which stop in hidden tabs.
+        await new Promise((resolve) => setTimeout(resolve, 0));
         // E1.3 (Emre): buildFusionScene artık asenkron (DepthProvider sözleşmesi
         // + tek-çalışma kilidi) — tek gerekli await dokunuşu, kalanı aynen.
         const scene = await buildFusionScene(frames, VIDEO_FOV_Y);
+        if (scene.data.count === 0) {
+          throw new Error('sahne oluşturulamadı — hareketli ve dokulu bir video deneyin');
+        }
 
         engine.setGaussians(scene.data);
         engine.setPoseTrack(scene.poses);
@@ -197,6 +203,7 @@ export function CapturePanel({
           scaleB: scene.scale ? scene.scale.scaleB : null,
           scaleRmse: scene.scale ? scene.scale.rmse : null,
           ms,
+          depthSource: scene.diagnostics.derinlikKaynagi ?? 'unknown',
         };
         setStats(s);
         setStage('ready');
@@ -210,6 +217,17 @@ export function CapturePanel({
         setStage('error');
         setProgress('');
         say(`capture HATA: ${msg}`);
+      } finally {
+        video?.pause();
+        if (video) {
+          video.onloadeddata = null;
+          video.onerror = null;
+          video.removeAttribute('src');
+          video.load();
+        }
+        if (url) URL.revokeObjectURL(url);
+        runInProgress.current = false;
+        setRunning(false);
       }
     },
     [engine, maxFrames, setMode, say, showTraj],
@@ -220,13 +238,17 @@ export function CapturePanel({
 
   return (
     <div style={panelStyle}>
-      <strong style={headingStyle}>capture · video → 3B harita</strong>
+      <strong style={headingStyle}>hızlı 3B harita · ayrı video</strong>
+      <div style={{ color: '#889', lineHeight: 1.4 }}>
+        Bu alan üstteki videodan bağımsız bir klipten yaklaşık splat haritası üretir. “3D eğit” ile yapılan 3DGS eğitimi değildir.
+      </div>
 
       <label style={{ ...buttonStyle, display: 'inline-block', textAlign: 'center' }}>
-        video seç
+        {running ? 'işleniyor…' : 'video seç'}
         <input
           type="file"
           accept="video/*"
+          disabled={running}
           style={{ display: 'none' }}
           onChange={(e) => {
             const f = e.target.files?.[0];
@@ -244,6 +266,7 @@ export function CapturePanel({
           max={20}
           step={1}
           value={maxFrames}
+          disabled={running}
           onChange={(e) => setMaxFrames(Number(e.target.value))}
           style={{ flex: 1 }}
         />
@@ -294,6 +317,10 @@ export function CapturePanel({
                  hata, açıklanan aralığın 8 KATI. Tek başına işaret kontrolü
                  YETMİYOR. */}
           <span style={{ color: scaleVerdict.ok ? '#c8c8d4' : '#c66' }}>{scaleVerdict.text}</span>
+          <span>derinlik kaynağı</span>
+          <span style={{ color: stats.depthSource === 'midas' ? '#c8c8d4' : '#dc6' }}>
+            {stats.depthSource === 'midas' ? 'derinlik modeli' : stats.depthSource === 'luminance' ? 'parlaklık yaklaşımı (model kullanılamadı)' : 'bilinmiyor'}
+          </span>
           <span>süre</span>
           <span style={{ color: '#c8c8d4' }}>{Math.round(stats.ms)} ms</span>
         </div>

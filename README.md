@@ -4,6 +4,12 @@ Tarayıcıda çalışan mekânsal görsel motor. Fotoğraf yolu Depth Anything V
 
 ## Durum
 
+Ekrandaki **hızlı 3B harita** paneli, üstte yüklenen videodan bağımsız olarak
+seçilen klipten yaklaşık surfel/splat sahnesi üretir; gerçek `3D eğit` yolunun
+yerine geçmez. **Çevrimdışı değerlendirme** paneli `eval-out/report.json` ya da
+elle yüklenen raporu gösterir. AbsRel, RMSE ve IoU değerleri raporun veri
+kümesine aittir; yüklediğiniz videonun canlı kalite puanı değildir.
+
 - **Güncel ürün ayrımı (2026-09-24):** `video → 3B` surfel önizleme,
   `3D eğit` gerçek 3DGS eğitimidir. İkinci yolun GPU'ya göre ayarları ve
   ölçülmüş koşuları [vendor kaydında](src/vendor/splat.js/VENDORED.md).

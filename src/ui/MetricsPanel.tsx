@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { CSSProperties } from 'react';
 import type { EvalReport, MetricColumn } from '../engine/vision/types';
+import { parseEvalReport } from './metricsReport';
 
 /**
  * METRİK PANELİ (render/UI katmanı — Zeynep, Gün 7).
@@ -51,37 +52,24 @@ const headingStyle: CSSProperties = { color: '#8ab', fontSize: 12, letterSpacing
 
 const COLUMN_ORDER: MetricColumn[] = ['depth', 'seg', 'pose', 'timing'];
 
-/** D.5 şema denetimi: eksik/uyumsuz alanda `null` yerine AÇIK hata. */
-function parseReport(raw: unknown): EvalReport {
-  if (typeof raw !== 'object' || raw === null) throw new Error('rapor bir nesne değil');
-  const r = raw as Partial<EvalReport>;
-  if (typeof r.run !== 'string') throw new Error("şema: 'run' eksik");
-  if (typeof r.commit !== 'string') throw new Error("şema: 'commit' eksik");
-  if (!Array.isArray(r.results)) throw new Error("şema: 'results' dizi değil");
-  if (typeof r.params !== 'object' || r.params === null) throw new Error("şema: 'params' eksik");
-  for (const row of r.results) {
-    if (typeof row?.metric !== 'string' || typeof row?.value !== 'number') {
-      throw new Error('şema: results satırı { metric, value } taşımıyor');
-    }
-  }
-  return r as EvalReport;
-}
-
 export function MetricsPanel() {
   const [report, setReport] = useState<EvalReport | null>(null);
   const [note, setNote] = useState<string>('yükleniyor…');
+  const [source, setSource] = useState('');
 
   const load = useCallback(async () => {
     setNote('yükleniyor…');
     try {
       const res = await fetch('/eval-out/report.json', { cache: 'no-store' });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      setReport(parseReport(await res.json()));
+      setReport(parseEvalReport(await res.json()));
+      setSource('yerel eval-out/report.json');
       setNote('');
     } catch (e) {
       setReport(null);
+      setSource('');
       setNote(
-        `otomatik okunamadı (${e instanceof Error ? e.message : String(e)}) — "npm run eval" çalıştırın ya da report.json'ı elle yükleyin`,
+        `yerel rapor okunamadı (${e instanceof Error ? e.message : String(e)}) — geliştirme ortamında "npm run eval" çalıştırın ya da report.json yükleyin`,
       );
     }
   }, []);
@@ -93,20 +81,22 @@ export function MetricsPanel() {
   const grouped = new Map<MetricColumn, EvalReport['results']>();
   if (report) {
     for (const row of report.results) {
-      const col = (COLUMN_ORDER as string[]).includes(row.column) ? row.column : 'depth';
-      const list = grouped.get(col) ?? [];
+      const list = grouped.get(row.column) ?? [];
       list.push(row);
-      grouped.set(col, list);
+      grouped.set(row.column, list);
     }
   }
 
   return (
     <div style={panelStyle}>
-      <strong style={headingStyle}>metrikler · eval-out/report.json</strong>
+      <strong style={headingStyle}>çevrimdışı değerlendirme · rapor</strong>
+      <div style={{ color: '#889', lineHeight: 1.4 }}>
+        Bu sayılar seçtiğiniz videonun canlı derinlik kalitesini ölçmez; rapordaki veri kümesine aittir.
+      </div>
 
       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
         <button type="button" style={buttonStyle} onClick={() => void load()}>
-          yenile
+          yerel raporu yenile
         </button>
         <label style={{ ...buttonStyle, display: 'inline-block' }}>
           dosya yükle
@@ -119,10 +109,12 @@ export function MetricsPanel() {
               e.target.value = '';
               if (!f) return;
               try {
-                setReport(parseReport(JSON.parse(await f.text())));
+                setReport(parseEvalReport(JSON.parse(await f.text())));
+                setSource(`yüklenen dosya: ${f.name}`);
                 setNote('');
               } catch (err) {
                 setReport(null);
+                setSource('');
                 setNote(`geçersiz rapor: ${err instanceof Error ? err.message : String(err)}`);
               }
             }}
@@ -135,7 +127,7 @@ export function MetricsPanel() {
       {report && (
         <>
           <div style={{ color: '#667' }}>
-            {report.run} · {report.commit} · {report.date?.slice(0, 19).replace('T', ' ')}
+            {source} · {report.run} · {report.commit} · {report.date.slice(0, 19).replace('T', ' ')}
           </div>
 
           {COLUMN_ORDER.filter((c) => grouped.has(c)).map((col) => (
@@ -143,7 +135,7 @@ export function MetricsPanel() {
               <div style={{ color: '#8ab', marginBottom: 2 }}>{col}</div>
               <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '1px 8px' }}>
                 {grouped.get(col)!.map((row, i) => (
-                  <ReportRow key={`${row.metric}-${i}`} metric={row.metric} value={row.value} />
+                  <ReportRow key={`${row.metric}-${i}`} metric={`${row.metric} (${row.dataset}/${row.split})`} value={row.value} />
                 ))}
               </div>
             </div>
