@@ -9,7 +9,7 @@ env.allowLocalModels = true;
 env.localModelPath = './public/models/';
 env.backends.onnx.wasm.numThreads = 1;
 
-const MODEL = 'onnx-community/depth-anything-v2-base';
+const MODEL = 'onnx-community/depth-anything-v2-small';
 
 const t0 = performance.now();
 // Node: cpu = WASM yolu (tarayicidaki 'wasm' adinin Node karsiligi)

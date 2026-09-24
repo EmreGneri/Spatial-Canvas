@@ -7,14 +7,14 @@
  * GaussianBuffer'ı kamera görüşüne sığdırır (`Engine.setGaussians` kapısı).
  *
  * ── DÜRÜSTLÜK KAYDILAR ─────────────────────────────────────────────────
- * 1. Video yolunda yoğun derinlik MODEL çıktısı DEĞİLDİR: depth[k] =
- *    luminance haritası (App'in kamera/video tasarımı: "parlaklık =
- *    yükseklik", depth modeli yalnız tek fotoğrafta çalışır). Splat
- *    derinliği bu haritadan gelir — görsel kalitesi luminance'ın kalitesidir.
- * 2. Ölçek hizalaması luminance'a BAĞLI DEĞİLDİR: `fitScaleAlignment`
- *    üçgenlemeden gelen metrik derinliğe doğrulur (flow eşleşmeleri +
- *    RANSAC + chainPoseTrack). Yani şekil fiziği gerçektir; d_pred yalnız
- *    splat yerleşim marjıdır.
+ * 1. Tarayıcıda varsayılan yoğun derinlik, Depth Anything V2 modelinden
+ *    gelir. Model kullanılamazsa luminance vekiline düşülür ve
+ *    `diagnostics.derinlikKaynagi` bunu bildirir. Node/sentetik testlerde
+ *    canvas olmadığından luminance yolu kullanılır.
+ * 2. Ölçek hizalaması derinlik kaynağından BAĞIMSIZDIR: `fitScaleAlignment`
+ *    üçgenlemeden gelen derinliğe doğrulur (flow eşleşmeleri + RANSAC +
+ *    chainPoseTrack). Geçerli hizalama yoksa metrik ölçek iddiası yoktur;
+ *    d_pred splat yerleşimi için yaklaşık derinlik sağlar.
  * 3. `fitBufferToCamera`: sahne birimini kamera görüşüne sığdırır (ağırlık
  *    merkezi → orijin, köşegen → 2). Füzyonun D.1 çıktısını DEĞİŞTİRMEZ —
  *    KOPYASINI ölçekler (konum + splat yarıçapı birlikte; iç tutarlılık
@@ -164,15 +164,15 @@ export interface FusionSceneResult {
 }
 
 /**
- * E1.2 — DepthProvider sözleşmesinin (types.ts) bugünkü SENKRON uygulaması:
- * d_pred = luminance ("parlaklık = yükseklik", kayıt 1). D5'te MiDaS bağlanınca
- * bu, asenkron provider sözleşmesini uygulayan bir sarmalayıcının içine girer.
+ * DepthProvider sözleşmesinin senkron yedek uygulaması:
+ * d_pred = luminance ("parlaklık = yükseklik"). Tarayıcıdaki varsayılan
+ * model yolu başarısız olursa veya Node'da canvas yoksa bu yol seçilir.
  */
 export function luminanceDepthProvider(frame: KeyframeFrame): Float32Array {
   return frame.lum;
 }
 
-/** MiDaS sağlayıcısını kurmayı dener; canvas yoksa/kurulamazsa null. */
+/** Tarihsel adı MiDaS olan Depth Anything sağlayıcısını kurmayı dener. */
 function tryCreateMidasProvider(width: number, height: number): DepthProvider | null {
   try {
     return createMidasDepthProvider(width, height);
@@ -184,15 +184,14 @@ function tryCreateMidasProvider(width: number, height: number): DepthProvider | 
 /**
  * E1.3 — TEK-ÇALIŞMA KİLİDİ. Eşzamanlı ikinci koşu reddedilir (iki füzyon
  * yarışı çifte setGaussians/flicker üretir); koşu bitince — başarı ya da
- * hata — kilit serbest kalır (try/finally). D5'te asenkron MiDaS provider'ı
- * koşuyu uzatınca bu kilit gerçek koruma olur; bugün de kötüye kullanımı
- * yakalar.
+ * hata — kilit serbest kalır (try/finally). Asenkron model derinliği
+ * boyunca da ikinci koşuyu engeller.
  */
 let pipelineCalisiyor = false;
 
 export interface BuildSceneOptions {
-  /** E1.2 sözleşmesi — verilirse luminance yerine bu provider'dan derinlik
-   *  alınır (D5: MiDaS). Varsayılan: luminanceDepthProvider. */
+  /** Verilirse varsayılan model/fallback yerine bu provider'dan derinlik
+   * alınır. Varsayılan: Depth Anything, başarısızsa luminance. */
   depthProvider?: DepthProvider;
 }
 
@@ -200,8 +199,8 @@ export interface BuildSceneOptions {
  * Yakalanan karelerden tek dünya sahnesini kurar: ardışık karelerde
  * `computeOpticalFlow` (Shi-Tomasi + piramidal LK, deterministik) → izlenebilir
  * izler `PointMatch` olur → `chainPoseTrack` (8-nokta + RANSAC + cheirality,
- * ilk keyframe orijini) → `fuseVideoFrames` (grid örneklemesi step=4 →
- * 64×48×KF aday splat; d_pred = luminance; ölçek üçgenlemeden).
+ * ilk keyframe orijini) → `fuseVideoFrames` (grid örneklemesi step=4;
+ * d_pred modelden, fallback'te luminance'tan; ölçek üçgenlemeden).
  */
 export async function buildFusionScene(
   frames: KeyframeFrame[],
@@ -238,7 +237,7 @@ export async function buildFusionScene(
     const times = frames.map((f) => f.timeMs);
     const poses = chainPoseTrack(frameMatches, K, times);
 
-    // ── E5.1: DERİNLİK — luminance yerine MiDaS + zamansal hizalama ────────
+    // ── E5.1: DERİNLİK — luminance yerine Depth Anything + zamansal hizalama ──
     // Sağlayıcı SIRAYLA çağrılır (paralel değil): model tek cihaz kilidi
     // tutuyor (depth.ts), eşzamanlı çağrılar kilitte kuyruğa girip hiçbir
     // hız kazandırmadan bellek tepesi yaratırdı.

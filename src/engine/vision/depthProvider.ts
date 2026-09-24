@@ -1,4 +1,4 @@
-// E5.1 (Emre) — VİDEO DERİNLİK SAĞLAYICISI: luminance yerine MiDaS.
+// E5.1 (Emre) — VİDEO DERİNLİK SAĞLAYICISI: luminance yerine Depth Anything.
 //
 // NEDEN: video yolu bugüne kadar d_pred olarak PARLAKLIĞI kullanıyordu
 // ("parlaklık = derinlik"). Açık renkli düz duvar "yakın", koyu bir yüz
@@ -15,14 +15,15 @@
 // [0,1]'e yeniden normalize ediyordu. İki sonucu oldu: (1) `out /= max`
 // adımı, max uzak kırpmasından geldiği için tüm sahneyi aralığın dibine
 // sıkıştırıp RÖLYEFİ EZDİ (video sahnesi düz panoya döndü); (2) uydurma
-// mesafe uzayında kaldığı için MiDaS parlaklıkla aynı kalitede uydu
+// mesafe uzayında kaldığı için model parlaklıkla aynı kalitede uydu
 // (rmse/|a| ≈ 2.3 vs 1.95) ve eğim işareti koşudan koşuya döndü.
 // Affine belirsizlik disparite uzayında yaşar — çözüm de orada olmalı.
 import type { DepthProvider } from './types.ts';
 import { KEYFRAME_HEIGHT, KEYFRAME_WIDTH, type KeyframeFrame } from './videoPipe.ts';
 
 /**
- * MiDaS destekli `DepthProvider`. Tek canvas yeniden kullanılır (kare başına
+ * Depth Anything destekli `DepthProvider`. İşlev adı önceki MiDaS adını
+ * uyumluluk için korur. Tek canvas yeniden kullanılır (kare başına
  * yalnız piksel yazımı + model çağrısı ayrılır).
  *
  * `estimateDepth` kaynak canvas boyutundan farklı bir ızgara dönerse en yakın
