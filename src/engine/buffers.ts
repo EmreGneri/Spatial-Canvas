@@ -97,7 +97,8 @@ export interface PositionFillOptions {
   /**
    * Önem tabanlı UV örneklemesi: örnekleme noktaları yüz/ön plan bölgesine
    * yoğunlaşır (kısıtlar: SAMPLE_MIN/MAX_DENSITY). false = eski doğrusal grid.
-   * Varsayılan açık.
+   * Varsayılan KAPALI: world xy stays on the uniform grid, so a bent sampling
+   * coordinate magnifies the subject in x/y but not z (see sampler.ts).
    */
   importanceSampling?: boolean;
   /** Preserve video UVs and depth regardless of segmentation mask. */
@@ -139,7 +140,7 @@ export function fillPositionsFromDepth(
     depthRange: POINTS_DEPTH_RANGE,
     curvature: opts.curvature ?? VOLUME_CURVATURE,
     foregroundMask: opts.foregroundMask,
-    importanceSampling: opts.importanceSampling !== false,
+    importanceSampling: opts.importanceSampling === true,
     fullFrame: opts.fullFrame,
   });
   const blend = opts.blend ?? 1;
@@ -187,7 +188,7 @@ export function createImageColorTexture(): THREE.DataTexture {
 }
 
 export interface ImageColorFillOptions {
-  /** Önem tabanlı örnekleme — fillPositionsFromDepth ile AYNI ayar. Varsayılan açık. */
+  /** Önem tabanlı örnekleme — fillPositionsFromDepth ile AYNI ayar. Varsayılan KAPALI. */
   importanceSampling?: boolean;
   /**
    * Ön plan maskesi — fillPositionsFromDepth ile AYNI girdi (hizalama): renk
@@ -219,7 +220,7 @@ export function fillImageColorTexture(
   const data = tex.image.data as Uint8Array;
   const sampleOpts = {
     gridSize: n,
-    importanceSampling: opts.importanceSampling !== false,
+    importanceSampling: opts.importanceSampling === true,
     foregroundMask: opts.foregroundMask,
   };
   const grid = sampleImageGrid(rgb, imgWidth, imgHeight, depth, depthWidth, depthHeight, sampleOpts);

@@ -3,6 +3,19 @@
 Sözleşmeye dokunan her değişiklik buraya yazılır (`ARCHITECTURE.md` kuralı: sessiz sapma yok).
 En yeni üstte.
 
+## 2026-09-25 — Fotoğraf: önem örneklemesi varsayılanı KAPALI (basık/yayık büst)
+
+- `importanceSampling` artık opt-in (`sampleVolumePositions`,
+  `sampleImageGrid`, `sampleAoGrid`, `buildShellMesh`,
+  `fillPositionsFromDepth`, `fillImageColorTexture`). Remap yalnız örnekleme
+  koordinatını büküyor, dünya xy'si düzgün grid'de kalıyordu: özne x/y'de
+  büyütülüyor, z büyümüyordu. 16:9 büst (518×291) ölçümü: özne genişliği
+  1.216 → 2.216 (×1.82), yükseklik ×1.56, z/x 0.40 → 0.21. Her render modu
+  aynı konum texture'ını okuduğu için hepsinde görülüyordu.
+- Regresyon: `verify-sampler`, `verify-positions` (özne dünya genişliği
+  siluetle %5 içinde, z/x > 0.35). `verify-mesh` remap vakaları kolu açıkça
+  açar. Eval `importanceSampling` kolu açık değer verdiği için etkilenmez.
+
 ## 2026-09-24 — 3D eğitim: GPU yönlendirmesi ve isteğe bağlı kalite yolları
 
 - Intel Iris/UHD gibi tanınan entegre GPU'da eğitim paneli, Windows Grafik

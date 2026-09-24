@@ -138,4 +138,63 @@ assert.ok(Math.abs(rightmost - (2 - 2 / N)) < 1e-5, '2:1 kaynakta yarı genişli
   assert.equal(rgbAt(0.5, 0.5), 128, 'AO yazımı RGB kanallarını bozmaz (0.5 → 128)');
 }
 
+// --- REGRESSION (photo flatness): default options must not warp the subject.
+// The importance remap bent the SAMPLING coordinate while world xy stayed on
+// the uniform grid, so the high-importance subject was magnified in x/y
+// (~1.8x on a 16:9 bust) but not in z: the bust read wide and flat in every
+// render mode. Scene: 518x291 (1919x1079 letterboxed), centered waist-up bust
+// (torso 34% of width, head + torso down to the bottom edge), brick-pattern
+// background, clean subject mask. Truth = the mask's own world bbox.
+{
+  const W2 = 518;
+  const H2 = 291;
+  const depth2 = new Float32Array(W2 * H2);
+  const mask2 = new Float32Array(W2 * H2);
+  const cx2 = W2 / 2;
+  const headR = 0.11 * H2;
+  const headCy = 0.53 * H2;
+  const tHalf = (0.34 * W2) / 2;
+  let mx0 = W2;
+  let mx1 = -1;
+  for (let y = 0; y < H2; y++) {
+    for (let x = 0; x < W2; x++) {
+      const i = y * W2 + x;
+      const inHead = (x - cx2) ** 2 + (y - headCy) ** 2 < headR ** 2;
+      const inTorso = y > headCy + headR * 0.8 && Math.abs(x - cx2) < tHalf;
+      depth2[i] = 0.2 + 0.05 * (((x >> 3) + (y >> 3)) & 1);
+      if (inHead || inTorso) {
+        mask2[i] = 1;
+        const dx = (x - cx2) / (inTorso ? tHalf : headR);
+        depth2[i] = 0.55 + 0.35 * Math.sqrt(Math.max(0, 1 - dx * dx));
+        mx0 = Math.min(mx0, x);
+        mx1 = Math.max(mx1, x);
+      }
+    }
+  }
+  const out2 = (() => {
+    const t = createHomeTexture();
+    fillPositionsFromDepth(t, depth2, W2, H2, { foregroundMask: mask2 });
+    return t.image.data;
+  })();
+  let x0 = Infinity;
+  let x1 = -Infinity;
+  let z0 = Infinity;
+  let z1 = -Infinity;
+  for (let k = 0; k < out2.length / 4; k++) {
+    if (out2[k * 4 + 3] < 1) continue;
+    x0 = Math.min(x0, out2[k * 4]);
+    x1 = Math.max(x1, out2[k * 4]);
+    z0 = Math.min(z0, out2[k * 4 + 2]);
+    z1 = Math.max(z1, out2[k * 4 + 2]);
+  }
+  const trueX = ((mx1 + 1 - mx0) / W2) * 2 * (W2 / H2);
+  const spanX = x1 - x0;
+  const zx = (z1 - z0) / spanX;
+  assert.ok(
+    Math.abs(spanX - trueX) / trueX < 0.05,
+    `photo bust world width matches its silhouette (${spanX.toFixed(3)} vs ${trueX.toFixed(3)})`,
+  );
+  assert.ok(zx > 0.35, `photo bust is not flat: z/x = ${zx.toFixed(3)} (> 0.35)`);
+}
+
 console.log('OK · position sözleşmesi (z ortalı, satır 0 = üst, iki seviyeli w, aspect doğru) + renk grid alpha = AO');
