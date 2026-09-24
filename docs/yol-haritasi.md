@@ -27,7 +27,7 @@ taşıyamaz. Eğitim görüntüsü ve `.ply` çıktısı `splat.js` yolundadır.
 | E3 · tracker CV + tespit Worker | Kodlandı, ölçüldü | [E3 FPS ölçümü](benchmarks/E3-tracker.md); Web Locks yoksa ana iş parçacığına döner |
 | E4 · Brush karşılaştırması | **Tamamlanmadı** | [Eski surfel koşusu](benchmarks/E4-brush.md) yalnız `video → 3B` içindir; Brush süresi ve ortak kalite ölçümü yok |
 | Z1 · paylaşılabilir çıktı | Kısmi | PNG/WebM ve iki ayrı `.ply` indirme yolu var; 3DGS sonucunu tek linkle paylaşma akışı yok |
-| Z2 · yetenek uyarısı | Kısmi | Sebep uygulama günlüğüne yazılıyor; eğitim için kullanıcıya görünür ön kontrol yok |
+| Z2 · yetenek uyarısı | Kısmi | Intel iGPU eğitim ipucu görünür; genel WebGPU ön kontrolü ve diğer cihazlarda kurtarma yolu henüz eksik |
 | Z3 · mobil düzen | Açık | Ana sahne 640×420, node editörü 640 px sabit; gerçek telefon kabulü yapılmadı |
 | Z4 · karşılaştırma sunumu | Bekliyor | Önce karşılaştırılabilir E4 verisi üretilmeli |
 
@@ -49,6 +49,13 @@ farklı kliplerde görüntü kabulünü tekrarlamaktır.
 
 ### 1. Eğitimi yayın için sağlamlaştır — Emre + Zeynep
 
+Kodda Intel iGPU'ya özgü Windows yüksek performans ipucu, aynı oturumda
++4.000 iterasyon sürdürme ve her eğitim karesini ayrı maskeleyen isteğe bağlı
+özne modu bulunur. Varsayılan hızlı iGPU ayarı değişmedi. Sürdürmenin iGPU
+held-out PSNR kazancı tek St George klibinde +0,8 dB ölçüldü; farklı kliplerde
+tekrarlanmadı. Özne modunun görsel etkisi henüz ölçülmedi. İki seçenek bu
+yüzden deneysel olarak etiketlenir.
+
 - **Emre:** Sabit, yeniden dağıtılabilir test klibiyle Intel ve NVIDIA
   koşularını kaydet: kare sayısı, GPU, aşama süreleri, Gaussian sayısı, eğitim
   ve ayrılmış kare PSNR, `.ply` boyutu. Var olan geliştirici ölçümleri
@@ -58,8 +65,9 @@ farklı kliplerde görüntü kabulünü tekrarlamaktır.
   temizliği kodlandı. Farklı tarayıcı ve GPU'larda sekme değiştirme, SfM
   sırasında kapatma ve cihaz kaybından sonra tekrar koşma davranışı gerçek
   donanımda ölçülmeli; tarayıcı kapanırsa eğitim oturumu kalıcı değildir.
-- **Zeynep:** Eğitimin WebGPU ön kontrolünü, seçilen GPU/ayar katmanını,
-  aşamaları, iptal sonucunu ve kurtarma yolunu kullanıcıya açık göster.
+- **Zeynep:** Intel iGPU için Windows yönlendirmesi kodlandı. Eğitimin WebGPU
+  ön kontrolünü, seçilen GPU/ayar katmanını, aşamaları, iptal sonucunu ve
+  kurtarma yolunu diğer GPU/tarayıcılarda da kullanıcıya açık göster.
 - **Ortak kabul:** İki GPU sınıfında video yükle → `3D eğit` → tamamlanma →
   döndürme → `.ply` indirme uçtan uca geçer; hata/iptal sonrası tekrar koşu
   sayfa yenilemeden güvenle başlar veya neden başlayamadığı söylenir.
