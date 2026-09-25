@@ -100,6 +100,26 @@ export function bekcili<T>(
   });
 }
 
+/** Kare seçiminde tespit edilen kesim (shot) bilgisinden kullanıcıya
+ * gösterilecek kısa notu üretir. `selectFrames` (splat.js) varsayılan
+ * olarak yalnız en uzun çekimi tutar (`shots: 'longest'`) ve diğerlerini
+ * sessizce atar — video odalar arası kesimle kurgulanmışsa bütün bir oda
+ * kaybolabilir. Tek çekim varsa ya da hiçbir şey atılmadıysa (`shot: null`,
+ * `shots: 'all'` stratejisi) sessiz kal: gürültü ekleme. */
+export function cekimOzeti(sel: {
+  shots?: { start: number; end: number }[];
+  shot?: { start: number; end: number } | null;
+  analysis?: { t: number }[];
+  frames?: { t: number }[];
+}): string {
+  const shots = sel.shots ?? [];
+  if (shots.length <= 1 || !sel.shot || !sel.analysis) return '';
+  const sure = sel.analysis[sel.shot.end].t - sel.analysis[sel.shot.start].t;
+  const kare = sel.frames?.length ?? 0;
+  return `video ${shots.length} ayrı çekimden oluşuyor, yalnız en uzunu ` +
+    `(${sure.toFixed(1)} sn / ${kare} kare) kullanıldı, diğer ${shots.length - 1} çekim atlandı`;
+}
+
 export interface EgitimOlaylari {
   ayar?(ayar: EgitimAyari): void;
   asama(metin: string): void;
@@ -171,7 +191,12 @@ export async function egitimBaslat(
   const hareket = () => { son = performance.now(); };
 
   olay.asama('kareler seçiliyor');
-  const ex = await bekcili<{ frames: { source: Blob; name: string; t: number }[] }>(sj.extractSharpFrames(video, {
+  const ex = await bekcili<{
+    frames: { source: Blob; name: string; t: number }[];
+    shots?: { start: number; end: number }[];
+    shot?: { start: number; end: number } | null;
+    analysis?: { t: number }[];
+  }>(sj.extractSharpFrames(video, {
     maxFrames: secilen.maxFrames,
     signal,
     backgroundSafe: true,
@@ -181,6 +206,11 @@ export async function egitimBaslat(
     },
   }), () => son, 90_000, 'kareler seçiliyor', signal);
   signal?.throwIfAborted();
+  // Video kesimle kurgulanmışsa (oda değişimi vb.) varsayılan seçici yalnız
+  // en uzun çekimi tutar, gerisini sessizce atar — kullanıcı neden eksik
+  // olduğunu bilemez. Tespit edildiyse bir kez bildir; tek çekimde sessiz kal.
+  const cekimNot = cekimOzeti(ex);
+  if (cekimNot) olay.asama(cekimNot);
 
   const s = sj.createSession({
     maxIters: secilen.maxIters,

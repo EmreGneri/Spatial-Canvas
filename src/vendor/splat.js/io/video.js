@@ -720,7 +720,7 @@ async function extractElement(file, opts, log, onProgress) {
       out.push({ source: blob, name: `frame_${String(i + 1).padStart(5, '0')}.jpg`, t: frames[picks[i]].t });
       onProgress({ stage: 'capture', done: i + 1, total: picks.length });
     }
-    return { frames: out, duration, sampled: frames.length, videoW: vw, videoH: vh, fps: null, rotation: 0, engine: 'element', analysis: frames, thumbs };
+    return { frames: out, duration, sampled: frames.length, videoW: vw, videoH: vh, fps: null, rotation: 0, engine: 'element', analysis: frames, shots: sel.shots, shot: sel.shot, thumbs };
   } finally {
     video.removeAttribute('src'); video.load(); URL.revokeObjectURL(url);
   }
