@@ -4,6 +4,7 @@ import {
   yeniStretchAraligi,
   applySobelRelief,
   DETAIL_STRENGTH_DEFAULT,
+  fillSoftMaskInterior,
   gpuSirasinaGir,
   limitDepthSlope,
   loadTransformers,
@@ -763,12 +764,16 @@ export function postProcessLiveDepth(
   if (!mask || mask.length !== depth.length) {
     return limitDepthSlope(depth, width, height, null);
   }
+  // Same blend weight as the photo path: a soft segmentation interior must not
+  // be stamped onto depth as a bowl (see fillSoftMaskInterior). The limiter
+  // below keeps the raw mask; the fill never changes its >= 0.5 regions.
+  const agirlik = fillSoftMaskInterior(mask, width, height);
   // Aralık KARELER ARASI taşınır (`canliStretchAralik`) — foto yolu bu
   // argümanı geçirmez ve orada davranış birebir eskisidir.
-  applyForegroundStretch(depth, mask, width, height, undefined, canliStretchAralik);
+  applyForegroundStretch(depth, agirlik, width, height, undefined, canliStretchAralik);
   // Sobel mikro kabartma stretch'ten SONRA: önce uygulansaydı stretch'in
   // yeniden dağıtımı rölyefi ezerdi (fotoğraf yolundaki sıranın aynısı).
-  if (detayVar) applySobelRelief(depth, lum!, mask, width, height, SOBEL_RELIEF_DEFAULT);
+  if (detayVar) applySobelRelief(depth, lum!, agirlik, width, height, SOBEL_RELIEF_DEFAULT);
   // İKİ BÖLGELİ sınırlama (fotoğraf yoluyla aynı gerekçe): tek maskesiz geçişte
   // özne↔arka plan sıçraması "aşırı eğim" sayılır ve siluetin dış halkası arka
   // plan seviyesine çekilir — kenar 3B'de arkaya çöker.

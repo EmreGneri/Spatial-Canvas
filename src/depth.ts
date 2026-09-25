@@ -452,9 +452,13 @@ export async function estimateDepth(
   // Yüz detay aşamaları ön plan maskesiyle çalışır. GÜN E (bulgu 1): RMBG özne
   // maskesi varsa OTORİTE ODUR; yoksa eski depth-türevli maskeye düşülür
   // (smoothstep(0.15, 0.8, D)) — kamera/video yolu ve maskesiz çağrılar aynen.
+  // A real subject mask gets its soft interior filled (fillSoftMaskInterior):
+  // the blend weight must be silhouette confidence, not a per-pixel imprint.
   const maskFg =
     stretchEnabled || sobelRelief > 0
-      ? (subject ?? foregroundMask(normalized, outWidth, outHeight))
+      ? (subject
+          ? fillSoftMaskInterior(subject, outWidth, outHeight)
+          : foregroundMask(normalized, outWidth, outHeight))
       : null;
   if (stretchEnabled) {
     // Near-tail clamp only with a real subject mask: the depth-derived fallback
@@ -1055,6 +1059,71 @@ export function foregroundMask(depth: Float32Array, w: number, h: number): Float
     out[i] = smoothstep(DETAIL_MASK_NEAR, DETAIL_MASK_FAR, depth[i]);
   }
   return out;
+}
+
+/** Distance (px) a mask pixel must keep from every sub-0.5 pixel to count as
+ *  true interior, and the blur radius that eases the filled region in. */
+const SOFT_INTERIOR_RADIUS = 6;
+const SOFT_INTERIOR_BLUR = 3;
+
+/**
+ * Blend weight for the stretch/sobel stages from a real subject mask:
+ * `max(m, blur(interior))`, where interior = every pixel within
+ * SOFT_INTERIOR_RADIUS (square window, off-image counts as outside) is >= 0.5.
+ *
+ * Why: `applyForegroundStretch` blends `depth + (stretched - depth) * m`. The
+ * soft ramp is meant for the silhouette edge, but segmentation can also be
+ * unsure INSIDE the subject. Measured on d93ef671…jpg (wet, glossy skin, rolled
+ * head): IS-Net gave the bare face 0.51-0.65 while the hair/hood frame was
+ * ~1.0. The face centre got ~55% of a ~+0.4 lift and the frame 100%, so the
+ * mask's dip was stamped onto depth as a ~0.15 bowl, larger than the model's
+ * own face relief (IQR 0.031). The inner face flipped from convex (+9.2e-3) to
+ * concave (-9.1e-3) exactly at the stretch; every other stage kept the sign.
+ *
+ * Only the interior is filled. Pixels < 0.5 are never raised (the blur of the
+ * interior cannot reach them: interior sits >= RADIUS px from any of them and
+ * RADIUS > BLUR), so the silhouette set, the limiter's >= 0.5 regions and the
+ * stretch range scan (mask >= STRETCH_MASK_LO) are unchanged. That also keeps
+ * the near-tail skew gate's decision identical. A confident mask (~1 inside,
+ * narrow feather) comes back unchanged.
+ *
+ * Cost: O(n) erosion (run distances, radius-free) + a separable radius-3 box.
+ * Measured median (Node): 2.3 ms at 252x322, 5.5 ms at 518x388 — runs every
+ * live frame, next to ~13.5 ms of existing post-processing and ~133 ms of
+ * inference.
+ */
+export function fillSoftMaskInterior(mask: Float32Array, w: number, h: number): Float32Array {
+  const r = SOFT_INTERIOR_RADIUS;
+  // Separable erosion of (m >= 0.5), off-image = outside. Each 1-D pass keeps
+  // the distance to the nearest outside sample on both sides (O(n), radius-free:
+  // this also runs every live frame).
+  const good = new Uint8Array(mask.length);
+  for (let i = 0; i < mask.length; i++) good[i] = mask[i] >= 0.5 ? 1 : 0;
+  const erode = (src: Uint8Array, n: number, count: number, stride: number, step: number) => {
+    const out = new Uint8Array(src.length);
+    const left = new Int32Array(n);
+    for (let line = 0; line < count; line++) {
+      const base = line * stride;
+      let last = -1; // index of the nearest outside sample so far (-1 = image edge)
+      for (let k = 0; k < n; k++) {
+        if (!src[base + k * step]) last = k;
+        left[k] = k - last;
+      }
+      let next = n; // image edge on the right
+      for (let k = n - 1; k >= 0; k--) {
+        if (!src[base + k * step]) next = k;
+        out[base + k * step] = left[k] > r && next - k > r ? 1 : 0;
+      }
+    }
+    return out;
+  };
+  const rows = erode(good, w, h, w, 1);
+  const eroded = erode(rows, h, w, 1, w);
+  const interior = new Float32Array(mask.length);
+  for (let i = 0; i < mask.length; i++) interior[i] = eroded[i];
+  const soft = boxBlur(interior, w, h, SOFT_INTERIOR_BLUR);
+  for (let i = 0; i < soft.length; i++) soft[i] = Math.max(mask[i], soft[i]);
+  return soft;
 }
 
 /**

@@ -3,6 +3,30 @@
 Sözleşmeye dokunan her değişiklik buraya yazılır (`ARCHITECTURE.md` kuralı: sessiz sapma yok).
 En yeni üstte.
 
+## 2026-09-25 — Fotoğraf + canlı: yumuşak maske içi yüzü içe çökertmez
+
+- Kök neden: `applyForegroundStretch` maske değeriyle harmanlıyor
+  (`d + (hedef − d)·m`). IS-Net bazı yüzlerde (d93ef671: ıslak/parlak cilt,
+  yatık kafa) çıplak cilde yalnız 0.51–0.65 güven veriyor, saç/kapüşon
+  çerçevesi ~1.0. Yüz merkezi ~+0.4'lük stretch kaldırmasının ~%55'ini,
+  çerçeve %100'ünü alıyordu; maskenin çukuru derinliğe ~0.15'lik kase olarak
+  basılıyordu. İç yüz dışbükeylikten (+9.2e-3) içbükeye (−9.1e-3) tam stretch
+  aşamasında dönüyordu. Model çıktısı dışbükey; detay/sobel/sınırlayıcı/baş
+  detayı/kırpma neden değil.
+- Yeni `fillSoftMaskInterior`: stretch + sobel ağırlığı
+  `max(m, blur3(iç6))`; iç = 6 px içinde her piksel ≥ 0.5. Dış tüy (< 0.5)
+  hiç yükselmez → siluet, sınırlayıcı bölgeleri, stretch aralık taraması ve
+  yakın-kuyruk çarpıklık kapısı değişmez. Fotoğraf (gerçek özne maskesi) ve
+  canlı yol (`postProcessLiveDepth`) ikisi de kullanır; maskesiz/depth-türevli
+  maske yolları aynen.
+- Ölçüm (gerçek model q8, iç yüz dışbükeyliği ×1e-3 / yüz iqr): d93ef671
+  −10.7 → +20.5 / 0.104 → 0.173. özüm, büst, 66fe3981 yüzü aynı; karina
+  16.9 → 17.0; 4cb24ad8 yüz iqr 0.080 → 0.080 (yakın-kuyruk düzeltmesi
+  korunur). Bilinen yan etki: ayna selfie kot bölgesi (maske 0.78–0.87)
+  ortalama +0.068 öne gelir, büst kaidesi −0.011. Canlı maliyet 2.3 ms
+  (252×322).
+- Regresyon: `verify-depth-mask [11]`.
+
 ## 2026-09-25 — Fotoğraf: kameraya uzanan uzuv yüz/gövde rölyefini ezmez
 
 - Kök neden: maskenin %10'undan büyük bir yakın uzuv (kameraya uzanan kol/el)

@@ -21,6 +21,8 @@ import {
   MAX_SLOPE_PER_PX,
   NEAR_TAIL_MAX_SKEW,
 } from '../src/depth.ts';
+import * as depthModule from '../src/depth.ts';
+import { postProcessLiveDepth, resetLiveDepthState } from '../src/engine/vision/liveDepth.ts';
 import {
   dilateAndFeatherMask,
   MASK_DILATE_RADIUS,
@@ -574,6 +576,92 @@ function maskAware(scene) {
   for (let i = 0; i < a.length && same; i++) if (a[i] !== b[i]) same = false;
   console.log(`[10] simetrik dağılımda kapı: ${same ? 'bit-aynı' : 'FARKLI'}`);
   assert.ok(same, 'kapı çarpık olmayan dağılımı değiştirdi');
+}
+
+// ---------------------------------------------------------------------------
+// 11. SOFT MASK INTERIOR — the stretch must not imprint mask confidence as depth
+//
+// Measured on d93ef671…jpg (wet skin, rolled head): IS-Net is only 0.51-0.65
+// confident on the bare face while the hair/hood frame around it is ~1.0.
+// `applyForegroundStretch` blends by mask value, so the face centre got ~55%
+// of the stretch lift and the frame 100%: the mid-face flipped from convex to
+// concave. The fix fills the TRUE interior (every pixel within 6 px >= 0.5) to
+// full weight; the outer feather band is untouched.
+// ---------------------------------------------------------------------------
+{
+  const cx = 100;
+  const cy = 110;
+  const R = 55; // subject head disk (frame = hair ring 36..55)
+  const F = 36; // face radius inside the frame
+  const d0 = new Float32Array(W * H);
+  const soft = new Float32Array(W * H);
+  const solid = new Float32Array(W * H);
+  const ss = (e0, e1, x) => {
+    const t = Math.min(1, Math.max(0, (x - e0) / (e1 - e0)));
+    return t * t * (3 - 2 * t);
+  };
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const i = y * W + x;
+      const r = Math.hypot(x - cx, y - cy);
+      const torso = y > cy + 40 && Math.abs(x - cx) < 70;
+      // 2 px outer feather (as after resampling the production mask)
+      const edge = torso ? 1 : Math.min(1, Math.max(0, (R - r) / 2 + 0.5));
+      if (edge <= 0) {
+        d0[i] = 0.1;
+        continue;
+      }
+      solid[i] = edge;
+      // Soft face plateau: 0.55 at the centre rising to 1 at the frame.
+      soft[i] = torso || r >= F ? edge : 0.55 + 0.45 * ss(0, F, r);
+      // Convex face dome (centre nearer), hair ring and torso a bit farther.
+      d0[i] = torso && r > R ? 0.4 + 0.1 * ((y - cy) / H) : r < F ? 0.5 + 0.03 * (1 - (r / F) ** 2) : 0.5;
+    }
+  }
+  // centre (r<8) minus inner ring (r in 20..30): >0 = convex
+  const conv = (d) => {
+    let c = 0, cn = 0, g = 0, gn = 0;
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+      const r = Math.hypot(x - cx, y - cy);
+      if (r < 8) { c += d[y * W + x]; cn++; } else if (r >= 20 && r < 30) { g += d[y * W + x]; gn++; }
+    }
+    return c / cn - g / gn;
+  };
+  const before = conv(d0);
+  // Reference: the same scene with a confident (~1) interior. Mask confidence
+  // must not change the stretched SHAPE, so the soft mask has to match it.
+  resetLiveDepthState();
+  const liveRef = conv(postProcessLiveDepth(Float32Array.from(d0), W, H, solid, null));
+  // Live path first: production entry point, raw soft mask in.
+  resetLiveDepthState();
+  const live = conv(postProcessLiveDepth(Float32Array.from(d0), W, H, soft, null));
+  console.log(`[11] soft face mask — convexity in ${before.toFixed(4)}; live: confident mask ${liveRef.toFixed(4)}, soft mask ${live.toFixed(4)}`);
+  assert.ok(before > 0 && liveRef > 0, 'scenario broken: face must be convex in and with a confident mask');
+  assert.ok(live > 0.9 * liveRef, `live stretch imprinted the soft mask (inverted/flattened face): ${live.toFixed(4)} vs ${liveRef.toFixed(4)}`);
+  const { fillSoftMaskInterior } = depthModule;
+  assert.equal(typeof fillSoftMaskInterior, 'function', 'fillSoftMaskInterior must be exported');
+  const ref = Float32Array.from(d0);
+  applyForegroundStretch(ref, solid, W, H, undefined, undefined, true);
+  const photo = Float32Array.from(d0);
+  applyForegroundStretch(photo, fillSoftMaskInterior(soft, W, H), W, H, undefined, undefined, true);
+  console.log(`[11] soft face mask — photo stretch: confident ${conv(ref).toFixed(4)}, soft+fill ${conv(photo).toFixed(4)}`);
+  assert.ok(conv(photo) > 0.9 * conv(ref) && conv(photo) > 0, `photo stretch imprinted the soft mask: ${conv(photo).toFixed(4)}`);
+
+  // Already-confident mask (~1 inside, 2 px outer feather): the fill is a no-op.
+  const filled = fillSoftMaskInterior(solid, W, H);
+  let maxDiff = 0;
+  for (let i = 0; i < solid.length; i++) maxDiff = Math.max(maxDiff, Math.abs(filled[i] - solid[i]));
+  const a = Float32Array.from(d0);
+  const b = Float32Array.from(d0);
+  applyForegroundStretch(a, solid, W, H);
+  applyForegroundStretch(b, filled, W, H);
+  let outDiff = 0;
+  for (let i = 0; i < a.length; i++) outDiff = Math.max(outDiff, Math.abs(a[i] - b[i]));
+  console.log(`[11] confident mask — weight max change ${maxDiff.toExponential(2)}, depth max change ${outDiff.toExponential(2)}`);
+  assert.ok(outDiff < 1e-6, `fill changed a confident mask's stretch output by ${outDiff}`);
+  // Outer feather (< 0.5) must never be raised.
+  const softFilled = fillSoftMaskInterior(soft, W, H);
+  for (let i = 0; i < soft.length; i++) if (soft[i] < 0.5) assert.equal(softFilled[i], soft[i], 'outer feather raised');
 }
 
 console.log('OK derinlik maskesi + zSpan + eğim tavanı (Gün E — bulgu 3, 4, 6)');
