@@ -253,6 +253,13 @@ tanımını kullanır:
   verildiğinde üç aşama da bu maskeyi kullanır; maske depth çıktısına
   `resampleBilinear` ile ölçeklenir (1024 vs 518 — ikisi de letterbox karesinin
   iç kırpımı, aynı görsel alan).
+- **Stretch + sobel ağırlığı maskenin kendisi DEĞİL, `fillSoftMaskInterior`
+  çıktısıdır** (fotoğraf ve canlı yol): gerçek iç (6 px içinde her piksel
+  ≥ 0.5) 1'e doldurulur, dış tüy (< 0.5) dokunulmaz. Sebep: segmentasyon
+  öznenin İÇİNDE de kararsız kalabiliyor (d93ef671: çıplak yüz 0.51–0.65,
+  çerçeve ~1.0) ve harman `d + (hedef − d)·m` o çukuru derinliğe kase olarak
+  basıyordu — yüz içe çöküyordu. Eğim sınırlayıcı ham maskeyi kullanır (≥ 0.5
+  bölgeleri dolgu ile değişmez). Bkz. CHANGELOG 2026-09-25.
 - **Maske verilmezse eski davranış AYNEN korunur:** depth-türevli sahte maske
   (`smoothstep(0.15, 0.8, D)`) + maskesiz eğim sınırlayıcı. Kamera/video yolu ve
   maskesiz çağrılar bit-bit aynıdır (regresyon testi: `after_check` ölçümü).
