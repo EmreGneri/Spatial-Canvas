@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import type { CSSProperties } from 'react';
+import { dugme as temaDugme } from './tema';
 import type { Engine } from '../engine';
 import type { PointCloudMaterial } from '../shaders/pointCloudMaterial';
 import type { AsciiMaterial } from '../shaders/asciiMaterial';
@@ -50,21 +51,14 @@ const rowStyle: CSSProperties = {
   fontSize: 12,
 };
 
+/**
+ * Mod düğmeleri tema dilini kullanır (tasarim-kurallari.md · Fitts +
+ * Benzerlik): yükseklik 32 px, yarıçap `tema.yaricap.kontrol`, etkin hâl
+ * dolguyla. Eskiden kendi stili vardı: 28 px ve 3 px yarıçap — ölçümde hem
+ * hedef boyu hem yarıçap kademesi ihlaliydi.
+ */
 function buttonStyle(active: boolean): CSSProperties {
-  return {
-    font: 'inherit',
-    padding: '4px 10px',
-    cursor: active ? 'default' : 'pointer',
-    color: active ? '#101014' : '#c8c8d4',
-    background: active ? '#8ab' : '#1a1a22',
-    // UZUN yazım: "sıfırla" düğmesi bu stilin üstüne yalnız `borderColor`
-    // yazıyor. Taban `border` kısayolu kaldığında React her yeniden çizimde
-    // "shorthand ile non-shorthand karıştırma" uyarısı basıyordu.
-    borderWidth: 1,
-    borderStyle: 'solid',
-    borderColor: active ? '#8ab' : '#26262e',
-    borderRadius: 3,
-  };
+  return { ...temaDugme(active), cursor: active ? 'default' : 'pointer' };
 }
 
 export function ModeSelector({

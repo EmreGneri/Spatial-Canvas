@@ -200,7 +200,8 @@ function ColorInput({ color, label }: { color: Color; label: string }) {
       <input
         type="color"
         value={hex}
-        style={{ width: '100%', height: 24, padding: 0, border: 'none', background: 'none' }}
+        // tasarim-kurallari.md · Fitts: kontrol yüksekliği ≥ 32 px.
+        style={{ width: '100%', height: 32, padding: 0, background: 'none' }}
         onChange={(e) => {
           color.set(e.target.value); // yerinde: uniform.value objesi değişmez
           setHex(e.target.value);

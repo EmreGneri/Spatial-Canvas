@@ -19,7 +19,9 @@
       input[type='range'] {
         -webkit-appearance: none;
         appearance: none;
-        height: 24px;
+        /* tasarim-kurallari.md · Fitts: kontrol yüksekliği ≥ 32 px. Kolun
+           kendisi ince kalır (3 px ray), tıklanabilir alan 32 px. */
+        height: 32px;
         background: transparent;
         cursor: pointer;
       }
@@ -48,7 +50,7 @@
         appearance: none;
         width: 18px;
         height: 18px;
-        border-radius: 5px;
+        border-radius: 6px;
         border: 1px solid rgba(255, 255, 255, 0.16);
         background: #171b24;
         cursor: pointer;
@@ -79,10 +81,10 @@
         background: transparent;
         cursor: pointer;
         padding: 0;
-        height: 26px;
+        height: 32px;
       }
-      input[type='color']::-webkit-color-swatch-wrapper { padding: 2px; }
-      input[type='color']::-webkit-color-swatch { border: none; border-radius: 4px; }
+      input[type='color']::-webkit-color-swatch-wrapper { padding: 3px; }
+      input[type='color']::-webkit-color-swatch { border: none; border-radius: 5px; }
 
       select, input[type='text'] {
         font: inherit;
@@ -99,6 +101,15 @@
       button:active:not(:disabled) { transform: translateY(1px); }
       button:disabled { opacity: 0.4; cursor: not-allowed; }
       :focus-visible { outline: 2px solid #4d8dff; outline-offset: 2px; }
+
+      /* Çalışma göstergesinin nabzı (tasarim-kurallari.md · Doherty). */
+      @keyframes sc-nabiz {
+        0%, 100% { opacity: 1; transform: scale(1); }
+        50% { opacity: 0.35; transform: scale(0.8); }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+      }
 
       ::-webkit-scrollbar { width: 10px; height: 10px; }
       ::-webkit-scrollbar-track { background: transparent; }

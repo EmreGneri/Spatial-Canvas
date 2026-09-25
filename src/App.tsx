@@ -98,6 +98,36 @@ function toggleButton(active: boolean, accent: string): CSSProperties {
  * iner. `minmax(0, …)` şart — `auto` sütun içeriğin max-content'ine şişip
  * kadrajı taşırıyordu.
  */
+/** Sahnenin üstünde duran çalışma katmanı — sahneyi örtmez, köşede durur. */
+const calismaKatmani: CSSProperties = {
+  position: 'absolute',
+  left: 10,
+  top: 10,
+  display: 'flex',
+  alignItems: 'center',
+  gap: 8,
+  padding: '7px 11px',
+  borderRadius: yaricap.kontrol,
+  background: 'rgba(10,12,16,0.78)',
+  backdropFilter: 'blur(10px)',
+  WebkitBackdropFilter: 'blur(10px)',
+  borderWidth: 1,
+  borderStyle: 'solid',
+  borderColor: renk.kenar,
+  color: renk.metin,
+  fontSize: yazi.govde,
+  pointerEvents: 'none',
+};
+
+/** Nabız atan nokta: CSS animasyonu index.html'de (`sc-nabiz`). */
+const calismaNokta: CSSProperties = {
+  width: 7,
+  height: 7,
+  borderRadius: '50%',
+  background: renk.vurgu,
+  animation: 'sc-nabiz 1s ease-in-out infinite',
+};
+
 function calismaAlani(dar: boolean): CSSProperties {
   return {
     display: 'grid',
@@ -1336,6 +1366,16 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
               if (m === 'nesne') say('tracker: nesne modu — ilk tespit modeli yüklerken birkaç saniye sürebilir');
             }}
           />
+        )}
+        {/* ÇALIŞMA GÖSTERGESİ (tasarim-kurallari.md · Doherty eşiği): 400
+            ms'yi aşan işlerde ekranda bir şey DEĞİŞMELİ. Model yükleme, RMBG
+            ve derinlik çıkarımı saniyeler sürüyordu ve tek geri bildirim en
+            alttaki log satırıydı — kullanıcı donmuş sanıyordu. */}
+        {busy && (
+          <div style={calismaKatmani}>
+            <span style={calismaNokta} />
+            <span>işleniyor…</span>
+          </div>
         )}
         {showMask && (
           <canvas
