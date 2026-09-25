@@ -15,6 +15,7 @@ import { MetricsPanel } from './ui/MetricsPanel';
 import { NodeGraphEditor } from './ui/NodeGraphEditor';
 import { TrackerOverlay } from './ui/TrackerOverlay';
 import { ExportBar } from './ui/ExportBar';
+import { maskeKarari } from './ui/maskeKarari';
 import { YetenekUyarisi } from './ui/YetenekUyarisi';
 import { Egitim3D } from './ui/Egitim3D';
 import { type TrackedTarget, type TrackerModu } from './engine/vision/tracker';
@@ -358,24 +359,21 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
         for (let q = 0; q < seg.mask.length; q++) {
           if (seg.mask[q] >= 0.5) fgCount++;
         }
-        const fgRatio = fgCount / seg.mask.length;
-        const hasFg = fgCount > 0 && fgRatio <= 0.92;
-        if (fgCount > 0 && !hasFg) {
-          say(`nesne ayırma: RMBG kareyi tümüyle ön plan saydı (%${(100 * fgRatio).toFixed(0)}) — maske atlandı`);
-        }
-        if (hasFg) {
+        // GÜN 25 (düzeltme): karar ÜÇ uçlu. Alt uç eskiden yoktu ve IS-Net'e
+        // geçince sentetik görselde maske kadrajın %4,7'sini seçip sahnenin
+        // gerisini siliyordu — ekran pratikte siyahtı, sebebi de yazmıyordu.
+        // Eşiklerin ölçümü: ui/maskeKarari.ts başlığı.
+        const karar = maskeKarari(fgCount / seg.mask.length);
+        if (karar.sebep) say(karar.sebep);
+        if (karar.tip === 'kullan') {
           mask = seg.mask;
           maskW = seg.width;
           maskH = seg.height;
           maskLoadedRef.current = true;
-          say(`nesne ayırma (RMBG)      ${Math.round(performance.now() - t2)} ms  (${maskW}x${maskH})`);
-          updateSegment(true);
-          engineRef.current!.setObjectSeparation(true);
-        } else {
-          say('nesne ayırma: RMBG boş maske üretti — maske atlandı (tüm sahne)');
-          updateSegment(false);
-          engineRef.current!.setObjectSeparation(false);
+          say(`nesne ayırma (IS-Net)    ${Math.round(performance.now() - t2)} ms  (${maskW}x${maskH})`);
         }
+        updateSegment(karar.ayirmaAcik);
+        engineRef.current!.setObjectSeparation(karar.ayirmaAcik);
       } catch (err) {
         if (!isCurrent()) return;
         say(`nesne ayırma atlandı (${err instanceof Error ? err.message : String(err)}) — maske olmadan devam`);
