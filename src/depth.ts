@@ -457,7 +457,9 @@ export async function estimateDepth(
       ? (subject ?? foregroundMask(normalized, outWidth, outHeight))
       : null;
   if (stretchEnabled) {
-    applyForegroundStretch(normalized, maskFg!, outWidth, outHeight);
+    // Near-tail clamp only with a real subject mask: the depth-derived fallback
+    // mask includes near floor/table, whose tail is scenery, not a limb.
+    applyForegroundStretch(normalized, maskFg!, outWidth, outHeight, STRETCH_TRIM_PCT, undefined, subject !== null);
   }
   if (sobelRelief > 0 && lum) {
     applySobelRelief(normalized, lum, maskFg!, outWidth, outHeight, sobelRelief);
@@ -952,6 +954,31 @@ const STRETCH_MASK_LO = 0.1;
 const STRETCH_TRIM_PCT = 10;
 
 /**
+ * Near-tail skew clamp for the photo-path stretch range.
+ *
+ * Why: Depth Anything outputs relative disparity, which grows steeply as
+ * something approaches the lens. When a limb reaching toward the camera covers
+ * more than STRETCH_TRIM_PCT of the subject mask, the trimmed upper bound (p90)
+ * lands inside that limb and the face/torso keep only ~3% of the 0..1 range —
+ * they read flat in 3D. Measured on real photos (skin-relief investigation,
+ * 2026-09-25), skew = (p90 − p50) / (p50 − p10) of the stretch input:
+ *
+ *   positives (limb toward camera)    4cb24ad8… 7.36 · 66fe3981… 3.38 (fp16 3.08)
+ *   negatives (known-good corpus)     özüm 1.43 · karina 0.87 · mirror 0.81
+ *                                     bust 0.62 · d93ef671… 0.70
+ *
+ * A single subject gives a roughly symmetric spread (≤ 1.43 observed); a
+ * separate near lobe gives a long near tail. When skew exceeds this value the
+ * upper bound is capped at p50 + NEAR_TAIL_MAX_SKEW·(p50 − p10), i.e. the skew
+ * itself is clamped. Clamping (instead of switching to a fixed tighter bound)
+ * keeps the mapping continuous across the threshold: a photo just above it
+ * changes only slightly. The limb stays in front, but its own shape is
+ * compressed into the soft upper tail of `foregroundStretchTarget` — an
+ * accepted product trade-off (face/body relief matters more for a portrait).
+ */
+export const NEAR_TAIL_MAX_SKEW = 2;
+
+/**
  * Yüzdelik bandın içini aynen doğrusal bırakır. Dışarıdaki değerleri ise
  * STRETCH_LO→0 ve STRETCH_HI→1 boşluklarına üstel olarak sıkıştırır; böylece
  * aykırı pikseller sıralarını korur ama ortak bir düzleme kelepçelenmez.
@@ -1135,6 +1162,9 @@ export function applyForegroundStretch(
   h: number,
   pct = STRETCH_TRIM_PCT,
   durum?: StretchAraligi,
+  /** Photo path only: clamp a near-limb tail (see NEAR_TAIL_MAX_SKEW). Off by
+   *  default so the live path (range carried across frames) is untouched. */
+  nearTailClamp = false,
 ) {
   let mn = Infinity;
   let mx = -Infinity;
@@ -1166,6 +1196,20 @@ export function applyForegroundStretch(
     for (let i = 255; i >= 0 && acc < limit; i--) {
       acc += bins[i];
       hi = mn + ((i + 1) / 256) * rawSpan;
+    }
+    if (nearTailClamp) {
+      // Median from the same histogram (bin centre), then clamp the skew.
+      let mid = lo;
+      acc = 0;
+      for (let i = 0; i < 256; i++) {
+        acc += bins[i];
+        if (acc >= count / 2) {
+          mid = mn + ((i + 0.5) / 256) * rawSpan;
+          break;
+        }
+      }
+      const far = mid - lo;
+      if (far > 0 && hi - mid > NEAR_TAIL_MAX_SKEW * far) hi = mid + NEAR_TAIL_MAX_SKEW * far;
     }
   }
   // Kareler arası taşıma: bu karenin uçları HEDEFTİR, uygulanan uçlar EMA ile

@@ -19,6 +19,7 @@ import {
   foregroundMask,
   limitDepthSlope,
   MAX_SLOPE_PER_PX,
+  NEAR_TAIL_MAX_SKEW,
 } from '../src/depth.ts';
 import {
   dilateAndFeatherMask,
@@ -513,6 +514,66 @@ function maskAware(scene) {
   console.log(`[9] sobel rölyef sonrası maks depth: ${maxV.toFixed(4)} (kenar üstü piksel ${edgeN}, mag tavanlı — kırpma aktif)`);
   assert.ok(edgeN > 0, 'rölyef hiçbir piksele dokunmadı — senaryo bozuk');
   assert.ok(maxV <= 1 + 1e-6, `rölyef 0..1 sözleşmesini bozdu: maks ${maxV.toFixed(4)}`);
+}
+
+// ---------------------------------------------------------------------------
+// 10. YAKIN UZUV KUYRUĞU — stretch üst sınırı çarpıklıkla kelepçelenir
+//
+// Gerçek fotoğraflarda ölçüldü (4cb24ad8…jpg kola uzanan kol, 66fe3981…jpg
+// kameraya uzanan el): maskenin %10'undan büyük bir yakın uzuv p90'ı ele
+// geçiriyor, yüz/gövde 0..1'in ~%3'ünde kalıyor. Kapı yalnızca yakın kuyruk
+// uzak kuyruğun NEAR_TAIL_MAX_SKEW katından uzunsa devreye girer; simetrik
+// dağılımda çıktı BİT-AYNI kalmalı (iyi fotoğraflar etkilenmez).
+// ---------------------------------------------------------------------------
+{
+  const sc = bodyScene();
+  const m = Float32Array.from(sc.subj);
+  const limb = new Uint8Array(W * H);
+  const d0 = Float32Array.from(sc.d);
+  const y0 = Math.round(H * 0.78);
+  for (let y = y0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const i = y * W + x;
+      if (!sc.subj[i]) continue;
+      limb[i] = 1;
+      d0[i] = 0.8 + 0.2 * ((y - y0) / (H - y0));
+    }
+  }
+  const pick = (arr, sel) => {
+    const v = [];
+    for (let i = 0; i < arr.length; i++) if (sel(i)) v.push(arr[i]);
+    v.sort((a, b) => a - b);
+    return (p) => v[Math.floor(p * (v.length - 1))];
+  };
+  const body = (i) => sc.subj[i] && !limb[i];
+  const off = Float32Array.from(d0);
+  applyForegroundStretch(off, m, W, H);
+  const on = Float32Array.from(d0);
+  applyForegroundStretch(on, m, W, H, undefined, undefined, true);
+  const bOff = pick(off, body);
+  const bOn = pick(on, body);
+  const spreadOff = bOff(0.9) - bOff(0.1);
+  const spreadOn = bOn(0.9) - bOn(0.1);
+  const limbOn = pick(on, (i) => limb[i]);
+  console.log(
+    `[10] yakın uzuv kuyruğu — gövde p10-p90: kapısız ${spreadOff.toFixed(3)} → kapılı ${spreadOn.toFixed(3)} (×${(spreadOn / spreadOff).toFixed(2)}), uzuv min ${limbOn(0).toFixed(3)} > gövde p90 ${bOn(0.9).toFixed(3)}`,
+  );
+  assert.equal(typeof NEAR_TAIL_MAX_SKEW, 'number', 'NEAR_TAIL_MAX_SKEW dışa aktarılmalı');
+  assert.ok(spreadOn > spreadOff * 1.4, `kapı gövde rölyefini açmıyor: ${spreadOff.toFixed(3)} → ${spreadOn.toFixed(3)}`);
+  assert.ok(limbOn(0) > bOn(0.9), 'uzuv gövdenin önünde kalmalı (sıra korunur)');
+  for (let i = 0; i < on.length; i++) assert.ok(on[i] >= 0 && on[i] <= 1, `kapılı stretch 0..1 bozdu: ${on[i]}`);
+
+  // Simetrik dağılım (uzuvsuz gövde): kapı açık olsa da çıktı bit-aynı.
+  const s0 = bodyScene();
+  const sm = Float32Array.from(s0.subj);
+  const a = Float32Array.from(s0.d);
+  const b = Float32Array.from(s0.d);
+  applyForegroundStretch(a, sm, W, H);
+  applyForegroundStretch(b, sm, W, H, undefined, undefined, true);
+  let same = true;
+  for (let i = 0; i < a.length && same; i++) if (a[i] !== b[i]) same = false;
+  console.log(`[10] simetrik dağılımda kapı: ${same ? 'bit-aynı' : 'FARKLI'}`);
+  assert.ok(same, 'kapı çarpık olmayan dağılımı değiştirdi');
 }
 
 console.log('OK derinlik maskesi + zSpan + eğim tavanı (Gün E — bulgu 3, 4, 6)');

@@ -3,6 +3,24 @@
 Sözleşmeye dokunan her değişiklik buraya yazılır (`ARCHITECTURE.md` kuralı: sessiz sapma yok).
 En yeni üstte.
 
+## 2026-09-25 — Fotoğraf: kameraya uzanan uzuv yüz/gövde rölyefini ezmez
+
+- Kök neden: maskenin %10'undan büyük bir yakın uzuv (kameraya uzanan kol/el)
+  stretch aralığının p90'ını ele geçiriyordu; yüz/gövde 0..1'in ~%3'ünde
+  kalıp 3B'de düz okunuyordu. Model rölyefi görüyor (kol kadraj dışında
+  kalınca yüz iqr ×4.5), eğim sınırlayıcı/maske/kırpma geçişi neden değil.
+- `applyForegroundStretch` yeni opsiyonel `nearTailClamp`: çarpıklık
+  (p90−p50)/(p50−p10) > `NEAR_TAIL_MAX_SKEW` (= 2) ise üst sınır
+  p50 + 2·(p50−p10)'a kelepçelenir (sürekli; eşik üstünde sıçrama yok).
+  Yalnız fotoğraf yolunda ve gerçek özne maskesiyle açılır; canlı yol ve
+  maskesiz çağrılar birebir eski davranış.
+- Ölçüm (gerçek model, son derinlik, yüz iqr): 4cb24ad8 0.030 → 0.080,
+  66fe3981 0.070 → 0.101. Bedel (kabul edildi): uzvun kendi şekli yumuşak
+  üst kuyruğa sıkışır (kol iqr 0.540 → 0.047, masadaki el 0.132 → 0.014),
+  uzuv önde kalır. Çarpıklık: pozitifler 7.36 / 3.38, negatifler ≤ 1.43;
+  özüm, karina, ayna selfie, büst, d93ef671 son derinliği BİT-AYNI.
+- Regresyon: `verify-depth-mask [10]`.
+
 ## 2026-09-25 — Fotoğraf: önem örneklemesi varsayılanı KAPALI (basık/yayık büst)
 
 - `importanceSampling` artık opt-in (`sampleVolumePositions`,
