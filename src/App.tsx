@@ -14,6 +14,8 @@ import { CapturePanel } from './ui/CapturePanel';
 import { MetricsPanel } from './ui/MetricsPanel';
 import { NodeGraphEditor } from './ui/NodeGraphEditor';
 import { TrackerOverlay } from './ui/TrackerOverlay';
+import { ExportBar } from './ui/ExportBar';
+import { YetenekUyarisi } from './ui/YetenekUyarisi';
 import { Egitim3D } from './ui/Egitim3D';
 import { type TrackedTarget, type TrackerModu } from './engine/vision/tracker';
 import { TrackerClient } from './engine/vision/trackerClient';
@@ -173,8 +175,6 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
   const [trackerMod, setTrackerMod] = useState<TrackerModu>('ozellik');
   const [useTextureColor, setUseTextureColor] = useState(true);
   const [fps, setFps] = useState(0);
-  /** GÜN 6: WebM kayıt süresi — döngüsel butonla değiştirilir (5/10/20). */
-  const [webmSec, setWebmSec] = useState(5);
   /** Editör dışından graf kurulduğunda (preset yükleme) editörü tazele. */
   const [graphTick, setGraphTick] = useState(0);
   /** ControlPanel caches uniform values at mount; bump after reset / graph
@@ -1068,6 +1068,10 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
         </span>
       </h1>
 
+      {/* Z2 — sessiz bozulma yerine sebep: WebGPU/canlı derinlik/tespit
+          kapalıysa üstte tek şerit. Her şey çalışıyorsa hiç çizilmez. */}
+      <YetenekUyarisi say={say} />
+
       <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', maxWidth: 640 }}>
         {/* KAYNAK */}
         <button
@@ -1161,74 +1165,6 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
         </label>
         <span style={toolDivider} />
         {/* ÇIKTI + DURUM */}
-        <button
-         type="button"
-         style={toolButton}
-         disabled={!engine}
-         onClick={() => {
-         const canvas = engineRef.current?.renderer.domElement;
-         if (!canvas) return;
-         // WebGL çizim tamponu compositing sonrası geçersizdir
-         // (preserveDrawingBuffer kapalı): yakalamadan HEMEN ÖNCE, aynı
-         // görevde bir kare çizilmezse PNG boş iner. Kancayı export
-         // modülü çağırır — ölçekli yol da aynı tampondan okur.
-         exportPNG(canvas, 'spatial-canvas', {
-           onBeforeCapture: () => engineRef.current?.renderFrame(),
-         })
-          .then(() => say('PNG indirildi'))
-          .catch((e) => say(`PNG HATA: ${e instanceof Error ? e.message : String(e)}`));
-         }}
-        >
-         PNG
-        </button>
-        {/* E1 — sahneyi standart 3DGS .ply olarak dışa aktar. Üretilen dosya
-            SuperSplat/PlayCanvas gibi görüntüleyicilerde açılır; çıktı
-            uygulamanın içinde hapis kalmaz. Splat yoksa buton çalışmaz. */}
-        <button
-         type="button"
-         style={toolButton}
-         disabled={!engine}
-         title="sahneyi 3D Gaussian Splat (.ply) olarak indir — SuperSplat vb. açar"
-         onClick={() => {
-           const snap = engineRef.current?.gaussianSnapshot();
-           if (!snap) {
-             say('PLY: sahnede splat yok (önce "video → 3B" çalıştır)');
-             return;
-           }
-           try {
-             exportPly({ ...snap, flatten: SPLAT_FLATTEN }, 'spatial-canvas');
-             say(`PLY indirildi · ${snap.count.toLocaleString('tr-TR')} splat`);
-           } catch (e) {
-             say(`PLY HATA: ${e instanceof Error ? e.message : String(e)}`);
-           }
-         }}
-        >
-         PLY
-        </button>
-        <button
-         type="button"
-         style={toolButton}
-         disabled={!engine}
-         onClick={() => {
-         const canvas = engineRef.current?.renderer.domElement;
-         if (!canvas) return;
-         say('WebM kaydı başladı...');
-         exportWebM(canvas, { durationSec: webmSec })
-          .then(() => say(`WebM indirildi (${webmSec} sn)`))
-          .catch((e) => say(`WebM HATA: ${e instanceof Error ? e.message : String(e)}`));
-         }}
-        >
-         WebM ({webmSec}sn)
-        </button>
-        <button
-         type="button"
-         disabled={!engine}
-         onClick={() => { setWebmSec(webmSec === 5 ? 10 : webmSec === 10 ? 20 : 5); }}
-         style={{ ...toolButton, fontSize: 11, padding: '4px 7px', background: 'none', color: '#667', borderColor: 'transparent' }}
-         title="süreyi değiştir: 5/10/20 sn"
-        >
-         ⏱
-        </button>
         <span style={{ color: fps >= 30 ? '#6a6' : '#c66', fontSize: 12, fontVariantNumeric: 'tabular-nums', marginLeft: 'auto' }}>
          {fps} fps
         </span>
@@ -1239,6 +1175,10 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
       <span style={{ color: '#667', fontSize: 12, marginTop: -8 }}>
         görsel/video sürükle-bırak · tıklayıp döndür · hover = kuvvet
       </span>
+
+      {/* Z1 — çıktı akışı: süre görünür, kayıt geri sayımlı, sonuç şeridin
+          kendi durum satırında. export.ts'e dokunulmadı. */}
+      <ExportBar engine={engine} say={say} />
 
       <div
         ref={containerRef}
