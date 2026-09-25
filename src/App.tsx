@@ -16,6 +16,7 @@ import { NodeGraphEditor } from './ui/NodeGraphEditor';
 import { TrackerOverlay } from './ui/TrackerOverlay';
 import { ExportBar } from './ui/ExportBar';
 import { maskeKarari } from './ui/maskeKarari';
+import { useDarEkran } from './ui/useDarEkran';
 import { YetenekUyarisi } from './ui/YetenekUyarisi';
 import { Egitim3D } from './ui/Egitim3D';
 import { type TrackedTarget, type TrackerModu } from './engine/vision/tracker';
@@ -126,6 +127,8 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
   const timerRef = useRef<number | null>(null);
   const objectUrlRef = useRef<string | null>(null);
   const [engine, setEngine] = useState<Engine | null>(null);
+  /** Z3 — mobil düzen: sabit sağ panel akışa girer, sahne kadraja sığar. */
+  const dar = useDarEkran();
   const [mode, setMode] = useState<RenderMode>('points');
   // Render modu material'ları BİR KEZ üretilir; mod değişiminde yalnızca takas
   // edilir. Atlas rasterleştirmesi (ASCII) her tıkta tekrarlanmasın.
@@ -218,6 +221,18 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
     // uniform nesnelerini kullanır, ayrı knob seti yoktur.
     engine.setCrystalSplatMaterial(createCrystalSplatMaterial(materials.crystal));
     engine.setPointsMaterial(materials.points);
+    // Z3 (yerleşim): motorun tuvali AKIŞTAN çıkarılır. Sebep ölçüldü —
+    // konteynere `aspect-ratio` verildiğinde tuval kendi CSS yüksekliğiyle
+    // (önceki karenin ölçüsü) konteyneri geri itiyor ve oran hiç uygulanmıyor
+    // (353×302 ölçüldü, oranın istediği 353×232). Tuval absolute olunca
+    // konteynerin ölçüsünü oran belirler, Engine.resize de o ölçüyü okur.
+    // Engine yalnız width/height yazar; position'a dokunmaz.
+    {
+      const cv = engine.renderer.domElement;
+      cv.style.position = 'absolute';
+      cv.style.top = '0';
+      cv.style.left = '0';
+    }
     const textureType = engine.simTextureLabel;
     setLog((prev) => [
       ...prev,
@@ -1051,7 +1066,26 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
   }
 
   return (
-    <div style={{ padding: 24, display: 'grid', gap: 16, justifyItems: 'start' }}>
+    <div
+      style={{
+        // Z3: masaüstünde sağdaki SABİT panel (220 px) içeriği örtüyordu;
+        // kadraj payı bırakılır. Dar ekranda panel akışa girdiği için pay
+        // gerekmez ve kenar boşluğu küçülür (351 px'lik sahneye yer açar).
+        padding: dar ? 12 : 24,
+        paddingRight: dar ? 12 : 252,
+        display: 'grid',
+        // minmax(0, 1fr): `auto` sütun içeriğin max-content'ine (640 px)
+        // şişiyordu, o yüzden alt öğelerdeki `min(640px, 100%)` de 640'a
+        // çözülüyor ve kadraj taşıyordu. Sütun kadraja kilitlenince yüzdeler
+        // gerçek ekran genişliğini gösterir.
+        gridTemplateColumns: 'minmax(0, 1fr)',
+        gap: dar ? 10 : 16,
+        justifyItems: 'start',
+        boxSizing: 'border-box',
+        width: '100%',
+        maxWidth: '100%',
+      }}
+    >
       {/* `font` kısayolu + `fontSize` birlikte kullanılınca React her
           yeniden çizimde uyarı basıyordu (konsolda onlarca satır). */}
       {/* Başlık artık kendi SÜRÜMÜNÜ gösterir. Eskiden burada elle yazılmış bir
@@ -1070,7 +1104,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
           kapalıysa üstte tek şerit. Her şey çalışıyorsa hiç çizilmez. */}
       <YetenekUyarisi say={say} />
 
-      <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', maxWidth: 640 }}>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', maxWidth: 'min(640px, 100%)' }}>
         {/* KAYNAK */}
         <button
           style={toolButton}
@@ -1189,7 +1223,21 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
           const file = e.dataTransfer.files?.[0];
           if (file) void handleFile(file);
         }}
-        style={{ width: 640, height: 420, border: '1px solid #222', background: '#000', position: 'relative' }}
+        style={{
+          // Z3: sabit 640×420 telefonda kadrajdan taşıyordu (375 px ekranda
+          // sayfa 810 px'e çıkıp yatay kaydırma açıyordu). Genişlik kadraja
+          // uyar, oran korunur — Engine zaten konteynerin ölçüsüne göre
+          // yeniden boyutlanır (Engine.resize parent'ı okur).
+          width: 'min(640px, 100%)',
+          aspectRatio: '640 / 420',
+          border: '1px solid #222',
+          background: '#000',
+          position: 'relative',
+          overflow: 'hidden',
+          // Dokunmatikte sahneyi sürüklerken sayfa kaymasın (OrbitControls
+          // kendi jestini alır).
+          touchAction: 'none',
+        }}
       >
         {/* Tracker HUD — maske overlay'iyle AYNI desen: motor canvas'ının
             üstünde, WebGL sahnesinin dışında. Kapalıyken hiç mount edilmez,
@@ -1242,7 +1290,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
       )}
       {engine && <PresetControls engine={engine} say={say} onGraphChanged={() => { setGraphTick((t) => t + 1); refreshPanel(); }} />}
       {engine && <ForceControls engine={engine} />}
-      <pre style={{ margin: 0, color: '#8ab', whiteSpace: 'pre-wrap' }}>{log.join('\n')}</pre>
+      <pre style={{ margin: 0, color: '#8ab', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', maxWidth: '100%' }}>{log.join('\n')}</pre>
       {engine && (
         <ControlPanel
           grain={engine.grainUniforms}

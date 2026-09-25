@@ -14,6 +14,7 @@ import { BLOOM_PARAMS, type BloomPassUniforms } from '../shaders/bloomPass';
 import { LOOK_PARAMS, type LookUniforms } from '../shaders/look';
 import type { RenderTargets } from '../shaders/renderPreset';
 import { PresetSection } from './PresetSection';
+import { useDarEkran } from './useDarEkran';
 import type { RenderMode } from './ModeSelector';
 
 /**
@@ -31,6 +32,12 @@ import type { RenderMode } from './ModeSelector';
  * re-render etmez.
  */
 
+/**
+ * Z3 (mobil düzen): panel masaüstünde sağda SABİT durur. Dar ekranda sabit
+ * kalsaydı 375 px'lik kadrajın 220 px'ini yiyip sahnenin üstüne binerdi —
+ * orada akışa girer, tam genişlik alır ve katlanabilir (varsayılan kapalı:
+ * telefonda önce sahne görünsün, ayarlar isteyene açılsın).
+ */
 const panelStyle: CSSProperties = {
   position: 'fixed',
   top: 0,
@@ -48,6 +55,43 @@ const panelStyle: CSSProperties = {
   gap: 12,
   alignContent: 'start',
   overflowY: 'auto',
+};
+
+const darPanelStyle: CSSProperties = {
+  position: 'static',
+  width: '100%',
+  maxWidth: '100%',
+  height: 'auto',
+  maxHeight: '60vh',
+  boxSizing: 'border-box',
+  padding: '10px 12px',
+  background: '#101014',
+  borderWidth: 1,
+  borderStyle: 'solid',
+  borderColor: '#26262e',
+  borderRadius: 3,
+  color: '#c8c8d4',
+  fontFamily: 'ui-monospace, "Cascadia Mono", Consolas, monospace',
+  fontSize: 12,
+  display: 'grid',
+  gap: 12,
+  alignContent: 'start',
+  overflowY: 'auto',
+};
+
+const darAcKapaStyle: CSSProperties = {
+  fontFamily: 'inherit',
+  fontSize: 12,
+  padding: '4px 10px',
+  background: '#1a1a22',
+  color: '#c8c8d4',
+  borderWidth: 1,
+  borderStyle: 'solid',
+  borderColor: '#26262e',
+  borderRadius: 3,
+  cursor: 'pointer',
+  width: '100%',
+  textAlign: 'left',
 };
 
 const headingStyle: CSSProperties = {
@@ -276,11 +320,29 @@ points: PointCloudMaterial;
   // renk seçicileri başlangıç değerini mount anında uniform'dan okur; remount
   // olmazsa uniform değişse de panel eski sayıyı göstermeye devam eder.
   const [revision, setRevision] = useState(0);
+  // Z3: dar ekranda panel akışa girer ve katlanır; masaüstünde davranış aynı.
+  const dar = useDarEkran();
+  const [darAcik, setDarAcik] = useState(false);
 
   const targets: RenderTargets = { mode, points, ascii, neon, solid, splat, crystal, grain, feedback, chromatic, setMode };
 
+  if (dar && !darAcik) {
+    return (
+      <aside style={{ width: '100%' }}>
+        <button type="button" style={darAcKapaStyle} onClick={() => setDarAcik(true)}>
+          ⚙ ayarlar ve presetler ▸
+        </button>
+      </aside>
+    );
+  }
+
   return (
-    <aside style={panelStyle}>
+    <aside style={dar ? darPanelStyle : panelStyle}>
+      {dar && (
+        <button type="button" style={darAcKapaStyle} onClick={() => setDarAcik(false)}>
+          ⚙ ayarlar ve presetler ▾
+        </button>
+      )}
       <strong style={firstHeading}>Presets</strong>
       <PresetSection targets={targets} onApplied={() => setRevision((r) => r + 1)} />
 

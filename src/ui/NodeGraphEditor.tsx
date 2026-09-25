@@ -240,7 +240,7 @@ export function NodeGraphEditor({
   const selected = selectedId ? liveGraph(engine).nodes.find((n) => n.id === selectedId) : undefined;
 
   return (
-    <div style={{ display: 'grid', gap: 8, width: 640 }}>
+    <div style={{ display: 'grid', gap: 8, width: 'min(640px, 100%)', maxWidth: '100%' }}>
       <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
         <span style={{ color: '#667', fontSize: 12 }}>graf:</span>
         <button
@@ -254,7 +254,7 @@ export function NodeGraphEditor({
           kabloyu çek → pass gerçekten kapanır · kenar seç + Backspace/Delete ile kopar
         </span>
       </div>
-      <div style={{ width: 640, height: 300, border: '1px solid #1d1d26', background: '#0d0d13', borderRadius: 6 }}>
+      <div style={{ width: '100%', height: 300, border: '1px solid #1d1d26', background: '#0d0d13', borderRadius: 6 }}>
         <ReactFlow
           nodes={nodes}
           edges={edges}
