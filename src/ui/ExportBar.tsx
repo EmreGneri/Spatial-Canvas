@@ -3,6 +3,7 @@ import type { Engine } from '../engine';
 import { exportPly, exportPNG, exportWebM } from '../engine/export';
 import { SPLAT_FLATTEN } from '../shaders/splatMaterial';
 import { imzaCiz } from './imzaCiz';
+import { dugme as temaDugme, renk, SANS, yaricap, yazi } from './tema';
 
 /**
  * ÇIKTI ŞERİDİ — Z1 (render katmanı, Zeynep).
@@ -216,18 +217,9 @@ const seritStyle: CSSProperties = {
   fontSize: 12,
 };
 
-const dugme: CSSProperties = {
-  fontFamily: 'inherit',
-  fontSize: 12,
-  padding: '4px 10px',
-  background: '#1a1a22',
-  color: '#c8c8d4',
-  borderWidth: 1,
-  borderStyle: 'solid',
-  borderColor: '#26262e',
-  borderRadius: 3,
-  cursor: 'pointer',
-};
+// tasarim-kurallari.md · Fitts: 32 px hedef, tema yarıçapı. Eskiden 24 px
+// ve 3 px yarıçaptı (ölçüldü).
+const dugme: CSSProperties = temaDugme(false);
 
 const grupStyle: CSSProperties = {
   display: 'flex',
@@ -236,24 +228,26 @@ const grupStyle: CSSProperties = {
   padding: 2,
   borderWidth: 1,
   borderStyle: 'solid',
-  borderColor: '#26262e',
-  borderRadius: 3,
+  borderColor: renk.kenar,
+  borderRadius: yaricap.kontrol,
 };
 
+/** Süre seçici: ölçümde 17 px'di — dokunma hedefi olarak çok küçük. */
 function sureDugmesi(secili: boolean): CSSProperties {
   return {
-    fontFamily: 'inherit',
-    fontSize: 11,
-    padding: '2px 6px',
-    background: secili ? '#8ab' : 'transparent',
-    color: secili ? '#101014' : '#667',
+    fontFamily: SANS,
+    fontSize: yazi.kucuk,
+    minHeight: 32,
+    padding: '6px 9px',
+    background: secili ? renk.vurguSakin : 'transparent',
+    color: secili ? '#dce9ff' : renk.metinSilik,
     borderWidth: 0,
-    borderRadius: 2,
+    borderRadius: yaricap.kontrol,
     cursor: secili ? 'default' : 'pointer',
   };
 }
 
 function durumStyle(d: Durum): CSSProperties {
-  const renk = d.tip === 'hata' ? '#c66' : d.tip === 'calisiyor' ? '#f0b429' : '#6a6';
-  return { color: renk, fontSize: 12, marginLeft: 'auto', fontVariantNumeric: 'tabular-nums' };
+  const c = d.tip === 'hata' ? renk.kotu : d.tip === 'calisiyor' ? renk.uyari : renk.iyi;
+  return { color: c, fontSize: yazi.kucuk, marginLeft: 'auto', fontVariantNumeric: 'tabular-nums' };
 }
