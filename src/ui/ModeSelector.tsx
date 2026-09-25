@@ -91,7 +91,7 @@ export function ModeSelector({
 
   return (
     <div style={rowStyle}>
-      <span style={{ color: '#667' }}>mod:</span>
+
       {MODES.map(({ id, label }) => (
         <button
           key={id}
@@ -121,7 +121,7 @@ export function ModeSelector({
           onReset?.();
         }}
       >
-        ↺ sıfırla
+        ↺
       </button>
       <LivePhotoControls engine={engine} />
       <FlatVideoToggle engine={engine} />
@@ -155,7 +155,7 @@ function FlatVideoToggle({ engine }: { engine: Engine }) {
         engine.setFlatVideo(next);
       }}
     >
-      ▭ düz video
+      ▭ düz
     </button>
   );
 }
@@ -195,7 +195,7 @@ function LivePhotoControls({ engine }: { engine: Engine }) {
         style={{ ...buttonStyle(on), marginLeft: 8 }}
         onClick={toggle}
       >
-        ◍ canlı fotoğraf
+        ◍ canlı
       </button>
       <label title="salınım hızı" style={{ display: 'flex', gap: 4, alignItems: 'center', color: on ? '#889' : '#556' }}>
         <input
