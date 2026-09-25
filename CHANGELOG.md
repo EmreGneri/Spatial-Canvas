@@ -3,6 +3,23 @@
 Sözleşmeye dokunan her değişiklik buraya yazılır (`ARCHITECTURE.md` kuralı: sessiz sapma yok).
 En yeni üstte.
 
+## 2026-09-25 — Splat: nesne ayırma arka plan perdesini çizmez
+
+- Kök neden: nesne ayırma AÇIK iken Point Cloud / ASCII / Neon arka plan
+  texel'lerini (w = `BACKDROP_OPACITY` = 0.4) atıyor, splat modu atmıyordu —
+  splat material'ında ayırma kolu yok, sıralama kapısı sabit 0.02. Büst
+  fotoğrafında 147.456 splat'ın 121.057'si (%82) arka plandı; boyutları ön
+  planla aynı (0.0026), ama komşuya değecek şekilde örtüştükleri için sürekli
+  bir tabaka oluyor, yandan bakışta kavisli beyaz perde olarak okunuyordu.
+  Veri/boyut hatası değil, ayırmanın splat'a hiç uygulanmaması.
+- `splatOpacityGate`: ayırma AÇIK + köprü kaynağında kapı ≥ 0.5; Engine
+  sıralamaya bunu verir, ayırma değişince sırayı tazeler. Ayırma kapalı ve
+  `authored` Gauss'lar birebir eski davranış.
+- Doğrulama (tarayıcı, 70° yan görüş): büst ve özüm'de perde kayboldu, Point
+  Cloud ile aynı siluet; çizilen splat 147.456 → 26.399 (= ön plan sayısı).
+  Ayırma kapatılınca tüm sahne geri gelir.
+- Regresyon: `verify-splat-separation`.
+
 ## 2026-09-25 — Fotoğraf + canlı: yumuşak maske içi yüzü içe çökertmez
 
 - Kök neden: `applyForegroundStretch` maske değeriyle harmanlıyor

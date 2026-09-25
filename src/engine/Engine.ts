@@ -16,7 +16,7 @@ import {
 import { createPointsCloud } from './points';
 import { SplatObject, fillGaussiansFromPointCloud, uploadGaussianData } from './splats';
 import type { GaussianBufferData } from '../shaders/splatFixture';
-import type { SplatSortMode } from '../shaders/splatSort';
+import { splatOpacityGate, type SplatSortMode } from '../shaders/splatSort';
 import { createTrajectoryOverlay, type TrajectoryOverlay } from '../shaders/trajectoryOverlay';
 import type { PoseTrackRecord } from './vision/types';
 import { createSimulation, type SimulationUniforms } from './simulation';
@@ -422,7 +422,7 @@ export class Engine {
         this.splatObject.update(
           this.camera,
           this.splatSortModeName,
-          this.splatMinOpacity,
+          splatOpacityGate(this.splatMinOpacity, this.objectSeparation, this.gaussianSource),
           this.viewportPx,
           this.splatObject.mesh.material as THREE.Material,
         );
@@ -753,6 +753,8 @@ setPointsMaterial(material: THREE.Material) {
   setObjectSeparation(on: boolean) {
     this.objectSeparation = on;
     this.pushSharedUniformsAll();
+    // The splat gate reads separation on the CPU, so the draw order is stale.
+    this.splatObject?.forceResort();
   }
 
   /**

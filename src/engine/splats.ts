@@ -331,7 +331,7 @@ export class SplatObject {
    * yeterlidir (hiçbir birim vektörle eşik dolmaz); konum da uzağa itilir ki
    * yalnız-öteleme kolu da tetiklensin.
    */
-  private forceResort() {
+  forceResort() {
     this.resort.dir[0] = 0;
     this.resort.dir[1] = 0;
     this.resort.dir[2] = 0;
