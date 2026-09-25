@@ -43,6 +43,9 @@ const rowStyle: CSSProperties = {
   display: 'flex',
   gap: 6,
   alignItems: 'center',
+  // Z3: satır sarmıyordu; telefonda 786 px'e uzayıp kadrajı taşırıyordu.
+  flexWrap: 'wrap',
+  maxWidth: '100%',
   fontFamily: 'ui-monospace, "Cascadia Mono", Consolas, monospace',
   fontSize: 12,
 };
