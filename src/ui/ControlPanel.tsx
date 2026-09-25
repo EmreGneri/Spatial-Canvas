@@ -40,20 +40,24 @@ import type { RenderMode } from './ModeSelector';
  * telefonda önce sahne görünsün, ayarlar isteyene açılsın).
  */
 const panelStyle: CSSProperties = {
-  position: 'fixed',
+  // Çalışma alanının SAĞ sütunu: ekrana çivilenmiş (fixed) değil, sütunun
+  // içinde yaşar. Kendi içinde kaydırılır — sayfa kaymadan efektler gezilir,
+  // canvas yerinde kalır.
+  position: 'sticky',
   top: 12,
-  right: 12,
-  bottom: 12,
-  width: 296,
-  padding: 12,
+  maxHeight: 'calc(100vh - 120px)',
+  width: '100%',
+  padding: 10,
   boxSizing: 'border-box',
   ...cam({ blur: 26, radius: yaricap.panel }),
   fontFamily: SANS,
   fontSize: 12,
   display: 'grid',
-  gap: 8,
+  gap: 6,
   alignContent: 'start',
   overflowY: 'auto',
+  // Kaydırma sırasında kartlar panelin kenarına yapışmasın.
+  scrollbarGutter: 'stable',
 };
 
 const rafBasligi: CSSProperties = {
@@ -352,6 +356,8 @@ points: PointCloudMaterial;
   const [acikKart, setAcikKart] = useState<string | null>('render');
 
   const targets: RenderTargets = { mode, points, ascii, neon, solid, splat, crystal, grain, feedback, chromatic, setMode };
+  // Preset kütüphanesi artık ORTA sütunda (KutuphanePaneli); raf yalnız
+  // efekt modüllerini taşır.
 
   if (dar && !darAcik) {
     return (
@@ -381,18 +387,6 @@ points: PointCloudMaterial;
     ...(bloom ? [{ id: 'bloom', ad: 'Bloom', ozet: `${BLOOM_PARAMS.length} kol`, etkin: degismis(BLOOM_PARAMS, asRecord(bloom)), icerik: <ParamGroup defs={BLOOM_PARAMS} uniforms={asRecord(bloom)} /> }] : []),
     ...(look ? [{ id: 'look', ad: 'Look', ozet: 'ACES + sis', etkin: degismis(LOOK_PARAMS, asRecord(look)), icerik: <ParamGroup defs={LOOK_PARAMS} uniforms={asRecord(look)} /> }] : []),
     { id: 'grain', ad: 'Grain / Grading', ozet: `${GRAIN_PARAMS.length} kol`, etkin: degismis(GRAIN_PARAMS, asRecord(grain)), icerik: <ParamGroup defs={GRAIN_PARAMS} uniforms={asRecord(grain)} /> },
-    { id: 'presets', ad: 'Presets', ozet: 'kaydet · yükle', etkin: false, icerik: (
-      <PresetSection
-        targets={targets}
-        onApplied={() => setRevision((r) => r + 1)}
-        sahne={engine ? {
-          canvas: engine.renderer.domElement,
-          renderFrame: () => engine.renderFrame(),
-          serialize: () => serializeRenderState(targets),
-          setMode: setModeGuncel,
-        } : undefined}
-      />
-    ) },
   ];
 
   return (
