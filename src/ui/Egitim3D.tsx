@@ -3,6 +3,9 @@ import { egitimBaslat, kameraMerkezi, yorunge, type Egitim, type EgitimMetrik } 
 import { bindWheelZoom, boundedZoomFactor, flyAxes, flyRadius, flyStep, lookAround } from './egitimControls';
 import { egitimGpuHint } from './egitimGpuHint';
 import { ayarOzeti, egitimOnKontrol, type OnKontrol } from './egitimOnKontrol';
+import { kunyeMetni, PAYLASIM_KLIP_SN, turAcisi } from './paylasim';
+import { imzaCiz } from './imzaCiz';
+import { exportWebM } from '../engine/export';
 import { ayarSec, type EgitimAyari } from '../engine/reconstruction/egitim3dgs';
 
 /**
@@ -28,6 +31,10 @@ export function Egitim3D({ dosya, onKapat, say }: { dosya: File; onKapat(): void
   const [bitti, setBitti] = useState(false);
   const [hata, setHata] = useState<string | null>(null);
   const [plyBusy, setPlyBusy] = useState(false);
+  /** Z1 — paylaşım klibi kaydı sürüyor mu (kalan saniye). */
+  const [klipKalan, setKlipKalan] = useState<number | null>(null);
+  /** Eğitimin gerçek süresi — künyeye girer. */
+  const sureRef = useRef<number | null>(null);
   const [gpu, setGpu] = useState<{ ad: string; entegre: boolean; iter: number } | null>(null);
   /** Z2 — ön kontrol: eğitim BAŞLAMADAN cihazın yapabildiği söylenir. */
   const [onKontrol, setOnKontrol] = useState<OnKontrol | null>(null);
@@ -71,6 +78,7 @@ export function Egitim3D({ dosya, onKapat, say }: { dosya: File; onKapat(): void
       bitti: (m) => {
         if (iptal) return;
         setBitti(true);
+        sureRef.current = (performance.now() - t0) / 1000;
         sayRef.current(`3D eğitim bitti · ${Math.round((performance.now() - t0) / 1000)} sn · ` +
           `${m?.splats.toLocaleString('tr-TR') ?? '?'} Gaussian · test ${subjectOnly ? 'özne ' : ''}PSNR ${m?.psnrHold?.toFixed(1) ?? '?'}`);
       },
@@ -151,6 +159,90 @@ export function Egitim3D({ dosya, onKapat, say }: { dosya: File; onKapat(): void
     const e = egitimRef.current;
     heldKeys.current.clear();
     if (e && homeCameraRef.current) e.kameraAyarla(homeCameraRef.current);
+  }
+
+  /**
+   * Z1 — PAYLAŞIM KLİBİ: sahneyi TAM BİR TUR döndürerek imzalı WebM kaydeder
+   * ve künyeyi panoya kopyalar. Tam tur, klip döngüye alındığında sıçrama
+   * görünmesin diye (sosyal mecralar kısa klipleri döngüler).
+   *
+   * Kayıt ARA CANVAS'tan alınır: eğitim tuvaline imza çizmek onun kendi
+   * çizimini bozardı; ara yüzeye her karede kopyalanıp imza üstüne konur.
+   */
+  async function paylasimKlibi() {
+    const e = egitimRef.current;
+    const canvas = canvasRef.current;
+    if (!e || !canvas || klipKalan !== null) return;
+
+    const ara = document.createElement('canvas');
+    ara.width = canvas.width;
+    ara.height = canvas.height;
+    const ctx = ara.getContext('2d');
+    if (!ctx) return;
+
+    // KAYNAK STREAM ÜZERİNDEN OKUNUR. Doğrudan `drawImage(canvas)` ÖLÇÜLDÜ ve
+    // siyah kare verdi (klip ortalama parlaklığı 0,1; yalnız imza görünüyordu):
+    // eğitim tuvali splat.js'in kendi WebGL bağlamı, tampon onun çizim anı
+    // dışında geçersiz. `captureStream` compositing'den bağımsız çalışır;
+    // video elemanı her an okunabilir bir yüzeydir.
+    const kaynak = canvas.captureStream(60);
+    const kaynakVideo = document.createElement('video');
+    kaynakVideo.muted = true;
+    kaynakVideo.playsInline = true;
+    kaynakVideo.srcObject = kaynak;
+    await kaynakVideo.play().catch(() => undefined);
+
+    const basla = performance.now();
+    let uygulanan = 0;
+    let raf = 0;
+    const pompa = () => {
+      raf = requestAnimationFrame(pompa);
+      // Açı MUTLAK: kaydın başından beri geçen süreye bakılır, kare başına
+      // artışa değil. Kare düşse de süre dolduğunda tur tam kapanır.
+      const hedef = turAcisi((performance.now() - basla) / 1000);
+      const delta = hedef - uygulanan;
+      uygulanan = hedef;
+      if (delta > 0) e.kameraAyarla(yorunge(e.kamera, e.pivot, e.yukari, delta, 0));
+      if (kaynakVideo.readyState >= 2) ctx.drawImage(kaynakVideo, 0, 0, ara.width, ara.height);
+      imzaCiz(ctx, ara.width, ara.height);
+    };
+    pompa();
+
+    const bitisAn = performance.now() + PAYLASIM_KLIP_SN * 1000;
+    setKlipKalan(PAYLASIM_KLIP_SN);
+    const sayac = window.setInterval(() => {
+      setKlipKalan(Math.max(0, Math.ceil((bitisAn - performance.now()) / 1000)));
+    }, 250);
+
+    try {
+      await exportWebM(ara, { durationSec: PAYLASIM_KLIP_SN });
+      const kunye = kunyeMetni({
+        surum: __APP_VERSION__,
+        dosyaAdi: dosya.name,
+        splats: metrik?.splats ?? null,
+        psnr: metrik?.psnrHold ?? null,
+        gpu: onAyar?.gpu ?? null,
+        sureSn: sureRef.current,
+        yalnizOzne: subjectOnly,
+      });
+      try {
+        await navigator.clipboard.writeText(kunye);
+        sayRef.current(`paylaşım klibi indirildi (${PAYLASIM_KLIP_SN} sn, tam tur) · künye panoya kopyalandı`);
+      } catch {
+        // Pano izni yoksa künye kaybolmasın: log şeridinde kalır.
+        sayRef.current(`paylaşım klibi indirildi (${PAYLASIM_KLIP_SN} sn, tam tur) · künye: ${kunye}`);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setHata(`paylaşım klibi kaydedilemedi: ${message}`);
+      sayRef.current(`paylaşım klibi HATA: ${message}`);
+    } finally {
+      cancelAnimationFrame(raf);
+      clearInterval(sayac);
+      kaynak.getTracks().forEach((t) => t.stop());
+      kaynakVideo.srcObject = null;
+      setKlipKalan(null);
+    }
   }
 
   async function plyIndir() {
@@ -287,6 +379,16 @@ export function Egitim3D({ dosya, onKapat, say }: { dosya: File; onKapat(): void
         {bitti && gpu?.entegre && (
           <button style={dugme} onClick={devamEt} title="Aynı sahnede 4.000 iterasyon daha; kalite etkisi videoya göre değişir">
             sürdür +4.000 (deneysel)
+          </button>
+        )}
+        {bitti && (
+          <button
+            style={dugme}
+            disabled={klipKalan !== null}
+            title={`${PAYLASIM_KLIP_SN} sn'lik, tam tur dönen imzalı klip kaydeder ve künyeyi panoya kopyalar`}
+            onClick={paylasimKlibi}
+          >
+            {klipKalan !== null ? `● klip kaydediliyor · ${klipKalan} sn` : '⤓ paylaşım klibi'}
           </button>
         )}
         {bitti && <button style={dugme} disabled={plyBusy} onClick={plyIndir}>{plyBusy ? 'PLY hazırlanıyor…' : '.ply indir'}</button>}

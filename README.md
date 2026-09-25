@@ -30,6 +30,16 @@ kümesine aittir; yüklediğiniz videonun canlı kalite puanı değildir.
   [E4 raporu](docs/benchmarks/E4-brush.md) yalnız surfel önizlemenin kısmi
   ölçümüdür; yeni 3DGS yolu için Brush karşılaştırması tamamlanmadı.
 
+- **Z1-Z3 (render katmanı — Zeynep, 2026-09-25):** üst başlık artık uygulamanın
+  **sürümünü** gösterir (`package.json`'dan, elle güncellenmez). **Çıktı şeridi**
+  tek yerde toplandı: süre görünür, kayıt geri sayımlı, kapatılabilir imza
+  PNG/WebM'e girer. Eğitim bitince **paylaşım klibi** (8 sn, tam tur döner,
+  künye panoya) — barındırma yapılmadığı için "tek link" yok, paylaşılabilir
+  dosya + künye var. **Yetenek uyarısı** ve **eğitim ön kontrolü**: WebGPU
+  yoksa eğitim düğmesi kapalı gelir, sebep ve tarayıcıya özel kurtarma adımları
+  listelenir; seçilen GPU/ayar katmanı her cihazda görünür. **Mobil düzen**:
+  375 px ekranda sayfa 810 → 375 px, yatay kaydırma bitti (gerçek telefon
+  kabulü henüz yapılmadı). Detay: [CHANGELOG.md](CHANGELOG.md).
 - **Viral sprint (render katmanı — Zeynep):** **tracker HUD overlay** (motor
   canvas'ının üstünde ayrı 2D canvas — köşe parantez kutuları, LOCK vurgusu,
   ID/koordinat etiketleri, sayaç bloğu; üstteki "tracker" düğmesi), **"canlı
