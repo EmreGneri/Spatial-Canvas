@@ -1,6 +1,6 @@
-import { useState, type CSSProperties } from 'react';
+import { useEffect, useState, type CSSProperties } from 'react';
 import { BUILT_IN_PRESETS } from '../shaders/presets';
-import { kapakSil, kapakUret, kapakYaz, kapaklariOku, yerTutucu } from './presetOnizleme';
+import { kapakSil, kapakUret, kapakYaz, kapaklariOku, kaynakDinle, yerTutucu } from './presetOnizleme';
 import { bosluk, dugme as temaDugme, renk, yaricap, yazi, yuzey } from './tema';
 import {
   applyRenderState,
@@ -101,6 +101,9 @@ export function PresetSection({
   const [userPresets, setUserPresets] = useState<StoredPreset[]>(loadUserPresets);
   const [note, setNote] = useState('');
   const [kapaklar, setKapaklar] = useState(kapaklariOku);
+  // Kaynak (fotoğraf/video/kamera) değişince kapaklar bu sahneyi temsil
+  // etmez: kütüphane yer tutucuya döner.
+  useEffect(() => kaynakDinle(() => setKapaklar(kapaklariOku())), []);
   const [uretiliyor, setUretiliyor] = useState<string | null>(null);
 
   const tumPresetler = [

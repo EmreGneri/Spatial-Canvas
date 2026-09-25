@@ -17,6 +17,7 @@ import { TrackerOverlay } from './ui/TrackerOverlay';
 import { ExportBar } from './ui/ExportBar';
 import { TransportSerit } from './ui/TransportSerit';
 import { KutuphanePaneli } from './ui/KutuphanePaneli';
+import { kaynakBelirle } from './ui/presetOnizleme';
 import { serializeRenderState } from './shaders/renderPreset';
 import { maskeKarari } from './ui/maskeKarari';
 import { useDarEkran } from './ui/useDarEkran';
@@ -992,6 +993,9 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
       if (!isCurrent()) return;
       setCameraOn(true);
       engineRef.current!.mediaType = 'camera';
+      // Kütüphane kapakları sahneye bağlı: kaynak değişti, eskiler artık
+      // bu sahneyi temsil etmiyor (bkz. presetOnizleme.ts).
+      kaynakBelirle('kamera');
       // Tur 12 (şikayet 1): kamera da canlı renk dokusu olarak bağlanır —
       // önceki resmin hayaleti parçacıklarda kalmaz.
       lastPhotoRef.current = null;
@@ -1025,6 +1029,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
     setCameraOn(false);
     setVideoDosya(null);
     engineRef.current!.mediaType = 'upload';
+    kaynakBelirle(`dosya:${file.name}:${file.size}`);
     const isCurrent = captureGeneration(sourceGenRef);
     const url = URL.createObjectURL(file);
     try {
@@ -1215,6 +1220,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
             teardownSource();
             setCameraOn(false);
             engineRef.current!.mediaType = 'synthetic';
+            kaynakBelirle('sentetik');
             run(syntheticImage());
           }}
         >
