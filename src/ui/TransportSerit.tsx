@@ -72,15 +72,14 @@ export function TransportSerit({
 }
 
 const serit: CSSProperties = {
-  position: 'sticky',
-  bottom: bosluk.m,
-  zIndex: 5,
+  // Canvas'ın HEMEN ALTINDA, onunla aynı sütunda: kumanda kontrol ettiği
+  // şeyin yanında durur. (Sticky denendi ve kaldırıldı — sayfa kayarken
+  // kütüphanenin üstüne biniyordu.)
   display: 'flex',
   flexWrap: 'wrap',
   alignItems: 'center',
   gap: bosluk.m,
   width: '100%',
-  maxWidth: 'min(960px, 100%)',
   boxSizing: 'border-box',
   padding: bosluk.s,
   fontFamily: SANS,

@@ -16,6 +16,8 @@ import { NodeGraphEditor } from './ui/NodeGraphEditor';
 import { TrackerOverlay } from './ui/TrackerOverlay';
 import { ExportBar } from './ui/ExportBar';
 import { TransportSerit } from './ui/TransportSerit';
+import { KutuphanePaneli } from './ui/KutuphanePaneli';
+import { serializeRenderState } from './shaders/renderPreset';
 import { maskeKarari } from './ui/maskeKarari';
 import { useDarEkran } from './ui/useDarEkran';
 import { bosluk, cam, dugme as temaDugme, led, MONO, renk, SANS, yaricap, yazi, yuzey } from './ui/tema';
@@ -88,6 +90,22 @@ function toggleButton(active: boolean, accent: string): CSSProperties {
     background: `${accent}26`,
     borderColor: `${accent}66`,
     color: '#fff',
+  };
+}
+
+/**
+ * Çalışma alanı: canvas · kütüphane (ince) · efektler. Dar ekranda alt alta
+ * iner. `minmax(0, …)` şart — `auto` sütun içeriğin max-content'ine şişip
+ * kadrajı taşırıyordu.
+ */
+function calismaAlani(dar: boolean): CSSProperties {
+  return {
+    display: 'grid',
+    gridTemplateColumns: dar ? 'minmax(0, 1fr)' : 'minmax(360px, 1fr) minmax(0, 228px) minmax(0, 296px)',
+    alignItems: 'start',
+    gap: dar ? 10 : 12,
+    width: '100%',
+    minWidth: 0,
   };
 }
 
@@ -285,6 +303,21 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
   }, [materials]);
 
   const say = (line: string) => setLog((prev) => [...prev.slice(-(LOG_LIMIT - 1)), line]);
+
+  /** Preset kütüphanesinin okuyup yazdığı hedefler — panelle aynı sözleşme. */
+  const panelHedefleri = () => ({
+    mode,
+    points: materials.points,
+    ascii: materials.ascii,
+    neon: materials.neon,
+    solid: materials.solid,
+    splat: materials.splat,
+    crystal: materials.crystal,
+    grain: engineRef.current!.grainUniforms,
+    feedback: engineRef.current!.feedbackUniforms,
+    chromatic: engineRef.current!.chromaticUniforms,
+    setMode: changeMode,
+  });
 
   function clearTimer() {
     if (timerRef.current !== null) {
@@ -1091,16 +1124,18 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
         // Z3: masaüstünde sağdaki SABİT panel (220 px) içeriği örtüyordu;
         // kadraj payı bırakılır. Dar ekranda panel akışa girdiği için pay
         // gerekmez ve kenar boşluğu küçülür (351 px'lik sahneye yer açar).
-        padding: dar ? 12 : 24,
-        paddingRight: dar ? 12 : 332,
+        padding: dar ? 12 : 16,
         display: 'grid',
-        // minmax(0, 1fr): `auto` sütun içeriğin max-content'ine (640 px)
-        // şişiyordu, o yüzden alt öğelerdeki `min(640px, 100%)` de 640'a
-        // çözülüyor ve kadraj taşıyordu. Sütun kadraja kilitlenince yüzdeler
-        // gerçek ekran genişliğini gösterir.
+        /**
+         * Kök akış tek sütun: üst bar, çalışma alanı, transport, sonra ALT
+         * bölüm (graf/capture/metrik/log) — alt bölüm olduğu gibi kalır.
+         *
+         * ÜÇ SÜTUN yalnız ÇALIŞMA ALANINDA (aşağıdaki iç grid).
+         */
         gridTemplateColumns: 'minmax(0, 1fr)',
-        gap: dar ? 10 : 14,
-        justifyItems: 'start',
+        alignContent: 'start',
+        gap: dar ? 10 : 12,
+        justifyItems: 'stretch',
         boxSizing: 'border-box',
         width: '100%',
         maxWidth: '100%',
@@ -1119,7 +1154,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
       {/* ÜST ŞERİT — referans arayüzdeki durum barı: kimlik + sürüm solda,
           canlı durum (mod · kaynak · fps) sağda. Sürüm `package.json`'dan
           gelir (elle güncellenmez). */}
-      <header style={ustSerit(dar)}>
+      <header style={{ ...ustSerit(dar) }}>
         <span style={{ fontSize: 15, fontWeight: 600, letterSpacing: 0.2 }}>spatial-canvas</span>
         <span style={{ fontFamily: MONO, fontSize: 10, color: renk.metinSilik, padding: '2px 6px', borderRadius: 6, background: 'rgba(255,255,255,0.06)' }}>
           v{__APP_VERSION__}
@@ -1141,7 +1176,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
           kapalıysa üstte tek şerit. Her şey çalışıyorsa hiç çizilmez. */}
       <YetenekUyarisi say={say} />
 
-      <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', maxWidth: 'min(960px, 100%)' }}>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
         {/* KAYNAK */}
         <button
           style={toolButton}
@@ -1238,10 +1273,17 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
 
       {/* İpucu şeridi: eskiden butonların ARASINDAydı ve dar pencerede
           kırpılıyordu — kendi satırına alındı. */}
-      <span style={{ color: renk.metinSilik, fontSize: 11.5, marginTop: -6 }}>
-        görsel/video sürükle-bırak · tıklayıp döndür · hover = kuvvet
+      <span style={{ color: renk.metinSilik, fontSize: yazi.kucuk, marginTop: -4 }}>
+        sürükle-bırak · tıkla-döndür · hover = kuvvet
       </span>
 
+      {/* ÇALIŞMA ALANI — üç sütun: canvas · kütüphane (ince) · efektler.
+          Göz soldan sağa akar: ne çizildiği → neyle çizileceği → nasıl
+          ayarlandığı. Alt bölüm (graf/capture/metrik/log) bu grid'in DIŞINDA,
+          eskisi gibi tam genişlikte akar. */}
+      <div style={calismaAlani(dar)}>
+      {/* SOL SÜTUN: canvas ve onun kumandası (transport) birlikte. */}
+      <div style={{ display: 'grid', gap: dar ? 10 : 12, minWidth: 0 }}>
       <div
         ref={containerRef}
         onDragOver={(e) => e.preventDefault()}
@@ -1261,7 +1303,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
           // Sahne artık ana alanın tamamını alır (referans düzen: solda büyük
           // görüntü, sağda efekt rafı). Üst sınır 960 px — daha genişte
           // parçacık yoğunluğu seyrelip görüntü zayıflıyor.
-          width: 'min(960px, 100%)',
+          width: '100%',
           aspectRatio: '16 / 10',
           background: '#000',
           borderRadius: yaricap.kart,
@@ -1320,6 +1362,47 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
           cikti={<ExportBar engine={engine} say={say} />}
         />
       )}
+      </div>
+
+      {/* KÜTÜPHANE — orta sütun, ince. Eskiden efekt rafının 07. kartının
+          içindeydi: kapak görmek için önce kartı açmak gerekiyordu ve
+          kapaklar dar bir sütuna sıkışıyordu. */}
+      {engine && (
+        <KutuphanePaneli
+          targets={panelHedefleri()}
+          onApplied={refreshPanel}
+          sahne={{
+            canvas: engine.renderer.domElement,
+            renderFrame: () => engine.renderFrame(),
+            serialize: () => serializeRenderState(panelHedefleri()),
+            setMode: (m) => changeModeRef.current(m),
+          }}
+        />
+      )}
+
+      {/* EFEKTLER — sağ sütun, kaydırmalı akordeon. */}
+      {engine && (
+        <ControlPanel
+          engine={engine}
+          setModeGuncel={(m) => changeModeRef.current(m)}
+          grain={engine.grainUniforms}
+          feedback={engine.feedbackUniforms}
+          chromatic={engine.chromaticUniforms}
+          bloom={engine.bloomUniforms}
+          look={engine.lookUniforms}
+          points={materials.points}
+          ascii={materials.ascii}
+          neon={materials.neon}
+          solid={materials.solid}
+          splat={materials.splat}
+          crystal={materials.crystal}
+          setMode={changeMode}
+          mode={mode}
+          syncKey={panelTick}
+        />
+      )}
+      </div>
+
       {engine && <NodeGraphEditor engine={engine} graphTick={graphTick} onRenderModeChange={changeMode} onParamsApplied={refreshPanel} />}
       {/* GÜN 6-7 (render şeridi): capture akışı + metrik paneli. İkisi de
           kendi durumunu tutar; Engine'e yalnızca imzalı API'den yazarlar
@@ -1348,26 +1431,6 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
         fontFamily: MONO, fontSize: 11, lineHeight: 1.6, maxHeight: 180, overflowY: 'auto',
         ...yuzey(1), padding: bosluk.m,
       }}>{log.join('\n')}</pre>
-      {engine && (
-        <ControlPanel
-          engine={engine}
-          setModeGuncel={(m) => changeModeRef.current(m)}
-          grain={engine.grainUniforms}
-          feedback={engine.feedbackUniforms}
-          chromatic={engine.chromaticUniforms}
-          bloom={engine.bloomUniforms}
-          look={engine.lookUniforms}
-          points={materials.points}
-          ascii={materials.ascii}
-          neon={materials.neon}
-          solid={materials.solid}
-          splat={materials.splat}
-          crystal={materials.crystal}
-          setMode={changeMode}
-          mode={mode}
-          syncKey={panelTick}
-        />
-      )}
     </div>
   );
 }

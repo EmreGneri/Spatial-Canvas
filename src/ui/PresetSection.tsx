@@ -83,9 +83,12 @@ export function PresetSection({
   targets,
   onApplied,
   sahne,
+  filtre = '',
 }: {
   targets: RenderTargets;
   onApplied: () => void;
+  /** Kütüphane panelindeki arama kutusu — isimle süzer. */
+  filtre?: string;
   /** Kapak üretmek için sahne. Verilmezse kütüphane yalnız yer tutucu gösterir. */
   sahne?: {
     canvas: HTMLCanvasElement;
@@ -104,6 +107,9 @@ export function PresetSection({
     ...BUILT_IN_PRESETS.map((p) => ({ ...p, hazir: true })),
     ...userPresets.map((p) => ({ ...p, hazir: false })),
   ];
+  const gorunenler = filtre.trim()
+    ? tumPresetler.filter((p) => p.name.toLocaleLowerCase('tr').includes(filtre.trim().toLocaleLowerCase('tr')))
+    : tumPresetler;
 
   /**
    * Preset uygulanınca kapağı da tazelenir: bir sonraki karede sahne yeni
@@ -194,8 +200,9 @@ export function PresetSection({
 
   return (
     <div style={{ display: 'grid', gap: bosluk.s }}>
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: bosluk.s }}>
-        {tumPresetler.map(({ name, state, hazir }) => {
+      {/* İnce sütunda tek kolon: 228 px'de iki kapak yan yana sıkışıyordu. */}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: bosluk.s }}>
+        {gorunenler.map(({ name, state, hazir }) => {
           const kapak = kapaklar[name];
           return (
             <div key={name} style={{ position: 'relative' }}>
@@ -259,6 +266,9 @@ export function PresetSection({
         )}
       </div>
 
+      {filtre.trim() && gorunenler.length === 0 && (
+        <span style={{ color: renk.metinSilik, fontSize: yazi.kucuk }}>"{filtre}" ile eşleşen preset yok</span>
+      )}
       {note && <span style={{ color: renk.metinSilik, fontSize: yazi.kucuk }}>{note}</span>}
     </div>
   );
