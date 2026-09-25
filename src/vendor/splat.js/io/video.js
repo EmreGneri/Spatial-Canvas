@@ -508,14 +508,19 @@ function drawRotated(ctx, frame, cw, ch, rot) {
  *  sequentially from the packet list, so the second half of the take
  *  collapses onto the first (skulli.mp4, 2026-09-11: 4628 packets, 2314
  *  frames, "ends" at 46 of 93 s). */
-async function runDecoder(MB, track, startPacket, onFrame, signal = null) {
+export async function runDecoder(MB, track, startPacket, onFrame, signal = null) {
   const cfg = await track.getDecoderConfig();
   const queue = [];
   let err = null, stop = false, pumping = null;
   // outputs are hardware-backed and few: close them as they arrive (a pump
   // driven from the output callback), never hold them until the next packet —
   // a decoder waiting for its frame pool never finishes flush()
+  // local patch: yield before draining. After a stop the loop body never
+  // awaits, so without this the IIFE ran to `finally { pumping = null }`
+  // before the assignment below stored its (settled) promise; `pumping` then
+  // stayed non-null, later outputs were never closed and flush() hung.
   const pump = () => pumping || (pumping = (async () => {
+    await null;
     try {
       while (queue.length) {
         const f = queue.shift();

@@ -10,6 +10,10 @@ zamanlayici yedegi, gorunur egitim hatasi, gec gelen GPU aygitini birakma ve
 temiz dispose; `sfm/sfm.js` iptalde Worker havuzlarini sonlandirir; `io/video.js`
 iptal sinyali ve arka sekmede durmayan seek tabanli element yedegi. Guncellerken bu yamalari yeni
 upstream commit uzerine yeniden uygula veya upstream karsiligini kontrol et.
+- 2026-09-25 `io/video.js` `runDecoder`: pompa IIFE'si `await null;` ile baslar
+  (dur sonrasi dongu senkron bitip `pumping`i bayat birakiyor, sonraki kareler
+  kapanmiyor, `flush()` asili kaliyordu); `runDecoder` test icin export edildi
+  (`scripts/verify-egitim-decoder-drain.mjs`).
 
 ## Lisanslar (ticari kullanim denetimi, 2026-09-24)
 
