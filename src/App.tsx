@@ -15,6 +15,7 @@ import { MetricsPanel } from './ui/MetricsPanel';
 import { NodeGraphEditor } from './ui/NodeGraphEditor';
 import { TrackerOverlay } from './ui/TrackerOverlay';
 import { ExportBar } from './ui/ExportBar';
+import { TransportSerit } from './ui/TransportSerit';
 import { maskeKarari } from './ui/maskeKarari';
 import { useDarEkran } from './ui/useDarEkran';
 import { bosluk, cam, dugme as temaDugme, led, MONO, renk, SANS, yaricap, yazi, yuzey } from './ui/tema';
@@ -1241,10 +1242,6 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
         görsel/video sürükle-bırak · tıklayıp döndür · hover = kuvvet
       </span>
 
-      {/* Z1 — çıktı akışı: süre görünür, kayıt geri sayımlı, sonuç şeridin
-          kendi durum satırında. export.ts'e dokunulmadı. */}
-      <ExportBar engine={engine} say={say} />
-
       <div
         ref={containerRef}
         onDragOver={(e) => e.preventDefault()}
@@ -1305,7 +1302,24 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
           />
         )}
       </div>
-      {engine && <ModeSelector engine={engine} materials={materials} mode={mode} onChange={changeMode} onReset={() => { say('sıfırlandı: efektler, look ve kamera başlangıç değerlerinde (görsel korundu)'); refreshPanel(); }} />}
+      {/* TRANSPORT — sahne durumu · mod · çıktı tek şeritte (bkz. TransportSerit). */}
+      {engine && (
+        <TransportSerit
+          engine={engine}
+          fps={fps}
+          mod={mode}
+          modlar={
+            <ModeSelector
+              engine={engine}
+              materials={materials}
+              mode={mode}
+              onChange={changeMode}
+              onReset={() => { say('sıfırlandı: efektler, look ve kamera başlangıç değerlerinde (görsel korundu)'); refreshPanel(); }}
+            />
+          }
+          cikti={<ExportBar engine={engine} say={say} />}
+        />
+      )}
       {engine && <NodeGraphEditor engine={engine} graphTick={graphTick} onRenderModeChange={changeMode} onParamsApplied={refreshPanel} />}
       {/* GÜN 6-7 (render şeridi): capture akışı + metrik paneli. İkisi de
           kendi durumunu tutar; Engine'e yalnızca imzalı API'den yazarlar

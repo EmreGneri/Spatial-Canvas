@@ -465,6 +465,102 @@ export class Engine {
   }
 
   /**
+   * OFFSCREEN RENDER — Tur 3 fotometrik döngüsünün girişi (Emre'nin istediği
+   * sözleşme). Verilen kamera pozundan `w×h` bir kare çizer ve pikselleri
+   * döndürür; ekrandaki görüntüye DOKUNMAZ (poz, boyut ve pass durumu
+   * çağrı sonunda birebir geri yüklenir).
+   *
+   * İKİ ŞART (Emre'nin koyduğu, ikisi de burada karşılanıyor):
+   *
+   *  1. AYNI RASTERİZASYON. Kendi mini renderer'ı kurulmaz: ekrandaki kareyi
+   *     çizen `composer` zincirinin TA KENDİSİ kullanılır, yalnız son pass'in
+   *     hedefi ekrandan dahili tampona çevrilir. Böylece bloom/grain/look
+   *     dahil her şey ekranda ne ise offscreen'de de odur.
+   *  2. YENİ KANAL AÇILMAZ. Gaussian verisi yalnız mevcut `GaussianBuffer`
+   *     yolundan gelir; bu metot hiçbir texture kanalı eklemez, yalnız okur.
+   *
+   * `coverage` şimdilik HER ZAMAN null: kapsama (splat başına ekran alanı)
+   * ayrı bir geçiş ister ve ölçülmedi — uydurulmuş bir dizi döndürmektense
+   * "bu yolda hesaplanmadı" demek doğrusu. Sözleşme alanı hazır duruyor.
+   */
+  renderFromPose(
+    pose: { position: [number, number, number]; target: [number, number, number]; fov?: number },
+    w: number,
+    h: number,
+  ): { color: Uint8Array; coverage: Float32Array | null } {
+    const eskiBoyut = new THREE.Vector2();
+    this.renderer.getSize(eskiBoyut);
+    const eskiDpr = this.renderer.getPixelRatio();
+    const eskiPos = this.camera.position.clone();
+    const eskiHedef = this.controls.target.clone();
+    const eskiFov = this.camera.fov;
+    const eskiAspect = this.camera.aspect;
+
+    try {
+      // Pozu uygula. `controls.update()` ÇAĞRILMAZ: damping ile hedefe
+      // yaklaşmak bu tek karelik çizimde istenmeyen kayma üretir.
+      this.camera.position.set(...pose.position);
+      this.controls.target.set(...pose.target);
+      if (pose.fov !== undefined) this.camera.fov = pose.fov;
+      this.camera.aspect = w / h;
+      this.camera.lookAt(this.controls.target);
+      this.camera.updateProjectionMatrix();
+      this.camera.updateMatrixWorld();
+
+      // DPR 1: istenen piksel ölçüsü tam olarak w×h olsun (ekranın DPR'si
+      // çıktının boyutunu iki katına çıkarmasın).
+      this.renderer.setPixelRatio(1);
+      this.renderer.setSize(w, h, false);
+      this.composer.setSize(w, h);
+
+      // Döngünün İLK adımı: okunan konum texture'ı her karede değişir
+      // (ping-pong) ve material'a push edilmesi gerekir. Atlanınca kare boş
+      // çıkıyordu (ölçüldü: en parlak piksel 0).
+      const uPositions = (this.pointsMaterial as THREE.ShaderMaterial).uniforms?.['uPositions'];
+      if (uPositions) uPositions.value = this.simulation.positionTexture;
+      this.pushLookUniforms();
+      if (this.splatObject?.mesh.visible) {
+        // Döngüdeki çağrının AYNISI: alpha sırası kamera matrisine bağlı,
+        // farklı parametreyle çizmek offscreen kareyi ekrandakinden ayırırdı.
+        this.splatObject.update(
+          this.camera,
+          this.splatSortModeName,
+          splatOpacityGate(this.splatMinOpacity, this.objectSeparation, this.gaussianSource),
+          new THREE.Vector2(w, h),
+          this.splatObject.mesh.material as THREE.Material,
+        );
+      }
+      this.composer.render();
+
+      // PİKSELLERİ EKRAN TAMPONUNDAN AL. Composer'ın dahili
+      // readBuffer/writeBuffer'ı ölçüldü ve İKİSİ DE BOŞTU (en parlak 0):
+      // zincirin sonucu son pass'te ekrana gidiyor, ara tamponda kalmıyor.
+      // `preserveDrawingBuffer` kapalı olduğu için tampon yalnız AYNI GÖREV
+      // içinde geçerli — kopyalama bu yüzden hemen burada, export.ts'in PNG
+      // yolundaki kuralın aynısı.
+      const ara = document.createElement('canvas');
+      ara.width = w;
+      ara.height = h;
+      const ctx = ara.getContext('2d', { willReadFrequently: true });
+      if (!ctx) throw new Error('renderFromPose: 2D bağlam açılamadı');
+      ctx.drawImage(this.renderer.domElement, 0, 0, w, h);
+      const color = new Uint8Array(ctx.getImageData(0, 0, w, h).data.buffer.slice(0));
+      return { color, coverage: null };
+    } finally {
+      this.renderer.setPixelRatio(eskiDpr);
+      this.renderer.setSize(eskiBoyut.x, eskiBoyut.y, false);
+      this.composer.setSize(eskiBoyut.x, eskiBoyut.y);
+      this.camera.position.copy(eskiPos);
+      this.controls.target.copy(eskiHedef);
+      this.camera.fov = eskiFov;
+      this.camera.aspect = eskiAspect;
+      this.camera.updateProjectionMatrix();
+      this.controls.update();
+      this.renderer.setRenderTarget(null);
+    }
+  }
+
+  /**
    * GÃ¼n A: global look kÃ¶prÃ¼sÃ¼nÃ¼ (exposure + fog) her karede iÅŸler â€” kÃ¶prÃ¼
    * tek doÄŸruluk kaynaÄŸÄ±dÄ±r; UI/preset yalnÄ±zca ona yazar. Fog Ã¼Ã§ render
    * material'Ä±nda (points/ascii/neon) aynÄ± uniform adlarÄ±nÄ± kullanÄ±r.
