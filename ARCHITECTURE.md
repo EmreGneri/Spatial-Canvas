@@ -849,6 +849,13 @@ burası yalnızca okur.
 - **Yeniden sıralama kapısı:** sıra her karede değil, görüş yönü 2°'den fazla
   dönünce kurulur — 147k'lık attribute yüklemesi (590 kB) her kareye
   ödenmez.
+- **Nesne ayırma = opaklık kapısı (`splatOpacityGate`):** ayırma AÇIK ve
+  kaynak köprü (`point-cloud`) iken sıralama kapısı en az 0.5'tir; arka plan
+  splat'ları (w = `BACKDROP_OPACITY`) sıraya hiç girmez — Point Cloud /
+  ASCII / Neon'daki `vOpacity < 0.5` discard'ının splat karşılığı. Kapı
+  olmadan komşusuna değecek boyuttaki arka plan splat'ları sürekli bir
+  tabakaya kaynaşıp yandan bakışta kavisli bir "perde" olarak görünüyordu.
+  `authored` Gauss'lar gerçek opaklık taşır, kapıdan etkilenmez.
 - **ÖZVEKTÖR SEÇİMİNDE KÖŞEGEN DALI (hata geçmişi — tekrar etmesin):** Σ₂
   köşegen olduğunda (`b ≈ 0`) büyük özvektör formülü `(b, l₁−a)` 0/0'a düşer.
   O dalda eksen, büyük özdeğerin hangi köşegen girdiye ait olduğuna bakılarak

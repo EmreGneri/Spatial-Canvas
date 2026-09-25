@@ -29,6 +29,24 @@
 export type SplatSortMode = 'radix' | 'bucket';
 
 /**
+ * Opacity gate for the sort, with object separation applied.
+ *
+ * Point Cloud, ASCII and Neon discard bridge backdrop texels
+ * (w = BACKDROP_OPACITY < 0.5) while separation is on. Splat must do the same:
+ * backdrop splats are sized to touch their neighbours, so they merge into a
+ * continuous sheet that reads as a curved curtain from a side view. Culling
+ * them here also skips their sort and fill cost. Authored Gaussians carry real
+ * opacities instead of the bridge's two-level mask, so they are left alone.
+ */
+export function splatOpacityGate(
+  minOpacity: number,
+  objectSeparation: boolean,
+  source: 'point-cloud' | 'authored',
+): number {
+  return objectSeparation && source === 'point-cloud' ? Math.max(minOpacity, 0.5) : minOpacity;
+}
+
+/**
  * Radix anahtar çözünürlüğü: görüş-uzayı derinliği 16 bit'e kuantalanır.
  * 65.536 kademe, [-1, +1] dünya z aralığında ~0.03 mm'lik ayrım demektir —
  * splat yarıçapının kat kat altında, yani kuantalama görünür sıra hatası
