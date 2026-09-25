@@ -1056,7 +1056,17 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
     <div style={{ padding: 24, display: 'grid', gap: 16, justifyItems: 'start' }}>
       {/* `font` kısayolu + `fontSize` birlikte kullanılınca React her
           yeniden çizimde uyarı basıyordu (konsolda onlarca satır). */}
-      <h1 style={{ fontFamily: 'inherit', fontWeight: 'inherit', fontSize: 18, margin: 0 }}>spatial-canvas · Gün A — ACES + bloom + FXAA + sis (global look)</h1>
+      {/* Başlık artık kendi SÜRÜMÜNÜ gösterir. Eskiden burada elle yazılmış bir
+          gün etiketi ("Gün A — ACES + bloom + FXAA + sis") duruyordu; o günden
+          beri onlarca değişiklik geçti, satırı kimse güncellemedi ve ekrandaki
+          bilgi yanlıştı. Sürüm `package.json`'dan build zamanında geldiği için
+          bir daha eskiyemez. */}
+      <h1 style={{ fontFamily: 'inherit', fontWeight: 'inherit', fontSize: 18, margin: 0 }}>
+        spatial-canvas{' '}
+        <span style={{ color: '#667', fontSize: 13 }} title="uygulama sürümü (package.json)">
+          v{__APP_VERSION__}
+        </span>
+      </h1>
 
       <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', maxWidth: 640 }}>
         {/* KAYNAK */}
