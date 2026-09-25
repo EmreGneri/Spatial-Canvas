@@ -240,7 +240,7 @@ export function NodeGraphEditor({
   const selected = selectedId ? liveGraph(engine).nodes.find((n) => n.id === selectedId) : undefined;
 
   return (
-    <div style={{ display: 'grid', gap: 8, width: 'min(640px, 100%)', maxWidth: '100%' }}>
+    <div style={{ display: 'grid', gap: 8, width: 'min(960px, 100%)', maxWidth: '100%' }}>
       <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
         <span style={{ color: '#667', fontSize: 12 }}>graf:</span>
         <button

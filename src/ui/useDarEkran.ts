@@ -8,10 +8,12 @@ import { useEffect, useState } from 'react';
  * değil — tarayıcı eşiği kendisi izler, her resize'da React state güncellemek
  * gerekmez (yalnız eşik geçilince bir kez render olur).
  *
- * EŞİK 720 px: masaüstü düzeni 640 px sahne + 220 px sabit sağ panel ister
- * (860 px). 720 altında sağ panel akışa girer, sahne kadraja sığar.
+ * EŞİK 1000 px: yan yana düzen 960 px sahne + 296 px efekt rafı + boşluk
+ * ister (~1300 px). Eşik 720'de bırakılınca 900 px'lik pencerede sahne
+ * 537 px'e düşüyordu — rafa yer açmak için görüntü feda ediliyordu. 1000
+ * altında raf akışa girer (sahnenin ALTINA), sahne tam genişliği alır.
  */
-export const DAR_ESIK = 720;
+export const DAR_ESIK = 1000;
 
 export function useDarEkran(esik = DAR_ESIK): boolean {
   const [dar, setDar] = useState(() =>

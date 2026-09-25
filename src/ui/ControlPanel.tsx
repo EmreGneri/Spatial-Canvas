@@ -1,4 +1,4 @@
-import { Fragment, useState, type CSSProperties } from 'react';
+import { Fragment, useState, type CSSProperties , type ReactNode } from 'react';
 import type { Color, IUniform } from 'three';
 import type { ParamDef } from '../engine/params';
 import { GRAIN_PARAMS, type GrainPassUniforms } from '../shaders/grainPass';
@@ -6,7 +6,7 @@ import { POINTS_PARAMS, type PointCloudMaterial } from '../shaders/pointCloudMat
 import { ASCII_PARAMS, CHAR_SETS, type AsciiMaterial } from '../shaders/asciiMaterial';
 import { NEON_PARAMS, type NeonWireMaterial } from '../shaders/neonWireMaterial';
 import { SOLID_PARAMS, type SolidMaterial } from '../shaders/solidMaterial';
-import { type SplatMaterial } from '../shaders/splatMaterial';
+import { SPLAT_PARAMS, type SplatMaterial } from '../shaders/splatMaterial';
 import { CRYSTAL_PARAMS, type CrystalMaterial } from '../shaders/crystalMaterial';
 import { FEEDBACK_PARAMS, type FeedbackPassUniforms } from '../shaders/feedbackPass';
 import { CHROMATIC_PARAMS, type ChromaticPassUniforms } from '../shaders/chromaticPass';
@@ -15,6 +15,7 @@ import { LOOK_PARAMS, type LookUniforms } from '../shaders/look';
 import type { RenderTargets } from '../shaders/renderPreset';
 import { PresetSection } from './PresetSection';
 import { useDarEkran } from './useDarEkran';
+import { cam, camDugme, led, MONO, renk, SANS } from './tema';
 import type { RenderMode } from './ModeSelector';
 
 /**
@@ -40,22 +41,49 @@ import type { RenderMode } from './ModeSelector';
  */
 const panelStyle: CSSProperties = {
   position: 'fixed',
-  top: 0,
-  right: 0,
-  height: '100%',
-  width: 220,
-  padding: '16px 14px',
+  top: 12,
+  right: 12,
+  bottom: 12,
+  width: 296,
+  padding: 12,
   boxSizing: 'border-box',
-  background: '#101014',
-  borderLeft: '1px solid #26262e',
-  color: '#c8c8d4',
-  fontFamily: 'ui-monospace, "Cascadia Mono", Consolas, monospace',
+  ...cam({ yogunluk: 0.05, blur: 22, radius: 18 }),
+  fontFamily: SANS,
   fontSize: 12,
   display: 'grid',
-  gap: 12,
+  gap: 8,
   alignContent: 'start',
   overflowY: 'auto',
 };
+
+const rafBasligi: CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'space-between',
+  padding: '2px 4px 6px',
+  fontSize: 13,
+  fontWeight: 600,
+  letterSpacing: 0.3,
+  color: renk.metin,
+};
+
+function kartBasligi(acik: boolean): CSSProperties {
+  return {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8,
+    width: '100%',
+    padding: '10px 12px',
+    background: 'none',
+    borderWidth: 0,
+    color: renk.metin,
+    fontFamily: SANS,
+    fontSize: 12.5,
+    cursor: 'pointer',
+    textAlign: 'left',
+    opacity: acik ? 1 : 0.92,
+  };
+}
 
 const darPanelStyle: CSSProperties = {
   position: 'static',
@@ -64,32 +92,18 @@ const darPanelStyle: CSSProperties = {
   height: 'auto',
   maxHeight: '60vh',
   boxSizing: 'border-box',
-  padding: '10px 12px',
-  background: '#101014',
-  borderWidth: 1,
-  borderStyle: 'solid',
-  borderColor: '#26262e',
-  borderRadius: 3,
-  color: '#c8c8d4',
-  fontFamily: 'ui-monospace, "Cascadia Mono", Consolas, monospace',
+  padding: 10,
+  ...cam({ yogunluk: 0.06, blur: 18, radius: 14 }),
+  fontFamily: SANS,
   fontSize: 12,
   display: 'grid',
-  gap: 12,
+  gap: 8,
   alignContent: 'start',
   overflowY: 'auto',
 };
 
 const darAcKapaStyle: CSSProperties = {
-  fontFamily: 'inherit',
-  fontSize: 12,
-  padding: '4px 10px',
-  background: '#1a1a22',
-  color: '#c8c8d4',
-  borderWidth: 1,
-  borderStyle: 'solid',
-  borderColor: '#26262e',
-  borderRadius: 3,
-  cursor: 'pointer',
+  ...camDugme(false),
   width: '100%',
   textAlign: 'left',
 };
@@ -323,6 +337,12 @@ points: PointCloudMaterial;
   // Z3: dar ekranda panel akışa girer ve katlanır; masaüstünde davranış aynı.
   const dar = useDarEkran();
   const [darAcik, setDarAcik] = useState(false);
+  /**
+   * EFEKT RAFI — aynı anda TEK kart açık. Eskiden bütün gruplar alt alta
+   * açıktı: sağ panel sonu gelmeyen bir slider listesiydi ve aranan kol
+   * kaydırmadan bulunamıyordu. Kartlar kapalıyken raf tek ekrana sığar.
+   */
+  const [acikKart, setAcikKart] = useState<string | null>('render');
 
   const targets: RenderTargets = { mode, points, ascii, neon, solid, splat, crystal, grain, feedback, chromatic, setMode };
 
@@ -330,90 +350,95 @@ points: PointCloudMaterial;
     return (
       <aside style={{ width: '100%' }}>
         <button type="button" style={darAcKapaStyle} onClick={() => setDarAcik(true)}>
-          ⚙ ayarlar ve presetler ▸
+          ◧ efektler · {mode} ▸
         </button>
       </aside>
     );
   }
 
+  /** Aktif render modunun kart içeriği ve adı (mod değişince kart da değişir). */
+  const modKarti = (): { ad: string; icerik: ReactNode } => {
+    if (mode === 'ascii') return { ad: 'ASCII', icerik: (<><CharSetSelect material={ascii} /><ParamGroup defs={ASCII_PARAMS} uniforms={asRecord(ascii.uniforms)} /></>) };
+    if (mode === 'neon') return { ad: 'Neon', icerik: <ParamGroup defs={NEON_PARAMS} uniforms={asRecord(neon.uniforms)} /> };
+    if (mode === 'solid') return { ad: 'Solid', icerik: <ParamGroup defs={SOLID_PARAMS} uniforms={asRecord(solid.uniforms)} /> };
+    if (mode === 'crystal' && crystal) return { ad: 'Crystal', icerik: <ParamGroup defs={CRYSTAL_PARAMS} uniforms={asRecord(crystal.uniforms)} /> };
+    if (mode === 'splat' && splat) return { ad: 'Splat', icerik: <ParamGroup defs={SPLAT_PARAMS} uniforms={asRecord(splat.uniforms)} /> };
+    return { ad: 'Point Cloud', icerik: <ParamGroup defs={POINTS_PARAMS} uniforms={asRecord(points.uniforms)} /> };
+  };
+  const mk = modKarti();
+
+  const kartlar: { id: string; ad: string; ozet: string; etkin: boolean; icerik: ReactNode }[] = [
+    { id: 'render', ad: mk.ad, ozet: 'render modu', etkin: true, icerik: mk.icerik },
+    ...(feedback ? [{ id: 'feedback', ad: 'Feedback', ozet: `${FEEDBACK_PARAMS.length} kol`, etkin: degismis(FEEDBACK_PARAMS, asRecord(feedback)), icerik: <ParamGroup defs={FEEDBACK_PARAMS} uniforms={asRecord(feedback)} /> }] : []),
+    ...(chromatic ? [{ id: 'chromatic', ad: 'Chromatic', ozet: `${CHROMATIC_PARAMS.length} kol`, etkin: degismis(CHROMATIC_PARAMS, asRecord(chromatic)), icerik: <ParamGroup defs={CHROMATIC_PARAMS} uniforms={asRecord(chromatic)} /> }] : []),
+    ...(bloom ? [{ id: 'bloom', ad: 'Bloom', ozet: `${BLOOM_PARAMS.length} kol`, etkin: degismis(BLOOM_PARAMS, asRecord(bloom)), icerik: <ParamGroup defs={BLOOM_PARAMS} uniforms={asRecord(bloom)} /> }] : []),
+    ...(look ? [{ id: 'look', ad: 'Look', ozet: 'ACES + sis', etkin: degismis(LOOK_PARAMS, asRecord(look)), icerik: <ParamGroup defs={LOOK_PARAMS} uniforms={asRecord(look)} /> }] : []),
+    { id: 'grain', ad: 'Grain / Grading', ozet: `${GRAIN_PARAMS.length} kol`, etkin: degismis(GRAIN_PARAMS, asRecord(grain)), icerik: <ParamGroup defs={GRAIN_PARAMS} uniforms={asRecord(grain)} /> },
+    { id: 'presets', ad: 'Presets', ozet: 'kaydet · yükle', etkin: false, icerik: <PresetSection targets={targets} onApplied={() => setRevision((r) => r + 1)} /> },
+  ];
+
   return (
     <aside style={dar ? darPanelStyle : panelStyle}>
       {dar && (
         <button type="button" style={darAcKapaStyle} onClick={() => setDarAcik(false)}>
-          ⚙ ayarlar ve presetler ▾
+          efektler ▾
         </button>
       )}
-      <strong style={firstHeading}>Presets</strong>
-      <PresetSection targets={targets} onApplied={() => setRevision((r) => r + 1)} />
+      <div style={rafBasligi}>
+        <span>efektler</span>
+        <span style={{ fontFamily: MONO, fontSize: 10, color: renk.metinSilik }}>{kartlar.length} modül</span>
+      </div>
 
       <Fragment key={`${revision}:${syncKey}`}>
-        {mode === 'points' && (
-          <>
-            <strong style={headingStyle}>Point Cloud</strong>
-            <ParamGroup defs={POINTS_PARAMS} uniforms={asRecord(points.uniforms)} />
-          </>
-        )}
-
-        {mode === 'ascii' && (
-          <>
-            <strong style={headingStyle}>ASCII</strong>
-            <CharSetSelect material={ascii} />
-            <ParamGroup defs={ASCII_PARAMS} uniforms={asRecord(ascii.uniforms)} />
-          </>
-        )}
-
-        {mode === 'neon' && (
-          <>
-            <strong style={headingStyle}>Neon</strong>
-            <ParamGroup defs={NEON_PARAMS} uniforms={asRecord(neon.uniforms)} />
-          </>
-        )}
-
-        {mode === 'solid' && (
-          <>
-            <strong style={headingStyle}>Solid</strong>
-            <ParamGroup defs={SOLID_PARAMS} uniforms={asRecord(solid.uniforms)} />
-          </>
-        )}
-
-        {mode === 'crystal' && crystal && (
-          <>
-            <strong style={headingStyle}>Crystal</strong>
-            <ParamGroup defs={CRYSTAL_PARAMS} uniforms={asRecord(crystal.uniforms)} />
-          </>
-        )}
-
-        {feedback && (
-          <>
-            <strong style={headingStyle}>Feedback</strong>
-            <ParamGroup defs={FEEDBACK_PARAMS} uniforms={asRecord(feedback)} />
-          </>
-        )}
-
-        {chromatic && (
-          <>
-            <strong style={headingStyle}>Chromatic</strong>
-            <ParamGroup defs={CHROMATIC_PARAMS} uniforms={asRecord(chromatic)} />
-          </>
-        )}
-
-        {bloom && (
-          <>
-            <strong style={headingStyle}>Bloom</strong>
-            <ParamGroup defs={BLOOM_PARAMS} uniforms={asRecord(bloom)} />
-          </>
-        )}
-
-        {look && (
-          <>
-            <strong style={headingStyle}>Look (ACES + sis)</strong>
-            <ParamGroup defs={LOOK_PARAMS} uniforms={asRecord(look)} />
-          </>
-        )}
-
-        <strong style={headingStyle}>Grain / Grading</strong>
-        <ParamGroup defs={GRAIN_PARAMS} uniforms={asRecord(grain)} />
+        {kartlar.map((k, i) => (
+          <EfektKarti
+            key={k.id}
+            no={i + 1}
+            ad={k.ad}
+            ozet={k.ozet}
+            etkin={k.etkin}
+            acik={acikKart === k.id}
+            onTikla={() => setAcikKart((a) => (a === k.id ? null : k.id))}
+          >
+            {k.icerik}
+          </EfektKarti>
+        ))}
       </Fragment>
     </aside>
   );
+}
+
+/**
+ * Tek efekt kartı: kapalıyken bir satır (numara · LED · ad · özet), açıkken
+ * kolları gösterir. Kart içi açılma (inline expand) seçildi — modal ya da
+ * ayrı panel, kolu çevirirken sahneyi görmeyi engellerdi.
+ */
+function EfektKarti({
+  no, ad, ozet, etkin, acik, onTikla, children,
+}: {
+  no: number; ad: string; ozet: string; etkin: boolean; acik: boolean; onTikla: () => void; children: ReactNode;
+}) {
+  return (
+    <section style={{ ...cam({ yogunluk: acik ? 0.09 : 0.05, blur: 14, radius: 12 }), overflow: 'hidden' }}>
+      <button type="button" onClick={onTikla} style={kartBasligi(acik)} aria-expanded={acik}>
+        <span style={{ fontFamily: MONO, fontSize: 10, color: renk.metinSilik, width: 16 }}>
+          {String(no).padStart(2, '0')}
+        </span>
+        <span style={led(etkin)} />
+        <span style={{ flex: 1, textAlign: 'left', fontWeight: 500 }}>{ad}</span>
+        <span style={{ fontSize: 10, color: renk.metinSilik }}>{ozet}</span>
+        <span style={{ color: renk.metinSilik, transform: acik ? 'rotate(90deg)' : 'none', transition: 'transform 160ms ease' }}>›</span>
+      </button>
+      {acik && <div style={{ display: 'grid', gap: 10, padding: '4px 12px 12px' }}>{children}</div>}
+    </section>
+  );
+}
+
+/** Bir grubun kolları varsayılandan sapmış mı — kartın LED'i bunu gösterir. */
+function degismis(defs: ParamDef[], uniforms: Record<string, { value: unknown }>): boolean {
+  return defs.some((d) => {
+    const v = uniforms[d.key]?.value;
+    if (typeof v !== 'number' || typeof d.default !== 'number') return false;
+    return Math.abs(v - d.default) > 1e-6;
+  });
 }

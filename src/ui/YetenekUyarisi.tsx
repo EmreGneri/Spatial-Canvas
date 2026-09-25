@@ -94,7 +94,7 @@ const seritStyle: CSSProperties = {
   display: 'flex',
   gap: 8,
   alignItems: 'flex-start',
-  maxWidth: 640,
+  maxWidth: 'min(960px, 100%)',
   boxSizing: 'border-box',
   padding: '6px 8px',
   background: '#17130a',
