@@ -17,7 +17,7 @@ import { TrackerOverlay } from './ui/TrackerOverlay';
 import { ExportBar } from './ui/ExportBar';
 import { maskeKarari } from './ui/maskeKarari';
 import { useDarEkran } from './ui/useDarEkran';
-import { cam, camDugme, led, MONO, renk, SANS } from './ui/tema';
+import { bosluk, cam, dugme as temaDugme, led, MONO, renk, SANS, yaricap, yazi, yuzey } from './ui/tema';
 import { YetenekUyarisi } from './ui/YetenekUyarisi';
 import { Egitim3D } from './ui/Egitim3D';
 import { type TrackedTarget, type TrackerModu } from './engine/vision/tracker';
@@ -71,7 +71,7 @@ const LOG_LIMIT = 200;
  * Toggle'ların vurgu rengi ANLAM taşır ve değişmedi: yeşil = nesne ayırma,
  * turuncu = maske tanısı, mavi = tracker HUD.
  */
-const toolButton: CSSProperties = camDugme(false);
+const toolButton: CSSProperties = temaDugme(false);
 
 /**
  * Toggle'ın AÇIK hâli: vurgu rengi dolgusu + aynı renkte hafif parıltı. Renk
@@ -80,12 +80,13 @@ const toolButton: CSSProperties = camDugme(false);
  */
 function toggleButton(active: boolean, accent: string): CSSProperties {
   if (!active) return toolButton;
+  // Etkin hâl DOLGU ile ayrışır, ışımayla değil: ekranda aynı anda birden
+  // çok ışık kaynağı olması "efekt gösterisi" hissi veriyordu.
   return {
-    ...camDugme(false),
-    background: `linear-gradient(180deg, ${accent}66, ${accent}33)`,
-    borderColor: `${accent}aa`,
+    ...temaDugme(false),
+    background: `${accent}26`,
+    borderColor: `${accent}66`,
     color: '#fff',
-    boxShadow: `0 0 18px ${accent}44`,
   };
 }
 
@@ -99,7 +100,7 @@ function ustSerit(dar: boolean): CSSProperties {
     maxWidth: 'min(960px, 100%)',
     boxSizing: 'border-box',
     padding: dar ? '8px 10px' : '10px 14px',
-    ...cam({ yogunluk: 0.05, blur: 20, radius: 14 }),
+    ...cam({ blur: 24, radius: yaricap.panel }),
   };
 }
 
@@ -1014,6 +1015,15 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
    * graf params.mode güncellenir (graf = tek doğruluk kaynağı) ③ UI state
    * ④ editör tazelenir — üç kol da birbirinin değişikliğini görür.
    */
+  /**
+   * Mod değiştirmenin GÜNCEL referansı. `changeMode` her render'da yeniden
+   * oluşur ve içindeki `mode` o render'ın değeridir; uzun süren bir iş
+   * (preset kapağı üretimi) sırasında yakalanan kopya bayatlar ve
+   * `next === mode` kontrolü yanlışlıkla erken döner. Ref hep sonuncuyu
+   * gösterir.
+   */
+  const changeModeRef = useRef<(m: RenderMode) => void>(() => {});
+
   function changeMode(next: RenderMode) {
     const engine = engineRef.current;
     if (!engine) return;
@@ -1027,6 +1037,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
       say('solid: kabuk yok (fotoğraf gerekir) — nokta bulutunda kalındı');
     }
   }
+  changeModeRef.current = changeMode;
 
   /**
    * GÜN 7 KABLOSU: canlı video/kamera → tek dünya sahnesi → splat modu.
@@ -1097,10 +1108,9 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
         // Camın altında görünecek derinlik: düz siyah yerine hafif renk geçişi
         // (glassmorphism arkasında desen yoksa cam "gri sis" gibi durur).
         minHeight: '100vh',
-        background:
-          'radial-gradient(1200px 700px at 12% -5%, #16233d 0%, transparent 55%),' +
-          'radial-gradient(900px 600px at 95% 10%, #241a33 0%, transparent 50%),' +
-          '#07070b',
+        // TEK EKSEN: siyahtan koyu maviye. Mor gradyan kalktı (istenen palet
+        // siyah/gri/koyu mavi; ayrıca o gradyan "yapay arayüz" imzasıydı).
+        background: `linear-gradient(180deg, #0d1018 0%, ${renk.zemin} 420px)`,
       }}
     >
       {/* `font` kısayolu + `fontSize` birlikte kullanılınca React her
@@ -1256,8 +1266,10 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
           // parçacık yoğunluğu seyrelip görüntü zayıflıyor.
           width: 'min(960px, 100%)',
           aspectRatio: '16 / 10',
-          border: '1px solid #222',
           background: '#000',
+          borderRadius: yaricap.kart,
+          // Çerçeve yerine iç gölge: sahne "kutuda" değil, gömülü durur.
+          boxShadow: 'inset 0 0 0 1px rgba(255,255,255,0.06), 0 24px 60px rgba(0,0,0,0.55)',
           position: 'relative',
           overflow: 'hidden',
           // Dokunmatikte sahneyi sürüklerken sayfa kaymasın (OrbitControls
@@ -1320,10 +1332,12 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
         margin: 0, color: renk.metinSolgun, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere',
         maxWidth: 'min(960px, 100%)', boxSizing: 'border-box', width: '100%',
         fontFamily: MONO, fontSize: 11, lineHeight: 1.6, maxHeight: 180, overflowY: 'auto',
-        ...cam({ yogunluk: 0.04, blur: 12, radius: 12 }), padding: 12,
+        ...yuzey(1), padding: bosluk.m,
       }}>{log.join('\n')}</pre>
       {engine && (
         <ControlPanel
+          engine={engine}
+          setModeGuncel={(m) => changeModeRef.current(m)}
           grain={engine.grainUniforms}
           feedback={engine.feedbackUniforms}
           chromatic={engine.chromaticUniforms}

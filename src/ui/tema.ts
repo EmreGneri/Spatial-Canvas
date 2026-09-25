@@ -3,94 +3,141 @@ import type { CSSProperties } from 'react';
 /**
  * ARAYÜZ TEMASI — tek kaynak (Zeynep).
  *
- * Eski arayüz "koyu terminal" diliydi: monospace her yerde, düz kutular, sağda
- * sonu gelmeyen bir slider listesi. Yeni yön modern cam (glassmorphism 2.0) ve
- * bento kart düzeni: yarı saydam yüzeyler, arkayı bulanıklaştıran katman, ince
- * açık kenar, yumuşak gölge.
+ * ── İLK TURDAN ÇIKAN DERS (eleştiri, 2026-09-25) ──────────────────────────
+ * İlk cam denemesi "AI üretimi" gibi duruyordu. Sebepleri ölçüldü ve üçü de
+ * burada kapatıldı:
  *
- * KULLANIM KURALI (araştırmadan çıkan tek cümle): cam YÜZEYLERDE kullanılır,
- * metinde değil. Panel/kart/çubuk cam olur; okunması gereken metin ve sayı düz
- * ve yüksek kontrastlı kalır.
+ *  1. MOR-MAVİ GRADYAN. En bilinen "yapay arayüz" imzası. Palet tek eksene
+ *     indirildi: siyah → gri → koyu mavi. Mor yok, ikinci vurgu rengi yok.
+ *  2. HER YÜZEY CAMDI (panel, kart, şerit, log kutusu). Premium his malzeme
+ *     çeşidinden değil TUTARLILIKTAN gelir: cam yalnız ÜSTTE YÜZEN iki
+ *     yüzeyde (üst şerit, raf gövdesi); kartlar ve kutular düz koyu yüzey.
+ *  3. ÜÇ AYRI IŞIK (slider glow + LED glow + toggle glow). Işık artık tek
+ *     yerde: etkin LED. Kontroller ışımaz.
  *
- * Tipografi: arayüz metni sistem sans-serif (modern), ÖLÇÜLEN DEĞERLER
- * monospace + tabular-nums (rakamlar zıplamasın — sayılar sürekli değişiyor).
+ * Ölçülen erişilebilirlik düzeltmeleri: solgun metin kontrastı 4.0 → 5.6
+ * (WCAG AA sınırı 4.5), kontrol yüksekliği 24-28 → 32 px, kutucuk 15 → 18 px.
  */
 
 export const SANS =
   '-apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", Roboto, system-ui, sans-serif';
 export const MONO = 'ui-monospace, "SF Mono", "Cascadia Mono", Consolas, monospace';
 
+/**
+ * TEK EKSEN: siyah → gri → koyu mavi. Her yüzey bu merdivenin bir basamağı;
+ * "biraz mor", "biraz teal" yok. Vurgu da aynı ailenin canlı ucu.
+ */
 export const renk = {
-  /** Sahne arkası — camın altında görünen derinlik. */
-  zemin: '#07070b',
-  metin: '#e8e9ef',
-  metinSolgun: '#9aa0b4',
-  metinSilik: '#6b7185',
-  /** Vurgu: canlı ama tek — her yerde aynı mavi. */
-  vurgu: '#5b9cff',
-  vurguSicak: '#ff6b4a',
-  iyi: '#3ddc84',
-  uyari: '#f0b429',
-  kotu: '#ff5d5d',
+  /** Sayfanın en altı — sahnenin siyahıyla aynı aile. */
+  zemin: '#0a0c10',
+  /** Yüzey basamakları (kart, panel, kutu). */
+  yuzey1: '#12151c',
+  yuzey2: '#171b24',
+  yuzey3: '#1d222d',
+  /** Kenarlar: renk değil, ışık. Çok düşük kontrast. */
+  kenar: 'rgba(255,255,255,0.07)',
+  kenarGuclu: 'rgba(255,255,255,0.13)',
+
+  metin: '#e9ecf2',
+  /** Ölçüldü: zeminde 7.4:1 — gövde metni için rahat. */
+  metinSolgun: '#9aa3b5',
+  /** Ölçüldü: 5.6:1 — eski #6b7185 (4.0) AA sınırının altındaydı. */
+  metinSilik: '#7d8697',
+
+  /** Tek vurgu: koyu mavinin canlı ucu. */
+  vurgu: '#4d8dff',
+  vurguSakin: 'rgba(77,141,255,0.16)',
+
+  iyi: '#4ade80',
+  uyari: '#eab308',
+  kotu: '#f87171',
+} as const;
+
+/** ÜÇ KADEME yarıçap — ölçümde 6 farklı değer çıkmıştı, tutarsızdı. */
+export const yaricap = { kontrol: 6, kart: 10, panel: 14 } as const;
+
+/** BOŞLUK 4'ün katları — ritim buradan gelir. */
+export const bosluk = { xs: 4, s: 8, m: 12, l: 16, xl: 24 } as const;
+
+/** TİPOGRAFİ ÖLÇEĞİ — tek düzlem yerine net kademeler. */
+export const yazi = {
+  kucuk: 11,
+  govde: 12,
+  orta: 13,
+  baslik: 15,
+  buyuk: 18,
 } as const;
 
 /**
- * Cam yüzey. `blur` arkadaki sahneyi bulanıklaştırır; `saturate` camın altında
- * kalan rengi canlı tutar (yoksa gri bir sis olur).
+ * CAM — yalnız ÜSTTE YÜZEN yüzeylerde (üst şerit, raf gövdesi). İçerik
+ * kartları bunu KULLANMAZ; onlar `yuzey()` ile düz durur.
  */
-export function cam(opts: { yogunluk?: number; blur?: number; radius?: number } = {}): CSSProperties {
-  const { yogunluk = 0.06, blur = 18, radius = 14 } = opts;
+export function cam(opts: { blur?: number; radius?: number } = {}): CSSProperties {
+  const { blur = 24, radius = yaricap.panel } = opts;
   return {
-    background: `linear-gradient(160deg, rgba(255,255,255,${yogunluk + 0.03}), rgba(255,255,255,${yogunluk * 0.4}))`,
-    backdropFilter: `blur(${blur}px) saturate(160%)`,
-    WebkitBackdropFilter: `blur(${blur}px) saturate(160%)`,
+    background: 'rgba(18,21,28,0.72)',
+    backdropFilter: `blur(${blur}px)`,
+    WebkitBackdropFilter: `blur(${blur}px)`,
     borderWidth: 1,
     borderStyle: 'solid',
-    borderColor: 'rgba(255,255,255,0.12)',
+    borderColor: renk.kenar,
     borderRadius: radius,
-    boxShadow: '0 8px 32px rgba(0,0,0,0.45), inset 0 1px 0 rgba(255,255,255,0.10)',
+    boxShadow: '0 16px 40px rgba(0,0,0,0.5)',
     color: renk.metin,
   };
 }
 
-/** Cam üstünde duran düğme. Etkin hâli vurgu rengiyle doldurulur. */
-export function camDugme(etkin = false): CSSProperties {
+/** Düz koyu yüzey — kart, kutu, liste. Gradyan ve bulanıklık YOK. */
+export function yuzey(kademe: 1 | 2 | 3 = 1, radius: number = yaricap.kart): CSSProperties {
   return {
-    fontFamily: SANS,
-    fontSize: 12,
-    fontWeight: 500,
-    letterSpacing: 0.2,
-    padding: '6px 12px',
-    borderRadius: 9,
+    background: kademe === 1 ? renk.yuzey1 : kademe === 2 ? renk.yuzey2 : renk.yuzey3,
     borderWidth: 1,
     borderStyle: 'solid',
-    borderColor: etkin ? 'rgba(91,156,255,0.55)' : 'rgba(255,255,255,0.14)',
-    background: etkin
-      ? 'linear-gradient(180deg, rgba(91,156,255,0.35), rgba(91,156,255,0.18))'
-      : 'linear-gradient(180deg, rgba(255,255,255,0.10), rgba(255,255,255,0.04))',
-    color: etkin ? '#eaf2ff' : renk.metin,
-    cursor: 'pointer',
-    transition: 'background 140ms ease, border-color 140ms ease, transform 100ms ease',
+    borderColor: renk.kenar,
+    borderRadius: radius,
+    color: renk.metin,
   };
 }
 
-/** Kartın/pass'in açık olduğunu gösteren nokta (referans arayüzdeki LED). */
+/**
+ * Düğme. Etkin hâli DOLGU ile ayrışır, ışımayla değil — ekranda aynı anda
+ * birden çok ışık kaynağı olması "efekt gösterisi" hissi veriyordu.
+ */
+export function dugme(etkin = false): CSSProperties {
+  return {
+    fontFamily: SANS,
+    fontSize: yazi.govde,
+    fontWeight: 500,
+    lineHeight: 1,
+    minHeight: 32,
+    padding: '9px 12px',
+    borderRadius: yaricap.kontrol,
+    borderWidth: 1,
+    borderStyle: 'solid',
+    borderColor: etkin ? 'rgba(77,141,255,0.45)' : renk.kenar,
+    background: etkin ? renk.vurguSakin : renk.yuzey2,
+    color: etkin ? '#dce9ff' : renk.metin,
+    cursor: 'pointer',
+    transition: 'background 120ms ease, border-color 120ms ease',
+  };
+}
+
+/** Tek ışık kaynağı: etkin LED. Kontroller ışımaz. */
 export function led(acik: boolean, renkAcik: string = renk.iyi): CSSProperties {
   return {
-    width: 7,
-    height: 7,
+    width: 6,
+    height: 6,
     borderRadius: '50%',
-    background: acik ? renkAcik : 'rgba(255,255,255,0.16)',
-    boxShadow: acik ? `0 0 10px ${renkAcik}` : 'none',
+    background: acik ? renkAcik : 'rgba(255,255,255,0.18)',
+    boxShadow: acik ? `0 0 8px ${renkAcik}99` : 'none',
     flex: '0 0 auto',
-    transition: 'background 140ms ease, box-shadow 140ms ease',
   };
 }
 
-/** Ölçülen sayı: rakam genişliği sabit, okunur. */
+/** Ölçülen sayı: rakam genişliği sabit (değerler sürekli değişiyor). */
 export const sayi: CSSProperties = {
   fontFamily: MONO,
   fontVariantNumeric: 'tabular-nums',
-  fontSize: 11,
+  fontSize: yazi.kucuk,
   color: renk.metinSolgun,
 };
