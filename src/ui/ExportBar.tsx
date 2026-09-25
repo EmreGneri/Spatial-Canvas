@@ -211,7 +211,7 @@ const seritStyle: CSSProperties = {
   gap: 8,
   alignItems: 'center',
   flexWrap: 'wrap',
-  maxWidth: 640,
+  maxWidth: 'min(960px, 100%)',
   fontFamily: 'ui-monospace, "Cascadia Mono", Consolas, monospace',
   fontSize: 12,
 };

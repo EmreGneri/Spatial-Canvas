@@ -5,8 +5,107 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>spatial-canvas</title>
     <style>
-      html, body, #root { margin: 0; height: 100%; background: #0a0a0c; color: #e8e8ea; }
-      body { font: 14px/1.5 ui-monospace, monospace; }
+      html, body, #root { margin: 0; min-height: 100%; background: #07070b; color: #e8e9ef; }
+      body {
+        font: 13px/1.5 -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', Roboto, system-ui, sans-serif;
+        -webkit-font-smoothing: antialiased;
+      }
+
+      /* ── KONTROLLER ────────────────────────────────────────────────────
+         Satır içi stil sözde-elemana (::-webkit-slider-thumb) yazamaz; kol ve
+         kutucuk stilleri bu yüzden burada. Arayüzün geri kalanı cam olunca
+         tarayıcının mavi native kolları yabancı duruyordu. */
+      input[type='range'] {
+        -webkit-appearance: none;
+        appearance: none;
+        height: 22px;
+        background: transparent;
+        cursor: pointer;
+      }
+      input[type='range']::-webkit-slider-runnable-track {
+        height: 4px;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.14);
+      }
+      input[type='range']::-webkit-slider-thumb {
+        -webkit-appearance: none;
+        appearance: none;
+        width: 14px;
+        height: 14px;
+        margin-top: -5px;
+        border-radius: 50%;
+        background: linear-gradient(180deg, #eaf2ff, #9dc2ff);
+        border: 1px solid rgba(255, 255, 255, 0.7);
+        box-shadow: 0 2px 6px rgba(0, 0, 0, 0.5), 0 0 12px rgba(91, 156, 255, 0.45);
+        transition: transform 120ms ease;
+      }
+      input[type='range']:hover::-webkit-slider-thumb { transform: scale(1.12); }
+      input[type='range']:disabled::-webkit-slider-thumb { background: #6b7185; box-shadow: none; }
+
+      input[type='checkbox'] {
+        -webkit-appearance: none;
+        appearance: none;
+        width: 15px;
+        height: 15px;
+        border-radius: 5px;
+        border: 1px solid rgba(255, 255, 255, 0.22);
+        background: rgba(255, 255, 255, 0.06);
+        cursor: pointer;
+        position: relative;
+        transition: background 140ms ease, border-color 140ms ease;
+      }
+      input[type='checkbox']:checked {
+        background: linear-gradient(180deg, #5b9cff, #3f7fe0);
+        border-color: rgba(91, 156, 255, 0.8);
+        box-shadow: 0 0 12px rgba(91, 156, 255, 0.45);
+      }
+      input[type='checkbox']:checked::after {
+        content: '';
+        position: absolute;
+        left: 4px;
+        top: 1px;
+        width: 4px;
+        height: 8px;
+        border: solid #fff;
+        border-width: 0 2px 2px 0;
+        transform: rotate(45deg);
+      }
+
+      input[type='color'] {
+        -webkit-appearance: none;
+        appearance: none;
+        border: 1px solid rgba(255, 255, 255, 0.18);
+        border-radius: 7px;
+        background: transparent;
+        cursor: pointer;
+        padding: 0;
+      }
+      input[type='color']::-webkit-color-swatch-wrapper { padding: 2px; }
+      input[type='color']::-webkit-color-swatch { border: none; border-radius: 5px; }
+
+      select, input[type='text'] {
+        font: inherit;
+        color: #e8e9ef;
+        background: rgba(255, 255, 255, 0.07);
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        border-radius: 8px;
+        padding: 4px 8px;
+      }
+
+      button:hover { filter: brightness(1.12); }
+      button:active { transform: translateY(1px); }
+      button:disabled { opacity: 0.45; cursor: not-allowed; filter: none; }
+
+      /* Cam panellerin içindeki kaydırma çubuğu da ince ve sessiz olsun. */
+      ::-webkit-scrollbar { width: 9px; height: 9px; }
+      ::-webkit-scrollbar-track { background: transparent; }
+      ::-webkit-scrollbar-thumb {
+        background: rgba(255, 255, 255, 0.14);
+        border-radius: 999px;
+        border: 2px solid transparent;
+        background-clip: content-box;
+      }
+      ::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.26); background-clip: content-box; }
     </style>
   </head>
   <body>

@@ -17,6 +17,7 @@ import { TrackerOverlay } from './ui/TrackerOverlay';
 import { ExportBar } from './ui/ExportBar';
 import { maskeKarari } from './ui/maskeKarari';
 import { useDarEkran } from './ui/useDarEkran';
+import { cam, camDugme, led, MONO, renk, SANS } from './ui/tema';
 import { YetenekUyarisi } from './ui/YetenekUyarisi';
 import { Egitim3D } from './ui/Egitim3D';
 import { type TrackedTarget, type TrackerModu } from './engine/vision/tracker';
@@ -70,37 +71,44 @@ const LOG_LIMIT = 200;
  * Toggle'ların vurgu rengi ANLAM taşır ve değişmedi: yeşil = nesne ayırma,
  * turuncu = maske tanısı, mavi = tracker HUD.
  */
-const toolButton: CSSProperties = {
-  // `font` KISAYOLU DEĞİL: React, aynı render'da kısayol (`font`) ile tekil
-  // alanı (`fontSize`) birlikte güncelleyince uyarı basıyor ve stil
-  // güncellemeleri sıraya bağlı hale geliyor. Aile ayrı, boyut ayrı yazılır.
-  fontFamily: 'inherit',
-  fontSize: 12,
-  padding: '4px 10px',
-  background: '#1a1a22',
-  color: '#c8c8d4',
-  // Kenarlık de UZUN yazımla: toggle'lar yalnız `borderColor`'ı değiştiriyor,
-  // taban `border` kısayolu olsaydı React aynı uyarıyı basardı (kısayol ile
-  // tekil alan aynı elemanda karışmamalı).
-  borderWidth: 1,
-  borderStyle: 'solid',
-  borderColor: '#26262e',
-  borderRadius: 3,
-  cursor: 'pointer',
-};
+const toolButton: CSSProperties = camDugme(false);
 
+/**
+ * Toggle'ın AÇIK hâli: vurgu rengi dolgusu + aynı renkte hafif parıltı. Renk
+ * hâlâ ANLAM taşır (yeşil = nesne ayırma, turuncu = maske, mavi = tracker),
+ * ama artık düz blok yerine camın üstünde ışıyan bir yüzey.
+ */
 function toggleButton(active: boolean, accent: string): CSSProperties {
-  return active
-    ? { ...toolButton, background: accent, color: '#fff', borderColor: accent }
-    : toolButton;
+  if (!active) return toolButton;
+  return {
+    ...camDugme(false),
+    background: `linear-gradient(180deg, ${accent}66, ${accent}33)`,
+    borderColor: `${accent}aa`,
+    color: '#fff',
+    boxShadow: `0 0 18px ${accent}44`,
+  };
+}
+
+function ustSerit(dar: boolean): CSSProperties {
+  return {
+    display: 'flex',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: dar ? 6 : 10,
+    width: '100%',
+    maxWidth: 'min(960px, 100%)',
+    boxSizing: 'border-box',
+    padding: dar ? '8px 10px' : '10px 14px',
+    ...cam({ yogunluk: 0.05, blur: 20, radius: 14 }),
+  };
 }
 
 /** Gruplar arası ince ayraç — şerit sardığında da grupları ayırır. */
 const toolDivider: CSSProperties = {
   width: 1,
   alignSelf: 'stretch',
-  background: '#26262e',
-  margin: '0 2px',
+  background: 'linear-gradient(180deg, transparent, rgba(255,255,255,0.18), transparent)',
+  margin: '0 4px',
 };
 
 export default function App() {  const containerRef = useRef<HTMLDivElement>(null);
@@ -1072,39 +1080,57 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
         // kadraj payı bırakılır. Dar ekranda panel akışa girdiği için pay
         // gerekmez ve kenar boşluğu küçülür (351 px'lik sahneye yer açar).
         padding: dar ? 12 : 24,
-        paddingRight: dar ? 12 : 252,
+        paddingRight: dar ? 12 : 332,
         display: 'grid',
         // minmax(0, 1fr): `auto` sütun içeriğin max-content'ine (640 px)
         // şişiyordu, o yüzden alt öğelerdeki `min(640px, 100%)` de 640'a
         // çözülüyor ve kadraj taşıyordu. Sütun kadraja kilitlenince yüzdeler
         // gerçek ekran genişliğini gösterir.
         gridTemplateColumns: 'minmax(0, 1fr)',
-        gap: dar ? 10 : 16,
+        gap: dar ? 10 : 14,
         justifyItems: 'start',
         boxSizing: 'border-box',
         width: '100%',
         maxWidth: '100%',
+        fontFamily: SANS,
+        color: renk.metin,
+        // Camın altında görünecek derinlik: düz siyah yerine hafif renk geçişi
+        // (glassmorphism arkasında desen yoksa cam "gri sis" gibi durur).
+        minHeight: '100vh',
+        background:
+          'radial-gradient(1200px 700px at 12% -5%, #16233d 0%, transparent 55%),' +
+          'radial-gradient(900px 600px at 95% 10%, #241a33 0%, transparent 50%),' +
+          '#07070b',
       }}
     >
       {/* `font` kısayolu + `fontSize` birlikte kullanılınca React her
           yeniden çizimde uyarı basıyordu (konsolda onlarca satır). */}
-      {/* Başlık artık kendi SÜRÜMÜNÜ gösterir. Eskiden burada elle yazılmış bir
-          gün etiketi ("Gün A — ACES + bloom + FXAA + sis") duruyordu; o günden
-          beri onlarca değişiklik geçti, satırı kimse güncellemedi ve ekrandaki
-          bilgi yanlıştı. Sürüm `package.json`'dan build zamanında geldiği için
-          bir daha eskiyemez. */}
-      <h1 style={{ fontFamily: 'inherit', fontWeight: 'inherit', fontSize: 18, margin: 0 }}>
-        spatial-canvas{' '}
-        <span style={{ color: '#667', fontSize: 13 }} title="uygulama sürümü (package.json)">
+      {/* ÜST ŞERİT — referans arayüzdeki durum barı: kimlik + sürüm solda,
+          canlı durum (mod · kaynak · fps) sağda. Sürüm `package.json`'dan
+          gelir (elle güncellenmez). */}
+      <header style={ustSerit(dar)}>
+        <span style={{ fontSize: 15, fontWeight: 600, letterSpacing: 0.2 }}>spatial-canvas</span>
+        <span style={{ fontFamily: MONO, fontSize: 10, color: renk.metinSilik, padding: '2px 6px', borderRadius: 6, background: 'rgba(255,255,255,0.06)' }}>
           v{__APP_VERSION__}
         </span>
-      </h1>
+        <span style={toolDivider} />
+        <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: renk.metinSolgun }}>
+          <span style={led(true, renk.vurgu)} />
+          {mode}
+        </span>
+        <span style={{ fontSize: 11, color: renk.metinSilik }}>
+          {cameraOn ? 'kamera' : videoDosya ? 'video' : 'fotoğraf'}
+        </span>
+        <span style={{ marginLeft: 'auto', fontFamily: MONO, fontSize: 11, color: fps >= 30 ? renk.iyi : renk.uyari }}>
+          {fps} fps
+        </span>
+      </header>
 
       {/* Z2 — sessiz bozulma yerine sebep: WebGPU/canlı derinlik/tespit
           kapalıysa üstte tek şerit. Her şey çalışıyorsa hiç çizilmez. */}
       <YetenekUyarisi say={say} />
 
-      <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', maxWidth: 'min(640px, 100%)' }}>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', maxWidth: 'min(960px, 100%)' }}>
         {/* KAYNAK */}
         <button
           style={toolButton}
@@ -1197,14 +1223,11 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
         </label>
         <span style={toolDivider} />
         {/* ÇIKTI + DURUM */}
-        <span style={{ color: fps >= 30 ? '#6a6' : '#c66', fontSize: 12, fontVariantNumeric: 'tabular-nums', marginLeft: 'auto' }}>
-         {fps} fps
-        </span>
         </div>
 
       {/* İpucu şeridi: eskiden butonların ARASINDAydı ve dar pencerede
           kırpılıyordu — kendi satırına alındı. */}
-      <span style={{ color: '#667', fontSize: 12, marginTop: -8 }}>
+      <span style={{ color: renk.metinSilik, fontSize: 11.5, marginTop: -6 }}>
         görsel/video sürükle-bırak · tıklayıp döndür · hover = kuvvet
       </span>
 
@@ -1228,8 +1251,11 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
           // sayfa 810 px'e çıkıp yatay kaydırma açıyordu). Genişlik kadraja
           // uyar, oran korunur — Engine zaten konteynerin ölçüsüne göre
           // yeniden boyutlanır (Engine.resize parent'ı okur).
-          width: 'min(640px, 100%)',
-          aspectRatio: '640 / 420',
+          // Sahne artık ana alanın tamamını alır (referans düzen: solda büyük
+          // görüntü, sağda efekt rafı). Üst sınır 960 px — daha genişte
+          // parçacık yoğunluğu seyrelip görüntü zayıflıyor.
+          width: 'min(960px, 100%)',
+          aspectRatio: '16 / 10',
           border: '1px solid #222',
           background: '#000',
           position: 'relative',
@@ -1290,7 +1316,12 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
       )}
       {engine && <PresetControls engine={engine} say={say} onGraphChanged={() => { setGraphTick((t) => t + 1); refreshPanel(); }} />}
       {engine && <ForceControls engine={engine} />}
-      <pre style={{ margin: 0, color: '#8ab', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', maxWidth: '100%' }}>{log.join('\n')}</pre>
+      <pre style={{
+        margin: 0, color: renk.metinSolgun, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere',
+        maxWidth: 'min(960px, 100%)', boxSizing: 'border-box', width: '100%',
+        fontFamily: MONO, fontSize: 11, lineHeight: 1.6, maxHeight: 180, overflowY: 'auto',
+        ...cam({ yogunluk: 0.04, blur: 12, radius: 12 }), padding: 12,
+      }}>{log.join('\n')}</pre>
       {engine && (
         <ControlPanel
           grain={engine.grainUniforms}
