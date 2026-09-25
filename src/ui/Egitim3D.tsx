@@ -2,6 +2,8 @@ import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { egitimBaslat, kameraMerkezi, yorunge, type Egitim, type EgitimMetrik } from '../engine/reconstruction/egitim3dgs';
 import { bindWheelZoom, boundedZoomFactor, flyAxes, flyRadius, flyStep, lookAround } from './egitimControls';
 import { egitimGpuHint } from './egitimGpuHint';
+import { ayarOzeti, egitimOnKontrol, type OnKontrol } from './egitimOnKontrol';
+import { ayarSec, type EgitimAyari } from '../engine/reconstruction/egitim3dgs';
 
 /**
  * The splat.js training view overlays the engine canvas. Training starts
@@ -27,10 +29,35 @@ export function Egitim3D({ dosya, onKapat, say }: { dosya: File; onKapat(): void
   const [hata, setHata] = useState<string | null>(null);
   const [plyBusy, setPlyBusy] = useState(false);
   const [gpu, setGpu] = useState<{ ad: string; entegre: boolean; iter: number } | null>(null);
+  /** Z2 — ön kontrol: eğitim BAŞLAMADAN cihazın yapabildiği söylenir. */
+  const [onKontrol, setOnKontrol] = useState<OnKontrol | null>(null);
+  const [onAyar, setOnAyar] = useState<EgitimAyari | null>(null);
   // App'in `say`'ı her render'da yeni fonksiyon: effect bağımlılığı olursa
   // her render eğitimi baştan başlatır. Ref üzerinden çağrılır.
   const sayRef = useRef(say);
   sayRef.current = say;
+
+  // Ön ayar ekranı açılır açılmaz cihaz sorulur: WebGPU var mı, hangi GPU
+  // seçilir, hangi ayar katmanı uygulanır. Eskiden bu ancak "başlat"tan
+  // SONRA, kare çıkarma sırasında öğreniliyordu.
+  useEffect(() => {
+    if (started) return;
+    let iptal = false;
+    ayarSec()
+      .then((a) => {
+        if (iptal) return;
+        setOnAyar(a);
+        setOnKontrol(egitimOnKontrol({ webgpu: true, ua: navigator.userAgent }));
+      })
+      .catch(() => {
+        if (iptal) return;
+        setOnAyar(null);
+        setOnKontrol(egitimOnKontrol({ webgpu: false, ua: navigator.userAgent }));
+      });
+    return () => {
+      iptal = true;
+    };
+  }, [started]);
 
   useEffect(() => {
     if (!started) return;
@@ -170,6 +197,20 @@ export function Egitim3D({ dosya, onKapat, say }: { dosya: File; onKapat(): void
       <div style={onAyarlama}>
         <strong>3D eğit</strong>
         <p>{dosya.name}</p>
+        {/* Z2 — CİHAZ ÖN KONTROLÜ: ne olacağı baştan söylenir. */}
+        <div style={onKontrolKutusu(onKontrol?.calisir !== false)}>
+          <div>{onKontrol ? onKontrol.baslik : 'cihaz kontrol ediliyor…'}</div>
+          {onAyar && (
+            <div style={{ color: '#8ab', marginTop: 4 }}>{ayarOzeti(onAyar)}</div>
+          )}
+          {onKontrol && onKontrol.adimlar.length > 0 && (
+            <ol style={{ margin: '6px 0 0', paddingLeft: 18, color: '#c8c8d4', lineHeight: 1.5 }}>
+              {onKontrol.adimlar.map((adim) => (
+                <li key={adim}>{adim}</li>
+              ))}
+            </ol>
+          )}
+        </div>
         <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <input type="checkbox" checked={subjectOnly} onChange={(event) => setSubjectOnly(event.target.checked)} />
           Yalnız özneyi eğit (deneysel)
@@ -180,7 +221,14 @@ export function Egitim3D({ dosya, onKapat, say }: { dosya: File; onKapat(): void
         </p>
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
           <button style={dugme} onClick={onKapat}>kapat</button>
-          <button style={dugme} onClick={() => setStarted(true)}>eğitimi başlat</button>
+          <button
+            style={{ ...dugme, opacity: onKontrol?.calisir === false ? 0.5 : 1 }}
+            disabled={onKontrol?.calisir === false}
+            title={onKontrol?.calisir === false ? 'WebGPU olmadan eğitim başlatılamaz' : 'eğitimi başlat'}
+            onClick={() => setStarted(true)}
+          >
+            eğitimi başlat
+          </button>
         </div>
       </div>
     </div>
@@ -242,12 +290,36 @@ export function Egitim3D({ dosya, onKapat, say }: { dosya: File; onKapat(): void
           </button>
         )}
         {bitti && <button style={dugme} disabled={plyBusy} onClick={plyIndir}>{plyBusy ? 'PLY hazırlanıyor…' : '.ply indir'}</button>}
+        {/* Z2 — KURTARMA YOLU: hata sonrası tek yol "kapat" idi; kullanıcı
+            videoyu yeniden seçmek zorunda kalıyordu. Şimdi aynı dosyayla ön
+            ayara dönülür (oturum kapatılır, GPU serbest bırakılır). */}
+        {hata && (
+          <button
+            style={dugme}
+            title="aynı videoyla ön ayar ekranına dön ve yeniden dene"
+            onClick={() => {
+              egitimRef.current?.kapat();
+              egitimRef.current = null;
+              setHata(null);
+              setMetrik(null);
+              setBitti(false);
+              setAsama('başlıyor');
+              setStarted(false);
+            }}
+          >
+            tekrar dene
+          </button>
+        )}
         <button style={dugme} onClick={onKapat}>kapat</button>
       </div>
       {!bitti && !hata && <div style={{ ...cubuk, width: `${yuzde}%` }} />}
-      {gpuHint && (
-        <div role="status" style={{ ...serit, top: 0, bottom: 'auto', color: '#db6', padding: '8px' }}>
-          {gpuHint}
+      {/* Z2 — SEÇİLEN GPU VE AYAR KATMANI her cihazda görünür. Eskiden yalnız
+          Intel iGPU'ya özel ipucu vardı; başka bir GPU'da kullanıcı hangi
+          ayarla koştuğunu hiç öğrenmiyordu. */}
+      {(onAyar || gpuHint) && (
+        <div role="status" style={{ ...serit, top: 0, bottom: 'auto', color: gpuHint ? '#db6' : '#89a', padding: '8px', display: 'grid', gap: 4 }}>
+          {onAyar && <span>{ayarOzeti(onAyar)}</span>}
+          {gpuHint && <span>{gpuHint}</span>}
         </div>
       )}
     </div>
@@ -255,6 +327,19 @@ export function Egitim3D({ dosya, onKapat, say }: { dosya: File; onKapat(): void
 }
 
 const kaplama: CSSProperties = { position: 'absolute', inset: 0, background: '#000', zIndex: 5 };
+function onKontrolKutusu(calisir: boolean): CSSProperties {
+  return {
+    padding: '6px 8px',
+    borderRadius: 3,
+    borderWidth: 1,
+    borderStyle: 'solid',
+    borderColor: calisir ? '#2a3a4a' : '#6b4a12',
+    background: calisir ? '#12161c' : '#17130a',
+    color: calisir ? '#c8c8d4' : '#f0b429',
+    fontSize: 12,
+  };
+}
+
 const onAyarlama: CSSProperties = {
   width: 'min(430px, calc(100% - 32px))', padding: 20, border: '1px solid #333',
   borderRadius: 8, background: '#15151d', color: '#c8c8d4', fontSize: 13,
