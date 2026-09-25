@@ -15,39 +15,90 @@
  * kapak ~250 KB yerine ~60 KB tutuyor, kapak için kayıp önemsiz).
  */
 
-const ANAHTAR = 'spatial-canvas.preset-onizleme.v1';
+const ANAHTAR = 'spatial-canvas.preset-onizleme.v2';
+
+/**
+ * KAPAKLAR KAYNAĞA BAĞLIDIR. Kapak "bu preset ŞU SAHNEDE böyle görünür"
+ * demektir; sahne değişince eski kapak yalan söyler. Ölçüldü: sentetik
+ * görselle üretilen 8 kapak, başka bir görsel yüklendikten sonra aynen
+ * duruyordu ve yeni sahneyi hiç temsil etmiyordu.
+ *
+ * Kapaklar bu yüzden KAYNAK BAŞINA saklanır: kimlik değişince kütüphane yer
+ * tutucuya döner, eski kaynağa dönülünce kapaklar geri gelir — silmek yerine
+ * ayırmak, üretim emeğini çöpe atmaz (ölçüldü: tek dosyada saklarken geri
+ * dönüşte 0 kapak kalıyordu).
+ *
+ * Son `KAYNAK_SINIRI` kaynak tutulur; en eski düşer. Her kaynak ~8 kapak ×
+ * ~4,5 KB = ~36 KB, üç kaynak ~110 KB — localStorage kotası için rahat.
+ */
+const KAYNAK_SINIRI = 3;
+
+interface KapakDosyasi {
+  /** Kaynak kimliği → o kaynakta üretilmiş kapaklar. Sıra: eskiden yeniye. */
+  kaynaklar: { kaynak: string; kapaklar: Kapaklar }[];
+}
+
+/** Şu anki kaynağın kimliği; App her yeni medyada günceller. */
+let aktifKaynak = 'baslangic';
+const dinleyiciler = new Set<() => void>();
+
+export function kaynakBelirle(kimlik: string): void {
+  if (kimlik === aktifKaynak) return;
+  aktifKaynak = kimlik;
+  // Kütüphane açıkken kaynak değişirse kapaklar ANINDA yer tutucuya dönmeli;
+  // yoksa yeni sahnede eski kapaklar duruyormuş gibi görünür.
+  for (const d of dinleyiciler) d();
+}
+
+/** Kütüphane paneli kaynak değişimini buradan duyar. */
+export function kaynakDinle(geriCagri: () => void): () => void {
+  dinleyiciler.add(geriCagri);
+  return () => dinleyiciler.delete(geriCagri);
+}
 export const ONIZLEME_EN = 192;
 export const ONIZLEME_BOY = 120;
 
 type Kapaklar = Record<string, string>;
 
-export function kapaklariOku(): Kapaklar {
+function dosyaOku(): KapakDosyasi {
   try {
     const ham = localStorage.getItem(ANAHTAR);
-    return ham ? (JSON.parse(ham) as Kapaklar) : {};
+    if (!ham) return { kaynaklar: [] };
+    const d = JSON.parse(ham) as KapakDosyasi;
+    return Array.isArray(d.kaynaklar) ? d : { kaynaklar: [] };
   } catch {
-    return {};
+    return { kaynaklar: [] };
   }
+}
+
+function dosyaYaz(dosya: KapakDosyasi): void {
+  try {
+    localStorage.setItem(ANAHTAR, JSON.stringify(dosya));
+  } catch {
+    // Kota dolduysa kapaklar kaybolur ama uygulama çalışmaya devam eder.
+  }
+}
+
+/** YALNIZ aktif kaynağın kapakları — başka sahnenin kapağı gösterilmez. */
+export function kapaklariOku(): Kapaklar {
+  return dosyaOku().kaynaklar.find((k) => k.kaynak === aktifKaynak)?.kapaklar ?? {};
 }
 
 export function kapakYaz(ad: string, dataUrl: string): Kapaklar {
   const hepsi = { ...kapaklariOku(), [ad]: dataUrl };
-  try {
-    localStorage.setItem(ANAHTAR, JSON.stringify(hepsi));
-  } catch {
-    // Kota dolduysa kapaklar kaybolur ama uygulama çalışmaya devam eder.
-  }
+  const dosya = dosyaOku();
+  const kalan = dosya.kaynaklar.filter((k) => k.kaynak !== aktifKaynak);
+  // Aktif kaynak sona gider (en yeni); sınırı aşan EN ESKİ düşer.
+  dosyaYaz({ kaynaklar: [...kalan, { kaynak: aktifKaynak, kapaklar: hepsi }].slice(-KAYNAK_SINIRI) });
   return hepsi;
 }
 
 export function kapakSil(ad: string): Kapaklar {
   const hepsi = kapaklariOku();
   delete hepsi[ad];
-  try {
-    localStorage.setItem(ANAHTAR, JSON.stringify(hepsi));
-  } catch {
-    /* yoksay */
-  }
+  const dosya = dosyaOku();
+  const kalan = dosya.kaynaklar.filter((k) => k.kaynak !== aktifKaynak);
+  dosyaYaz({ kaynaklar: [...kalan, { kaynak: aktifKaynak, kapaklar: hepsi }].slice(-KAYNAK_SINIRI) });
   return hepsi;
 }
 
