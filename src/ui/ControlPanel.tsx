@@ -12,10 +12,10 @@ import { FEEDBACK_PARAMS, type FeedbackPassUniforms } from '../shaders/feedbackP
 import { CHROMATIC_PARAMS, type ChromaticPassUniforms } from '../shaders/chromaticPass';
 import { BLOOM_PARAMS, type BloomPassUniforms } from '../shaders/bloomPass';
 import { LOOK_PARAMS, type LookUniforms } from '../shaders/look';
-import type { RenderTargets } from '../shaders/renderPreset';
+import { serializeRenderState, type RenderTargets } from '../shaders/renderPreset';
 import { PresetSection } from './PresetSection';
 import { useDarEkran } from './useDarEkran';
-import { cam, camDugme, led, MONO, renk, SANS } from './tema';
+import { bosluk, cam, dugme as temaDugme, led, MONO, renk, SANS, yaricap, yazi, yuzey } from './tema';
 import type { RenderMode } from './ModeSelector';
 
 /**
@@ -47,7 +47,7 @@ const panelStyle: CSSProperties = {
   width: 296,
   padding: 12,
   boxSizing: 'border-box',
-  ...cam({ yogunluk: 0.05, blur: 22, radius: 18 }),
+  ...cam({ blur: 26, radius: yaricap.panel }),
   fontFamily: SANS,
   fontSize: 12,
   display: 'grid',
@@ -60,10 +60,10 @@ const rafBasligi: CSSProperties = {
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'space-between',
-  padding: '2px 4px 6px',
-  fontSize: 13,
+  padding: `${bosluk.xs}px ${bosluk.xs}px ${bosluk.s}px`,
+  fontSize: yazi.baslik,
   fontWeight: 600,
-  letterSpacing: 0.3,
+  letterSpacing: -0.1,
   color: renk.metin,
 };
 
@@ -73,12 +73,13 @@ function kartBasligi(acik: boolean): CSSProperties {
     alignItems: 'center',
     gap: 8,
     width: '100%',
-    padding: '10px 12px',
+    padding: `${bosluk.m}px ${bosluk.m}px`,
+    minHeight: 40,
     background: 'none',
     borderWidth: 0,
     color: renk.metin,
     fontFamily: SANS,
-    fontSize: 12.5,
+    fontSize: yazi.orta,
     cursor: 'pointer',
     textAlign: 'left',
     opacity: acik ? 1 : 0.92,
@@ -93,7 +94,7 @@ const darPanelStyle: CSSProperties = {
   maxHeight: '60vh',
   boxSizing: 'border-box',
   padding: 10,
-  ...cam({ yogunluk: 0.06, blur: 18, radius: 14 }),
+  ...cam({ blur: 22, radius: yaricap.panel }),
   fontFamily: SANS,
   fontSize: 12,
   display: 'grid',
@@ -103,7 +104,7 @@ const darPanelStyle: CSSProperties = {
 };
 
 const darAcKapaStyle: CSSProperties = {
-  ...camDugme(false),
+  ...temaDugme(false),
   width: '100%',
   textAlign: 'left',
 };
@@ -301,6 +302,8 @@ export function ControlPanel({
   mode,
   setMode,
   syncKey = 0,
+  engine,
+  setModeGuncel,
 }: {
   grain: GrainPassUniforms;
 points: PointCloudMaterial;
@@ -327,6 +330,10 @@ points: PointCloudMaterial;
    * ("↺ sıfırla", graph editor, graph preset). Same reason as `revision`.
    */
   syncKey?: number;
+  /** Kapak üretimi için sahne (verilmezse kütüphane yalnız yer tutucu gösterir). */
+  engine?: { renderer: { domElement: HTMLCanvasElement }; renderFrame: () => void };
+  /** Mod değiştirmenin GÜNCEL referansı (uzun işlerde bayatlamayan). */
+  setModeGuncel?: (m: RenderMode) => void;
 }) {
   const firstHeading: CSSProperties = { ...headingStyle, borderTop: 'none', paddingTop: 0 };
 
@@ -374,7 +381,18 @@ points: PointCloudMaterial;
     ...(bloom ? [{ id: 'bloom', ad: 'Bloom', ozet: `${BLOOM_PARAMS.length} kol`, etkin: degismis(BLOOM_PARAMS, asRecord(bloom)), icerik: <ParamGroup defs={BLOOM_PARAMS} uniforms={asRecord(bloom)} /> }] : []),
     ...(look ? [{ id: 'look', ad: 'Look', ozet: 'ACES + sis', etkin: degismis(LOOK_PARAMS, asRecord(look)), icerik: <ParamGroup defs={LOOK_PARAMS} uniforms={asRecord(look)} /> }] : []),
     { id: 'grain', ad: 'Grain / Grading', ozet: `${GRAIN_PARAMS.length} kol`, etkin: degismis(GRAIN_PARAMS, asRecord(grain)), icerik: <ParamGroup defs={GRAIN_PARAMS} uniforms={asRecord(grain)} /> },
-    { id: 'presets', ad: 'Presets', ozet: 'kaydet · yükle', etkin: false, icerik: <PresetSection targets={targets} onApplied={() => setRevision((r) => r + 1)} /> },
+    { id: 'presets', ad: 'Presets', ozet: 'kaydet · yükle', etkin: false, icerik: (
+      <PresetSection
+        targets={targets}
+        onApplied={() => setRevision((r) => r + 1)}
+        sahne={engine ? {
+          canvas: engine.renderer.domElement,
+          renderFrame: () => engine.renderFrame(),
+          serialize: () => serializeRenderState(targets),
+          setMode: setModeGuncel,
+        } : undefined}
+      />
+    ) },
   ];
 
   return (
@@ -386,7 +404,7 @@ points: PointCloudMaterial;
       )}
       <div style={rafBasligi}>
         <span>efektler</span>
-        <span style={{ fontFamily: MONO, fontSize: 10, color: renk.metinSilik }}>{kartlar.length} modül</span>
+        <span style={{ fontFamily: MONO, fontSize: yazi.kucuk, color: renk.metinSilik }}>{kartlar.length} modül</span>
       </div>
 
       <Fragment key={`${revision}:${syncKey}`}>
@@ -419,17 +437,19 @@ function EfektKarti({
   no: number; ad: string; ozet: string; etkin: boolean; acik: boolean; onTikla: () => void; children: ReactNode;
 }) {
   return (
-    <section style={{ ...cam({ yogunluk: acik ? 0.09 : 0.05, blur: 14, radius: 12 }), overflow: 'hidden' }}>
+    <section style={{ ...yuzey(acik ? 2 : 1), overflow: 'hidden' }}>
       <button type="button" onClick={onTikla} style={kartBasligi(acik)} aria-expanded={acik}>
         <span style={{ fontFamily: MONO, fontSize: 10, color: renk.metinSilik, width: 16 }}>
           {String(no).padStart(2, '0')}
         </span>
         <span style={led(etkin)} />
         <span style={{ flex: 1, textAlign: 'left', fontWeight: 500 }}>{ad}</span>
-        <span style={{ fontSize: 10, color: renk.metinSilik }}>{ozet}</span>
-        <span style={{ color: renk.metinSilik, transform: acik ? 'rotate(90deg)' : 'none', transition: 'transform 160ms ease' }}>›</span>
+        <span style={{ fontSize: yazi.kucuk, color: renk.metinSilik }}>{ozet}</span>
+        <span style={{ color: renk.metinSilik, fontSize: yazi.orta, transform: acik ? 'rotate(90deg)' : 'none', transition: 'transform 160ms ease' }}>›</span>
       </button>
-      {acik && <div style={{ display: 'grid', gap: 10, padding: '4px 12px 12px' }}>{children}</div>}
+      {acik && (
+        <div style={{ display: 'grid', gap: bosluk.m, padding: `0 ${bosluk.m}px ${bosluk.m}px` }}>{children}</div>
+      )}
     </section>
   );
 }
