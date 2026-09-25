@@ -3,6 +3,79 @@
 Sözleşmeye dokunan her değişiklik buraya yazılır (`ARCHITECTURE.md` kuralı: sessiz sapma yok).
 En yeni üstte.
 
+## 2026-09-25 — Z1-Z3 (Zeynep): çıktı akışı, yetenek/ön kontrol, mobil düzen
+
+Dördü de aynı kuralın ayakları: **sessiz bozulma yerine sebep.**
+
+**Sürüm görünürlüğü.** Başlıkta elle yazılmış bir gün etiketi duruyordu
+("Gün A — ACES + bloom + FXAA + sis"); aradan onlarca değişiklik geçti, satırı
+kimse güncellemedi. Sürüm artık `package.json`'dan build zamanında enjekte
+edilir (`vite.config.ts` → `__APP_VERSION__`), başlık `spatial-canvas v1.0.0`
+yazar ve elle tutulan ikinci kopya olmadığı için eskiyemez.
+
+**Z1 · çıktı şeridi** (`ui/ExportBar.tsx`). PNG/PLY/WebM üç ayrı düğmeydi;
+WebM süresi "saat" düğmesinin arkasında gizliydi (5→10→20 döngüsü), kayıt
+sırasında hiçbir geri bildirim yoktu, sonuç yalnız log şeridinden okunuyordu.
+Artık tek şerit: süre açıkça seçilir, kayıt geri sayımla ilerler ve o sırada
+diğer çıktılar kilitlenir, sonuç şeridin kendi durum satırında görünür. Splat
+yokken PLY sebebini söyler. Kapatılabilir **imza** (sağ alt köşe,
+`spatial-canvas v<sürüm>`) hem PNG'ye hem WebM'e girer — kayıt ara canvas
+üzerinden geçer, `engine/export.ts` değişmedi.
+
+**Z1 · paylaşım** (`ui/paylasim.ts`, `Egitim3D`). Eğitim bitince tek düğme:
+**tam bir tur dönen** 8 sn'lik imzalı klip (döngüye alındığında sıçrama
+görünmesin diye tam tur) + künye panoya. Künye ölçülmeyeni uydurmaz, eksik
+alanı atlar. **"Tek link" YAPILMADI:** link, 11 MB'lık `.ply`'ı ve
+görüntüleyiciyi barındırmak demek; proje ücretsiz/yerel kalma kararında ve bunu
+arayüz tek başına bozamaz. Barındırma kararı verilirse künye aynen link
+açıklaması olur.
+
+**Z2 · yetenek uyarısı** (`ui/YetenekUyarisi.tsx`). `yetenekRaporu()`'nun (E2)
+arayüz karşılığı: `sebep === null` iken hiçbir şey çizilmez. Sorun varsa
+rozetler (WebGPU / canlı derinlik / nesne tespiti) + sebep + kapat; sebep log
+şeridine de düşer.
+
+**Z2 · eğitim ön kontrolü** (`ui/egitimOnKontrol.ts`). WebGPU olmayan
+tarayıcıda kullanıcı "eğitimi başlat"a basıyor, kare çıkarma başlıyor ve ancak
+`ayarSec()` içinde patlıyordu — mesaj doğru, zamanı yanlıştı. Artık ön ayar
+ekranı açılır açılmaz cihaz sorulur; WebGPU yoksa düğme kapalı gelir, sebep ve
+**tarayıcıya özel** kurtarma adımları listelenir (Safari: sürüm/bayrak,
+Firefox: about:config, Chrome/Edge: donanım hızlandırma + uzak masaüstü
+uyarısı). Seçilen GPU ve ayar katmanı her cihazda görünür
+("apple / metal-3 · hafif ayar (quick) · 24 kare · 3.000 iterasyon") — eskiden
+yalnız Intel iGPU'ya özel ipucu vardı. Hata sonrası "tekrar dene" aynı dosyayla
+ön ayara döner (oturum kapanır, GPU bırakılır).
+
+**Z3 · mobil düzen.** 375 px ekranda sayfa 810 px'e uzuyordu: sabit 640×420
+sahne, sabit 640 px node editörü, sarmayan mod satırı ve 220 px sabit sağ panel.
+
+| ölçüm (emülasyon 375×812) | önce | sonra |
+|---|---|---|
+| sayfa genişliği | 810 px | **375 px** (yatay kaydırma yok) |
+| sahne | kadrajdan taşıyor | 353×232, oran 1.52 korunuyor |
+
+Motorun tuvali akıştan çıkarıldı (`position: absolute`): tuval kendi CSS
+yüksekliğiyle konteyneri geri itiyor ve `aspect-ratio` hiç uygulanmıyordu
+(ölçüldü: 353×302, oranın istediği 353×232). Kök grid `minmax(0, 1fr)` —
+`auto` sütun içeriğin max-content'ine şişip alt öğelerdeki `min(640px, 100%)`
+hesabını da bozuyordu. Dar ekranda sağ panel akışa girer ve katlanır
+(varsayılan kapalı). Masaüstünde regresyon yok (1280×800: sahne 642×422, panel
+sabit 220 px, örtüşme yok). **Sınır:** ölçümler tarayıcı emülasyonunda; gerçek
+telefon kabulü yapılmadı.
+
+**Siyah ekran düzeltmesi** (`ui/maskeKarari.ts`). Segmentasyon RMBG-1.4'ten
+IS-Net'e geçince sentetik görselde maske kadrajın yalnız %4,7'sini özne saydı;
+nesne ayırma otomatik açık olduğu için sahnenin gerisi siliniyordu (dolu piksel
+%5,3 → %0,7) ve sebep hiçbir yere yazılmıyordu. Karar tek taraflıydı: üst uç
+korunuyordu (%92 üstü "model pes etti"), alt uç yoktu. Ölçülen oranlar —
+sentetik %4,7 · proje küçük resmi %17,9 · bina cephesi %45,6 — alt eşik %8.
+Maske atılmaz (derinlik aşamaları ondan faydalanır), yalnız ayırma kapalı
+başlar ve sebep söylenir.
+
+**Doğrulama:** `npm run verify` zinciri 64 → **69** (yeni: `verify-cikti-imza`,
+`verify-yetenek-uyarisi`, `verify-maske-karari`, `verify-egitim-onkontrol`,
+`verify-paylasim`), hepsi geçiyor; `npm run typecheck` temiz.
+
 ## 2026-09-25 — 3D eğit: kare yakalama sonunda decoder asılı kalmaz
 
 - Kök neden (vendor `splat.js/io/video.js` `runDecoder`): son seçilen kareden
