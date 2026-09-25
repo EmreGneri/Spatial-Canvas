@@ -3,6 +3,24 @@
 Sözleşmeye dokunan her değişiklik buraya yazılır (`ARCHITECTURE.md` kuralı: sessiz sapma yok).
 En yeni üstte.
 
+## 2026-09-25 — 3D eğit: kare yakalama sonunda decoder asılı kalmaz
+
+- Kök neden (vendor `splat.js/io/video.js` `runDecoder`): son seçilen kareden
+  sonra durdurulunca pompa döngüsü hiç `await` etmiyor; async IIFE senkron
+  bitip `finally { pumping = null }` çalıştırıyor, ARDINDAN dış atama bitmiş
+  sözü `pumping`e yazıyordu. `pumping` bayat kalınca sonraki çıktı kareleri
+  hiç kapanmıyor, decoder kare havuzu tükeniyor, `flush()` dönmüyordu —
+  yalnız 90 sn bekçisi (`kareler seçiliyor: 90 sn ilerleme yok…`) bitiriyordu.
+  Son seçim videonun bitişinden ~0.8 sn (≥ ~24 kare) önce kalınca tetikleniyor.
+- Düzeltme: pompa IIFE'si `await null;` ile başlar; atama her zaman önce biter.
+- Doğrulama (tarayıcı, WebCodecs): düzeltmesiz nyc24 son seçim bitişten 24
+  kare önce → 3/3 asılı (90 sn bekçi), `cut3` + `shots: 'all'` → 1/2 asılı;
+  düzeltmeyle aynı durumlar (12–30 kare) 5–7 sn'de biter, hiç kare sızmaz.
+  Tek çekim klipler (nyc24, light8, yay-100derece) ve `cut3` varsayılan
+  modda düzeltmeli/düzeltmesiz birebir aynı kare zamanı ve JPEG boyutu.
+- Regresyon: `verify-egitim-decoder-drain` (sahte VideoDecoder, düzeltmesiz
+  kırmızı).
+
 ## 2026-09-25 — Splat: nesne ayırma arka plan perdesini çizmez
 
 - Kök neden: nesne ayırma AÇIK iken Point Cloud / ASCII / Neon arka plan
