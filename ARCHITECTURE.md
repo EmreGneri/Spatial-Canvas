@@ -123,6 +123,23 @@ yeni eğitim yolunun sonucu sayılmaz.
   koşar: `Engine.setDepth` konumlara açıkça `false` verir, renk dolumları ve
   kabuk varsayılanla aynı remap'i paylaşır (video zaten öyleydi). Kol yalnız
   eval/lab ölçümü için açılır.
+- **Özne kırpma (nesne ayırma yoğunluğu, 2026-09-26):** grid bütçesi
+  (384×384, sabit) nesne ayırma AÇIKKEN bile tüm fotoğraf karesini
+  kaplıyordu — çizilmeyen (shader/`splatOpacityGate` ile atılan) arka plan
+  aynı bütçeyi paylaşıyordu; özne kare alanının küçük bir kısmıysa (ör.
+  büst ~%19) bütçenin çoğu boşa gidiyordu. `reconstruction/crop.ts`
+  (`applySeparationCrop`, `Engine.setDepth` + nesne ayırma toggle'ı) maskenin
+  piksel bbox'ını (+ %12 pay) hesaplar ve depth/maske/rgb'yi ÖRNEKLEMEDEN
+  ÖNCE bu bbox'a kırpar — yukarıdaki önem remap'inden FARKLI bir mekanizma:
+  koordinatı bükmez, girdiyi küçültür; grid yine 1:1 düzgün kalır (aynı
+  stretch/basıklık hatasını tekrar açmaz). Sonucu: `depthWidth/depthHeight`
+  artık kırpılmış bölgenin boyutudur, yani "Koordinat Uzayı"ndaki
+  `2·aspect` kuralı özne bbox'ının en/boy oranını kullanır (kare olmayan
+  fotoğraflarda kısa eksende sıkışan/uzayan aralık de facto düzelir).
+  Yalnızca fotoğrafta (`!videoTexture`); video/kamerada dokunulmaz (bileşen
+  analizini ~10 fps'te tekrarlamamak için). Ölçüm: `verify-subject-crop.mjs`
+  (synthetic büst, ~%19 kare alanı) — tam kare grid'de özne yoğunluğu %15.0,
+  kırpılmışta %55.5 (×3.7).
 
 ## GPGPU Simülasyon (Gün 3 — Emre)
 
