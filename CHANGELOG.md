@@ -3,6 +3,32 @@
 Sözleşmeye dokunan her değişiklik buraya yazılır (`ARCHITECTURE.md` kuralı: sessiz sapma yok).
 En yeni üstte.
 
+## 2026-09-26 — Görüntüleyici ve paylaşım klibi çekimin şeklini izler
+
+İleri yürüyüş videolarında kameralar tek bir çizgi üzerinde durur; pivot uzak
+arka plana düşer ve onun etrafında dönmek görüntüyü hiç çekilmemiş, gürültülü
+ormana götürür. Yeni `cekimTuru(Egitim.pozlar)` çekim sırasındaki eğitim
+pozlarından yörünge / ileri yol / karma ayırır. Bu ayrım hareket yönü ile
+bakış yönü arasındaki medyan |cos| değerine dayanır. `Egitim.pozlar` alanı
+eğitim pozlarını çekim sırasıyla ve kanvas ölçeğinde verir.
+
+Yalnız `yol` çekimlerde:
+- Açılış görünümü ortanca eğitim kamerasıdır ve serbest gezinme (WASD) varsayılan olarak açılır.
+- Gezinme sınırı artık kameralardan pivota uzanan yelpaze değildir. Sınır, yürünen çizgi ile
+  `YOL_PAY` (0,06) × yol uzunluğu kadar paydır.
+- Paylaşım klibi kamerası kaydedilen yolda baştan sona ileri yürür ve yürürken bakılan yöne
+  bakar. Kamera sarsıntısı ±%10'luk pencereyle yumuşatılır, ufuk düz tutulur
+  (`yolKamerasi`, `yolKlipKamerasi`).
+
+Yörünge ve karma çekimlerde davranış değişmez; St George ve deniz feneri
+kareleri eski kodla bayt bayt aynıdır. Orman yürüyüşünde (Pexels 3679072) eski
+klibin 0,2 ve 0,8 kareleri gürültüydü, yeni klipte üç kare de patikayı gösterir.
+Yana kayma eski sınırda yoldan 1,11 birim uzağa (bulanık leke), yeni sınırda
+0,35 birime (patika kenarı) izin verir.
+
+Yeni `verify-cekim-yolu.mjs` sınıflandırıcıyı, yol kamerasını, klip yolunu ve
+yol sınırını doğrular; standart doğrulama zincirine eklenmiştir.
+
 ## 2026-09-26 — Neon: nesne ayırma kırpmasında eşik telafisi
 
 Nesne ayırma kırpması grid'i özneye sıkıştırdığında neon yakın planda dolu

@@ -1131,6 +1131,13 @@ ayrıca bir sözleşme değişikliği gerekmez.
   kamera–pivot uzaklığı pay (`egitimControls.flySiniri`). Kamera sınıra
   dayanınca yüzey boyunca kayar. Yörünge modunun yakınlaştırma sınırı
   değişmedi.
+- **Çekim türü (2026-09-26):** `egitimControls.cekimTuru(Egitim.pozlar)`
+  çekim sırasındaki eğitim pozlarından yörünge / ileri yol / karma ayırır
+  (hareket yönü ile bakış yönü arasındaki medyan |cos|). Yalnız `yol`da:
+  açılış görünümü ortanca eğitim kamerasıdır, serbest gezinme varsayılan
+  açıktır, sınır yürünen çizgi + `YOL_PAY` × yol uzunluğudur ve paylaşım
+  klibi kamerası kaydedilen yolda ileri yürür (`yolKamerasi`,
+  `klipRender.yolKlipKamerasi`). Yörünge ve karma çekimlerde davranış aynıdır.
 - GPU profili uygulamada NVIDIA için `standard`/40 kare/10.000 iterasyon,
   diğer adaptörlerde `quick`/24 kare/3.000 iterasyondur. Bu yalnız ölçülmüş
   Intel ve RTX davranışına dayalı temkinli seçimdir; diğer cihazlarda kalite

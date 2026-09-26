@@ -420,6 +420,8 @@ export interface Egitim {
   pivot: Vec3;
   /** Training camera centres in capture order; free-fly stays near their volume. */
   kameralar: Vec3[];
+  /** Training camera poses in capture order, at canvas scale (`kamera`'s). */
+  pozlar: GsKamera[];
   /** Kameraların baskın yukarı ekseni (dünya). */
   yukari: Vec3;
   kameraAyarla(k: GsKamera): void;
@@ -653,6 +655,8 @@ export async function egitimBaslat(
       kamera,
       pivot,
       kameralar: [...s.recon.cams].sort((a: { imgIdx: number }, b: { imgIdx: number }) => a.imgIdx - b.imgIdx).map(kameraMerkezi),
+      pozlar: [...s.trainer.camMeta as (GsKamera & { imgIdx: number })[]].sort((a, b) => a.imgIdx - b.imgIdx)
+        .map((m) => kameraOlcekle(m, olcek)),
       yukari: s._camerasUp(),
       kameraAyarla: (k) => { e.kamera = k; s.view.setCamera(k); },
       kareCiz: (k, hedef) => {
