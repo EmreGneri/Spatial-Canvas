@@ -340,6 +340,11 @@ export interface Egitim {
   /** Kameraların baskın yukarı ekseni (dünya). */
   yukari: Vec3;
   kameraAyarla(k: GsKamera): void;
+  /** Offline klip karesi: `k` kamerasıyla (`k.w`×`k.h`) ayrı bir WebGPU
+   * yüzeyine çizer ve AYNI görevde `hedef`e kopyalar. Görünür tuvale, rAF'a
+   * ve sekme görünürlüğüne bağlı değildir; son `deform`/`fade` yazımını
+   * görür (GPU kuyruğu sıralı). */
+  kareCiz(k: GsKamera, hedef: CanvasRenderingContext2D): void;
 }
 
 /**
@@ -509,6 +514,11 @@ export async function egitimBaslat(
       return bend.apply(spec, Infinity, undefined, fadeOn ? bendRegion(e.kameralar, pivot, 0).halfLength : Infinity);
     };
 
+    // Offline frame surface, created on first use. A WebGPU canvas texture is
+    // only readable in the task that rendered it (drawImage afterwards gives
+    // black), so render + copy happen together in `kareCiz`.
+    let kareYuzeyi: { canvas: HTMLCanvasElement; ctx: { configure(o: object): void } } | null = null;
+
     const e: Egitim = {
       ayar: secilen,
       kapat: close,
@@ -550,6 +560,20 @@ export async function egitimBaslat(
       kameralar: [...s.recon.cams].sort((a: { imgIdx: number }, b: { imgIdx: number }) => a.imgIdx - b.imgIdx).map(kameraMerkezi),
       yukari: s._camerasUp(),
       kameraAyarla: (k) => { e.kamera = k; s.view.setCamera(k); },
+      kareCiz: (k, hedef) => {
+        if (closed || !s.trainer) throw new Error('Training session is closed');
+        if (!kareYuzeyi) {
+          const c = document.createElement('canvas');
+          const ctx = c.getContext('webgpu') as unknown as { configure(o: object): void } | null;
+          if (!ctx) throw new Error('WebGPU canvas unavailable');
+          ctx.configure({ device: s.trainer.device, format: s.trainer.canvasFormat, alphaMode: 'opaque' });
+          kareYuzeyi = { canvas: c, ctx };
+        }
+        const { canvas: c, ctx } = kareYuzeyi;
+        if (c.width !== k.w || c.height !== k.h) { c.width = k.w; c.height = k.h; }
+        s.trainer.renderView(k, ctx, 0, 0);
+        hedef.drawImage(c, 0, 0);
+      },
     };
     signal?.throwIfAborted();
     s.start();

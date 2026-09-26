@@ -22,7 +22,7 @@ export interface ImzaYerlesimi {
   boy: number;
 }
 
-/** Yazı boyu kare yüksekliğinin bu oranıdır — 2x PNG'de de aynı GÖRÜNÜR boy. */
+/** Yazı boyu karenin KISA kenarının bu oranıdır — 2x PNG'de de, dikey (9:16) klipte de aynı görünür boy. */
 export const IMZA_ORAN = 0.028;
 /** Küçük kayıtlarda okunmaz hale gelmesin. */
 export const IMZA_MIN_BOY = 10;
@@ -36,7 +36,7 @@ export function imzaMetni(surum: string): string {
  * (`ctx.measureText`), çünkü yazı tipi metriği yalnız tarayıcıda bilinir.
  */
 export function imzaYerlesimi(w: number, h: number, metinGenisligi: number): ImzaYerlesimi {
-  const boy = Math.max(IMZA_MIN_BOY, Math.round(h * IMZA_ORAN));
+  const boy = Math.max(IMZA_MIN_BOY, Math.round(Math.min(w, h) * IMZA_ORAN));
   const pad = Math.round(boy * 0.5);
   const metinX = w - metinGenisligi - pad * 2;
   const metinY = h - pad;

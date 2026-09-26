@@ -3,6 +3,39 @@
 Sözleşmeye dokunan her değişiklik buraya yazılır (`ARCHITECTURE.md` kuralı: sessiz sapma yok).
 En yeni üstte.
 
+## 2026-09-26 — 3DGS paylaşım klibi: offline render, renk, vinyet, MP4, 9:16
+
+"⤓ paylaşım klibi" artık gerçek zamanlı kayıt (captureStream +
+MediaRecorder) değil, kare kare deterministik render: her karede kamera ve
+deform zaman çizelgesinden kurulur, deform BEKLENİR, kare ayrı bir WebGPU
+yüzeyine çizilip aynı görevde 2D tuvale kopyalanır (`Egitim.kareCiz`),
+renk derecelendirmesi (S eğrisi, doygunluk, hafif sıcaklık) ve karanlık
+vinyet uygulanır, imza çizilir, mediabunny ile H.264/MP4'e kodlanır (H.264
+yoksa VP9/WebM). rAF'a ve sekme görünürlüğüne bağlı değil.
+
+- Seçili deform (yana / yukarı / kubbe / gürültü) 8 sn içinde yumuşakça
+  açılır, tepede durur, kapanır: klibin başı ve sonu aynı kare, döngüde
+  sıçrama yok. Kaydırıcı sıfırsa türün varsayılan tepesi (bükme 0,6,
+  kubbe tam = 0,6, gürültü 0,7; gürültü klipte en çok 0,8). Gürültünün
+  zamanı 1 periyotla döner.
+- Kamera: çekim yayının ortasından, yayın yarı açıklığının yarısı kadar
+  salınır (tam tur çekilmemiş arka yüzü gösterirdi). Kubbede deformla
+  birlikte ~40° yükselip 3× uzaklaşır (küçük gezegen ancak oradan okunuyor).
+- 16:9 (1920×1080) ya da 9:16 (1080×1920); kısa kenar görüş açısını korur.
+- Arka plan saydamlaşması klipte hep açık; ton eğrisi siyahı ve gölgeleri
+  asla aydınlatmaz (soluk floater'lar geri gelmez).
+- İlerleme çubuğu + "iptal" düğmesi. Bitince, iptalde ya da hatada
+  kullanıcının deform + fade ayarı geri yüklenir (sıfırda eğitilmiş durum
+  bayt bayt). Künye yine panoya kopyalanır.
+- Fade kutusu yavaş güncellemede yine "uygulanıyor…" gösteriyor.
+- İmza boyu karenin kısa kenarına oranlı (`ciktiImza.ts`): dikey klipte
+  imza yatay kliptekiyle aynı boyda (önce yüksekliğe oranlıydı, 9:16'da
+  1,8× büyüyordu). Yatay çıktılarda değişiklik yok.
+
+Saf parçalar `src/ui/klipRender.ts`'te; `scripts/verify-klip-render.mjs`
+zaman çizelgesi, döngü kapanışı, kamera yolu, kadraj, derece/vinyet piksel
+fonksiyonu, kodlayıcı seçimi ve sıralı çağrı + geri yüklemeyi doğrular.
+
 ## 2026-09-26 — 3DGS gürültü: analitik Jakobyen, görünür tam güç
 
 Gürültü Jakobyeni artık analitik (J = I + Σ v kᵀ cos); sonlu fark yalnız
