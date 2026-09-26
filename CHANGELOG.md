@@ -3,6 +3,30 @@
 Sözleşmeye dokunan her değişiklik buraya yazılır (`ARCHITECTURE.md` kuralı: sessiz sapma yok).
 En yeni üstte.
 
+## 2026-09-26 — 3D eğit: yoğunlaştırma kısa bütçelerde de çalışır
+
+**Kök neden.** splat.js refine'ı (ölü splat taşıma + Gaussian büyütme)
+`iter > 1500` ve son refine'dan `refineEvery` sonra tetikler; varsayılan
+2500, 60k iterasyonluk ufka göre seçilmiş. Varsayılan eğitici yalnız
+`iter < 0.75 × maxIters` iken büyür ve taşır. `quick` (3k) ilk refine'ı
+~2518'de görüyordu, pencere 2250'de kapanmıştı: **hiç büyüme, hiç taşıma**.
+`standard` (10k) yalnız iki kez büyüyordu (2518, 5023).
+
+**Düzeltme.** `egitimOturumAyari()` `createSession`'a
+`refineEvery = max(300, round(maxIters / 8))` geçer (quick 375, standard
+1250). Vendored dosyaya dokunulmadı. `growUntil` geçilmedi, varsayılanı zaten doğru.
+
+**Ölçüm** (RTX 5070, `yay-100derece-stgeorge.mp4`, gerçek `egitimBaslat()`):
+
+| katman | Gaussian önce → sonra | holdout PSNR önce → sonra |
+|---|---|---|
+| quick 3k (2+2 koşu) | 58 950 → 77 962 | 27.28 / 27.41 → 27.79 / 28.13 |
+| standard 10k | 135 076 → 205 435 | 30.84 → 31.66 |
+
+Koşu gürültüsü ~0.13 dB. Intel iGPU'da süre etkisi ölçülmedi (bkz.
+`src/vendor/splat.js/VENDORED.md`). Kontrol: `scripts/verify-egitim-densify.mjs`
+(refine takvimini vendored kapılarla simüle eder; vendored kapı değişirse düşer).
+
 ## 2026-09-25 — Z1-Z3 (Zeynep): çıktı akışı, yetenek/ön kontrol, mobil düzen
 
 Dördü de aynı kuralın ayakları: **sessiz bozulma yerine sebep.**
