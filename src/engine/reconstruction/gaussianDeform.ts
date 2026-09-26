@@ -215,13 +215,96 @@ export function bendFrame(direction: BendDirection, up: ArrayLike<number>, forwa
 export function bendPointAndJacobianInFrame(
   point: ArrayLike<number>, frame: Mat3, curvature: number, halfLength = Infinity,
 ): { point: Vec3; jacobian: Mat3 } {
+  return inFrame(point, frame, (local) => bendPointAndJacobian(local, curvature, halfLength));
+}
+
+type PointMap = (point: ArrayLike<number>) => { point: Vec3; jacobian: Mat3 };
+
+/** Conjugate a canonical map by an orthonormal frame (local = frameᵀ·p). */
+function inFrame(point: ArrayLike<number>, frame: Mat3, map: PointMap): { point: Vec3; jacobian: Mat3 } {
   const frameT = transpose(frame);
-  const local = applyMat3(frameT, point);
-  const { point: bentLocal, jacobian: jacobianLocal } = bendPointAndJacobian(local, curvature, halfLength);
+  const { point: mapped, jacobian } = map(applyMat3(frameT, point));
+  return { point: applyMat3(frame, mapped), jacobian: multiply(multiply(frame, jacobian), frameT) };
+}
+
+/**
+ * Tiny-planet dome: the ground plane (local XZ, height = local Y, pivot at the
+ * origin) wraps onto a sphere of radius 1/curvature whose centre sits below
+ * the pivot. Horizontal distance rho becomes the polar angle k·rho, height
+ * becomes radial distance, so verticals (trees) fan out along the sphere
+ * normal and the pivot plus the up axis through it stay put. Negative
+ * curvature is a bowl. Like the bend: only rho <= halfLength wraps, beyond
+ * it the ground continues rigidly along the rim tangent, and height is eased
+ * (`softRadial`) so points far below never cross the sphere centre.
+ * Pole/antipode guard: rho = 0 uses series forms (no 0/0), and the rim angle
+ * is capped at pi/2 so the continuation can never fold back through the axis.
+ */
+export function domePointAndJacobian(
+  point: ArrayLike<number>, curvature: number, halfLength = Infinity,
+): { point: Vec3; jacobian: Mat3 } {
+  if (point.length !== 3 || !Number.isFinite(point[0]) || !Number.isFinite(point[1])
+    || !Number.isFinite(point[2]) || !Number.isFinite(curvature) || !(halfLength > 0)) {
+    throw new RangeError('Expected a finite point, curvature and positive half-length');
+  }
+  const x = point[0], h = point[1], z = point[2];
+  if (curvature === 0) return { point: [x, h, z], jacobian: IDENTITY.slice() };
+  const k = curvature;
+  const edge = Math.min(halfLength, Math.PI / (2 * Math.abs(k)));
+  const rho = Math.hypot(x, z);
+  const [u, slope] = softRadial(k * h);
+  // g = A/rho (horizontal scale), gRho = (dA/drho - g)/rho^2, gH = (dA/dh)/rho,
+  // yRho = (dY/drho)/rho, yH = dY/dh; A = new horizontal radius, Y = new height.
+  let g: number, gRho: number, gH: number, y: number, yRho: number, yH: number;
+  if (rho < edge) {
+    const t = k * rho;
+    const sin = Math.sin(t), cos = Math.cos(t);
+    const small = Math.abs(t) < 1e-3;
+    const sinc = small ? 1 - t * t / 6 : sin / t;
+    g = (1 + u) * sinc;
+    gRho = (1 + u) * k * k * (small ? -1 / 3 + t * t / 30 : (cos - sinc) / (t * t));
+    gH = slope * k * sinc;
+    y = -2 * Math.sin(t / 2) ** 2 / k + u / k * cos;
+    yRho = -(1 + u) * k * sinc;
+    yH = slope * cos;
+  } else {
+    const theta = k * edge, along = rho - edge;
+    const sin = Math.sin(theta), cos = Math.cos(theta);
+    g = ((1 + u) * sin / k + along * cos) / rho;
+    gRho = (cos - g) / (rho * rho);
+    gH = slope * sin / rho;
+    y = -2 * Math.sin(theta / 2) ** 2 / k + u / k * cos - along * sin;
+    yRho = -sin / rho;
+    yH = slope * cos;
+  }
   return {
-    point: applyMat3(frame, bentLocal),
-    jacobian: multiply(multiply(frame, jacobianLocal), frameT),
+    point: [g * x, y, g * z],
+    jacobian: [
+      g + x * x * gRho, x * gH, x * z * gRho,
+      x * yRho, yH, z * yRho,
+      z * x * gRho, z * gH, g + z * z * gRho,
+    ],
   };
+}
+
+/** `domePointAndJacobian` in a frame whose Y column is the scene up. */
+export function domePointAndJacobianInFrame(
+  point: ArrayLike<number>, frame: Mat3, curvature: number, halfLength = Infinity,
+): { point: Vec3; jacobian: Mat3 } {
+  return inFrame(point, frame, (local) => domePointAndJacobian(local, curvature, halfLength));
+}
+
+/** One deform, selected by `kind`; each maps a point to point + Jacobian. */
+export type DeformSpec =
+  | { kind: 'bend'; curvature: number; halfLength?: number; frame?: Mat3 }
+  | { kind: 'dome'; curvature: number; halfLength?: number; frame?: Mat3 };
+
+function deformMap(spec: DeformSpec): PointMap {
+  const halfLength = spec.halfLength ?? Infinity;
+  const canonical: PointMap = spec.kind === 'dome'
+    ? (p) => domePointAndJacobian(p, spec.curvature, halfLength)
+    : (p) => bendPointAndJacobian(p, spec.curvature, halfLength);
+  const frame = spec.frame;
+  return frame ? (p) => inFrame(p, frame, canonical) : canonical;
 }
 
 function quaternionToMatrix(w: number, x: number, y: number, z: number): Mat3 {
@@ -292,20 +375,22 @@ export function fadeGaussianOpacity(source: Float32Array, count: number, halfLen
   return output;
 }
 
-/** Return a view-only transformed snapshot of stride-16 trainer parameters. */
+/** Return a view-only transformed snapshot of stride-16 trainer parameters.
+ * A plain number is the cylindrical bend's curvature (with `halfLength`,
+ * `frame`); a `DeformSpec` selects any deform. */
 export function deformGaussianBuffer(
-  source: Float32Array, count: number, curvature: number, halfLength = Infinity, frame?: Mat3,
+  source: Float32Array, count: number, deform: number | DeformSpec, halfLength = Infinity, frame?: Mat3,
 ): Float32Array {
-  if (!Number.isInteger(count) || count < 0 || source.length < count * 16 || !Number.isFinite(curvature)) {
+  const spec: DeformSpec = typeof deform === 'number' ? { kind: 'bend', curvature: deform, halfLength, frame } : deform;
+  if (!Number.isInteger(count) || count < 0 || source.length < count * 16 || !Number.isFinite(spec.curvature)) {
     throw new RangeError('Expected a valid Gaussian count and finite curvature');
   }
   const output = source.slice();
-  if (curvature === 0) return output;
+  if (spec.curvature === 0) return output;
+  const map = deformMap(spec);
   for (let index = 0; index < count; index++) {
     const base = index * 16;
-    const { point, jacobian } = frame
-      ? bendPointAndJacobianInFrame(source.subarray(base, base + 3), frame, curvature, halfLength)
-      : bendPointAndJacobian(source.subarray(base, base + 3), curvature, halfLength);
+    const { point, jacobian } = map(source.subarray(base, base + 3));
     output.set(point, base);
     const original = quaternionToMatrix(source[base + 6], source[base + 7], source[base + 8], source[base + 9]);
     const scales: Vec3 = [0, 1, 2].map(axis => Math.exp(2 * source[base + 3 + axis])) as Vec3;
