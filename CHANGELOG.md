@@ -50,22 +50,50 @@ KENDİ malzemesine göre profil yazıldı; ortak bir "güzel" profil yok, çünk
 aynı bloom ASCII'de harfleri okunmaz yaparken Neon'da modun bütün esprisi.
 
 Ölçüm "göz kararı" değil: iki sahnede (sentetik + `assets/thumbnail.jpg`),
-320×200 kareden `konuOran` (L > 0.05 piksel oranı) ve `konuDoyg` (yalnız o
-piksellerde doygunluk). Arka plan hariç — kadrajın ~%95'i siyah olduğu için
-genel ortalama farkı gizliyordu. thumbnail.jpg, kapalı → profil:
+320×200 kareden `kapsam` (L > 0.05 piksel oranı) ve `doygunluk` (yalnız o
+piksellerde). Arka plan hariç — kadrajın çoğu siyah olduğu için genel ortalama
+farkı gizliyordu.
 
-| mod | konuOran | konuDoyg |
-|---|---|---|
-| Point Cloud | 0.0226 → 0.0306 | 0.415 → 0.455 |
-| ASCII | 0.0188 → 0.0232 | 0.480 → 0.380 (bilerek) |
-| Neon | 0.1919 → 0.5029 | 0.598 → 0.555 |
-| Solid | 0.0255 → 0.0287 | 0.292 → 0.283 |
-| Splat | 0.0238 → 0.0293 | 0.425 → 0.459 |
-| Crystal | 0.0239 → 0.0260 | 0.175 → 0.228 |
+**Tablo Emre'nin nesne-ayırma kırpmasından SONRA yenilendi.** Kırpma özne
+ızgarasını ~3.7× yoğunlaştırıyor; kırpma öncesi ölçtüğüm değerler geçersiz
+kaldı, hepsi tek temiz oturumda yeniden alındı. thumbnail.jpg, kapalı → profil:
 
-Konu kapsamı altı modda da arttı, kırpılan piksel oranı altısında da %0.
-Solid'in kazancı ölçüm sınırında — o modda post-FX'in yapabileceği az, dürüst
-kayıt bu. **Kullanıcının ayarı kaybolmaz:** moddan çıkarken o modun değerleri
+| mod | kapsam | doygunluk | kırpılan % |
+|---|---|---|---|
+| Point Cloud | 0.181 → 0.451 | 0.633 → 0.575 | 0.002 → 0.002 |
+| ASCII | 0.024 → 0.028 | 0.434 → 0.349 | 0 → 0 |
+| Neon | 0.610 → 0.477 | 0.592 → 0.606 | 0.350 → 0.022 |
+| Solid | 0.047 → 0.097 | 0.327 → 0.341 | 0 → 0 |
+| Splat | 0.027 → 0.040 | 0.445 → 0.505 | 0 → 0 |
+| Crystal | 0.026 → 0.036 | 0.112 → 0.131 | 0 → 0 |
+
+Beş modda kapsam arttı; kırpılan piksel oranı hiçbir modda profille ARTMADI.
+ASCII'nin doygunluğu bilerek düşük (terminal dili). Solid'in kazancı ölçüm
+sınırına yakın — o modda post-FX'in yapabileceği az, dürüst kayıt bu.
+
+**Neon'un profili merge sonrası TERS YÖNE çevrildi.** Kırpma sonrası neon
+kenarları siluetin içini de dolduruyor, yani mod kendi başına zaten taşıyor
+(post-FX kapalı: kapsam 0.610, kırpılan %0.350). İlk yazdığım güçlü profil
+(bloom 1.15 / eşik 0.28) bunu beyaza çeviriyordu. Aynı oturumda arka arkaya:
+
+    post-FX kapalı        kapsam 0.610 · doyg 0.592 · kırpılan %0.350
+    ilk profil (1.15)     kapsam 0.915 · doyg 0.550 · kırpılan %0.402
+    ara aday   (0.55)     kapsam 0.890 · doyg 0.556 · kırpılan %0.247
+    SEVK EDİLEN (0.40)    kapsam 0.477 · doyg 0.606 · kırpılan %0.022
+
+Doğru yön güçlendirmek değil DİZGİNLEMEKTİ: yüksek eşik + düşük şiddet + koyu
+vignette + 0.95 pozlama, ham moddan bile az kırpıyor (on altıda bir) ve
+doygunluğu yükseltiyor. Verify bu kararı sayıyla koruyor.
+
+**VERİ KATMANINA AÇIK SORU:** kırpmadan sonra yakın plan öznede neon artık tel
+kafes değil DOLU bir kütle çiziyor. Asıl kol post-FX değil, modun kendi
+`uEdgeThreshold`'u (varsayılan 0.10). Onu yükseltmek çizgileri geri inceltir
+ama mevcut her sahnenin neon görünümünü değiştirir — tek taraflı
+değiştirilmedi, ortak karar bekliyor.
+
+Hiçbir profilde kontrast 1'in üstünde değil: kelepçeden sonra bile kontrast > 1
+sönük KONU piksellerini siyaha düşürüyor. İstenen güç pozlama ve doygunlukla
+alındı. **Kullanıcının ayarı kaybolmaz:** moddan çıkarken o modun değerleri
 oturumluk hafızaya alınır, aynı moda dönünce profil değil KULLANICININ ayarı
 uygulanır.
 

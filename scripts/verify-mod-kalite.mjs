@@ -58,12 +58,26 @@ for (const m of MODLAR) {
 // modun tek görsel dayanağı glif keskinliği.
 assert.equal(MOD_KALITE.ascii.bloom?.uBloomStrength, 0, 'ASCII’ye bloom girmiş — harfler okunmaz olur');
 assert.ok((MOD_KALITE.ascii.grain?.uSaturation ?? 1) < 1, 'ASCII doygunluğu düşürülmemiş (terminal dili)');
-// Neon EN YÜKSEK bloom'a sahip olmalı — modun bütün esprisi o.
-const bloomlar = MODLAR.map((m) => [m, MOD_KALITE[m].bloom?.uBloomStrength ?? 0]);
-const enYuksek = bloomlar.reduce((a, b) => (b[1] > a[1] ? b : a));
-assert.equal(enYuksek[0], 'neon', `en yüksek bloom ${enYuksek[0]}’de — Neon’da olmalı`);
-// Neon eşiği en DÜŞÜK: hâle sönük kenarları da yakalamalı.
-assert.ok(MOD_KALITE.neon.bloom.uBloomThreshold < 0.5, 'Neon bloom eşiği yüksek — hâle oluşmaz');
+// NEON DİZGİNLENMİŞ KALMALI. Bu kural bir ÖLÇÜMÜN sonucu ve tersi denendi:
+// Emre'nin nesne-ayırma kırpmasından sonra ızgara özneye yoğunlaşıyor, neon
+// kenarları siluetin içini de dolduruyor ve mod KENDİ BAŞINA zaten taşıyor
+// (post-FX kapalı: kapsam 0.610, kırpılan %0.350). Guclu bloom bunu beyaza
+// çeviriyordu — thumbnail.jpg, aynı oturumda arka arkaya:
+//   1.15 siddet / 0.28 esik -> kapsam 0.915 · kirpilan %0.402
+//   0.55 siddet / 0.55 esik -> kapsam 0.890 · kirpilan %0.247
+//   0.40 siddet / 0.62 esik -> kapsam 0.477 · kirpilan %0.022  (sevk edilen)
+// Bu satirlar duserse biri bloom'u yine yukari cekmis demektir.
+assert.ok(MOD_KALITE.neon.bloom.uBloomStrength <= 0.6,
+  `Neon bloom ${MOD_KALITE.neon.bloom.uBloomStrength} — 0.6 ustu kadraji beyazlatiyor (olculdu)`);
+assert.ok(MOD_KALITE.neon.bloom.uBloomThreshold >= 0.5,
+  `Neon bloom esigi ${MOD_KALITE.neon.bloom.uBloomThreshold} — dusuk esik sonuk kenarlari da yakip kadraji dolduruyor`);
+assert.ok((MOD_KALITE.neon.look?.uExposure ?? 1) <= 1,
+  'Neon pozlamasi 1 ustu — mod kirpmanin esiginde, pozlama onu tasirir');
+// Chromatic YALNIZ cam/tup karakteri olan iki modda: sus degil, dispersiyon.
+for (const m of MODLAR) {
+  const c = MOD_KALITE[m].chromatic?.uAmount ?? 0;
+  assert.equal(c > 0, m === 'neon' || m === 'crystal', `${m}: chromatic karari yanlis (${c})`);
+}
 // Sis YALNIZ solid'de: gerçek bir hacim gösteren tek mod o.
 for (const m of MODLAR) {
   const f = MOD_KALITE[m].look?.uFogDensity ?? 0;

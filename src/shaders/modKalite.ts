@@ -31,19 +31,24 @@ import type { RenderMode } from '../ui/ModeSelector';
  *    HİÇBİR PROFİLDE kontrast 1'in üstünde değil; istenen "daha güçlü
  *    görüntü" pozlama ve doygunlukla alındı.
  *
- * ── SONUÇ (thumbnail.jpg, sevk edilen profillerle · kapalı → profil) ───────
- *   mod          konuOran            konuDoyg
- *   Point Cloud  0.0226 → 0.0306     0.415 → 0.455
- *   ASCII        0.0188 → 0.0232     0.480 → 0.380  (doygunluk BİLEREK aşağı)
- *   Neon         0.1919 → 0.5029     0.598 → 0.555
- *   Solid        0.0255 → 0.0287     0.292 → 0.283
- *   Splat        0.0238 → 0.0293     0.425 → 0.459
- *   Crystal      0.0239 → 0.0260     0.175 → 0.228
- * Konu kapsamı altı modda da ARTTI, kırpılan piksel oranı altısında da %0.
- * Neon'un doygunluğunun hafif düşmesi hâlenin kendisinden: bloom kadraja çok
- * sayıda düşük doygunluklu hâle pikseli ekliyor, buna karşılık kapsam iki
- * buçuk katına çıkıyor. Solid'in kazancı ölçüm sınırında — o modda post-FX'in
- * yapabileceği az, dürüst kayıt bu.
+ * ── SONUÇ (thumbnail.jpg · kapalı → profil) ────────────────────────────────
+ * DİKKAT: aşağıdaki sayılar Emre'nin nesne-ayırma kırpmasından SONRA, tek bir
+ * temiz oturumda alındı. Kırpma özne ızgarasını ~3.7× yoğunlaştırdığı için
+ * kırpma öncesi ölçülen değerler artık geçerli değil — tablo yenilendi.
+ *
+ *   mod          kapsam            doygunluk        kırpılan %
+ *   Point Cloud  0.181 → 0.451     0.633 → 0.575    0.002 → 0.002
+ *   ASCII        0.024 → 0.028     0.434 → 0.349    0     → 0
+ *   Neon         0.610 → 0.477     0.592 → 0.606    0.350 → 0.022
+ *   Solid        0.047 → 0.097     0.327 → 0.341    0     → 0
+ *   Splat        0.027 → 0.040     0.445 → 0.505    0     → 0
+ *   Crystal      0.026 → 0.036     0.112 → 0.131    0     → 0
+ *
+ * Beş modda kapsam ARTTI; Neon'da bilerek AZALDI (yukarıdaki gerekçe: mod
+ * kırpmadan sonra kendi başına taşıyordu, profil onu dizginliyor). Kırpılan
+ * piksel oranı HİÇBİR modda profille artmadı; Neon'da on altıda bire indi.
+ * ASCII'nin doygunluğu bilerek düşük (terminal dili). Solid'in kazancı ölçüm
+ * sınırına yakın — o modda post-FX'in yapabileceği az, dürüst kayıt bu.
  *
  * ── TASARIM KARARI ─────────────────────────────────────────────────────────
  * Her modun post-FX'i o modun KENDİ malzemesine göre ayarlandı. Ortak bir
@@ -93,17 +98,34 @@ export const MOD_KALITE: Record<RenderMode, KaliteProfili> = {
   },
 
   /**
-   * NEON — modun bütün esprisi bloom. Düşük eşik + yüksek şiddet kenarları
-   * gerçekten "tüp" gibi yakar. Kontrast burada ÖZELLİKLE 1: 1.1 denendi ve
-   * hâlenin kendisini yiyordu (konu kapsamı 0.0165 → 0.0118, yani post-FX'siz
-   * hâlden KÖTÜ). 1'e indirilince 0.0508 — üç katı. Hafif chromatic cam
-   * kırılmasının karşılığı; doygunluk yukarı, renk bu modda tek anlam taşıyıcı.
+   * NEON — modun esprisi bloom AMA bu mod artık kendi başına zaten parlak.
+   *
+   * İLK PROFİL AGRESİFTİ VE ÖLÇÜMDE DÜŞTÜ. Emre'nin nesne-ayırma kırpması
+   * (2026-09-26) ızgarayı özneye yoğunlaştırınca neon kenarları siluetin
+   * İÇİNİ de dolduruyor; üstüne güçlü bloom binince kadraj beyazlıyor.
+   * Ölçüldü (thumbnail.jpg, kırpma sonrası, aynı temiz oturumda arka arkaya):
+   *
+   *   post-FX kapalı        kapsam 0.610 · doyg 0.592 · kırpılan %0.350
+   *   eski profil (1.15)    kapsam 0.915 · doyg 0.550 · kırpılan %0.402
+   *   ara aday   (0.55)     kapsam 0.890 · doyg 0.556 · kırpılan %0.247
+   *   BU PROFİL  (0.40)     kapsam 0.477 · doyg 0.606 · kırpılan %0.022
+   *
+   * Yani doğru yön GÜÇLENDİRMEK değil DİZGİNLEMEKTİ: yüksek eşik + düşük
+   * şiddet + koyu vignette + 0.95 pozlama, ham moddan bile AZ kırpıyor
+   * (%0.350 → %0.022, on altıda bir) ve doygunluğu yükseltiyor. Hafif
+   * chromatic cam kırılmasının karşılığı.
+   *
+   * AÇIK KALAN (veri katmanıyla ortak karar): yakın plan öznede neon artık
+   * tel kafes değil dolu bir kütle çiziyor. Asıl kol post-FX değil modun
+   * KENDİ `uEdgeThreshold`'u (varsayılan 0.10); onu yükseltmek çizgileri geri
+   * inceltir ama mevcut her sahnenin neon görünümünü değiştirir, o yüzden
+   * tek taraflı değiştirilmedi.
    */
   neon: {
-    bloom: { uBloomStrength: 1.15, uBloomRadius: 0.9, uBloomThreshold: 0.28 },
+    bloom: { uBloomStrength: 0.4, uBloomRadius: 0.75, uBloomThreshold: 0.62 },
     chromatic: { uAmount: 0.0022, uRadial: 1 },
-    grain: { uGrainAmount: 0.02, uVignette: 0.7, uContrast: 1, uSaturation: 1.25 },
-    look: { uExposure: 1.1 },
+    grain: { uGrainAmount: 0.02, uVignette: 0.8, uContrast: 1, uSaturation: 1.3 },
+    look: { uExposure: 0.95 },
   },
 
   /**
