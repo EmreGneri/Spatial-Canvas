@@ -40,6 +40,8 @@ export interface NeonWireMaterialUniforms {
   uDprScale: { value: number };
   /** 0..1 — Sobel eşiği; düşükte çok çizgi, yüksekte az */
   uEdgeThreshold: { value: number };
+  /** Engine'in yazdığı fotoğraf kırpma alan oranı; 1 = kırpmasız, eski kenar yolu aynen. */
+  uCropDensity: { value: number };
   /**
    * 0..1 — GÖRÜNTÜ KONTRASTININ kenarlara katkısı. 0 = yalnız derinlik
    * kenarları (eski davranış: sadece silüet), 1 = fotoğraftaki kontrast
@@ -112,6 +114,7 @@ const VERTEX = /* glsl */ `
   uniform float uPointSize;
   uniform float uDprScale;
   uniform float uEdgeThreshold;
+  uniform float uCropDensity;
   uniform float uGlowRadius;
   // Kenar bulma artık görüntüyü de okuyor (aşağıdaki nota bak) — fragment'ta
   // renk için zaten bağlı olan AYNI texture, aynı grid eşlemesiyle.
@@ -268,11 +271,20 @@ const VERTEX = /* glsl */ `
     // çoğu 0.1-0.2 parlaklıkta kalıyordu — "var ama görünmüyor"). Üst uç
     // eşikten 0.25 sonra doyar; güç farkı hâlâ görünür, ama sönük uç siyaha
     // düşmez.
-    vEdge = smoothstep(uEdgeThreshold, min(1.0, uEdgeThreshold + 0.25), edge);
+    // Nesne ayırma kırpması grid'i özneye sıkıştırır: iç yüzeyin zayıf
+    // gradyanları eşiği geçip yakın planda dolu kütle çizer. Eşik alan
+    // oranıyla ölçeklenir (sqrt'ten iyi: bkz. CHANGELOG); kullanıcının
+    // kayıtlı uEdgeThreshold'u değişmez.
+    float threshold = uEdgeThreshold;
+    if (uCropDensity > 1.0) threshold = min(1.0, threshold * uCropDensity);
+    // Eşik 1'e dayanınca rampa aralığı kalmaz; smoothstep'e eşit uçlar
+    // vermek GLSL'de tanımsız, o yüzden doğrudan 0.
+    vEdge = uCropDensity > 1.0 && threshold >= 1.0
+      ? 0.0 : smoothstep(threshold, min(1.0, threshold + 0.25), edge);
 
     // Kenar değilse ELE: nokta merkezi clip hacminin dışına atılır ve boyutu
     // sıfırlanır. Fragment aşamasına hiç gelmez — discard'dan ucuz.
-    if (edge < uEdgeThreshold) {
+    if (edge < threshold) {
       gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
       gl_PointSize = 0.0;
       return;
@@ -419,6 +431,7 @@ export function createNeonWireMaterial(): NeonWireMaterial {
     // 1 outside Engine: the startup size, unchanged.
     uDprScale: { value: 1 },
     uEdgeThreshold: { value: 0.1 },
+    uCropDensity: { value: 1 },
     uTextureEdge: { value: 0.6 },
     uNeonColor: { value: new THREE.Color(0.2, 1.0, 0.85) },
     // Varsayılanlar pointCloudMaterial/asciiMaterial ile aynı; Engine ilk
