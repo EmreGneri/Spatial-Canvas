@@ -53,6 +53,9 @@ export function Egitim3D({ dosya, onKapat, say }: { dosya: File; onKapat(): void
   // One select picks the deform: a bend axis, the dome (tiny planet) or noise.
   const [deformChoice, setDeformChoice] = useState<DeformChoice>('yana');
   const [bendBusy, setBendBusy] = useState(false);
+  // "uygulanıyor…" only once an update has run 400 ms (design rule), so fast
+  // updates never flicker the readout.
+  const [bendSlow, setBendSlow] = useState(false);
   // Off by default in normal viewing; the offline clip renderer (Task 5) turns
   // it on by calling `Egitim.fade` directly, not through this UI state.
   const [fadeOn, setFadeOn] = useState(false);
@@ -312,6 +315,7 @@ export function Egitim3D({ dosya, onKapat, say }: { dosya: File; onKapat(): void
     const e = egitimRef.current;
     if (!e || bendBusy) return;
     setBendBusy(true);
+    const slow = window.setTimeout(() => setBendSlow(true), 400);
     try {
       await e.deform(deformAyari(direction, strength));
       setBendStrength(strength);
@@ -320,6 +324,8 @@ export function Egitim3D({ dosya, onKapat, say }: { dosya: File; onKapat(): void
     } catch (error) {
       setHata(error instanceof Error ? error.message : String(error));
     } finally {
+      clearTimeout(slow);
+      setBendSlow(false);
       setBendBusy(false);
     }
   }
@@ -461,7 +467,7 @@ export function Egitim3D({ dosya, onKapat, say }: { dosya: File; onKapat(): void
               disabled={bendBusy || plyBusy}
               onChange={(event) => void applyBend(Number(event.target.value), deformChoice)}
             />
-            <span style={{ minWidth: 72 }}>{bendBusy ? 'uygulanıyor…' : deformGostergesi(deformChoice, bendStrength)}</span>
+            <span style={{ minWidth: 72 }}>{bendSlow ? 'uygulanıyor…' : deformGostergesi(deformChoice, bendStrength)}</span>
           </label>
         )}
         {bitti && (

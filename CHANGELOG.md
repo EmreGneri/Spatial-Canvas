@@ -3,6 +3,27 @@
 Sözleşmeye dokunan her değişiklik buraya yazılır (`ARCHITECTURE.md` kuralı: sessiz sapma yok).
 En yeni üstte.
 
+## 2026-09-26 — 3DGS gürültü: analitik Jakobyen, görünür tam güç
+
+Gürültü Jakobyeni artık analitik (J = I + Σ v kᵀ cos); sonlu fark yalnız
+testte kâhin (Richardson, 1e-9 uyum). 205k splatte bir deform ~530 ms →
+~290 ms (Node), uygulamada ~310–330 ms.
+
+Genlik sınırı tohuma özgü ve daha sıkı ama yine kanıtlı:
+`noiseAmplitudeLimit(frekans, tohum = 0)`. Dalgaların cos katsayıları
+[-1, 1] küpünde; sym(D)'nin en büyük özdeğeri dışbükey olduğundan en kötü
+durum 2¹² köşeden birinde. Köşe taraması μ(tohum) verir; |A|·f·μ ≤ 0,8
+kırpması λ_min(sym J) ≥ 0,2 ⇒ σ_min(J) ≥ 0,2, det J ≥ 0,008 > 0 demek
+(kanıt `gaussianDeform.ts` yorumunda; test sınırın kendisini, rastgele ve
+hedefli arama örneklerinde doğruluyor). Eski üçgen eşitsizliği sınırına
+göre 2,3–3× genlik. `NOISE_REGION_CYCLES` 1 → 0,7 (daha büyük, yavaş
+dalgalar): tohum 0'da tam güç eskisinin ~3,3 katı yer değiştirme. Güç 0
+yine bayt bayt geri yükleme; tohum/zaman belirlenimi, 1 periyotla döngü ve
+gürültü + solmanın tek yazması değişmedi. `Egitim.deform` API'si aynı.
+
+Arayüz: "uygulanıyor…" yalnız güncelleme 400 ms'yi geçerse görünüyor;
+hızlı güncellemelerde gösterge titremiyor.
+
 ## 2026-09-26 — 3DGS gürültü deformu
 
 `gaussianDeform.ts`'e `noisePointAndJacobian` eklendi: tohumlu, pürüzsüz
