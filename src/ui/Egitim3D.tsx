@@ -31,6 +31,8 @@ export function Egitim3D({ dosya, onKapat, say }: { dosya: File; onKapat(): void
   const [bitti, setBitti] = useState(false);
   const [hata, setHata] = useState<string | null>(null);
   const [plyBusy, setPlyBusy] = useState(false);
+  const [bendStrength, setBendStrength] = useState(0);
+  const [bendBusy, setBendBusy] = useState(false);
   /** Z1 — paylaşım klibi kaydı sürüyor mu (kalan saniye). */
   const [klipKalan, setKlipKalan] = useState<number | null>(null);
   /** Eğitimin gerçek süresi — künyeye girer. */
@@ -271,6 +273,7 @@ export function Egitim3D({ dosya, onKapat, say }: { dosya: File; onKapat(): void
     if (!e) return;
     try {
       const target = e.devamEt();
+      setBendStrength(0);
       setGpu((current) => current ? { ...current, iter: target } : current);
       setBitti(false);
       setHata(null);
@@ -278,6 +281,21 @@ export function Egitim3D({ dosya, onKapat, say }: { dosya: File; onKapat(): void
       sayRef.current(`3D eğitim aynı sahnede sürdürüldü · hedef ${target} iterasyon · kalite sonucu test PSNR ile izlenir`);
     } catch (error) {
       setHata(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  async function applyBend(strength: number) {
+    const e = egitimRef.current;
+    if (!e || bendBusy) return;
+    setBendBusy(true);
+    try {
+      await e.bend(strength);
+      setBendStrength(strength);
+      setHata(null);
+    } catch (error) {
+      setHata(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBendBusy(false);
     }
   }
 
@@ -377,9 +395,22 @@ export function Egitim3D({ dosya, onKapat, say }: { dosya: File; onKapat(): void
         </button>
         <button style={dugme} onClick={gorunumuSifirla}>görünümü sıfırla</button>
         {bitti && gpu?.entegre && (
-          <button style={dugme} onClick={devamEt} title="Aynı sahnede 4.000 iterasyon daha; kalite etkisi videoya göre değişir">
+          <button style={dugme} disabled={bendBusy} onClick={devamEt} title="Aynı sahnede 4.000 iterasyon daha; kalite etkisi videoya göre değişir">
             sürdür +4.000 (deneysel)
           </button>
+        )}
+        {bitti && (
+          <label style={{ display: 'flex', alignItems: 'center', gap: 4 }} title="Eğitim tamamlandıktan sonra uygulanır; sıfır eğitilmiş geometriyi tam olarak geri yükler">
+            Bükme (deneysel)
+            <input
+              type="range" min="-1" max="1" step="0.05"
+              aria-label="Bükme gücü"
+              value={bendStrength}
+              disabled={bendBusy || plyBusy}
+              onChange={(event) => void applyBend(Number(event.target.value))}
+            />
+            <span>{Math.round(bendStrength * 90)}°</span>
+          </label>
         )}
         {bitti && (
           <button
@@ -391,7 +422,7 @@ export function Egitim3D({ dosya, onKapat, say }: { dosya: File; onKapat(): void
             {klipKalan !== null ? `● klip kaydediliyor · ${klipKalan} sn` : '⤓ paylaşım klibi'}
           </button>
         )}
-        {bitti && <button style={dugme} disabled={plyBusy} onClick={plyIndir}>{plyBusy ? 'PLY hazırlanıyor…' : '.ply indir'}</button>}
+        {bitti && <button style={dugme} disabled={plyBusy || bendBusy} onClick={plyIndir}>{plyBusy ? 'PLY hazırlanıyor…' : '.ply indir'}</button>}
         {/* Z2 — KURTARMA YOLU: hata sonrası tek yol "kapat" idi; kullanıcı
             videoyu yeniden seçmek zorunda kalıyordu. Şimdi aynı dosyayla ön
             ayara dönülür (oturum kapatılır, GPU serbest bırakılır). */}
@@ -405,6 +436,7 @@ export function Egitim3D({ dosya, onKapat, say }: { dosya: File; onKapat(): void
               setHata(null);
               setMetrik(null);
               setBitti(false);
+              setBendStrength(0);
               setAsama('başlıyor');
               setStarted(false);
             }}
