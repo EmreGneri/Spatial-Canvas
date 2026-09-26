@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
-import { bendPointAndJacobian, deformGaussianBuffer, polarDecompose3 } from '../src/engine/reconstruction/gaussianDeform.ts';
+import {
+  bendFrame, bendPointAndJacobian, bendPointAndJacobianInFrame, deformGaussianBuffer, polarDecompose3,
+} from '../src/engine/reconstruction/gaussianDeform.ts';
 
 const EPSILON = 1e-9;
 
@@ -198,6 +200,87 @@ for (const curvature of [k45, -k45]) {
     if (base < 32) for (const axis of [3, 4, 5]) assert.ok(bentOutliers[base + axis] > -20, 'outlier scale not collapsed');
     near(Math.hypot(...bentOutliers.slice(base + 6, base + 10)), 1, 'outlier quaternion stays unit', 1e-5);
   }
+}
+
+// ── Free bend axis/direction: an arbitrary orthonormal frame conjugates the
+// canonical (fixed-Y-axis) bend, both for the raw point/Jacobian and for the
+// full covariance path through deformGaussianBuffer. ──────────────────────
+function normalize(v) { const n = Math.hypot(...v); return v.map((x) => x / n); }
+function applyMat3(m, v) {
+  return [
+    m[0] * v[0] + m[1] * v[1] + m[2] * v[2],
+    m[3] * v[0] + m[4] * v[1] + m[5] * v[2],
+    m[6] * v[0] + m[7] * v[1] + m[8] * v[2],
+  ];
+}
+
+const tiltedUp = normalize([1, 2, 0.3]);
+const someForward = normalize([0.2, -0.4, 1]);
+for (const direction of ['yana', 'yukari']) {
+  const frame = bendFrame(direction, tiltedUp, someForward);
+  nearArray(multiply3(transpose3(frame), frame), identity, `${direction} frame is orthonormal`, 1e-9);
+  near(determinant3(frame) ** 2, 1, `${direction} frame is a proper orthogonal matrix`, 1e-9);
+  for (const [point, curvature, h] of [[[1.3, -0.4, 2.1], 0.6, 2], [[-0.5, 3, -1], -0.4, Infinity]]) {
+    const local = applyMat3(transpose3(frame), point);
+    const canonical = bendPointAndJacobian(local, curvature, h);
+    const expectedPoint = applyMat3(frame, canonical.point);
+    const expectedJacobian = multiply3(multiply3(frame, canonical.jacobian), transpose3(frame));
+    const framed = bendPointAndJacobianInFrame(point, frame, curvature, h);
+    nearArray(framed.point, expectedPoint, `${direction} framed point matches conjugated canonical bend`, 1e-9);
+    nearArray(framed.jacobian, expectedJacobian, `${direction} framed Jacobian matches conjugated canonical bend`, 1e-9);
+  }
+}
+
+// A point exactly on the true-up axis must stay fixed under a 'yana' bend
+// (the cylinder axis never moves), even when the forward hint used to pick
+// the spine direction is unrelated to it — proving the axis is real scene
+// up, not a camera's own (possibly tilted) vertical.
+const trueUp = normalize([1, 3, -0.5]);
+const unrelatedForward = normalize([0.9, 0, 0.1]);
+const axisFrame = bendFrame('yana', trueUp, unrelatedForward);
+const onAxis = [trueUp[0] * 2, trueUp[1] * 2, trueUp[2] * 2];
+const fixed = bendPointAndJacobianInFrame(onAxis, axisFrame, 0.8, 1);
+nearArray(fixed.point, onAxis, 'a point on the true-up axis is unmoved by a yana bend', 1e-9);
+nearArray(fixed.jacobian, identity, 'Jacobian on the true-up axis is identity', 1e-9);
+
+// 'yukari' (up/down curl, e.g. a road curling upward): the fixed axis is
+// horizontal, perpendicular to the main view direction, so the curl happens
+// in the vertical plane containing that view direction.
+const upDir = normalize([0, 1, 0]);
+const viewDir = normalize([1, 0, 1]);
+const upFrame = bendFrame('yukari', upDir, viewDir);
+const axisWorld = [upFrame[1], upFrame[4], upFrame[7]];
+near(axisWorld[0] * upDir[0] + axisWorld[1] * upDir[1] + axisWorld[2] * upDir[2], 0,
+  'yukari axis is horizontal (perpendicular to up)', 1e-9);
+near(axisWorld[0] * viewDir[0] + axisWorld[1] * viewDir[1] + axisWorld[2] * viewDir[2], 0,
+  'yukari axis is perpendicular to the view direction', 1e-9);
+
+// deformGaussianBuffer threads the frame into its position update exactly
+// like bendPointAndJacobianInFrame (already proven above).
+const bufferFrame = bendFrame('yukari', tiltedUp, someForward);
+const framedBuffer = deformGaussianBuffer(source, 2, 0.5, 1.2, bufferFrame);
+const expectedFramedCenter = bendPointAndJacobianInFrame(source.slice(0, 3), bufferFrame, 0.5, 1.2).point;
+nearArray(framedBuffer.slice(0, 3), expectedFramedCenter,
+  'deformGaussianBuffer moves centers through the supplied frame', 1e-5);
+
+// Covariance conjugation: J·C·Jᵀ computed with the framed Jacobian must equal
+// F·(J_local·C_local·J_localᵀ)·Fᵀ for an arbitrary symmetric covariance C —
+// i.e. bending in a frame is the canonical bend conjugated by that frame,
+// for covariances too, not just centers.
+function covMultiply(a, b) { return multiply3(a, b); }
+const arbitraryCovariance = [3, 0.5, 0.2, 0.5, 2, -0.1, 0.2, -0.1, 1];
+for (const [point, curvature, h] of [[[0.4, -1.1, 0.7], 0.5, 1.5], [[-2, 0.3, 1.8], -0.9, Infinity]]) {
+  const frame = bendFrame('yukari', tiltedUp, someForward);
+  const framedJacobian = bendPointAndJacobianInFrame(point, frame, curvature, h).jacobian;
+  const direct = covMultiply(covMultiply(framedJacobian, arbitraryCovariance), transpose3(framedJacobian));
+
+  const local = applyMat3(transpose3(frame), point);
+  const localCovariance = covMultiply(covMultiply(transpose3(frame), arbitraryCovariance), frame);
+  const localJacobian = bendPointAndJacobian(local, curvature, h).jacobian;
+  const newLocalCovariance = covMultiply(covMultiply(localJacobian, localCovariance), transpose3(localJacobian));
+  const expected = covMultiply(covMultiply(frame, newLocalCovariance), transpose3(frame));
+
+  nearArray(direct, expected, 'framed covariance update equals the canonical update conjugated by the frame', 1e-9);
 }
 
 console.log('OK · polar decomposition and cylindrical bend Jacobian');

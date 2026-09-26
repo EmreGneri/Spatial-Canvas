@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react';
-import { egitimBaslat, kameraMerkezi, yorunge, type Egitim, type EgitimMetrik } from '../engine/reconstruction/egitim3dgs';
+import {
+  egitimBaslat, kameraMerkezi, yorunge, type BendDirection, type Egitim, type EgitimMetrik,
+} from '../engine/reconstruction/egitim3dgs';
 import { bindWheelZoom, boundedZoomFactor, flyAxes, flySiniri, flyStep, lookAround } from './egitimControls';
 import { egitimGpuHint } from './egitimGpuHint';
 import { ayarOzeti, egitimOnKontrol, type OnKontrol } from './egitimOnKontrol';
@@ -32,6 +34,7 @@ export function Egitim3D({ dosya, onKapat, say }: { dosya: File; onKapat(): void
   const [hata, setHata] = useState<string | null>(null);
   const [plyBusy, setPlyBusy] = useState(false);
   const [bendStrength, setBendStrength] = useState(0);
+  const [bendDirection, setBendDirection] = useState<BendDirection>('yana');
   const [bendBusy, setBendBusy] = useState(false);
   /** Z1 — paylaşım klibi kaydı sürüyor mu (kalan saniye). */
   const [klipKalan, setKlipKalan] = useState<number | null>(null);
@@ -284,13 +287,14 @@ export function Egitim3D({ dosya, onKapat, say }: { dosya: File; onKapat(): void
     }
   }
 
-  async function applyBend(strength: number) {
+  async function applyBend(strength: number, direction: BendDirection) {
     const e = egitimRef.current;
     if (!e || bendBusy) return;
     setBendBusy(true);
     try {
-      await e.bend(strength);
+      await e.bend(strength, direction);
       setBendStrength(strength);
+      setBendDirection(direction);
       setHata(null);
     } catch (error) {
       setHata(error instanceof Error ? error.message : String(error));
@@ -402,12 +406,22 @@ export function Egitim3D({ dosya, onKapat, say }: { dosya: File; onKapat(): void
         {bitti && (
           <label style={{ display: 'flex', alignItems: 'center', gap: 4 }} title="Eğitim tamamlandıktan sonra uygulanır; sıfır eğitilmiş geometriyi tam olarak geri yükler">
             Bükme (deneysel)
+            <select
+              style={secim}
+              aria-label="Bükme ekseni"
+              value={bendDirection}
+              disabled={bendBusy || plyBusy}
+              onChange={(event) => void applyBend(bendStrength, event.target.value as BendDirection)}
+            >
+              <option value="yana">yana</option>
+              <option value="yukari">yukarı/aşağı</option>
+            </select>
             <input
               type="range" min="-1" max="1" step="0.05"
               aria-label="Bükme gücü"
               value={bendStrength}
               disabled={bendBusy || plyBusy}
-              onChange={(event) => void applyBend(Number(event.target.value))}
+              onChange={(event) => void applyBend(Number(event.target.value), bendDirection)}
             />
             <span>{Math.round(bendStrength * 90)}°</span>
           </label>
@@ -485,5 +499,9 @@ const serit: CSSProperties = {
 const cubuk: CSSProperties = { position: 'absolute', left: 0, bottom: 0, height: 2, background: '#6af', transition: 'width 0.5s' };
 const dugme: CSSProperties = {
   fontFamily: 'inherit', fontSize: 12, padding: '2px 8px', background: '#1a1a22', color: '#c8c8d4',
+  border: '1px solid #333', borderRadius: 3, cursor: 'pointer',
+};
+const secim: CSSProperties = {
+  fontFamily: 'inherit', fontSize: 12, padding: '2px 4px', background: '#1a1a22', color: '#c8c8d4',
   border: '1px solid #333', borderRadius: 3, cursor: 'pointer',
 };
