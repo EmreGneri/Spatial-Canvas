@@ -293,12 +293,134 @@ export function domePointAndJacobianInFrame(
   return inFrame(point, frame, (local) => domePointAndJacobian(local, curvature, halfLength));
 }
 
-/** One deform, selected by `kind`; each maps a point to point + Jacobian. */
+// Noise field: NOISE_OCTAVES x NOISE_WAVES_PER_OCTAVE seeded plane waves
+// ("spectral" noise), octave o at 2^o x the base frequency with weight 2^-o,
+// normalized so |displacement| <= |amplitude|. Each wave's displacement
+// gradient is rank one with spectral norm (weight / total)·2π·f·2^o, so the
+// whole strain ||J - I||₂ <= |A|·f·NOISE_STRAIN_PER_UNIT; the amplitude is
+// clamped to keep it <= NOISE_MAX_STRAIN < 1, hence every singular value of J
+// is >= 1 - NOISE_MAX_STRAIN and det J > 0 (J = I + tD never becomes
+// singular for t in [0, 1]). Time phases advance by integer turns, so the
+// field loops with period 1 in `time`. Calibration knobs.
+const NOISE_OCTAVES = 3;
+const NOISE_WAVES_PER_OCTAVE = 4;
+const NOISE_MAX_STRAIN = 0.8;
+let noiseWeightSum = 0, noiseStrainSum = 0;
+for (let octave = 0; octave < NOISE_OCTAVES; octave++) {
+  noiseWeightSum += NOISE_WAVES_PER_OCTAVE * 2 ** -octave;
+  noiseStrainSum += NOISE_WAVES_PER_OCTAVE * 2 ** -octave * 2 * Math.PI * 2 ** octave;
+}
+const NOISE_STRAIN_PER_UNIT = noiseStrainSum / noiseWeightSum;
+
+/** Largest |amplitude| (scene units) at `frequency` (base cycles per scene
+ * unit) that keeps the noise Jacobian invertible with det J > 0. */
+export function noiseAmplitudeLimit(frequency: number): number {
+  if (!(frequency > 0) || !Number.isFinite(frequency)) throw new RangeError('Noise frequency must be positive and finite');
+  return NOISE_MAX_STRAIN / (frequency * NOISE_STRAIN_PER_UNIT);
+}
+
+interface NoiseWave { direction: Vec3; displacement: Vec3; weight: number; octave: number; phase: number; turns: number }
+
+/** Seeded wave table (mulberry32); the same seed always gives the same field. */
+function noiseWaves(seed: number): NoiseWave[] {
+  let a = seed >>> 0;
+  const random = () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = Math.imul(a ^ (a >>> 15), a | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+  const unit = (): Vec3 => {
+    const z = 2 * random() - 1, angle = 2 * Math.PI * random(), r = Math.sqrt(1 - z * z);
+    return [r * Math.cos(angle), r * Math.sin(angle), z];
+  };
+  const waves: NoiseWave[] = [];
+  for (let octave = 0; octave < NOISE_OCTAVES; octave++) {
+    for (let wave = 0; wave < NOISE_WAVES_PER_OCTAVE; wave++) {
+      const turns = (random() < 0.5 ? -1 : 1) * (1 + Math.floor(2 * random()));
+      waves.push({
+        direction: unit(), displacement: unit(), weight: 2 ** -octave / noiseWeightSum,
+        octave, phase: 2 * Math.PI * random(), turns,
+      });
+    }
+  }
+  return waves;
+}
+
+/**
+ * Smooth, bounded 3D noise displacement p + A·n(p) with a central
+ * finite-difference Jacobian. `amplitude` is clamped to
+ * `noiseAmplitudeLimit(frequency)` (sign kept), so det J > 0 for any input;
+ * `time` shifts every wave's phase by whole turns per unit (period 1).
+ */
+export function noisePointAndJacobian(
+  point: ArrayLike<number>, amplitude: number, frequency: number, seed = 0, time = 0,
+): { point: Vec3; jacobian: Mat3 } {
+  return noiseMap({ kind: 'noise', amplitude, frequency, seed, time })(point);
+}
+
+function noiseMap(spec: Extract<DeformSpec, { kind: 'noise' }>): PointMap {
+  const limit = noiseAmplitudeLimit(spec.frequency);
+  const amplitude = Math.sign(spec.amplitude) * Math.min(Math.abs(spec.amplitude), limit);
+  const time = spec.time ?? 0;
+  const waves = noiseWaves(spec.seed ?? 0).map((w) => ({
+    k: w.direction.map((d) => 2 * Math.PI * spec.frequency * 2 ** w.octave * d) as Vec3,
+    v: w.displacement.map((d) => amplitude * w.weight * d) as Vec3,
+    // Whole turns per unit time, reduced mod 1 so large `time` keeps precision.
+    phase: w.phase + 2 * Math.PI * ((w.turns * time) % 1),
+  }));
+  const displaced = (x: number, y: number, z: number): Vec3 => {
+    let dx = x, dy = y, dz = z;
+    for (const w of waves) {
+      const s = Math.sin(w.k[0] * x + w.k[1] * y + w.k[2] * z + w.phase);
+      dx += w.v[0] * s; dy += w.v[1] * s; dz += w.v[2] * s;
+    }
+    return [dx, dy, dz];
+  };
+  // Central differences shrink each wave's slope by sinc(|k|h) <= 1, so the
+  // FD Jacobian obeys the same strain bound as the exact one.
+  const h = 1e-4 / (spec.frequency * 2 ** (NOISE_OCTAVES - 1));
+  return (p) => {
+    if (p.length !== 3 || !Number.isFinite(p[0]) || !Number.isFinite(p[1]) || !Number.isFinite(p[2])) {
+      throw new RangeError('Expected a finite point');
+    }
+    const x = p[0], y = p[1], z = p[2];
+    if (amplitude === 0) return { point: [x, y, z], jacobian: IDENTITY.slice() };
+    const jacobian = new Array<number>(9);
+    for (let col = 0; col < 3; col++) {
+      const plus = displaced(x + (col === 0 ? h : 0), y + (col === 1 ? h : 0), z + (col === 2 ? h : 0));
+      const minus = displaced(x - (col === 0 ? h : 0), y - (col === 1 ? h : 0), z - (col === 2 ? h : 0));
+      for (let row = 0; row < 3; row++) jacobian[3 * row + col] = (plus[row] - minus[row]) / (2 * h);
+    }
+    return { point: displaced(x, y, z), jacobian };
+  };
+}
+
+/** One deform, selected by `kind`; each maps a point to point + Jacobian.
+ * noise: `amplitude` in scene units (clamped, see `noiseAmplitudeLimit`),
+ * `frequency` in base cycles per scene unit, integer `seed`, `time` loops
+ * with period 1. */
 export type DeformSpec =
   | { kind: 'bend'; curvature: number; halfLength?: number; frame?: Mat3 }
-  | { kind: 'dome'; curvature: number; halfLength?: number; frame?: Mat3 };
+  | { kind: 'dome'; curvature: number; halfLength?: number; frame?: Mat3 }
+  | { kind: 'noise'; amplitude: number; frequency: number; seed?: number; time?: number };
+
+/** True when `spec` is the exact identity (buffer restored bit-identically);
+ * throws RangeError for non-finite / invalid parameters. */
+export function isIdentityDeform(spec: DeformSpec): boolean {
+  if (spec.kind === 'noise') {
+    if (!Number.isFinite(spec.amplitude) || !Number.isFinite(spec.time ?? 0) || !Number.isInteger(spec.seed ?? 0)) {
+      throw new RangeError('Noise amplitude and time must be finite, seed an integer');
+    }
+    noiseAmplitudeLimit(spec.frequency);
+    return spec.amplitude === 0;
+  }
+  if (!Number.isFinite(spec.curvature)) throw new RangeError('Deform curvature must be finite');
+  return spec.curvature === 0;
+}
 
 function deformMap(spec: DeformSpec): PointMap {
+  if (spec.kind === 'noise') return noiseMap(spec);
   const halfLength = spec.halfLength ?? Infinity;
   const canonical: PointMap = spec.kind === 'dome'
     ? (p) => domePointAndJacobian(p, spec.curvature, halfLength)
@@ -382,11 +504,11 @@ export function deformGaussianBuffer(
   source: Float32Array, count: number, deform: number | DeformSpec, halfLength = Infinity, frame?: Mat3,
 ): Float32Array {
   const spec: DeformSpec = typeof deform === 'number' ? { kind: 'bend', curvature: deform, halfLength, frame } : deform;
-  if (!Number.isInteger(count) || count < 0 || source.length < count * 16 || !Number.isFinite(spec.curvature)) {
-    throw new RangeError('Expected a valid Gaussian count and finite curvature');
+  if (!Number.isInteger(count) || count < 0 || source.length < count * 16) {
+    throw new RangeError('Expected a valid Gaussian count');
   }
   const output = source.slice();
-  if (spec.curvature === 0) return output;
+  if (isIdentityDeform(spec)) return output;
   const map = deformMap(spec);
   for (let index = 0; index < count; index++) {
     const base = index * 16;

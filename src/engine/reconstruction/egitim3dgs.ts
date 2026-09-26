@@ -14,7 +14,8 @@
 import { segmentForeground } from './segmentation.ts';
 import { prepareSubjectFrames } from './subjectTrainingMasks.ts';
 import {
-  bendFrame, deformGaussianBuffer, fadeGaussianOpacity, type BendDirection, type DeformSpec, type Mat3,
+  bendFrame, deformGaussianBuffer, fadeGaussianOpacity, isIdentityDeform, noiseAmplitudeLimit,
+  type BendDirection, type DeformSpec, type Mat3,
 } from './gaussianDeform.ts';
 
 export type { BendDirection } from './gaussianDeform.ts';
@@ -197,10 +198,17 @@ export function bendSceneFrame(direction: BendDirection, yukari: Vec3, pivot: Ve
 
 /** Scene-level deform choice; `strength` in [-1, 1], 0 = exact trained state.
  * bend: ±90° total across the region. dome: ±90° rim angle (tiny planet /
- * bowl) with the ground plane through the pivot, normal `yukari`. */
+ * bowl) with the ground plane through the pivot, normal `yukari`. noise:
+ * ±1 = the largest amplitude that keeps det J > 0 (`noiseAmplitudeLimit`),
+ * NOISE_REGION_CYCLES base waves per region half-length; integer `seed`
+ * (default 0), `time` loops with period 1 (default 0). */
 export type DeformSettings =
   | { kind: 'bend'; strength: number; direction?: BendDirection }
-  | { kind: 'dome'; strength: number };
+  | { kind: 'dome'; strength: number }
+  | { kind: 'noise'; strength: number; seed?: number; time?: number };
+
+/** Base noise cycles per camera-region half-length. Calibration knob. */
+const NOISE_REGION_CYCLES = 1;
 
 /** Settings -> `DeformSpec`; the region always comes from cameras + pivot. */
 export function deformSpec(settings: DeformSettings, cameras: readonly Vec3[], pivot: Vec3, yukari: Vec3): DeformSpec {
@@ -209,6 +217,13 @@ export function deformSpec(settings: DeformSettings, cameras: readonly Vec3[], p
   }
   const region = bendRegion(cameras, pivot, settings.strength);
   const ilkKamera = cameras[0] ?? pivot;
+  if (settings.kind === 'noise') {
+    const frequency = NOISE_REGION_CYCLES / region.halfLength;
+    return {
+      kind: 'noise', frequency, amplitude: settings.strength * noiseAmplitudeLimit(frequency),
+      seed: settings.seed ?? 0, time: settings.time ?? 0,
+    };
+  }
   if (settings.kind === 'dome') {
     return {
       kind: 'dome', halfLength: region.halfLength, frame: bendSceneFrame('yana', yukari, pivot, ilkKamera),
@@ -241,11 +256,10 @@ export function createGaussianBendController(
      * in the one write below, so the two effects never compound across calls. */
     async apply(deform: number | DeformSpec, halfLength = Infinity, frame?: Mat3, fadeHalfLength = Infinity): Promise<void> {
       const spec: DeformSpec = typeof deform === 'number' ? { kind: 'bend', curvature: deform, halfLength, frame } : deform;
-      const curvature = spec.curvature;
-      if (!Number.isFinite(curvature)) throw new RangeError('Bend curvature must be finite');
+      const identity = isIdentityDeform(spec);
       const fadeActive = Number.isFinite(fadeHalfLength);
       if (fadeActive && !(fadeHalfLength > 0)) throw new RangeError('Fade half-length must be positive');
-      if (curvature === 0 && !fadeActive && !active) return;
+      if (identity && !fadeActive && !active) return;
       if (!canEdit()) throw new Error('Bend is available after training has finished');
       if (pending) throw new Error('A bend update is already in progress');
       pending = true;
@@ -255,7 +269,7 @@ export function createGaussianBendController(
           if (!canEdit()) throw new Error('Training session is no longer ready for bending');
           snapshot = { data: raw.data.slice(0, raw.n * 16), n: raw.n };
         }
-        if (curvature === 0 && !fadeActive) {
+        if (identity && !fadeActive) {
           write(snapshot.data);
         } else {
           const sceneCenter = typeof center === 'function' ? center() : center;
@@ -264,7 +278,7 @@ export function createGaussianBendController(
             const base = index * 16;
             for (let axis = 0; axis < 3; axis++) local[base + axis] -= sceneCenter[axis];
           }
-          const deformed = curvature !== 0 ? deformGaussianBuffer(local, snapshot.n, spec) : local.slice();
+          const deformed = identity ? local.slice() : deformGaussianBuffer(local, snapshot.n, spec);
           if (fadeActive) {
             // Fade reads position/opacity from the PRE-bend `local` snapshot: the
             // camera-framed region is a scene-relative fact, not something the
@@ -278,7 +292,7 @@ export function createGaussianBendController(
           }
           write(deformed);
         }
-        active = curvature !== 0 || fadeActive;
+        active = !identity || fadeActive;
       } finally {
         pending = false;
       }
@@ -303,7 +317,7 @@ export interface Egitim {
    * (`bendRegion`); zero restores the exact trained state. `direction`
    * picks the free bend axis (`bendSceneFrame`), default 'yana'. */
   bend(strength: number, direction?: BendDirection): Promise<void>;
-  /** Any deform (`DeformSettings`: bend, dome); replaces the previous one,
+  /** Any deform (`DeformSettings`: bend, dome, noise); replaces the previous one,
    * composes with `fade`, zero strength restores the exact trained state.
    * `bend(s, d)` is `deform({ kind: 'bend', strength: s, direction: d })`. */
   deform(settings: DeformSettings): Promise<void>;

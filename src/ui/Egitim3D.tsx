@@ -1,7 +1,23 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import {
-  egitimBaslat, kameraMerkezi, yorunge, type BendDirection, type Egitim, type EgitimMetrik,
+  egitimBaslat, kameraMerkezi, yorunge, type BendDirection, type DeformSettings, type Egitim, type EgitimMetrik,
 } from '../engine/reconstruction/egitim3dgs';
+
+type DeformChoice = BendDirection | 'kubbe' | 'gurultu';
+// The dome's usable range on real scenes is 0.3-0.6 of the ±90° rim angle;
+// beyond ~0.6 the rigid continuation drops the scene off the rim.
+const KUBBE_TAM_GUC = 0.6;
+
+function deformAyari(choice: DeformChoice, strength: number): DeformSettings {
+  if (choice === 'kubbe') return { kind: 'dome', strength: strength * KUBBE_TAM_GUC };
+  if (choice === 'gurultu') return { kind: 'noise', strength };
+  return { kind: 'bend', strength, direction: choice };
+}
+
+function deformGostergesi(choice: DeformChoice, strength: number): string {
+  if (choice === 'gurultu') return `%${Math.round(strength * 100)}`;
+  return `${Math.round(strength * (choice === 'kubbe' ? KUBBE_TAM_GUC : 1) * 90)}°`;
+}
 import { bindWheelZoom, boundedZoomFactor, flyAxes, flySiniri, flyStep, lookAround } from './egitimControls';
 import { egitimGpuHint } from './egitimGpuHint';
 import { ayarOzeti, egitimOnKontrol, type OnKontrol } from './egitimOnKontrol';
@@ -34,8 +50,8 @@ export function Egitim3D({ dosya, onKapat, say }: { dosya: File; onKapat(): void
   const [hata, setHata] = useState<string | null>(null);
   const [plyBusy, setPlyBusy] = useState(false);
   const [bendStrength, setBendStrength] = useState(0);
-  // One select picks the deform: a bend axis or the dome (tiny planet).
-  const [bendDirection, setBendDirection] = useState<BendDirection | 'kubbe'>('yana');
+  // One select picks the deform: a bend axis, the dome (tiny planet) or noise.
+  const [deformChoice, setDeformChoice] = useState<DeformChoice>('yana');
   const [bendBusy, setBendBusy] = useState(false);
   // Off by default in normal viewing; the offline clip renderer (Task 5) turns
   // it on by calling `Egitim.fade` directly, not through this UI state.
@@ -292,14 +308,14 @@ export function Egitim3D({ dosya, onKapat, say }: { dosya: File; onKapat(): void
     }
   }
 
-  async function applyBend(strength: number, direction: BendDirection | 'kubbe') {
+  async function applyBend(strength: number, direction: DeformChoice) {
     const e = egitimRef.current;
     if (!e || bendBusy) return;
     setBendBusy(true);
     try {
-      await e.deform(direction === 'kubbe' ? { kind: 'dome', strength } : { kind: 'bend', strength, direction });
+      await e.deform(deformAyari(direction, strength));
       setBendStrength(strength);
-      setBendDirection(direction);
+      setDeformChoice(direction);
       setHata(null);
     } catch (error) {
       setHata(error instanceof Error ? error.message : String(error));
@@ -425,26 +441,27 @@ export function Egitim3D({ dosya, onKapat, say }: { dosya: File; onKapat(): void
         )}
         {bitti && (
           <label style={{ display: 'flex', alignItems: 'center', gap: 4 }} title="Eğitim tamamlandıktan sonra uygulanır; sıfır eğitilmiş geometriyi tam olarak geri yükler">
-            Bükme / kubbe (deneysel)
+            Deform (deneysel)
             <select
               style={secim}
-              aria-label="Bükme ekseni veya kubbe"
-              value={bendDirection}
+              aria-label="Deform türü: bükme ekseni, kubbe veya gürültü"
+              value={deformChoice}
               disabled={bendBusy || plyBusy}
-              onChange={(event) => void applyBend(bendStrength, event.target.value as BendDirection | 'kubbe')}
+              onChange={(event) => void applyBend(bendStrength, event.target.value as DeformChoice)}
             >
               <option value="yana">yana</option>
               <option value="yukari">yukarı/aşağı</option>
               <option value="kubbe">kubbe (küçük gezegen)</option>
+              <option value="gurultu">gürültü (canlı yüzey)</option>
             </select>
             <input
               type="range" min="-1" max="1" step="0.05"
               aria-label="Bükme gücü"
               value={bendStrength}
               disabled={bendBusy || plyBusy}
-              onChange={(event) => void applyBend(Number(event.target.value), bendDirection)}
+              onChange={(event) => void applyBend(Number(event.target.value), deformChoice)}
             />
-            <span>{Math.round(bendStrength * 90)}°</span>
+            <span style={{ minWidth: 72 }}>{bendBusy ? 'uygulanıyor…' : deformGostergesi(deformChoice, bendStrength)}</span>
           </label>
         )}
         {bitti && (
