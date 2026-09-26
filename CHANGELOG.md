@@ -3,6 +3,14 @@
 Sözleşmeye dokunan her değişiklik buraya yazılır (`ARCHITECTURE.md` kuralı: sessiz sapma yok).
 En yeni üstte.
 
+## 2026-09-26 — Deformsiz paylaşım klibi
+
+Eğitim ekranındaki deform seçimine `yok` eklendi ve varsayılan yapıldı. Seçim,
+etkin deformu bir kez sıfırlayıp güç göstergesini sıfıra alır. Bu seçimde klip
+yalnızca yörünge kamerasıyla render edilir; karelerde veya geri yüklemede
+deform çağrısı yapılmaz. Klipteki renk derecelendirmesi, vinyet ve fade akışı
+korunur.
+
 ## 2026-09-26 — Deform efektleri: son inceleme düzeltmeleri
 
 Son gözden geçirmenin üç küçük bulgusu:

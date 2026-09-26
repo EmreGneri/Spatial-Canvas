@@ -26,7 +26,7 @@ for (let i = 0; i < 240; i++) {
 }
 
 // Deform per frame: strength = peak · envelope; noise time = t (period 1).
-for (const tur of ['yana', 'yukari', 'kubbe', 'gurultu']) {
+for (const tur of ['yana', 'yukari', 'kubbe', 'gurultu', 'yok']) {
   const d0 = klipDeformu(tur, klipTepeGucu(tur, 0), 0);
   assert.equal(d0.strength, 0, `${tur}: frame 0 is the trained state`);
 }
@@ -42,6 +42,11 @@ yakin(klipTepeGucu('gurultu', 0.5), 0.5);
 yakin(klipTepeGucu('kubbe', 0), 1);
 yakin(klipTepeGucu('yukari', 0), 0.6);
 yakin(klipTepeGucu('yana', -0.3), -0.3);
+yakin(klipTepeGucu('yok', 0), 0, 0, 'no-deform clips never receive a default peak');
+assert.deepEqual(klipDeformu('yok', 1, 0.5), { kind: 'bend', strength: 0, direction: 'yana' });
+assert.equal(klipDeformu('yok', klipTepeGucu('yok', 0), 0.5).strength, 0);
+const duzYorunge = kameraYolu('yok', 0.5, 0.4);
+yakin(duzYorunge.yaw, 0); yakin(duzYorunge.pitch, 0); yakin(duzYorunge.uzaklik, 1);
 
 // Camera path: loops (frame n == frame 0), dome rises ~40° and pulls back 3× at peak.
 for (const tur of ['yana', 'yukari', 'kubbe', 'gurultu']) {
@@ -159,6 +164,14 @@ const onceki = { deform: { kind: 'bend', strength: 0.25, direction: 'yana' }, fa
   assert.deepEqual(s.log.slice(-2), [['deform', onceki.deform], ['fade', false]], 'restore previous settings');
   // Held peak frames do not re-deform.
   assert.ok(s.log.filter((e) => e[0] === 'deform').length < 10 + 1);
+}
+{
+  const s = sahteOturum();
+  await klipKareleri(s.oturum, 'yok', 0, 10, { deform: onceki.deform, fade: false }, s.kare);
+  assert.equal(s.log.filter((e) => e[0] === 'deform').length, 0, 'plain clip makes no deform calls, including restore');
+  assert.equal(s.log.filter((e) => e[0] === 'kare').length, 10);
+  assert.deepEqual(s.log[0], ['fade', true]);
+  assert.deepEqual(s.log.at(-1), ['fade', false], 'restore fade after plain clip');
 }
 {
   const s = sahteOturum(4);

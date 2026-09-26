@@ -43,8 +43,8 @@ export function Egitim3D({ dosya, onKapat, say, onIlerleme }: {
   const [hata, setHata] = useState<string | null>(null);
   const [plyBusy, setPlyBusy] = useState(false);
   const [bendStrength, setBendStrength] = useState(0);
-  // One select picks the deform: a bend axis, the dome (tiny planet) or noise.
-  const [deformChoice, setDeformChoice] = useState<DeformChoice>('yana');
+  // The clip defaults to an undeformed orbit; choosing a deform applies it live.
+  const [deformChoice, setDeformChoice] = useState<DeformChoice>('yok');
   const [bendBusy, setBendBusy] = useState(false);
   // "uygulanıyor…" only once an update has run 400 ms (design rule), so fast
   // updates never flicker the readout.
@@ -302,7 +302,7 @@ export function Egitim3D({ dosya, onKapat, say, onIlerleme }: {
     const slow = window.setTimeout(() => setBendSlow(true), 400);
     try {
       await e.deform(deformAyari(direction, strength));
-      setBendStrength(strength);
+      setBendStrength(direction === 'yok' ? 0 : strength);
       setDeformChoice(direction);
       setHata(null);
     } catch (error) {
@@ -437,11 +437,12 @@ export function Egitim3D({ dosya, onKapat, say, onIlerleme }: {
             Deform (deneysel)
             <select
               style={secim}
-              aria-label="Deform türü: bükme ekseni, kubbe veya gürültü"
+              aria-label="Deform türü: yok, bükme ekseni, kubbe veya gürültü"
               value={deformChoice}
               disabled={bendBusy || plyBusy}
               onChange={(event) => void applyBend(bendStrength, event.target.value as DeformChoice)}
             >
+              <option value="yok">yok</option>
               <option value="yana">yana</option>
               <option value="yukari">yukarı/aşağı</option>
               <option value="kubbe">kubbe (küçük gezegen)</option>
@@ -451,7 +452,7 @@ export function Egitim3D({ dosya, onKapat, say, onIlerleme }: {
               type="range" min="-1" max="1" step="0.05"
               aria-label="Deform gücü"
               value={bendStrength}
-              disabled={bendBusy || plyBusy}
+              disabled={bendBusy || plyBusy || deformChoice === 'yok'}
               onChange={(event) => void applyBend(Number(event.target.value), deformChoice)}
             />
             <span style={{ minWidth: 72 }}>{bendSlow ? 'uygulanıyor…' : deformGostergesi(deformChoice, bendStrength)}</span>
