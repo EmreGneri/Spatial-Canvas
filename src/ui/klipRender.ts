@@ -16,18 +16,20 @@ import {
 
 type Vec3 = [number, number, number];
 
-export type DeformChoice = 'yana' | 'yukari' | 'kubbe' | 'gurultu';
+export type DeformChoice = 'yok' | 'yana' | 'yukari' | 'kubbe' | 'gurultu';
 // The dome's usable range on real scenes is 0.3-0.6 of the ±90° rim angle;
 // beyond ~0.6 the rigid continuation drops the scene off the rim.
 export const KUBBE_TAM_GUC = 0.6;
 
 export function deformAyari(choice: DeformChoice, strength: number): DeformSettings {
+  if (choice === 'yok') return { kind: 'bend', strength: 0, direction: 'yana' };
   if (choice === 'kubbe') return { kind: 'dome', strength: strength * KUBBE_TAM_GUC };
   if (choice === 'gurultu') return { kind: 'noise', strength };
   return { kind: 'bend', strength, direction: choice };
 }
 
 export function deformGostergesi(choice: DeformChoice, strength: number): string {
+  if (choice === 'yok') return 'yok';
   if (choice === 'gurultu') return `%${Math.round(strength * 100)}`;
   return `${Math.round(strength * (choice === 'kubbe' ? KUBBE_TAM_GUC : 1) * 90)}°`;
 }
@@ -56,6 +58,7 @@ export function zarf(t: number, rampa = 0.3): number {
 /** Klibin tepe gücü: kaydırıcı sıfırsa türün varsayılanı. Gürültü tam güçte
  * heykeli fazla oynatıyor (Görev 4b) — klipte 0,8 ile sınırlı, varsayılan 0,7. */
 export function klipTepeGucu(tur: DeformChoice, kaydirici: number): number {
+  if (tur === 'yok') return 0;
   const varsayilan = tur === 'gurultu' ? 0.7 : tur === 'kubbe' ? 1 : 0.6;
   const g = kaydirici !== 0 ? kaydirici : varsayilan;
   return tur === 'gurultu' ? Math.sign(g) * Math.min(Math.abs(g), 0.8) : g;
@@ -64,6 +67,7 @@ export function klipTepeGucu(tur: DeformChoice, kaydirici: number): number {
 /** t anındaki deform. Gürültünün `time`'ı periyot 1 ile döner: t = 0 ve 1
  * aynı alan; gücü ayrıca zarf taşır (t = 0'daki alan eğitilmiş durum değil). */
 export function klipDeformu(tur: DeformChoice, tepe: number, t: number): DeformSettings {
+  if (tur === 'yok') return deformAyari('yok', 0);
   const s = tepe * zarf(t);
   if (tur === 'gurultu') return { kind: 'noise', strength: s, time: t };
   return deformAyari(tur, s);
@@ -80,6 +84,7 @@ export interface KameraAdimi { yaw: number; pitch: number; uzaklik: number }
 export function kameraYolu(tur: DeformChoice, t: number, salinim: number): KameraAdimi {
   const e = zarf(t);
   const yaw = salinim * Math.sin(turAcisi(t, 1));
+  if (tur === 'yok') return { yaw, pitch: 0, uzaklik: 1 };
   if (tur === 'kubbe') return { yaw, pitch: -0.7 * e, uzaklik: 1 + 2 * e };
   if (tur === 'yukari') return { yaw, pitch: -0.25 * e, uzaklik: 1 + 0.3 * e };
   return { yaw, pitch: -0.15 * e, uzaklik: 1 + 0.15 * e };
@@ -231,11 +236,13 @@ export async function klipKareleri(
     for (let i = 0; i < n; i++) {
       signal?.throwIfAborted();
       const t = i / n;
-      const ayar = klipDeformu(tur, tepe, t);
-      const anahtar = JSON.stringify(ayar);
-      if (anahtar !== son) {
-        await o.deform(ayar);
-        son = anahtar;
+      if (tur !== 'yok') {
+        const ayar = klipDeformu(tur, tepe, t);
+        const anahtar = JSON.stringify(ayar);
+        if (anahtar !== son) {
+          await o.deform(ayar);
+          son = anahtar;
+        }
       }
       await kare(i, t);
     }
@@ -248,7 +255,9 @@ export async function klipKareleri(
     // session closed mid-render), and a restore failure must never hide the
     // original render error above.
     try {
-      await o.deform(onceki.deform);
+      if (tur !== 'yok') {
+        await o.deform(onceki.deform);
+      }
     } catch (restoreError) {
       if (!renderError) throw restoreError;
     } finally {
