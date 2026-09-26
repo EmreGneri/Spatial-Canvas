@@ -174,4 +174,26 @@ const onceki = { deform: { kind: 'bend', strength: 0.25, direction: 'yana' }, fa
   assert.deepEqual(s.log.slice(-2), [['deform', onceki.deform], ['fade', false]], 'restore after cancel');
 }
 
+{
+  // If the deform restore itself throws (e.g. session closed under the
+  // renderer), the fade restore must still run and the ORIGINAL render
+  // error must win, not the restore error.
+  const log = [];
+  const oturum = {
+    deform: async (s) => {
+      log.push(['deform', s]);
+      if (s === onceki.deform) throw new Error('restore-deform-failed');
+    },
+    fade: async (on) => { log.push(['fade', on]); },
+  };
+  const kare = async (i) => { if (i === 3) throw new Error('boom'); };
+  await assert.rejects(
+    klipKareleri(oturum, 'gurultu', 0.7, 10, onceki, kare),
+    /boom/,
+    'the original render error must surface, not the restore error',
+  );
+  assert.deepEqual(log.at(-2), ['deform', onceki.deform], 'deform restore attempted');
+  assert.deepEqual(log.at(-1), ['fade', onceki.fade], 'fade restore still runs after deform restore throws');
+}
+
 console.log('verify-klip-render: OK');

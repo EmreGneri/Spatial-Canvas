@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import * as egitim from '../src/engine/reconstruction/egitim3dgs.ts';
 import { bendFrame, deformGaussianBuffer, fadeGaussianOpacity } from '../src/engine/reconstruction/gaussianDeform.ts';
 
-const { createGaussianBendController, bendSceneFrame } = egitim;
+const { createGaussianBendController, bendSceneFrame, applyWithFlagRollback } = egitim;
 
 function near(actual, expected, label, tolerance = 1e-9) {
   assert.ok(Math.abs(actual - expected) <= tolerance, `${label}: expected ${expected}, received ${actual}`);
@@ -192,6 +192,32 @@ nearArray(frameWrites.at(-1), expectedFramed, 'bend controller applies the suppl
   // Zero everything restores exactly again.
   await fadeBend.apply(0, Infinity, undefined, Infinity);
   assert.deepEqual(fadeWrites.at(-1), fadeSource, 'zero bend + fade off restores exact trainer parameters');
+}
+
+// ── applyWithFlagRollback: shared by Egitim.deform and Egitim.fade ────────
+// A failing apply must leave the tracked flag at its previous value, for
+// both a deform-settings flag and a boolean fade flag.
+{
+  let flag = 'onceki';
+  await assert.rejects(
+    applyWithFlagRollback((v) => { flag = v; }, 'onceki', 'yeni', async () => { throw new Error('apply-failed'); }),
+    /apply-failed/,
+  );
+  assert.equal(flag, 'onceki', 'flag rolled back to its previous value after a failing apply');
+}
+{
+  let fadeOn = false;
+  await assert.rejects(
+    applyWithFlagRollback((v) => { fadeOn = v; }, fadeOn, true, async () => { throw new Error('apply-failed'); }),
+    /apply-failed/,
+  );
+  assert.equal(fadeOn, false, 'fade flag rolled back to previous value after a failing apply');
+}
+{
+  // Successful apply keeps the new value.
+  let flag = 'onceki';
+  await applyWithFlagRollback((v) => { flag = v; }, 'onceki', 'yeni', async () => {});
+  assert.equal(flag, 'yeni');
 }
 
 console.log('3DGS post-training bend integration: OK');
