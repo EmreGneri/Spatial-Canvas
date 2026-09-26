@@ -219,7 +219,10 @@ const someForward = normalize([0.2, -0.4, 1]);
 for (const direction of ['yana', 'yukari']) {
   const frame = bendFrame(direction, tiltedUp, someForward);
   nearArray(multiply3(transpose3(frame), frame), identity, `${direction} frame is orthonormal`, 1e-9);
-  near(determinant3(frame) ** 2, 1, `${direction} frame is a proper orthogonal matrix`, 1e-9);
+  // Un-squared: det=+1 is a proper rotation, det=-1 is a reflection (e.g. the
+  // cross3(axis, spine) vs cross3(spine, axis) handedness bug). Squaring
+  // would accept either and catch nothing.
+  near(determinant3(frame), 1, `${direction} frame is a proper rotation, not a reflection`, 1e-9);
   for (const [point, curvature, h] of [[[1.3, -0.4, 2.1], 0.6, 2], [[-0.5, 3, -1], -0.4, Infinity]]) {
     const local = applyMat3(transpose3(frame), point);
     const canonical = bendPointAndJacobian(local, curvature, h);
@@ -230,6 +233,36 @@ for (const direction of ['yana', 'yukari']) {
     nearArray(framed.jacobian, expectedJacobian, `${direction} framed Jacobian matches conjugated canonical bend`, 1e-9);
   }
 }
+
+// Independent check, not self-referential: the expected frame matrix below
+// is hand-derived from bendFrame's documented construction (axis = forward
+// x up normalized, spine = forward with its axis component removed, depth =
+// spine x axis), not obtained by calling bendFrame itself, so this catches a
+// handedness regression that a self-consistent (both-sides-from-bendFrame)
+// check cannot. For up=[0,1,0], forward=[0,0,1], direction='yukari':
+//   axis  = normalize(cross([0,0,1], [0,1,0])) = (-1, 0, 0)
+//   spine = normalize([0,0,1] - 0*axis)         = (0, 0, 1)   (already ⟂ axis)
+//   depth = cross(spine, axis)                  = (0, -1, 0)
+const handDerivedFrame = [
+  0, -1, 0,
+  0, 0, -1,
+  1, 0, 0,
+];
+near(determinant3(handDerivedFrame), 1, 'hand-derived reference frame is itself a proper rotation (sanity)', 1e-9);
+nearArray(bendFrame('yukari', [0, 1, 0], [0, 0, 1]), handDerivedFrame,
+  "bendFrame('yukari', up=Y, forward=Z) matches the hand-derived frame, not its mirror", 1e-9);
+// Bend a point through that hand-derived frame using only bendPointAndJacobian
+// (not bendPointAndJacobianInFrame) so the expected world point does not
+// depend on the framed helper under test either.
+const handPoint = [2, 3, 5], handCurvature = 0.4;
+const handLocal = applyMat3(transpose3(handDerivedFrame), handPoint);
+nearArray(handLocal, [5, -2, -3], 'hand-derived local coordinates for the reference frame', 1e-9);
+const handBentLocal = bendPointAndJacobian(handLocal, handCurvature).point;
+const handExpectedWorld = applyMat3(handDerivedFrame, handBentLocal);
+nearArray(handExpectedWorld, [2, 2.801706456496678, 0.6592406344486188],
+  'hand-derived expected world point (independent of bendFrame/bendPointAndJacobianInFrame)', 1e-9);
+nearArray(bendPointAndJacobianInFrame(handPoint, handDerivedFrame, handCurvature).point, handExpectedWorld,
+  'bendPointAndJacobianInFrame matches the independently hand-derived point', 1e-9);
 
 // A point exactly on the true-up axis must stay fixed under a 'yana' bend
 // (the cylinder axis never moves), even when the forward hint used to pick
