@@ -425,7 +425,7 @@ export function Egitim3D({ dosya, onKapat, say }: { dosya: File; onKapat(): void
             </select>
             <input
               type="range" min="-1" max="1" step="0.05"
-              aria-label="Bükme gücü"
+              aria-label="Deform gücü"
               value={bendStrength}
               disabled={bendBusy || plyBusy}
               onChange={(event) => void applyBend(Number(event.target.value), deformChoice)}

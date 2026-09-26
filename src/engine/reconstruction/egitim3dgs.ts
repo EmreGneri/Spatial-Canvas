@@ -348,6 +348,24 @@ export interface Egitim {
 }
 
 /**
+ * Bir izleme bayrağını (`currentDeform`, `fadeOn`) `next`e set edip `apply`i
+ * çalıştırır; `apply` reddederse bayrağı `previous`e geri alır ve hatayı
+ * yeniden fırlatır. `Egitim.deform` ve `Egitim.fade` bu deseni paylaşır —
+ * bayrak asla başarısız bir yazımdan sonra hayali bir durumda kalmaz.
+ */
+export async function applyWithFlagRollback<T>(
+  setFlag: (value: T) => void, previous: T, next: T, apply: () => Promise<void>,
+): Promise<void> {
+  setFlag(next);
+  try {
+    await apply();
+  } catch (error) {
+    setFlag(previous);
+    throw error;
+  }
+}
+
+/**
  * Videodan eğitimi başlatır. `canvas` hazırlanınca canlı görüntü oraya
  * çizilir (eğitim sürerken sahne ekranda netleşir). Söz, eğitim BAŞLAYINCA
  * döner; bitiş `olay.bitti` ile gelir.
@@ -540,20 +558,12 @@ export async function egitimBaslat(
         }
       },
       bend: (strength, direction = 'yana') => e.deform({ kind: 'bend', strength, direction }),
-      deform: async (settings) => {
-        const previous = currentDeform;
-        currentDeform = settings;
-        try {
-          return await applyBendAndFade();
-        } catch (error) {
-          currentDeform = previous;
-          throw error;
-        }
-      },
-      fade: async (enabled) => {
-        fadeOn = enabled;
-        return applyBendAndFade();
-      },
+      deform: (settings) => applyWithFlagRollback(
+        (v) => { currentDeform = v; }, currentDeform, settings, applyBendAndFade,
+      ),
+      fade: (enabled) => applyWithFlagRollback(
+        (v) => { fadeOn = v; }, fadeOn, enabled, applyBendAndFade,
+      ),
       plyBlob: () => s.exportPlyBlob(),
       kamera,
       pivot,

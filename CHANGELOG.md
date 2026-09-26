@@ -3,6 +3,22 @@
 Sözleşmeye dokunan her değişiklik buraya yazılır (`ARCHITECTURE.md` kuralı: sessiz sapma yok).
 En yeni üstte.
 
+## 2026-09-26 — Deform efektleri: son inceleme düzeltmeleri
+
+Son gözden geçirmenin üç küçük bulgusu:
+
+- `Egitim.fade`, `Egitim.deform` ile aynı deseni paylaşan `applyWithFlagRollback`
+  yardımcısına taşındı: `apply` reddederse bayrak (fade açık/kapalı ya da
+  seçili deform) önceki değerine geri alınır, önceden yalnız `deform` böyleydi.
+- `klipKareleri`'nin bitiş/iptal/hata sonrası geri yüklemesi: deform geri
+  yükleme atarsa artık fade geri yükleme yine de çalışıyor ve orijinal render
+  hatası, geri yükleme hatasının altında kaybolmuyor.
+- Kaydırıcının `aria-label`'ı "Bükme gücü" değil "Deform gücü" — artık kubbe
+  ve gürültüyü de kontrol ediyor.
+
+`scripts/verify-egitim-bend.mjs` ve `scripts/verify-klip-render.mjs` her ikisini
+de kapsayan test alır. `npm run verify` ve `npx tsc --noEmit` temiz.
+
 ## 2026-09-26 — 3DGS paylaşım klibi: offline render, renk, vinyet, MP4, 9:16
 
 "⤓ paylaşım klibi" artık gerçek zamanlı kayıt (captureStream +

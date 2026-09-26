@@ -224,6 +224,7 @@ export async function klipKareleri(
   kare: (i: number, t: number) => Promise<void>,
   signal?: AbortSignal,
 ): Promise<void> {
+  let renderError: unknown;
   try {
     await o.fade(true);
     let son = '';
@@ -239,9 +240,20 @@ export async function klipKareleri(
       await kare(i, t);
     }
     signal?.throwIfAborted();
+  } catch (error) {
+    renderError = error;
+    throw error;
   } finally {
-    await o.deform(onceki.deform);
-    await o.fade(onceki.fade);
+    // The fade restore must run even if the deform restore throws (e.g. the
+    // session closed mid-render), and a restore failure must never hide the
+    // original render error above.
+    try {
+      await o.deform(onceki.deform);
+    } catch (restoreError) {
+      if (!renderError) throw restoreError;
+    } finally {
+      await o.fade(onceki.fade);
+    }
   }
 }
 
