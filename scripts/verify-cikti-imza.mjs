@@ -22,6 +22,9 @@ const iki = imzaYerlesimi(1280, 840, 200);
 assert.equal(iki.boy, Math.round(bir.boy * 2), 'imza boyu kare yüksekliğiyle ölçeklenmiyor');
 assert.equal(bir.boy, Math.round(420 * IMZA_ORAN));
 
+// Dikey (9:16) karede imza yatay karedekiyle aynı boyda: kısa kenara oranlı.
+assert.equal(imzaYerlesimi(1080, 1920, 300).boy, imzaYerlesimi(1920, 1080, 300).boy, 'dikey karede imza büyüyor');
+
 // Çok küçük karede taban sınır devreye girer (okunabilirlik).
 assert.equal(imzaYerlesimi(120, 80, 40).boy, IMZA_MIN_BOY);
 

@@ -1,29 +1,12 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import {
-  egitimBaslat, kameraMerkezi, yorunge, type BendDirection, type DeformSettings, type Egitim, type EgitimMetrik,
+  egitimBaslat, kameraMerkezi, yorunge, type Egitim, type EgitimMetrik,
 } from '../engine/reconstruction/egitim3dgs';
-
-type DeformChoice = BendDirection | 'kubbe' | 'gurultu';
-// The dome's usable range on real scenes is 0.3-0.6 of the ±90° rim angle;
-// beyond ~0.6 the rigid continuation drops the scene off the rim.
-const KUBBE_TAM_GUC = 0.6;
-
-function deformAyari(choice: DeformChoice, strength: number): DeformSettings {
-  if (choice === 'kubbe') return { kind: 'dome', strength: strength * KUBBE_TAM_GUC };
-  if (choice === 'gurultu') return { kind: 'noise', strength };
-  return { kind: 'bend', strength, direction: choice };
-}
-
-function deformGostergesi(choice: DeformChoice, strength: number): string {
-  if (choice === 'gurultu') return `%${Math.round(strength * 100)}`;
-  return `${Math.round(strength * (choice === 'kubbe' ? KUBBE_TAM_GUC : 1) * 90)}°`;
-}
 import { bindWheelZoom, boundedZoomFactor, flyAxes, flySiniri, flyStep, lookAround } from './egitimControls';
 import { egitimGpuHint } from './egitimGpuHint';
 import { ayarOzeti, egitimOnKontrol, type OnKontrol } from './egitimOnKontrol';
-import { kunyeMetni, PAYLASIM_KLIP_SN, turAcisi } from './paylasim';
-import { imzaCiz } from './imzaCiz';
-import { exportWebM } from '../engine/export';
+import { kunyeMetni, PAYLASIM_KLIP_SN } from './paylasim';
+import { deformAyari, deformGostergesi, klipRenderEt, type DeformChoice, type KlipOrani } from './klipRender';
 import { ayarSec, type EgitimAyari } from '../engine/reconstruction/egitim3dgs';
 
 /**
@@ -56,11 +39,13 @@ export function Egitim3D({ dosya, onKapat, say }: { dosya: File; onKapat(): void
   // "uygulanıyor…" only once an update has run 400 ms (design rule), so fast
   // updates never flicker the readout.
   const [bendSlow, setBendSlow] = useState(false);
-  // Off by default in normal viewing; the offline clip renderer (Task 5) turns
-  // it on by calling `Egitim.fade` directly, not through this UI state.
+  // Off by default in normal viewing; the offline clip renderer turns it on
+  // for the clip by calling `Egitim.fade` directly, then restores this value.
   const [fadeOn, setFadeOn] = useState(false);
-  /** Z1 — paylaşım klibi kaydı sürüyor mu (kalan saniye). */
-  const [klipKalan, setKlipKalan] = useState<number | null>(null);
+  /** Z1 — paylaşım klibi render ilerlemesi (0..1); null = render yok. */
+  const [klipIlerleme, setKlipIlerleme] = useState<number | null>(null);
+  const [klipOrani, setKlipOrani] = useState<KlipOrani>('16:9');
+  const klipIptal = useRef<AbortController | null>(null);
   /** Eğitimin gerçek süresi — künyeye girer. */
   const sureRef = useRef<number | null>(null);
   const [gpu, setGpu] = useState<{ ad: string; entegre: boolean; iter: number } | null>(null);
@@ -190,60 +175,32 @@ export function Egitim3D({ dosya, onKapat, say }: { dosya: File; onKapat(): void
   }
 
   /**
-   * Z1 — PAYLAŞIM KLİBİ: sahneyi TAM BİR TUR döndürerek imzalı WebM kaydeder
-   * ve künyeyi panoya kopyalar. Tam tur, klip döngüye alındığında sıçrama
-   * görünmesin diye (sosyal mecralar kısa klipleri döngüler).
-   *
-   * Kayıt ARA CANVAS'tan alınır: eğitim tuvaline imza çizmek onun kendi
-   * çizimini bozardı; ara yüzeye her karede kopyalanıp imza üstüne konur.
+   * Z1 — PAYLAŞIM KLİBİ: seçili deform zamanla açılıp kapanırken kamera çekim
+   * yayında salınır; kareler tek tek (rAF'sız) çizilir, derecelendirilir,
+   * vinyetlenir, imzalanır ve MP4'e kodlanır (`klipRender.ts`). Başı ve sonu
+   * aynı kare: döngüde sıçramaz. Bitince / iptalde / hatada eğitilmiş durum
+   * ve kullanıcının deform + fade ayarı geri yüklenir; künye panoya kopyalanır.
    */
   async function paylasimKlibi() {
     const e = egitimRef.current;
-    const canvas = canvasRef.current;
-    if (!e || !canvas || klipKalan !== null) return;
-
-    const ara = document.createElement('canvas');
-    ara.width = canvas.width;
-    ara.height = canvas.height;
-    const ctx = ara.getContext('2d');
-    if (!ctx) return;
-
-    // KAYNAK STREAM ÜZERİNDEN OKUNUR. Doğrudan `drawImage(canvas)` ÖLÇÜLDÜ ve
-    // siyah kare verdi (klip ortalama parlaklığı 0,1; yalnız imza görünüyordu):
-    // eğitim tuvali splat.js'in kendi WebGL bağlamı, tampon onun çizim anı
-    // dışında geçersiz. `captureStream` compositing'den bağımsız çalışır;
-    // video elemanı her an okunabilir bir yüzeydir.
-    const kaynak = canvas.captureStream(60);
-    const kaynakVideo = document.createElement('video');
-    kaynakVideo.muted = true;
-    kaynakVideo.playsInline = true;
-    kaynakVideo.srcObject = kaynak;
-    await kaynakVideo.play().catch(() => undefined);
-
-    const basla = performance.now();
-    let uygulanan = 0;
-    let raf = 0;
-    const pompa = () => {
-      raf = requestAnimationFrame(pompa);
-      // Açı MUTLAK: kaydın başından beri geçen süreye bakılır, kare başına
-      // artışa değil. Kare düşse de süre dolduğunda tur tam kapanır.
-      const hedef = turAcisi((performance.now() - basla) / 1000);
-      const delta = hedef - uygulanan;
-      uygulanan = hedef;
-      if (delta > 0) e.kameraAyarla(yorunge(e.kamera, e.pivot, e.yukari, delta, 0));
-      if (kaynakVideo.readyState >= 2) ctx.drawImage(kaynakVideo, 0, 0, ara.width, ara.height);
-      imzaCiz(ctx, ara.width, ara.height);
-    };
-    pompa();
-
-    const bitisAn = performance.now() + PAYLASIM_KLIP_SN * 1000;
-    setKlipKalan(PAYLASIM_KLIP_SN);
-    const sayac = window.setInterval(() => {
-      setKlipKalan(Math.max(0, Math.ceil((bitisAn - performance.now()) / 1000)));
-    }, 250);
-
+    const ev = homeCameraRef.current;
+    if (!e || !ev || klipIlerleme !== null || bendBusy) return;
+    const iptal = new AbortController();
+    klipIptal.current = iptal;
+    setKlipIlerleme(0);
+    setBendBusy(true);
+    const t0 = performance.now();
     try {
-      await exportWebM(ara, { durationSec: PAYLASIM_KLIP_SN });
+      const sonuc = await klipRenderEt(e, ev, {
+        tur: deformChoice, kaydirici: bendStrength, fade: fadeOn, oran: klipOrani, sureSn: PAYLASIM_KLIP_SN,
+      }, setKlipIlerleme, iptal.signal);
+      const url = URL.createObjectURL(sonuc.blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${dosya.name.replace(/\.[^.]+$/, '')}-${deformChoice}-${klipOrani.replace(':', 'x')}.${sonuc.kap}`;
+      a.click();
+      window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+      const sure = Math.round((performance.now() - t0) / 1000);
       const kunye = kunyeMetni({
         surum: __APP_VERSION__,
         dosyaAdi: dosya.name,
@@ -253,23 +210,26 @@ export function Egitim3D({ dosya, onKapat, say }: { dosya: File; onKapat(): void
         sureSn: sureRef.current,
         yalnizOzne: subjectOnly,
       });
+      const ozet = `paylaşım klibi indirildi (${PAYLASIM_KLIP_SN} sn, ${klipOrani}, ${sonuc.kap.toUpperCase()}, ${sure} sn'de render)`;
       try {
         await navigator.clipboard.writeText(kunye);
-        sayRef.current(`paylaşım klibi indirildi (${PAYLASIM_KLIP_SN} sn, tam tur) · künye panoya kopyalandı`);
+        sayRef.current(`${ozet} · künye panoya kopyalandı`);
       } catch {
         // Pano izni yoksa künye kaybolmasın: log şeridinde kalır.
-        sayRef.current(`paylaşım klibi indirildi (${PAYLASIM_KLIP_SN} sn, tam tur) · künye: ${kunye}`);
+        sayRef.current(`${ozet} · künye: ${kunye}`);
       }
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      setHata(`paylaşım klibi kaydedilemedi: ${message}`);
-      sayRef.current(`paylaşım klibi HATA: ${message}`);
+      if (iptal.signal.aborted) {
+        sayRef.current('paylaşım klibi iptal edildi · sahne geri yüklendi');
+      } else {
+        const message = error instanceof Error ? error.message : String(error);
+        setHata(`paylaşım klibi kaydedilemedi: ${message}`);
+        sayRef.current(`paylaşım klibi HATA: ${message}`);
+      }
     } finally {
-      cancelAnimationFrame(raf);
-      clearInterval(sayac);
-      kaynak.getTracks().forEach((t) => t.stop());
-      kaynakVideo.srcObject = null;
-      setKlipKalan(null);
+      klipIptal.current = null;
+      setKlipIlerleme(null);
+      setBendBusy(false);
     }
   }
 
@@ -334,6 +294,7 @@ export function Egitim3D({ dosya, onKapat, say }: { dosya: File; onKapat(): void
     const e = egitimRef.current;
     if (!e || bendBusy) return;
     setBendBusy(true);
+    const slow = window.setTimeout(() => setBendSlow(true), 400);
     try {
       await e.fade(enabled);
       setFadeOn(enabled);
@@ -341,6 +302,8 @@ export function Egitim3D({ dosya, onKapat, say }: { dosya: File; onKapat(): void
     } catch (error) {
       setHata(error instanceof Error ? error.message : String(error));
     } finally {
+      clearTimeout(slow);
+      setBendSlow(false);
       setBendBusy(false);
     }
   }
@@ -483,19 +446,35 @@ export function Egitim3D({ dosya, onKapat, say }: { dosya: File; onKapat(): void
               disabled={bendBusy || plyBusy}
               onChange={(event) => void applyFade(event.target.checked)}
             />
-            arka plan saydamlaşması
+            {bendSlow ? 'uygulanıyor…' : 'arka plan saydamlaşması'}
           </label>
         )}
         {bitti && (
+          <select
+            style={secim}
+            aria-label="Klip en-boy oranı"
+            value={klipOrani}
+            disabled={klipIlerleme !== null}
+            onChange={(event) => setKlipOrani(event.target.value as KlipOrani)}
+          >
+            <option value="16:9">16:9</option>
+            <option value="9:16">9:16 (dikey)</option>
+          </select>
+        )}
+        {bitti && (klipIlerleme !== null ? (
+          <button style={dugmeBuyuk} title="klip render'ını durdur; sahne geri yüklenir" onClick={() => klipIptal.current?.abort()}>
+            {`iptal · klip %${Math.round(klipIlerleme * 100)}`}
+          </button>
+        ) : (
           <button
-            style={dugme}
-            disabled={klipKalan !== null}
-            title={`${PAYLASIM_KLIP_SN} sn'lik, tam tur dönen imzalı klip kaydeder ve künyeyi panoya kopyalar`}
+            style={dugmeBuyuk}
+            disabled={bendBusy || plyBusy}
+            title={`Seçili deform ${PAYLASIM_KLIP_SN} sn içinde açılıp kapanır, kamera salınır; renk derecelendirmeli, vinyetli, imzalı MP4 kare kare render edilir, künye panoya kopyalanır`}
             onClick={paylasimKlibi}
           >
-            {klipKalan !== null ? `● klip kaydediliyor · ${klipKalan} sn` : '⤓ paylaşım klibi'}
+            ⤓ paylaşım klibi
           </button>
-        )}
+        ))}
         {bitti && <button style={dugme} disabled={plyBusy || bendBusy} onClick={plyIndir}>{plyBusy ? 'PLY hazırlanıyor…' : '.ply indir'}</button>}
         {/* Z2 — KURTARMA YOLU: hata sonrası tek yol "kapat" idi; kullanıcı
             videoyu yeniden seçmek zorunda kalıyordu. Şimdi aynı dosyayla ön
@@ -522,6 +501,7 @@ export function Egitim3D({ dosya, onKapat, say }: { dosya: File; onKapat(): void
         <button style={dugme} onClick={onKapat}>kapat</button>
       </div>
       {!bitti && !hata && <div style={{ ...cubuk, width: `${yuzde}%` }} />}
+      {klipIlerleme !== null && <div role="progressbar" aria-label="Klip render ilerlemesi" aria-valuenow={Math.round(klipIlerleme * 100)} style={{ ...cubuk, transition: 'none', width: `${klipIlerleme * 100}%` }} />}
       {/* Z2 — SEÇİLEN GPU VE AYAR KATMANI her cihazda görünür. Eskiden yalnız
           Intel iGPU'ya özel ipucu vardı; başka bir GPU'da kullanıcı hangi
           ayarla koştuğunu hiç öğrenmiyordu. */}
@@ -563,6 +543,7 @@ const dugme: CSSProperties = {
   border: '1px solid #333', borderRadius: 3, cursor: 'pointer',
 };
 // docs/tasarim-kurallari.md: dokunma hedefleri >= 32 px (Fitts yasası).
+const dugmeBuyuk: CSSProperties = { ...dugme, minHeight: 32 };
 const secim: CSSProperties = {
   fontFamily: 'inherit', fontSize: 12, height: 32, minHeight: 32, padding: '0 6px',
   background: '#1a1a22', color: '#c8c8d4', border: '1px solid #333', borderRadius: 3, cursor: 'pointer',
