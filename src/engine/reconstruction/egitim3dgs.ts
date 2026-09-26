@@ -207,8 +207,10 @@ export type DeformSettings =
   | { kind: 'dome'; strength: number }
   | { kind: 'noise'; strength: number; seed?: number; time?: number };
 
-/** Base noise cycles per camera-region half-length. Calibration knob. */
-const NOISE_REGION_CYCLES = 1;
+/** Base noise cycles per camera-region half-length. Calibration knob: the
+ * det bound fixes amplitude·frequency, so fewer cycles = larger, slower waves.
+ * 0.7 measured on St George (1 = moderate, 0.5 = statue visibly displaced). */
+const NOISE_REGION_CYCLES = 0.7;
 
 /** Settings -> `DeformSpec`; the region always comes from cameras + pivot. */
 export function deformSpec(settings: DeformSettings, cameras: readonly Vec3[], pivot: Vec3, yukari: Vec3): DeformSpec {
@@ -219,9 +221,10 @@ export function deformSpec(settings: DeformSettings, cameras: readonly Vec3[], p
   const ilkKamera = cameras[0] ?? pivot;
   if (settings.kind === 'noise') {
     const frequency = NOISE_REGION_CYCLES / region.halfLength;
+    const seed = settings.seed ?? 0;
     return {
-      kind: 'noise', frequency, amplitude: settings.strength * noiseAmplitudeLimit(frequency),
-      seed: settings.seed ?? 0, time: settings.time ?? 0,
+      kind: 'noise', frequency, amplitude: settings.strength * noiseAmplitudeLimit(frequency, seed),
+      seed, time: settings.time ?? 0,
     };
   }
   if (settings.kind === 'dome') {

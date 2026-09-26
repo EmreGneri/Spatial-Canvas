@@ -295,28 +295,58 @@ export function domePointAndJacobianInFrame(
 
 // Noise field: NOISE_OCTAVES x NOISE_WAVES_PER_OCTAVE seeded plane waves
 // ("spectral" noise), octave o at 2^o x the base frequency with weight 2^-o,
-// normalized so |displacement| <= |amplitude|. Each wave's displacement
-// gradient is rank one with spectral norm (weight / total)·2π·f·2^o, so the
-// whole strain ||J - I||₂ <= |A|·f·NOISE_STRAIN_PER_UNIT; the amplitude is
-// clamped to keep it <= NOISE_MAX_STRAIN < 1, hence every singular value of J
-// is >= 1 - NOISE_MAX_STRAIN and det J > 0 (J = I + tD never becomes
-// singular for t in [0, 1]). Time phases advance by integer turns, so the
-// field loops with period 1 in `time`. Calibration knobs.
+// normalized so |displacement| <= |amplitude|. Time phases advance by integer
+// turns, so the field loops with period 1 in `time`. Calibration knobs.
+//
+// det J > 0 bound (per seed). n(p) = Σ_i w_i d_i sin(k_i·p + φ_i) with unit
+// d_i, k_i = 2π·f·2^o_i·u_i, so J = I + D, D = A·f·Σ_i c_i M_i with
+// M_i = w_i·2π·2^o_i·d_i u_iᵀ and c_i = cos(k_i·p + φ_i) ∈ [-1, 1].
+// 1. For any unit x: xᵀJx = 1 + xᵀ sym(D) x >= 1 + λ_min(sym D).
+// 2. λ_max(sym ·) is convex, so over the zonotope {Σ c_i M_i : c ∈ [-1,1]^n}
+//    it peaks at a vertex; the cube is symmetric, so
+//    -λ_min(sym D) <= |A|·f·μ, μ = max over s ∈ {±1}^n of λ_max(sym Σ s_i M_i).
+// 3. Clamping |A|·f·μ <= NOISE_MAX_STRAIN = 0.8 gives xᵀJx >= 0.2, hence
+//    |Jx| >= 0.2 (σ_min(J) >= 0.2), |det J| >= 0.008, and det J > 0 because
+//    xᵀ(I + tD)x >= 1 - 0.8t > 0 keeps I + tD invertible for t ∈ [0, 1].
+// μ replaces the triangle-inequality sum Σ‖M_i‖ (10.77, the previous bound)
+// and is ~2.3-2.8x smaller for these wave tables, so the same guarantee allows that much more
+// amplitude. The bound holds for all p and t, so `time` never needs a re-check.
 const NOISE_OCTAVES = 3;
 const NOISE_WAVES_PER_OCTAVE = 4;
 const NOISE_MAX_STRAIN = 0.8;
-let noiseWeightSum = 0, noiseStrainSum = 0;
-for (let octave = 0; octave < NOISE_OCTAVES; octave++) {
-  noiseWeightSum += NOISE_WAVES_PER_OCTAVE * 2 ** -octave;
-  noiseStrainSum += NOISE_WAVES_PER_OCTAVE * 2 ** -octave * 2 * Math.PI * 2 ** octave;
+let noiseWeightSum = 0;
+for (let octave = 0; octave < NOISE_OCTAVES; octave++) noiseWeightSum += NOISE_WAVES_PER_OCTAVE * 2 ** -octave;
+
+const strainBounds = new Map<number, number>();
+
+/** μ(seed) from the comment above: exact vertex enumeration (2^12 sign
+ * vectors, ~6 ms once per seed, cached), padded by 1e-9 relative for eigenvalue round-off. */
+function noiseStrainBound(seed: number): number {
+  const cached = strainBounds.get(seed);
+  if (cached !== undefined) return cached;
+  const terms = noiseWaves(seed).map((w) => {
+    const s = w.weight * 2 * Math.PI * 2 ** w.octave, d = w.displacement, u = w.direction;
+    // Upper triangle of sym(d uᵀ)·s: xx, yy, zz, xy, xz, yz.
+    return [d[0] * u[0], d[1] * u[1], d[2] * u[2], (d[0] * u[1] + d[1] * u[0]) / 2,
+      (d[0] * u[2] + d[2] * u[0]) / 2, (d[1] * u[2] + d[2] * u[1]) / 2].map((v) => v * s);
+  });
+  let mu = 0;
+  for (let mask = 0; mask < 1 << terms.length; mask++) {
+    const m = [0, 0, 0, 0, 0, 0];
+    terms.forEach((t, i) => { const sign = (mask >> i) & 1 ? -1 : 1; for (let j = 0; j < 6; j++) m[j] += sign * t[j]; });
+    const { values } = symmetricEigen([m[0], m[3], m[4], m[3], m[1], m[5], m[4], m[5], m[2]]);
+    mu = Math.max(mu, ...values);
+  }
+  mu *= 1 + 1e-9;
+  strainBounds.set(seed, mu);
+  return mu;
 }
-const NOISE_STRAIN_PER_UNIT = noiseStrainSum / noiseWeightSum;
 
 /** Largest |amplitude| (scene units) at `frequency` (base cycles per scene
- * unit) that keeps the noise Jacobian invertible with det J > 0. */
-export function noiseAmplitudeLimit(frequency: number): number {
+ * unit) for `seed` that keeps σ_min(J) >= 0.2 and det J > 0 (proof above). */
+export function noiseAmplitudeLimit(frequency: number, seed = 0): number {
   if (!(frequency > 0) || !Number.isFinite(frequency)) throw new RangeError('Noise frequency must be positive and finite');
-  return NOISE_MAX_STRAIN / (frequency * NOISE_STRAIN_PER_UNIT);
+  return NOISE_MAX_STRAIN / (frequency * noiseStrainBound(seed));
 }
 
 interface NoiseWave { direction: Vec3; displacement: Vec3; weight: number; octave: number; phase: number; turns: number }
@@ -348,10 +378,10 @@ function noiseWaves(seed: number): NoiseWave[] {
 }
 
 /**
- * Smooth, bounded 3D noise displacement p + A·n(p) with a central
- * finite-difference Jacobian. `amplitude` is clamped to
- * `noiseAmplitudeLimit(frequency)` (sign kept), so det J > 0 for any input;
- * `time` shifts every wave's phase by whole turns per unit (period 1).
+ * Smooth, bounded 3D noise displacement p + A·n(p) with its exact (analytic)
+ * Jacobian. `amplitude` is clamped to `noiseAmplitudeLimit(frequency, seed)`
+ * (sign kept), so σ_min(J) >= 0.2 and det J > 0 for any finite scene-scale
+ * input; `time` shifts every wave's phase by whole turns per unit (period 1).
  */
 export function noisePointAndJacobian(
   point: ArrayLike<number>, amplitude: number, frequency: number, seed = 0, time = 0,
@@ -360,39 +390,37 @@ export function noisePointAndJacobian(
 }
 
 function noiseMap(spec: Extract<DeformSpec, { kind: 'noise' }>): PointMap {
-  const limit = noiseAmplitudeLimit(spec.frequency);
+  const seed = spec.seed ?? 0;
+  const limit = noiseAmplitudeLimit(spec.frequency, seed);
   const amplitude = Math.sign(spec.amplitude) * Math.min(Math.abs(spec.amplitude), limit);
   const time = spec.time ?? 0;
-  const waves = noiseWaves(spec.seed ?? 0).map((w) => ({
-    k: w.direction.map((d) => 2 * Math.PI * spec.frequency * 2 ** w.octave * d) as Vec3,
-    v: w.displacement.map((d) => amplitude * w.weight * d) as Vec3,
+  // Flat table per wave: k (3), v = A·w·d (3), phase.
+  const table = new Float64Array(noiseWaves(seed).flatMap((w) => [
+    ...w.direction.map((d) => 2 * Math.PI * spec.frequency * 2 ** w.octave * d),
+    ...w.displacement.map((d) => amplitude * w.weight * d),
     // Whole turns per unit time, reduced mod 1 so large `time` keeps precision.
-    phase: w.phase + 2 * Math.PI * ((w.turns * time) % 1),
-  }));
-  const displaced = (x: number, y: number, z: number): Vec3 => {
-    let dx = x, dy = y, dz = z;
-    for (const w of waves) {
-      const s = Math.sin(w.k[0] * x + w.k[1] * y + w.k[2] * z + w.phase);
-      dx += w.v[0] * s; dy += w.v[1] * s; dz += w.v[2] * s;
-    }
-    return [dx, dy, dz];
-  };
-  // Central differences shrink each wave's slope by sinc(|k|h) <= 1, so the
-  // FD Jacobian obeys the same strain bound as the exact one.
-  const h = 1e-4 / (spec.frequency * 2 ** (NOISE_OCTAVES - 1));
+    w.phase + 2 * Math.PI * ((w.turns * time) % 1),
+  ]));
   return (p) => {
     if (p.length !== 3 || !Number.isFinite(p[0]) || !Number.isFinite(p[1]) || !Number.isFinite(p[2])) {
       throw new RangeError('Expected a finite point');
     }
     const x = p[0], y = p[1], z = p[2];
     if (amplitude === 0) return { point: [x, y, z], jacobian: IDENTITY.slice() };
-    const jacobian = new Array<number>(9);
-    for (let col = 0; col < 3; col++) {
-      const plus = displaced(x + (col === 0 ? h : 0), y + (col === 1 ? h : 0), z + (col === 2 ? h : 0));
-      const minus = displaced(x - (col === 0 ? h : 0), y - (col === 1 ? h : 0), z - (col === 2 ? h : 0));
-      for (let row = 0; row < 3; row++) jacobian[3 * row + col] = (plus[row] - minus[row]) / (2 * h);
+    let px = x, py = y, pz = z;
+    let j0 = 1, j1 = 0, j2 = 0, j3 = 0, j4 = 1, j5 = 0, j6 = 0, j7 = 0, j8 = 1;
+    // J = I + Σ v kᵀ cos(k·p + φ).
+    for (let i = 0; i < table.length; i += 7) {
+      const kx = table[i], ky = table[i + 1], kz = table[i + 2], vx = table[i + 3], vy = table[i + 4], vz = table[i + 5];
+      const angle = kx * x + ky * y + kz * z + table[i + 6];
+      const s = Math.sin(angle), c = Math.cos(angle);
+      px += vx * s; py += vy * s; pz += vz * s;
+      const cx = vx * c, cy = vy * c, cz = vz * c;
+      j0 += cx * kx; j1 += cx * ky; j2 += cx * kz;
+      j3 += cy * kx; j4 += cy * ky; j5 += cy * kz;
+      j6 += cz * kx; j7 += cz * ky; j8 += cz * kz;
     }
-    return { point: displaced(x, y, z), jacobian };
+    return { point: [px, py, pz], jacobian: [j0, j1, j2, j3, j4, j5, j6, j7, j8] };
   };
 }
 
@@ -412,7 +440,7 @@ export function isIdentityDeform(spec: DeformSpec): boolean {
     if (!Number.isFinite(spec.amplitude) || !Number.isFinite(spec.time ?? 0) || !Number.isInteger(spec.seed ?? 0)) {
       throw new RangeError('Noise amplitude and time must be finite, seed an integer');
     }
-    noiseAmplitudeLimit(spec.frequency);
+    noiseAmplitudeLimit(spec.frequency, spec.seed);
     return spec.amplitude === 0;
   }
   if (!Number.isFinite(spec.curvature)) throw new RangeError('Deform curvature must be finite');
