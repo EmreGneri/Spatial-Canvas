@@ -1107,6 +1107,13 @@ ayrıca bir sözleşme değişikliği gerekmez.
   `exportPlyBlob` standart 3DGS `.ply` dosyası üretir. Ana araç çubuğundaki
   `PLY` düğmesi D.1 surfel sahnesinindir; eğitim görünümündeki `.ply indir`
   düğmesi eğitilmiş sahnenindir.
+- **Serbest gezinme sınırı (2026-09-26):** WASD kamerası nokta bulutu
+  yarıçapıyla değil, eğitim kameralarının hacmiyle sınırlanır:
+  `Egitim.kameralar` (çekim sırasıyla kamera merkezleri) ve `pivot`'tan
+  kurulan (cam_i, cam_i+1, pivot) üçgen yelpazesi + `FLY_PAY` × medyan
+  kamera–pivot uzaklığı pay (`egitimControls.flySiniri`). Kamera sınıra
+  dayanınca yüzey boyunca kayar. Yörünge modunun yakınlaştırma sınırı
+  değişmedi.
 - GPU profili uygulamada NVIDIA için `standard`/40 kare/10.000 iterasyon,
   diğer adaptörlerde `quick`/24 kare/3.000 iterasyondur. Bu yalnız ölçülmüş
   Intel ve RTX davranışına dayalı temkinli seçimdir; diğer cihazlarda kalite
