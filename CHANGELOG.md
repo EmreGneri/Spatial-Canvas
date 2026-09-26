@@ -133,14 +133,100 @@ ona sıfıra kadar küçülme izni veriyordu, mod seçici **47 px'lik bir sütun
 çıkarıyordu (ölçüldü). `flex: '1 1 auto'` ile blok kendi içeriğinden dar olmaz,
 sığmazsa şeridin `flexWrap`'i devreye girer: şerit **148 px**, üç temiz satır.
 
-**Doğrulama:** `npm run verify` 70 → **75** (yeni: `verify-hata-siniri`,
-`verify-splat-temizleme`, `verify-egitim-ilerleme`, `verify-ar-onizleme`,
-`verify-mod-kalite`), hepsi geçiyor. `npm run typecheck` temiz.
+**Doğrulama:** `npm run verify` 70 → **77**, hepsi geçiyor (bu turdan beş
+yeni script: `verify-hata-siniri`, `verify-splat-temizleme`,
+`verify-egitim-ilerleme`, `verify-ar-onizleme`, `verify-mod-kalite`; ikisi
+aynı merge'de Emre'den geldi: `verify-subject-crop`, `verify-egitim-densify`).
+`npm run typecheck` temiz.
 
 **Açık kalan:** eğitim grafiği gerçek bir eğitim koşusunda görülmedi (verify
 seri/kadraj matematiğini kanıtlıyor, kablo denetimi geri çağrıyı kanıtlıyor);
 AR oturumu gerçek cihazda denenmedi (masaüstünde WebXR yok — durum mantığı ve
 bypass sözleşmesi verify'da).
+## 2026-09-26 — 3DGS serbest gezinme: eğitim kameralarının hacmiyle sınırlı
+
+WASD kamerası `1.5 × nokta bulutunun %90 yarıçapı` küresiyle sınırlıydı. Asıl
+kalite uçurumu ise eğitim KAMERALARININ hacmi: dışında fotoğraf kanıtı yok,
+sahne sise ve floater gürültüsüne dönüyor. Ölçüm (RTX, standard/40 kare/10k):
+
+- Deniz feneri yörüngesi (75° yay, kamera–pivot 2.0–2.6): eski sınır 3.93.
+  Yayın 60° ötesi (pivottan 1.96, eski sınırın içinde) tanınmaz gürültü;
+  yayın 25° ötesi bozuk ama okunur; kameralarla özne arası yakın çekim net.
+- St. George (100° yay, kamera–pivot 1.1): eski sınır **29.1** (arka plan
+  noktaları %90 yarıçapı 19'a şişirir), hız 7.3 birim/sn. Kameraların 3 katı
+  uzakta görüntü dağılmış floater yığını.
+
+Yeni sınır (`egitimControls.flySiniri`): çekim sırasıyla (cam_i, cam_i+1,
+pivot) üçgen yelpazesi + `FLY_PAY` (0.35) × medyan kamera–pivot uzaklığı pay;
+pay pivota doğru %10'a incelir (pivot öznenin üstünde, tam pay Q/E ile öznenin
+içine batırıyordu). Kamera sınırda yüzey boyunca kayar; yörüngeden dışarıda
+girilirse içeri serbest, dışarı kapalı (sıçrama yok). Hız ve tekerlek adımı
+artık medyan kamera uzaklığına göre (0.5/sn, St. George'da 7.3 → 0.56).
+`Egitim.yaricap` ve `sahneYaricapi` kaldırıldı, yerine `Egitim.kameralar`.
+Gerçek arayüzde (tutulan WASDQE tuşları) iki sahnede sınıra kadar uçuldu:
+geri/yan/yukarı sınırlarda sahne okunur kalıyor; St. George'da sınırın 1.5
+birim ilerisi zaten çizgili (sınır gereksiz dar değil). Bilinen: kamera
+yüksekliğinin altına pay kadar inilince alt yarı karanlık.
+
+**Floater temizliği (dışa aktarım) YAPILMADI** — bkz.
+`.superpowers/floater-flybound-report.md`: denenen üç süzgeç de ya bilinen iyi
+çıktıyı bozdu (iri ölçek → deniz yüzeyi silindi; <2 kamera → ilk karenin
+kenarında gerçek içerik oyuldu) ya da görünür floater'ı hiç azaltmadı
+(0 kamera → gürültü kadraj İÇİNDE; yalnız kenar dolgusu siyaha döndü).
+
+## 2026-09-26 — 3D eğit: yoğunlaştırma kısa bütçelerde de çalışır
+
+**Kök neden.** splat.js refine'ı (ölü splat taşıma + Gaussian büyütme)
+`iter > 1500` ve son refine'dan `refineEvery` sonra tetikler; varsayılan
+2500, 60k iterasyonluk ufka göre seçilmiş. Varsayılan eğitici yalnız
+`iter < 0.75 × maxIters` iken büyür ve taşır. `quick` (3k) ilk refine'ı
+~2518'de görüyordu, pencere 2250'de kapanmıştı: **hiç büyüme, hiç taşıma**.
+`standard` (10k) yalnız iki kez büyüyordu (2518, 5023).
+
+**Düzeltme.** `egitimOturumAyari()` `createSession`'a
+`refineEvery = max(300, round(maxIters / 8))` geçer (quick 375, standard
+1250). Vendored dosyaya dokunulmadı. `growUntil` geçilmedi, varsayılanı zaten doğru.
+
+**Ölçüm** (RTX 5070, `yay-100derece-stgeorge.mp4`, gerçek `egitimBaslat()`):
+
+| katman | Gaussian önce → sonra | holdout PSNR önce → sonra |
+|---|---|---|
+| quick 3k (2+2 koşu) | 58 950 → 77 962 | 27.28 / 27.41 → 27.79 / 28.13 |
+| standard 10k | 135 076 → 205 435 | 30.84 → 31.66 |
+
+Koşu gürültüsü ~0.13 dB. Intel iGPU'da süre etkisi ölçülmedi (bkz.
+`src/vendor/splat.js/VENDORED.md`). Kontrol: `scripts/verify-egitim-densify.mjs`
+(refine takvimini vendored kapılarla simüle eder; vendored kapı değişirse düşer).
+
+## 2026-09-26 — nesne ayırma: örnekleme grid'i özneye kırpılır
+
+Grid bütçesi (384×384, 147.456 parçacık, sabit) nesne ayırma AÇIKKEN bile tüm
+fotoğraf karesini kaplıyordu; çizilmeyen (shader/`splatOpacityGate` ile atılan)
+arka plan aynı bütçeyi paylaşıyordu. Özne kare alanının küçük bir kısmıysa
+bütçenin çoğu boşa gidiyordu (ölçüm: gerçek büst fotoğrafında maske %17.9 —
+`verify-curtain.mjs`).
+
+`src/engine/reconstruction/crop.ts` (`applySeparationCrop`) maskenin piksel
+bbox'ını (+ %12 pay) hesaplar ve depth/maske/rgb'yi ÖRNEKLEMEDEN ÖNCE bu
+bbox'a kırpar. Bu, `buildImportanceRemap`'in (14cfdfa/1fd9b87) YAPTIĞI
+şeyden kasıtlı olarak FARKLI bir mekanizma: koordinatı bükmez, girdiyi
+küçültür — grid yine 1:1 düzenli kalır, aynı basıklık/esneme hatasını
+(stretch regresyonu) tekrar açmaz. `verify-photo-geometry.mjs` değişmeden
+0 renk kayması ile geçiyor.
+
+`Engine.setDepth` (fotoğraf dalı, `!videoTexture`) ve nesne ayırma toggle'ı
+(`setObjectSeparation`, güncel depth+maskeyle yeniden örnekler) aynı kırpmayı
+paylaşır: konum, renk/AO ve 'solid' kabuk mesh'i hep aynı bbox'ı görür. Kare
+olmayan fotoğraflarda kısa eksendeki sıkışma da düzelir — dünya en/boy oranı
+artık kırpılmış bölgenin oranından gelir, tam kareninkinden değil. Video/
+kamerada dokunulmaz (bileşen analizini ~10 fps'te tekrarlamamak için).
+
+Ölçüm (`verify-subject-crop.mjs`, sentetik büst ~%19 kare alanı): tam kare
+grid'de özne yoğunluğu %15.0, kırpılmışta %55.5 (×3.7). Gerçek fotoğrafla
+(`assets/thumbnail.jpg`, dev sunucu + tarayıcı) nesne ayırma AÇIK/KAPALI
+karşılaştırması: yüz/gövde yüzeyi belirgin şekilde daha yoğun/pürüzsüz,
+siluet kenarında bozulma yok; Solid ve Splat modları da aynı kırpmayı
+kullandığı için tutarlı kaldı.
 
 ## 2026-09-25 — Z1-Z3 (Zeynep): çıktı akışı, yetenek/ön kontrol, mobil düzen
 

@@ -128,10 +128,25 @@ export interface EgitimOlaylari {
   hata(e: Error): void;
 }
 
-/** A short quick run ends before the first refinement can grow its seed.
- * Four more thousand iterations put the next refinement inside the extended
- * growth window (measured first refinement: ~2529; cadence: 2500). Quality
- * improvement is experimental until a held-out run is measured. */
+/** splat.js yoğunlaştırması (refine = ölü splat taşıma + büyüme) yalnız
+ * `iter > 1500` ve son refine'dan `refineEvery` (varsayılan 2500) sonra
+ * tetiklenir; varsayılan eğitici `iter < 0.75 × maxIters` iken büyür. 60k
+ * ufka göre seçilmiş 2500 aralığı kısa bütçelerde pencereyi kaçırıyordu:
+ * quick (3k) ilk refine'ı ~2518'de, pencere 2250'de kapanmış — hiç büyüme,
+ * hiç taşıma yok; standard (10k) yalnız 2 büyüme. Aralık bütçeyle ölçeklenir
+ * (quick 375, standard 1250); ölçüm: src/vendor/splat.js/VENDORED.md. */
+export function egitimOturumAyari(ayar: EgitimAyari) {
+  return {
+    maxIters: ayar.maxIters,
+    holdout: 'auto' as const,
+    refineEvery: Math.max(300, Math.round(ayar.maxIters / 8)),
+  };
+}
+
+/** Continuation of a finished quick run: the extended horizon reopens the
+ * growth window (0.75 x new maxIters), so refinements every `refineEvery`
+ * grow the model again. Measured on RTX, one clip: 3k -> 7k took 78k -> 180k
+ * splats and held-out 28.1 -> 29.3 dB; iGPU time cost not yet measured. */
 export const IGPU_CONTINUE_ITERS = 4000;
 
 export function egitimDevamEt(
@@ -159,8 +174,8 @@ export interface Egitim {
   kamera: GsKamera;
   /** Yörünge merkezi: kameraların baktığı ortak nokta (bkz. `bakisMerkezi`). */
   pivot: Vec3;
-  /** Point-cloud extent around `pivot`; bounds free-fly navigation. */
-  yaricap: number;
+  /** Training camera centres in capture order; free-fly stays near their volume. */
+  kameralar: Vec3[];
   /** Kameraların baskın yukarı ekseni (dünya). */
   yukari: Vec3;
   kameraAyarla(k: GsKamera): void;
@@ -212,11 +227,7 @@ export async function egitimBaslat(
   const cekimNot = cekimOzeti(ex);
   if (cekimNot) olay.asama(cekimNot);
 
-  const s = sj.createSession({
-    maxIters: secilen.maxIters,
-    holdout: 'auto',
-    sfm: sj.solveTierOpts(secilen.tier),
-  });
+  const s = sj.createSession({ ...egitimOturumAyari(secilen), sfm: sj.solveTierOpts(secilen.tier) });
   let closed = false;
   let complete = false;
   let trainWatch: ReturnType<typeof setInterval> | null = null;
@@ -342,7 +353,7 @@ export async function egitimBaslat(
       plyBlob: () => s.exportPlyBlob(),
       kamera,
       pivot,
-      yaricap: sahneYaricapi(noktalar, pivot),
+      kameralar: [...s.recon.cams].sort((a: { imgIdx: number }, b: { imgIdx: number }) => a.imgIdx - b.imgIdx).map(kameraMerkezi),
       yukari: s._camerasUp(),
       kameraAyarla: (k) => { e.kamera = k; s.view.setCamera(k); },
     };
@@ -372,14 +383,6 @@ export function medyanNokta(pts: Vec3[]): Vec3 {
     return v[v.length >> 1];
   };
   return [med(0), med(1), med(2)];
-}
-
-/** 90th-percentile point distance: SfM leaves a few far outliers (sky, stray
- *  matches) that would otherwise let free-fly wander into empty space. */
-export function sahneYaricapi(pts: Vec3[], merkez: Vec3): number {
-  if (pts.length === 0) return 0;
-  const d = pts.map((p) => Math.hypot(p[0] - merkez[0], p[1] - merkez[1], p[2] - merkez[2])).sort((a, b) => a - b);
-  return d[Math.min(d.length - 1, Math.floor(d.length * 0.9))];
 }
 
 /**
