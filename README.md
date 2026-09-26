@@ -64,6 +64,16 @@ kümesine aittir; yüklediğiniz videonun canlı kalite puanı değildir.
 > veya imza satırı girmez. Kural detayı ve neden: [CHANGELOG.md "KURAL" bölümü](CHANGELOG.md).
 > Commit mesajı yalnızca ne + neden; yazar alanı yalnızca insan (Emre / Zeynep).
 
+- **Z (splat temizleme + mod kalitesi + AR + hata sınırı + eğitim grafiği):**
+  sahne üstünde fırça/lasso/küre ile floater temizleme (silme = opaklık 0, geri
+  alınabilir; eşik motorun çizim kapısından okunur), altı render moduna ÖLÇÜLMÜŞ
+  post-FX profili (`shaders/modKalite.ts` — konu kapsamı altı modda da arttı,
+  kırpma %0), `navigator.xr` ile AR/VR hızlı önizleme (cihaza özel sebep ve yol;
+  XR'da post-FX bypass, onboarding'de yazılı), beyaz ekran yerine sınıflandırılmış
+  hata sınırı + kurtarma, eğitim sırasında PSNR/Gaussian çizgi grafiği. Yol
+  boyunca iki hata düzeltildi: grain pass'inde lineer uzayda negatife düşen
+  kontrast ve transport şeridini 432 px'e çıkaran flex çökmesi. Detay:
+  [CHANGELOG.md](CHANGELOG.md).
 - **Gün B (solid modu + mesh doğrulaması):** dördüncü render modu `solid` — depth grid'i kapalı z-kabuk mesh'e döner (fotoğraf-only), nokta bulutu yerine geometri çizilir; `Engine.setShellGeometry` + `buildShellMesh` (`reconstruction/mesh.ts`), su geçirmezlik yönlü kenar dengesiyle doğrulanır (`scripts/verify-mesh.mjs`, `npm run verify` zincirinde). Detay: [CHANGELOG.md](CHANGELOG.md).
 - **Gün A (görüntü kalitesi):** ACES tonemapping + exposure (sağ panel "Look"), bloom (feedback düğümüyle birlikte kapanır), FXAA (parametresiz, zincirin başında), üç modda da sis (uFogDensity/uFogColor — global look köprüsünden). Output graf düğümü global look kollarını taşır (eski preset'ler uyumlu). Detay: [CHANGELOG.md](CHANGELOG.md).
 - **Gün 8 (mod takası tek kapıya):** ModeSelector, ControlPanel ve graf editörünün renderer düğümü aynı `changeMode` kapısına düşer; takas artık graf renderer düğümünün `params.mode`'unu da günceller (`Engine.selectRenderMode`) — üç kol da birbirinin değişikliğini görür, editörde neon da var. Detay: [CHANGELOG.md](CHANGELOG.md).

@@ -340,6 +340,23 @@ export class SplatObject {
     this.resort.pos[2] = 0;
   }
 
+  /**
+   * Z — SPLAT TEMİZLEME: opaklık kanalı DIŞARIDAN (gSplatA'nın CPU tarafında)
+   * değiştirildi; sıralama kopyasını tazele ve sırayı zorla.
+   *
+   * `syncFromTextures` KULLANILMAZ: o, keyframe kimliğini almadığında null'a
+   * çeker ve D.4 timeline filtresini sessizce düşürür. Temizleme timeline'ı
+   * bozmamalı — burada yalnız w kanalı ve sıra tazelenir, konum/kimlik durur.
+   */
+  refreshOpacity() {
+    const A = this.textures.a.image.data as Float32Array;
+    for (let i = 0; i < this.splatCount; i++) {
+      this.xyzw[i * 4 + 3] = A[i * 4 + 3];
+    }
+    this.textures.a.needsUpdate = true;
+    this.forceResort();
+  }
+
   /** D.4 timeline: yalnızca bu keyframe'in splat'ları çizilir (null = hepsi). */
   setKeyframeFilter(id: number | null) {
     if (this.keyframeFilter === id) return;

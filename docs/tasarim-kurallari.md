@@ -1,6 +1,6 @@
 # Tasarım kuralları
 
-Güncellendi: 2026-09-26 · Sahiplik: Zeynep (render katmanı: `src/ui/`, `src/shaders/`)
+Güncellendi: 2026-09-26 (2. tur) · Sahiplik: Zeynep (render katmanı: `src/ui/`, `src/shaders/`)
 
 Bu dosya arayüz kararlarının **tek referansı**. Yeni bir panel, düğme ya da akış
 eklerken önce buraya bakılır; buradaki bir kuralı bozmak gerekiyorsa gerekçesi
@@ -105,6 +105,28 @@ Bitişe yaklaştıkça motivasyon artar.
 yükseklikleri ve `borderRadius` değerleri; gösterge için `busy` durumunda
 ekranda metin aranması.
 
+## Son denetim — 2. tur (2026-09-26, Z görevleri)
+
+| kural | bulgu | sonuç |
+|---|---|---|
+| Jakob | mod seçici bloğu `minWidth: 0` ile sıfıra kadar küçülüyordu: altı mod 47 px'lik bir sütuna çöküp şeridi **432 px** yapıyordu | `flex: '1 1 auto'` → şerit **148 px**, üç temiz satır (araçlar / modlar / çıktı) |
+| Fitts | temizleme aracı ve hata sınırı yeni kontrol getirdi | temizleme düğmeleri 32 px, kurtarma düğmeleri 36 px — verify'da denetleniyor |
+| Zeigarnik | silme geri dönüşü olmayan bir iş gibi duruyordu | şeritte `kalan / toplam` sayacı + `geri al (N)` adım sayısı |
+| Doherty | eğitim uzun sürüyor ama yalnız yüzde vardı (geçen ZAMAN, kalite değil) | transport şeridinin altında PSNR eğrisi + Gaussian sayısı + dB/1k eğimi |
+| Hedef-gradyanı | grafiğin X ekseni son iterasyona kadar gitseydi bitişe ne kaldığı görünmezdi | X ekseni 0..BÜTÇE; ilerleme grafiğin zemini olarak da çizilir |
+| Benzerlik | AR düğmesi cihaz desteklemiyorsa gizlenecekti | gizlenmez: kapalı ve sebepli durur — gizli düğme "uygulamada AR yok" diye okunur, oysa sorun cihazda |
+| Estetik | seçim vurgusu için parlama (glow) denendi | dolgu opaklığı yeterli ayrımı veriyor; "tek ışık kaynağı" kuralı korundu |
+
+**Araç modu kuralı (yeni).** Sahnenin üstüne olay yakalayan bir katman koyan
+her araç, kamerayı kilitlemeyen bir **`gez`** moduyla gelir ve o mod
+VARSAYILANDIR. Ölçüldü: temizleme katmanı olayları yakalarken sahne
+döndürülemiyor, oysa floater'ı bulmanın yolu döndürmek. Seçim modlar arasında
+KORUNUR — seç → gez → doğrula → sil akışı bozulmaz.
+
+**Kapalı düğme kuralı (yeni).** Bir yetenek cihazda yoksa düğme GİZLENMEZ;
+kapalı kalır ve sebebi söylenir. Gizli düğme kullanıcıya "bu uygulamada bu
+özellik yok" der; oysa doğru bilgi "bu CİHAZDA yok" ve çoğu zaman bir yol var.
+
 ## Denetim listesi (yeni arayüz işinden önce)
 
 1. Yeni kontrol ≥ 32 px mi, etiketi var mı? (Fitts)
@@ -114,3 +136,6 @@ ekranda metin aranması.
 5. 400 ms'den uzun sürebilir mi — sürüyorsa göstergesi var mı? (Doherty)
 6. İş yarıda kalırsa kullanıcı nerede kaldığını görüyor mu? (Zeigarnik)
 7. Yeni renk/yarıçap/boşluk değeri icat ettim mi? (`tema.ts` dışına çıkma)
+8. Sahnenin üstüne olay yakalayan katman koyuyorsam `gez` modu var mı ve
+   varsayılan mı? (Araç modu kuralı)
+9. Cihazda olmayan bir yetenek için düğmeyi gizliyor muyum? (Kapalı düğme kuralı)
