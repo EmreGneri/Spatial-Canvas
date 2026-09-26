@@ -34,7 +34,8 @@ export function Egitim3D({ dosya, onKapat, say }: { dosya: File; onKapat(): void
   const [hata, setHata] = useState<string | null>(null);
   const [plyBusy, setPlyBusy] = useState(false);
   const [bendStrength, setBendStrength] = useState(0);
-  const [bendDirection, setBendDirection] = useState<BendDirection>('yana');
+  // One select picks the deform: a bend axis or the dome (tiny planet).
+  const [bendDirection, setBendDirection] = useState<BendDirection | 'kubbe'>('yana');
   const [bendBusy, setBendBusy] = useState(false);
   // Off by default in normal viewing; the offline clip renderer (Task 5) turns
   // it on by calling `Egitim.fade` directly, not through this UI state.
@@ -291,12 +292,12 @@ export function Egitim3D({ dosya, onKapat, say }: { dosya: File; onKapat(): void
     }
   }
 
-  async function applyBend(strength: number, direction: BendDirection) {
+  async function applyBend(strength: number, direction: BendDirection | 'kubbe') {
     const e = egitimRef.current;
     if (!e || bendBusy) return;
     setBendBusy(true);
     try {
-      await e.bend(strength, direction);
+      await e.deform(direction === 'kubbe' ? { kind: 'dome', strength } : { kind: 'bend', strength, direction });
       setBendStrength(strength);
       setBendDirection(direction);
       setHata(null);
@@ -424,16 +425,17 @@ export function Egitim3D({ dosya, onKapat, say }: { dosya: File; onKapat(): void
         )}
         {bitti && (
           <label style={{ display: 'flex', alignItems: 'center', gap: 4 }} title="Eğitim tamamlandıktan sonra uygulanır; sıfır eğitilmiş geometriyi tam olarak geri yükler">
-            Bükme (deneysel)
+            Bükme / kubbe (deneysel)
             <select
               style={secim}
-              aria-label="Bükme ekseni"
+              aria-label="Bükme ekseni veya kubbe"
               value={bendDirection}
               disabled={bendBusy || plyBusy}
-              onChange={(event) => void applyBend(bendStrength, event.target.value as BendDirection)}
+              onChange={(event) => void applyBend(bendStrength, event.target.value as BendDirection | 'kubbe')}
             >
               <option value="yana">yana</option>
               <option value="yukari">yukarı/aşağı</option>
+              <option value="kubbe">kubbe (küçük gezegen)</option>
             </select>
             <input
               type="range" min="-1" max="1" step="0.05"

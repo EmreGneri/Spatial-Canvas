@@ -3,6 +3,32 @@
 Sözleşmeye dokunan her değişiklik buraya yazılır (`ARCHITECTURE.md` kuralı: sessiz sapma yok).
 En yeni üstte.
 
+## 2026-09-26 — 3DGS kubbe (küçük gezegen) deformu
+
+`gaussianDeform.ts`'e `domePointAndJacobian` (+ `...InFrame`) eklendi:
+pivottan geçen, normali `yukari` olan zemin düzlemi 1/k yarıçaplı bir
+küreye sarılır — yatay uzaklık kutup açısı, yükseklik yarıçap olur; dikeyler
+(ağaçlar) küre normali boyunca dışa açılır, pivot ve üstündeki eksen yerinde
+kalır. Negatif güç çanak. Bükmedeki gibi yalnız bölge içi (`bendRegion`,
+kameralar + pivot) sarılır, dışı kenar teğetinde katı devam eder; derin
+yükseklikler `softRadial` ile yumuşatılır. Kutup (ρ = 0) seri açılımla,
+karşı kutup kenar açısı π/2'ye kırpılarak korunur. Jakobyen analitik;
+kovaryans yine tek `J·C·Jᵀ` yolundan.
+
+Deform seçimi artık ayrımlı birleşim: `DeformSpec` (`bend` | `dome`),
+`Egitim.deform(DeformSettings)`; `bend(s, d)` bunun kısayolu, solma hâlâ
+üstüne aynı tek yazmada biniyor. `deformGaussianBuffer` ve denetleyicinin
+`apply`'ı eski sayı imzasını da kabul ediyor. `Egitim3D.tsx`'te eksen
+seçicisine "kubbe (küçük gezegen)" seçeneği eklendi; güç = kenar açısı
+(±90°).
+
+Gerçek sahne (St George, 205k splat): yukarıdan bakışta 0,3–0,6 güçte
+binalar heykelin altında tutarlı bir küçük gezegene sarılıyor; eğitim
+kamerası (pivot yüksekliği) görünümünde uzak arka plan ufkun altına
+düşüyor; 1,0'da kenar dışı katı devam arka planı dik aşağı gönderiyor.
+Sıfıra dönünce PNG bayt bayt aynı
+(`.superpowers/sdd/2026-09-26-deform-effects/shots/t3-*.png`).
+
 ## 2026-09-26 — 3DGS uzak arka plan solması
 
 Bükme ile aynı özne bölgesi (`bendRegion`, kameraların pivota medyan

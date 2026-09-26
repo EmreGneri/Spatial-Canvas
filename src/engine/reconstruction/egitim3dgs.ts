@@ -13,7 +13,9 @@
 
 import { segmentForeground } from './segmentation.ts';
 import { prepareSubjectFrames } from './subjectTrainingMasks.ts';
-import { bendFrame, deformGaussianBuffer, fadeGaussianOpacity, type BendDirection, type Mat3 } from './gaussianDeform.ts';
+import {
+  bendFrame, deformGaussianBuffer, fadeGaussianOpacity, type BendDirection, type DeformSpec, type Mat3,
+} from './gaussianDeform.ts';
 
 export type { BendDirection } from './gaussianDeform.ts';
 
@@ -193,6 +195,32 @@ export function bendSceneFrame(direction: BendDirection, yukari: Vec3, pivot: Ve
   return bendFrame(direction, yukari, forward);
 }
 
+/** Scene-level deform choice; `strength` in [-1, 1], 0 = exact trained state.
+ * bend: ±90° total across the region. dome: ±90° rim angle (tiny planet /
+ * bowl) with the ground plane through the pivot, normal `yukari`. */
+export type DeformSettings =
+  | { kind: 'bend'; strength: number; direction?: BendDirection }
+  | { kind: 'dome'; strength: number };
+
+/** Settings -> `DeformSpec`; the region always comes from cameras + pivot. */
+export function deformSpec(settings: DeformSettings, cameras: readonly Vec3[], pivot: Vec3, yukari: Vec3): DeformSpec {
+  if (!Number.isFinite(settings.strength) || Math.abs(settings.strength) > 1) {
+    throw new RangeError('Deform strength must be between -1 and 1');
+  }
+  const region = bendRegion(cameras, pivot, settings.strength);
+  const ilkKamera = cameras[0] ?? pivot;
+  if (settings.kind === 'dome') {
+    return {
+      kind: 'dome', halfLength: region.halfLength, frame: bendSceneFrame('yana', yukari, pivot, ilkKamera),
+      curvature: settings.strength * (Math.PI / 2) / region.halfLength,
+    };
+  }
+  return {
+    kind: 'bend', curvature: region.curvature, halfLength: region.halfLength,
+    frame: bendSceneFrame(settings.direction ?? 'yana', yukari, pivot, ilkKamera),
+  };
+}
+
 /** A finished run is captured once. Every slider move starts from that same
  * trained state, so returning to zero is exact and never compounds bends. */
 export function createGaussianBendController(
@@ -211,7 +239,9 @@ export function createGaussianBendController(
     /** `fadeHalfLength` (Infinity = off) fades opacity beyond that radius from
      * `center`, same region source and snapshot as the bend; composed with it
      * in the one write below, so the two effects never compound across calls. */
-    async apply(curvature: number, halfLength = Infinity, frame?: Mat3, fadeHalfLength = Infinity): Promise<void> {
+    async apply(deform: number | DeformSpec, halfLength = Infinity, frame?: Mat3, fadeHalfLength = Infinity): Promise<void> {
+      const spec: DeformSpec = typeof deform === 'number' ? { kind: 'bend', curvature: deform, halfLength, frame } : deform;
+      const curvature = spec.curvature;
       if (!Number.isFinite(curvature)) throw new RangeError('Bend curvature must be finite');
       const fadeActive = Number.isFinite(fadeHalfLength);
       if (fadeActive && !(fadeHalfLength > 0)) throw new RangeError('Fade half-length must be positive');
@@ -234,7 +264,7 @@ export function createGaussianBendController(
             const base = index * 16;
             for (let axis = 0; axis < 3; axis++) local[base + axis] -= sceneCenter[axis];
           }
-          const deformed = curvature !== 0 ? deformGaussianBuffer(local, snapshot.n, curvature, halfLength, frame) : local.slice();
+          const deformed = curvature !== 0 ? deformGaussianBuffer(local, snapshot.n, spec) : local.slice();
           if (fadeActive) {
             // Fade reads position/opacity from the PRE-bend `local` snapshot: the
             // camera-framed region is a scene-relative fact, not something the
@@ -273,6 +303,10 @@ export interface Egitim {
    * (`bendRegion`); zero restores the exact trained state. `direction`
    * picks the free bend axis (`bendSceneFrame`), default 'yana'. */
   bend(strength: number, direction?: BendDirection): Promise<void>;
+  /** Any deform (`DeformSettings`: bend, dome); replaces the previous one,
+   * composes with `fade`, zero strength restores the exact trained state.
+   * `bend(s, d)` is `deform({ kind: 'bend', strength: s, direction: d })`. */
+  deform(settings: DeformSettings): Promise<void>;
   /** Far-background opacity fade, off by default: beyond the same
    * camera-framed region as `bend` (`bendRegion`), opacity fades out
    * smoothly with distance from the pivot. Composes with whatever bend is
@@ -450,13 +484,12 @@ export async function egitimBaslat(
     bendPivot = pivot;
     // Last-applied bend/fade settings: both `bend` and `fade` re-issue the
     // combined controller call, since they share one snapshot and one write.
-    let currentBendStrength = 0;
-    let currentBendDirection: BendDirection = 'yana';
+    const noDeform: DeformSettings = { kind: 'bend', strength: 0, direction: 'yana' };
+    let currentDeform: DeformSettings = noDeform;
     let fadeOn = false;
     const applyBendAndFade = () => {
-      const region = bendRegion(e.kameralar, pivot, currentBendStrength);
-      const frame = bendSceneFrame(currentBendDirection, e.yukari, pivot, e.kameralar[0] ?? pivot);
-      return bend.apply(region.curvature, region.halfLength, frame, fadeOn ? region.halfLength : Infinity);
+      const spec = deformSpec(currentDeform, e.kameralar, pivot, e.yukari);
+      return bend.apply(spec, Infinity, undefined, fadeOn ? bendRegion(e.kameralar, pivot, 0).halfLength : Infinity);
     };
 
     const e: Egitim = {
@@ -466,8 +499,7 @@ export async function egitimBaslat(
         if (closed) throw new Error('Training session is closed');
         if (!complete) throw new Error('Training has not finished yet');
         bend.restoreForTraining();
-        currentBendStrength = 0;
-        currentBendDirection = 'yana';
+        currentDeform = noDeform;
         fadeOn = false;
         complete = false;
         try {
@@ -480,13 +512,16 @@ export async function egitimBaslat(
           throw error;
         }
       },
-      bend: async (strength, direction = 'yana') => {
-        if (!Number.isFinite(strength) || Math.abs(strength) > 1) {
-          throw new RangeError('Bend strength must be between -1 and 1');
+      bend: (strength, direction = 'yana') => e.deform({ kind: 'bend', strength, direction }),
+      deform: async (settings) => {
+        const previous = currentDeform;
+        currentDeform = settings;
+        try {
+          return await applyBendAndFade();
+        } catch (error) {
+          currentDeform = previous;
+          throw error;
         }
-        currentBendStrength = strength;
-        currentBendDirection = direction;
-        return applyBendAndFade();
       },
       fade: async (enabled) => {
         fadeOn = enabled;
