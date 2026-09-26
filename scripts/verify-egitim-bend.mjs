@@ -1,7 +1,16 @@
 import assert from 'node:assert/strict';
 import * as egitim from '../src/engine/reconstruction/egitim3dgs.ts';
+import { bendFrame, deformGaussianBuffer } from '../src/engine/reconstruction/gaussianDeform.ts';
 
-const { createGaussianBendController } = egitim;
+const { createGaussianBendController, bendSceneFrame } = egitim;
+
+function near(actual, expected, label, tolerance = 1e-9) {
+  assert.ok(Math.abs(actual - expected) <= tolerance, `${label}: expected ${expected}, received ${actual}`);
+}
+function nearArray(actual, expected, label, tolerance = 1e-9) {
+  assert.equal(actual.length, expected.length, `${label} length`);
+  for (let i = 0; i < expected.length; i++) near(actual[i], expected[i], `${label}[${i}]`, tolerance);
+}
 
 const original = new Float32Array([
   1, 0, 0, Math.log(2), 0, 0, 1, 0, 0, 0, 0.3, 0.4, 0.5, 0.6, 0, 0,
@@ -108,5 +117,33 @@ raceReady = false;
 releaseRead({ data: original.slice(), n: 1 });
 await assert.rejects(pendingBend, /no longer ready/);
 assert.equal(raceWrites, 0, 'late readback must not write into a resumed or closed trainer');
+
+// ── Free bend axis/direction ──────────────────────────────────────────────
+// bendSceneFrame turns the scene's up vector and the (pivot, first camera)
+// pair into the same reusable bendFrame from gaussianDeform.ts, so later
+// deform types (fade, dome, noise) can share it instead of re-deriving axes.
+const yukari = [0, 1, 0];
+const scenePivot = [10, 5, 10];
+const ilkKamera = [10, 5, 12]; // camera sits in front along +z, looking back at the pivot
+const yanaFrame = bendSceneFrame('yana', yukari, scenePivot, ilkKamera);
+nearArray(yanaFrame, bendFrame('yana', yukari, [0, 0, -2]), 'bendSceneFrame forwards pivot-minus-camera as the view hint');
+const axisColumn = [yanaFrame[1], yanaFrame[4], yanaFrame[7]];
+nearArray(axisColumn, yukari, 'yana scene frame axis is the scene up vector');
+
+// The controller threads an optional frame straight into deformGaussianBuffer:
+// a bend applied in a rotated frame must match calling the pure function directly.
+const frameOriginal = new Float32Array([
+  1, 0.5, -0.3, Math.log(2), Math.log(0.4), Math.log(0.6), 1, 0, 0, 0, 0.3, 0.4, 0.5, 0.6, 0, 0,
+]);
+const frameWrites = [];
+const frameSession = {
+  trainer: { device: { queue: { writeBuffer(_buffer, _offset, data) { frameWrites.push(new Float32Array(data)); } } }, bufParams: {} },
+  async exportRawState() { return { data: frameOriginal.slice(), n: 1 }; },
+};
+const frameBend = createGaussianBendController(frameSession, () => true, () => {});
+const someFrame = bendFrame('yukari', [0, 1, 0], [0, 0, 1]);
+await frameBend.apply(0.3, 2, someFrame);
+const expectedFramed = deformGaussianBuffer(frameOriginal, 1, 0.3, 2, someFrame);
+nearArray(frameWrites.at(-1), expectedFramed, 'bend controller applies the supplied frame via deformGaussianBuffer', 1e-6);
 
 console.log('3DGS post-training bend integration: OK');

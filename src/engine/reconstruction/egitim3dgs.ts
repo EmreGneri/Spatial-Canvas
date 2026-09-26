@@ -13,7 +13,9 @@
 
 import { segmentForeground } from './segmentation.ts';
 import { prepareSubjectFrames } from './subjectTrainingMasks.ts';
-import { deformGaussianBuffer } from './gaussianDeform.ts';
+import { bendFrame, deformGaussianBuffer, type BendDirection, type Mat3 } from './gaussianDeform.ts';
+
+export type { BendDirection } from './gaussianDeform.ts';
 
 export interface EgitimAyari {
   tier: 'quick' | 'standard';
@@ -181,6 +183,16 @@ export function bendRegion(cameras: readonly Vec3[], pivot: Vec3, strength: numb
   return { halfLength, curvature: strength * (Math.PI / 4) / halfLength };
 }
 
+/** Scene-level wrapper around `bendFrame` (gaussianDeform.ts): the view hint
+ * is the direction from the first training camera to the pivot, so free axis
+ * selection needs no camera rotation, only data `Egitim` already exposes
+ * (`yukari`, `pivot`, `kameralar`). Reused by later deform types (fade,
+ * dome, noise) that need the same scene-relative frame. */
+export function bendSceneFrame(direction: BendDirection, yukari: Vec3, pivot: Vec3, ilkKamera: Vec3): Mat3 {
+  const forward: Vec3 = [pivot[0] - ilkKamera[0], pivot[1] - ilkKamera[1], pivot[2] - ilkKamera[2]];
+  return bendFrame(direction, yukari, forward);
+}
+
 /** A finished run is captured once. Every slider move starts from that same
  * trained state, so returning to zero is exact and never compounds bends. */
 export function createGaussianBendController(
@@ -196,7 +208,7 @@ export function createGaussianBendController(
     redraw();
   };
   return {
-    async apply(curvature: number, halfLength = Infinity): Promise<void> {
+    async apply(curvature: number, halfLength = Infinity, frame?: Mat3): Promise<void> {
       if (!Number.isFinite(curvature)) throw new RangeError('Bend curvature must be finite');
       if (curvature === 0 && !active) return;
       if (!canEdit()) throw new Error('Bend is available after training has finished');
@@ -217,7 +229,7 @@ export function createGaussianBendController(
             const base = index * 16;
             for (let axis = 0; axis < 3; axis++) local[base + axis] -= sceneCenter[axis];
           }
-          const deformed = deformGaussianBuffer(local, snapshot.n, curvature, halfLength);
+          const deformed = deformGaussianBuffer(local, snapshot.n, curvature, halfLength, frame);
           for (let index = 0; index < snapshot.n; index++) {
             const base = index * 16;
             for (let axis = 0; axis < 3; axis++) deformed[base + axis] += sceneCenter[axis];
@@ -246,8 +258,9 @@ export interface Egitim {
   /** Resume the same Gaussian trainer after its first completed budget. */
   devamEt(moreIters?: number): number;
   /** Strength in [-1, 1] = ±90° total bend across the camera-framed subject
-   * (`bendRegion`); zero restores the exact trained state. */
-  bend(strength: number): Promise<void>;
+   * (`bendRegion`); zero restores the exact trained state. `direction`
+   * picks the free bend axis (`bendSceneFrame`), default 'yana'. */
+  bend(strength: number, direction?: BendDirection): Promise<void>;
   plyBlob(): Promise<Blob>;
   /** Serbest kamera; `ciz` kanvası bu kamerayla çizer. */
   kamera: GsKamera;
@@ -436,12 +449,13 @@ export async function egitimBaslat(
           throw error;
         }
       },
-      bend: (strength) => {
+      bend: async (strength, direction = 'yana') => {
         if (!Number.isFinite(strength) || Math.abs(strength) > 1) {
-          return Promise.reject(new RangeError('Bend strength must be between -1 and 1'));
+          throw new RangeError('Bend strength must be between -1 and 1');
         }
         const region = bendRegion(e.kameralar, pivot, strength);
-        return bend.apply(region.curvature, region.halfLength);
+        const frame = bendSceneFrame(direction, e.yukari, pivot, e.kameralar[0] ?? pivot);
+        return bend.apply(region.curvature, region.halfLength, frame);
       },
       plyBlob: () => s.exportPlyBlob(),
       kamera,

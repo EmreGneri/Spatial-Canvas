@@ -1,4 +1,4 @@
-type Mat3 = number[];
+export type Mat3 = number[];
 type Vec3 = [number, number, number];
 
 const IDENTITY: Mat3 = [1, 0, 0, 0, 1, 0, 0, 0, 1];
@@ -138,6 +138,92 @@ export function bendPointAndJacobian(
   };
 }
 
+function normalize3(v: Vec3): Vec3 {
+  const n = Math.hypot(v[0], v[1], v[2]);
+  if (!(n > 1e-12)) throw new RangeError('Expected a non-zero vector');
+  return [v[0] / n, v[1] / n, v[2] / n];
+}
+
+function cross3(a: Vec3, b: Vec3): Vec3 {
+  return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+}
+
+function dot3(a: Vec3, b: Vec3): number {
+  return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+}
+
+function applyMat3(m: Mat3, v: ArrayLike<number>): Vec3 {
+  return [
+    m[0] * v[0] + m[1] * v[1] + m[2] * v[2],
+    m[3] * v[0] + m[4] * v[1] + m[5] * v[2],
+    m[6] * v[0] + m[7] * v[1] + m[8] * v[2],
+  ];
+}
+
+export type BendDirection = 'yana' | 'yukari';
+
+/**
+ * Orthonormal bend frame (columns = world directions of the canonical
+ * spine/axis/depth used by `bendPointAndJacobian`) built from the scene up
+ * vector and a view-direction hint, instead of the trainer's raw Y axis.
+ * - 'yana' (sideways): the fixed axis is scene up — the bend curls around
+ *   the vertical, like a road spiraling sideways.
+ * - 'yukari' (up/down): the fixed axis is horizontal, perpendicular to
+ *   `forward` — the bend curls the spine up/down (e.g. a road curling
+ *   upward), matching the reference Houdini clip.
+ * Sign of the caller's curvature/strength gives the opposite way; that is
+ * unaffected by this frame choice.
+ */
+export function bendFrame(direction: BendDirection, up: ArrayLike<number>, forward: ArrayLike<number>): Mat3 {
+  const yukari = normalize3([up[0], up[1], up[2]]);
+  const forwardHint: Vec3 = [forward[0], forward[1], forward[2]];
+  let axis: Vec3;
+  if (direction === 'yana') {
+    axis = yukari;
+  } else {
+    const right = cross3(forwardHint, yukari);
+    if (!(Math.hypot(right[0], right[1], right[2]) > 1e-6)) {
+      throw new RangeError('Forward direction cannot be parallel to up for a yukari bend');
+    }
+    axis = normalize3(right);
+  }
+  // Gram-Schmidt: spine is the forward hint with its axis component removed.
+  const along = dot3(forwardHint, axis);
+  let spine: Vec3 = [forwardHint[0] - along * axis[0], forwardHint[1] - along * axis[1], forwardHint[2] - along * axis[2]];
+  if (!(Math.hypot(spine[0], spine[1], spine[2]) > 1e-6)) {
+    // Degenerate hint (parallel to the axis): fall back to any perpendicular.
+    const fallback: Vec3 = Math.abs(axis[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0];
+    const d = dot3(fallback, axis);
+    spine = [fallback[0] - d * axis[0], fallback[1] - d * axis[1], fallback[2] - d * axis[2]];
+  }
+  spine = normalize3(spine);
+  // spine x axis (not axis x spine) keeps the frame right-handed, matching
+  // the canonical frame's own handedness (X=spine, Y=axis, Z=depth with
+  // X x Y = Z), so `bendFrame` reduces to the identity when it already is.
+  const depth = cross3(spine, axis);
+  return [
+    spine[0], axis[0], depth[0],
+    spine[1], axis[1], depth[1],
+    spine[2], axis[2], depth[2],
+  ];
+}
+
+/** `bendPointAndJacobian` conjugated by an orthonormal `frame`: the point and
+ * Jacobian are computed in the frame's local coordinates (X spine, Y axis, Z
+ * depth) and rotated back, so the fixed bend axis is `frame`'s Y column
+ * instead of world Y. */
+export function bendPointAndJacobianInFrame(
+  point: ArrayLike<number>, frame: Mat3, curvature: number, halfLength = Infinity,
+): { point: Vec3; jacobian: Mat3 } {
+  const frameT = transpose(frame);
+  const local = applyMat3(frameT, point);
+  const { point: bentLocal, jacobian: jacobianLocal } = bendPointAndJacobian(local, curvature, halfLength);
+  return {
+    point: applyMat3(frame, bentLocal),
+    jacobian: multiply(multiply(frame, jacobianLocal), frameT),
+  };
+}
+
 function quaternionToMatrix(w: number, x: number, y: number, z: number): Mat3 {
   const norm = Math.hypot(w, x, y, z);
   if (norm < 1e-20 || !Number.isFinite(norm)) return IDENTITY.slice();
@@ -172,7 +258,7 @@ const PERMUTATIONS: readonly Vec3[] = [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0
 
 /** Return a view-only transformed snapshot of stride-16 trainer parameters. */
 export function deformGaussianBuffer(
-  source: Float32Array, count: number, curvature: number, halfLength = Infinity,
+  source: Float32Array, count: number, curvature: number, halfLength = Infinity, frame?: Mat3,
 ): Float32Array {
   if (!Number.isInteger(count) || count < 0 || source.length < count * 16 || !Number.isFinite(curvature)) {
     throw new RangeError('Expected a valid Gaussian count and finite curvature');
@@ -181,7 +267,9 @@ export function deformGaussianBuffer(
   if (curvature === 0) return output;
   for (let index = 0; index < count; index++) {
     const base = index * 16;
-    const { point, jacobian } = bendPointAndJacobian(source.subarray(base, base + 3), curvature, halfLength);
+    const { point, jacobian } = frame
+      ? bendPointAndJacobianInFrame(source.subarray(base, base + 3), frame, curvature, halfLength)
+      : bendPointAndJacobian(source.subarray(base, base + 3), curvature, halfLength);
     output.set(point, base);
     const original = quaternionToMatrix(source[base + 6], source[base + 7], source[base + 8], source[base + 9]);
     const scales: Vec3 = [0, 1, 2].map(axis => Math.exp(2 * source[base + 3 + axis])) as Vec3;
@@ -199,7 +287,7 @@ export function deformGaussianBuffer(
       }
       if (score > bestScore) { best = permutation; bestScore = score; }
     }
-    const frame = new Array<number>(9);
+    const outputFrame = new Array<number>(9);
     const alignments: Vec3 = [0, 0, 0];
     for (let axis = 0; axis < 3; axis++) {
       const col = best[axis];
@@ -207,14 +295,14 @@ export function deformGaussianBuffer(
         + vectors[6 + col] * targetAxes[6 + axis];
       alignments[axis] = Math.abs(dot);
       const sign = dot < 0 ? -1 : 1;
-      for (let row = 0; row < 3; row++) frame[3 * row + axis] = sign * vectors[3 * row + col];
+      for (let row = 0; row < 3; row++) outputFrame[3 * row + axis] = sign * vectors[3 * row + col];
       output[base + 3 + axis] = Math.log(Math.sqrt(Math.max(values[col], MIN_VARIANCE)));
     }
-    if (determinant(frame) < 0) {
+    if (determinant(outputFrame) < 0) {
       const axis = alignments.indexOf(Math.min(...alignments));
-      for (let row = 0; row < 3; row++) frame[3 * row + axis] *= -1;
+      for (let row = 0; row < 3; row++) outputFrame[3 * row + axis] *= -1;
     }
-    output.set(matrixToQuaternion(frame), base + 6);
+    output.set(matrixToQuaternion(outputFrame), base + 6);
   }
   return output;
 }

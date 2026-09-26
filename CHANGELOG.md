@@ -3,6 +3,26 @@
 Sözleşmeye dokunan her değişiklik buraya yazılır (`ARCHITECTURE.md` kuralı: sessiz sapma yok).
 En yeni üstte.
 
+## 2026-09-26 — 3DGS bükme: serbest eksen/yön (yukarı kıvrılma)
+
+Bükme ekseni artık ilk kameranın (SfM gauge'unun rastgele seçtiği) dikey
+ekseni değil, sahnenin gerçek yukarı vektörü (`yukari`); yön seçilebilir:
+"yana" (yukarı etrafında, önceki davranışa yakın) ve "yukarı/aşağı" (ana
+bakış yönüne dik yatay eksen etrafında — yolun yukarı kıvrılması gibi).
+Güç işareti ekseni değil yönü ters çevirir (değişmedi).
+
+`gaussianDeform.ts`'e `bendFrame` (yukarı + bakış ipucundan ortonormal
+çerçeve) ve `bendPointAndJacobianInFrame` (kanonik büküm bu çerçeveyle
+eşlenik) eklendi; `deformGaussianBuffer` artık isteğe bağlı bir çerçeve alır,
+kovaryans hâlâ tek `J·C·Jᵀ` yolundan geçer. `egitim3dgs.ts`'te `bendSceneFrame`
+bunu pivot + ilk kamera + `yukari`'den kurar — sonraki solma/kubbe/gürültü
+görevleri aynı çerçeveyi paylaşabilir. `Egitim3D.tsx`'e kaydırıcının yanına
+küçük bir yön seçici eklendi.
+
+Gerçek sahne kontrolü (St George, eğitilmiş sahne): "yana" arka planı
+düşeyin etrafında yana kıvırıyor, "yukarı/aşağı" arka planı yatay eksende
+dikey katlıyor; sıfıra dönüş piksel/bayt eşit (`.superpowers/sdd/2026-09-26-deform-effects/shots/`).
+
 ## 2026-09-26 — 3DGS bükme (deneysel): Jacobian ile şekil de bükülür
 
 Eğitim bitince "Bükme" kaydırıcısı eğitilmiş Gaussian'ları Y ekseni etrafında
