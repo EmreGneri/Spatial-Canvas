@@ -35,23 +35,91 @@ export function flyAxes(keys: ReadonlySet<string>): FlyAxes {
 }
 
 /**
+ * Free-fly bound: the training-camera volume. Outside it the splat has no
+ * photographic evidence and degrades to fog and floaters (measured on the
+ * lighthouse orbit: 25 deg past the arc end the subject is warped, 60 deg past
+ * it is unrecognisable, while a close-up between the cameras and the subject
+ * stays sharp). The volume is the fan of triangles (cam_i, cam_i+1, pivot) in
+ * capture order, so the space between the cameras and what they looked at is
+ * free; `pay` is the margin around it, tapering toward the pivot.
+ */
+export interface FlySiniri { ucgenler: [Vec3, Vec3, Vec3][]; pay: number; olcek: number }
+
+/** Margin as a fraction of the median camera-to-pivot distance (lighthouse
+ *  orbit: 0.4 of it past the arc end still reads, 0.9 does not). */
+export const FLY_PAY = 0.35;
+
+export function flySiniri(kameralar: Vec3[], pivot: Vec3): FlySiniri {
+  const d = kameralar.map((c) => Math.hypot(c[0] - pivot[0], c[1] - pivot[1], c[2] - pivot[2])).sort((a, b) => a - b);
+  const olcek = d.length ? d[(d.length - 1) >> 1] : 1;
+  const ucgenler: [Vec3, Vec3, Vec3][] = kameralar.length < 2
+    ? kameralar.map((c) => [c, c, pivot])
+    : kameralar.slice(1).map((c, i) => [kameralar[i], c, pivot]);
+  return { ucgenler: ucgenler.length ? ucgenler : [[pivot, pivot, pivot]], pay: FLY_PAY * olcek, olcek };
+}
+
+const fark = (a: Vec3, b: Vec3): Vec3 => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+const ic = (a: Vec3, b: Vec3) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+const dis = (a: Vec3, b: Vec3): Vec3 => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+
+function segmentteEnYakin(p: Vec3, a: Vec3, b: Vec3): Vec3 {
+  const ab = fark(b, a);
+  const L = ic(ab, ab);
+  const t = L > 0 ? Math.max(0, Math.min(1, ic(fark(p, a), ab) / L)) : 0;
+  return [a[0] + ab[0] * t, a[1] + ab[1] * t, a[2] + ab[2] * t];
+}
+
+function ucgendeEnYakin(p: Vec3, [a, b, c]: [Vec3, Vec3, Vec3]): Vec3 {
+  const ab = fark(b, a), ac = fark(c, a);
+  const n = dis(ab, ac);
+  const nn = ic(n, n);
+  if (nn > 1e-12 * ic(ab, ab) * ic(ac, ac) && nn > 0) {
+    const k = ic(fark(p, a), n) / nn;
+    const q: Vec3 = [p[0] - n[0] * k, p[1] - n[1] * k, p[2] - n[2] * k];
+    if (ic(dis(ab, fark(q, a)), n) >= 0 && ic(dis(fark(c, b), fark(q, b)), n) >= 0 && ic(dis(fark(a, c), fark(q, c)), n) >= 0) return q;
+  }
+  let best = a, bd = Infinity;
+  for (const e of [segmentteEnYakin(p, a, b), segmentteEnYakin(p, b, c), segmentteEnYakin(p, c, a)]) {
+    const d = ic(fark(p, e), fark(p, e));
+    if (d < bd) { bd = d; best = e; }
+  }
+  return best;
+}
+
+/** Nearest point of the camera volume, the distance to it and the margin
+ *  there. The margin tapers toward the pivot (to 10% at it): the pivot sits on
+ *  the subject, and a full margin there let Q/E sink into the lighthouse. */
+function hacmeEnYakin(p: Vec3, sinir: FlySiniri): [Vec3, number, number] {
+  let best: Vec3 = p, bd = Infinity;
+  for (const t of sinir.ucgenler) {
+    const q = ucgendeEnYakin(p, t);
+    const d = Math.hypot(...fark(p, q));
+    if (d < bd) { bd = d; best = q; }
+  }
+  const pivot = sinir.ucgenler[0][2];
+  const pay = sinir.pay * Math.max(0.1, Math.min(1, Math.hypot(...fark(best, pivot)) / sinir.olcek));
+  return [best, bd, pay];
+}
+
+/**
  * Translate without rotating: forward/right follow the camera (R rows 2 and 0,
  * COLMAP x right, z forward), vertical follows world up so rising never drifts
- * sideways on a tilted view. The centre stays inside `radius` of `pivot`; a
- * camera already outside (orbit zooms out further) may only move inward, so
- * entering fly mode never snaps the pose.
+ * sideways on a tilted view. The centre stays within `pay` of the camera
+ * volume, sliding along its surface; a camera already outside (orbit zooms out
+ * further) may only move closer, so entering fly mode never snaps the pose.
  */
-export function flyStep(k: GsKamera, axes: FlyAxes, distance: number, pivot: Vec3, radius: number, up: Vec3): GsKamera {
+export function flyStep(k: GsKamera, axes: FlyAxes, distance: number, sinir: FlySiniri, up: Vec3): GsKamera {
   const len = Math.hypot(axes.forward, axes.right, axes.vertical);
   if (!(len > 0) || !(distance > 0)) return k;
   const s = distance / len;
   const C = kameraMerkezi(k);
   const next = [0, 1, 2].map((i) =>
-    C[i] + s * (axes.forward * k.R[6 + i] + axes.right * k.R[i] + axes.vertical * up[i]) - pivot[i]);
-  const d = Math.hypot(...next);
-  const limit = Math.max(radius, Math.hypot(C[0] - pivot[0], C[1] - pivot[1], C[2] - pivot[2]));
-  const scale = d > limit ? limit / d : 1;
-  const C2 = next.map((v, i) => pivot[i] + v * scale);
+    C[i] + s * (axes.forward * k.R[6 + i] + axes.right * k.R[i] + axes.vertical * up[i])) as Vec3;
+  // Distances in units of the local margin: > 1 is outside the bound.
+  const [P, d, pay] = hacmeEnYakin(next, sinir);
+  const [, dC, payC] = hacmeEnYakin(C, sinir);
+  const limit = Math.max(1, dC / payC);
+  const C2 = d > limit * pay ? next.map((v, i) => P[i] + (v - P[i]) * (limit * pay / d)) : next;
   const t = [0, 1, 2].map((r) => -(k.R[r * 3] * C2[0] + k.R[r * 3 + 1] * C2[1] + k.R[r * 3 + 2] * C2[2]));
   return { ...k, t };
 }
@@ -65,9 +133,4 @@ export function lookAround(k: GsKamera, up: Vec3, yaw: number, pitch: number, li
   const upright = -(next.R[3] * up[0] + next.R[4] * up[1] + next.R[5] * up[2]) > 0;
   const e = Math.abs(elevation(next));
   return upright && (e <= limit || e <= Math.abs(elevation(k))) ? next : yorunge(k, C, up, yaw, 0);
-}
-
-/** Room to explore the reconstruction, capped at the orbit zoom-out limit so switching modes never snaps. */
-export function flyRadius(homeDistance: number, sceneRadius: number): number {
-  return Math.min(homeDistance * 30, Math.max(homeDistance * 2, sceneRadius * 1.5));
 }

@@ -174,8 +174,8 @@ export interface Egitim {
   kamera: GsKamera;
   /** Yörünge merkezi: kameraların baktığı ortak nokta (bkz. `bakisMerkezi`). */
   pivot: Vec3;
-  /** Point-cloud extent around `pivot`; bounds free-fly navigation. */
-  yaricap: number;
+  /** Training camera centres in capture order; free-fly stays near their volume. */
+  kameralar: Vec3[];
   /** Kameraların baskın yukarı ekseni (dünya). */
   yukari: Vec3;
   kameraAyarla(k: GsKamera): void;
@@ -353,7 +353,7 @@ export async function egitimBaslat(
       plyBlob: () => s.exportPlyBlob(),
       kamera,
       pivot,
-      yaricap: sahneYaricapi(noktalar, pivot),
+      kameralar: [...s.recon.cams].sort((a: { imgIdx: number }, b: { imgIdx: number }) => a.imgIdx - b.imgIdx).map(kameraMerkezi),
       yukari: s._camerasUp(),
       kameraAyarla: (k) => { e.kamera = k; s.view.setCamera(k); },
     };
@@ -383,14 +383,6 @@ export function medyanNokta(pts: Vec3[]): Vec3 {
     return v[v.length >> 1];
   };
   return [med(0), med(1), med(2)];
-}
-
-/** 90th-percentile point distance: SfM leaves a few far outliers (sky, stray
- *  matches) that would otherwise let free-fly wander into empty space. */
-export function sahneYaricapi(pts: Vec3[], merkez: Vec3): number {
-  if (pts.length === 0) return 0;
-  const d = pts.map((p) => Math.hypot(p[0] - merkez[0], p[1] - merkez[1], p[2] - merkez[2])).sort((a, b) => a - b);
-  return d[Math.min(d.length - 1, Math.floor(d.length * 0.9))];
 }
 
 /**
