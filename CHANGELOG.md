@@ -3,6 +3,25 @@
 Sözleşmeye dokunan her değişiklik buraya yazılır (`ARCHITECTURE.md` kuralı: sessiz sapma yok).
 En yeni üstte.
 
+## 2026-09-26 — 3DGS gürültü deformu
+
+`gaussianDeform.ts`'e `noisePointAndJacobian` eklendi: tohumlu, pürüzsüz
+3B gürültü yer değiştirmesi (3 oktav × 4 düzlem dalgası, |yer değiştirme| ≤
+genlik). Jakobyen merkezi sonlu farkla; kovaryans yine tek `J·C·Jᵀ`
+yolundan. Genlik `noiseAmplitudeLimit(frekans)`'a kırpılır: gerinim
+‖J − I‖₂ ≤ 0,8 olduğundan her tekil değer ≥ 0,2 ve det J > 0 tüm aralıkta
+kanıtlı (test de ediliyor). `time` her dalganın fazını tam tur kaydırır;
+alan zamanda sürekli ve 1 periyotla döngülü (5. görevin klibi için).
+
+`DeformSpec`'e `noise` üyesi eklendi; "etkisiz mi / tam geri yükleme"
+kararı artık `curvature` okumuyor, tür başına `isIdentityDeform(spec)`
+(sıfır genlikli gürültü de bayt bayt geri yüklüyor). `DeformSettings`'te
+`{ kind: 'noise', strength, seed?, time? }`: frekans kamera bölgesinden
+(`bendRegion`), güç ±1 = kırpma sınırı. Arayüzde seçiciye "gürültü (canlı
+yüzey)" eklendi; kubbe kaydırıcısının tam ucu artık 0,6 güç (54°), çünkü
+gerçek sahnede kullanılır aralık 0,3–0,6. Uygulama sürerken gösterge
+"uygulanıyor…" yazıyor (gürültü 205k splatte ~0,5 sn).
+
 ## 2026-09-26 — 3DGS kubbe (küçük gezegen) deformu
 
 `gaussianDeform.ts`'e `domePointAndJacobian` (+ `...InFrame`) eklendi:
