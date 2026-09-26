@@ -126,7 +126,7 @@ export function Egitim3D({ dosya, onKapat, say, onIlerleme }: {
       egitimRef.current = e;
       // A forward walk opens mid-path on the camera that filmed it and walks
       // (WASD) instead of orbiting a far background pivot; orbits unchanged.
-      cekimTuruRef.current = cekimTuru(e.pozlar);
+      cekimTuruRef.current = cekimTuru(e.pozlar, e.pivot);
       if (cekimTuruRef.current === 'yol') {
         e.kameraAyarla(e.pozlar[(e.pozlar.length - 1) >> 1]);
         setUcus(true);

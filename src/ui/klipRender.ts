@@ -102,13 +102,15 @@ export function klipKamerasi(taban: GsKamera, pivot: Vec3, yukari: Vec3, a: Kame
  * etrafında salınmak kamerayı yolun dışına, hiç görülmemiş ormana atar.
  * Kamera kaydedilen yolda baştan sona yumuşakça yürür, yürürken bakılan yöne
  * bakar. Deformun yükselme/uzaklaşması (`kameraYolu`) kameranın `olcek`
- * önündeki noktaya göre uygulanır; 'yok'ta kamera tam yol pozudur. Döngüde
- * son kareden ilk kareye yol başına dönülür (ileri yürüyüş geri oynatılmaz).
+ * önündeki noktaya göre uygulanır; 'yok'ta kamera tam yol pozudur. Git-gel:
+ * t = 0,5'te yol sonu, sonra geri; dönüşlerde hız sıfıra iner ve bakış yolun
+ * yönünde kalır (geri dönüşte kamera geri geri çekilir, dönmez) — döngüye
+ * alınan klipte n. kare 0. kareye eşittir, dikiş yok.
  */
 export function yolKlipKamerasi(
   pozlar: readonly GsKamera[], yukari: Vec3, olcek: number, tur: DeformChoice, t: number,
 ): GsKamera {
-  const k = yolKamerasi(pozlar, yukari, yumusak(t));
+  const k = yolKamerasi(pozlar, yukari, (1 - Math.cos(2 * Math.PI * t)) / 2);
   const a = kameraYolu(tur, t, 0);
   if (a.pitch === 0 && a.uzaklik === 1) return k;
   const C = kameraMerkezi(k);
@@ -308,8 +310,8 @@ export async function klipRenderEt(
 ): Promise<{ blob: Blob; kap: 'mp4' | 'webm'; kareSayisi: number }> {
   const { w, h } = klipBoyutu(secim.oran);
   const n = kareSayisi(secim.sureSn);
-  const yol = cekimTuru(e.pozlar) === 'yol';
-  const olcek = flySiniri(e.kameralar, e.pivot, 'yol').olcek;
+  const yol = cekimTuru(e.pozlar, e.pivot) === 'yol';
+  const olcek = yol ? flySiniri(e.kameralar, e.pivot, 'yol').olcek : 0;
   const yay = yayOrtasi(e.kameralar, e.pivot, e.yukari, kameraMerkezi(ev));
   const taban = kadrajKamerasi(yorunge(ev, e.pivot, e.yukari, yay.aci, 0), w, h);
   const kamera = (t: number) => yol

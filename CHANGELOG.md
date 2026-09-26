@@ -3,6 +3,19 @@
 Sözleşmeye dokunan her değişiklik buraya yazılır (`ARCHITECTURE.md` kuralı: sessiz sapma yok).
 En yeni üstte.
 
+## 2026-09-27 — Durağan çekim sallantısı ve yol klibinin döngüsü
+
+`cekimTuru` artık kamera hareketini sahne ölçeğiyle karşılaştırır:
+başlangıçtan en uzak kamera, medyan kamera–pivot uzaklığının %20'sini
+aşmıyorsa yörünge davranışı korunur. Böylece yerinde birkaç santimetre
+sallanma, gezinmeyi neredeyse kilitleyen kısa bir yürüyüş yolu sayılmaz.
+
+Yol paylaşım klibi yarı sürede yolun sonuna ulaşır ve aynı bakış yönünü
+koruyarak geri gelir. Dönüşlerde hız sıfıra iner; son kareden ilk kareye
+geçişte yolun iki ucu arasında atlama olmaz. Yörünge klibinin kamera
+hesabı korunur. Durağan sallantı, üç kamera, sahne ölçeği ve klip döngüsü
+testleri `verify-cekim-yolu.mjs` kapsamındadır.
+
 ## 2026-09-26 — Görüntüleyici ve paylaşım klibi çekimin şeklini izler
 
 İleri yürüyüş videolarında kameralar tek bir çizgi üzerinde durur; pivot uzak

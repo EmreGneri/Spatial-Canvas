@@ -56,6 +56,11 @@ export const FLY_PAY = 0.35;
  *  A walk only sees along its line; forest walk 3679072 is smeared 15% of the
  *  path length to the side (T1 `stepL/R`), this stays well inside that. */
 export const YOL_PAY = 0.06;
+/** A path must reach this fraction of the median camera-to-pivot distance.
+ *  Measured walks: forest 3679072 reaches 2.22 (path length / distance 2.24),
+ *  Pixabay 29721 has path length / distance 1.06;
+ *  body sway of a few cm at a subject 1-3 m away stays under 0.05. */
+export const YOL_MIN = 0.2;
 
 export function flySiniri(kameralar: Vec3[], pivot: Vec3, tur: CekimTuru = 'yorunge'): FlySiniri {
   if (tur === 'yol' && kameralar.length >= 2) {
@@ -83,13 +88,18 @@ const bakis = (k: Poz): Vec3 => [k.R[6], k.R[7], k.R[8]];
  * Orbit, forward path or mixed, from the training poses in capture order:
  * the median |cos| between where the camera moved (over ~10% of the capture,
  * so handheld bob cancels) and where it looked. An orbit moves sideways (~0),
- * a walk moves where it looks (~1). Fewer than 3 cameras or no movement at
- * all keeps the orbit default.
+ * a walk moves where it looks (~1). Fewer than 3 cameras, or a camera that
+ * never gets farther than `YOL_MIN` × the median camera-to-pivot distance
+ * from where it started (standing still, swaying, panning), keeps the orbit
+ * default.
  */
-export function cekimTuru(pozlar: readonly Poz[]): CekimTuru {
+export function cekimTuru(pozlar: readonly Poz[], pivot: Vec3): CekimTuru {
   const n = pozlar.length;
   if (n < 3) return 'yorunge';
   const C = pozlar.map((p) => kameraMerkezi(p as GsKamera));
+  const d = C.map((c) => Math.hypot(...fark(c, pivot))).sort((a, b) => a - b);
+  const kapsam = Math.max(...C.map((c) => Math.hypot(...fark(c, C[0]))));
+  if (!(kapsam > YOL_MIN * d[(n - 1) >> 1])) return 'yorunge';
   const k = Math.max(1, Math.round(n / 10));
   const kos: number[] = [];
   for (let i = 0; i + k < n; i++) {
@@ -99,9 +109,7 @@ export function cekimTuru(pozlar: readonly Poz[]): CekimTuru {
     const ld = Math.hypot(...d);
     if (lm > 0 && ld > 0) kos.push(Math.abs(ic(m, d)) / (lm * ld));
   }
-  // A camera that only turns in place has no path to follow.
-  const yayilim = Math.hypot(...fark(C[n - 1], C[0])) + Math.max(...C.map((c) => Math.hypot(...fark(c, C[0]))));
-  if (!kos.length || !(yayilim > 1e-9)) return 'yorunge';
+  if (!kos.length) return 'yorunge';
   kos.sort((a, b) => a - b);
   const med = kos[(kos.length - 1) >> 1];
   return med > 0.8 ? 'yol' : med < 0.5 ? 'yorunge' : 'karma';
