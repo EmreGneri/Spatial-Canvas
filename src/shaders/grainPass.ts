@@ -97,6 +97,16 @@ export function createGrainPass(): GrainPass {
 
         // -- renk grading: önce kontrast, sonra doygunluk --
         col.rgb = (col.rgb - 0.5) * uContrast + 0.5;
+        // NEGATİF IŞIK YOK. Kontrast 0.5 etrafında dönüyor ve bu pass LİNEER
+        // uzayda çalışıyor: sahnenin siyah zemini lineer ~0.003, yani 1'in
+        // biraz üstündeki her kontrast değeri onu EKSİYE düşürüyor. Zincirin
+        // ara tamponu kayan noktalı olduğu için eksi değer hayatta kalıyor ve
+        // OutputPass'in sRGB kodlaması (pow) tanımsız sonuç veriyor.
+        // ÖLÇÜLDÜ (sentetik sahne, ASCII): kontrast 1.05'te zemin 0.035,
+        // 1.18'de 0.34 — yani kontrastı ARTIRMAK zemini AYDINLATIYORDU. Tek
+        // satırlık kelepçe bunu kesiyor; 1'in altındaki kontrast zaten
+        // etkilenmez.
+        col.rgb = max(col.rgb, 0.0);
 
         float luma = dot(col.rgb, vec3(0.299, 0.587, 0.114));
         col.rgb = mix(vec3(luma), col.rgb, uSaturation);
