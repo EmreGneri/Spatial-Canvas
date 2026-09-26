@@ -256,6 +256,42 @@ function matrixToQuaternion(m: Mat3): [number, number, number, number] {
 
 const PERMUTATIONS: readonly Vec3[] = [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]];
 
+// Rational falloff 1 / (1 + t^2): 1 at the boundary (t=0) with zero slope
+// there (continuous, matches the bend region's own C1 edge), strictly
+// decreasing and always > 0 (never hard-clips a distant subject splat to
+// zero, per the outlier constraint), asymptoting toward the background.
+const FADE_MIN_OPACITY = 1e-6;
+
+/**
+ * Far-background opacity fade: points beyond `halfLength` from the origin
+ * (3D radial distance in the same centered coordinates `deformGaussianBuffer`
+ * uses, and the same region source as `bendRegion`) fade out smoothly and
+ * monotonically; inside the region opacity is an exact copy (bit-identical),
+ * so a zero/disabled fade (`halfLength = Infinity`) restores exactly. Only
+ * the opacity logit (index 13) changes — position, scale, rotation, DC and
+ * padding are untouched.
+ */
+export function fadeGaussianOpacity(source: Float32Array, count: number, halfLength: number): Float32Array {
+  if (!Number.isInteger(count) || count < 0 || source.length < count * 16) {
+    throw new RangeError('Expected a valid Gaussian count');
+  }
+  if (!(halfLength > 0)) throw new RangeError('Expected a positive half-length');
+  const output = source.slice();
+  if (!Number.isFinite(halfLength)) return output;
+  for (let index = 0; index < count; index++) {
+    const base = index * 16;
+    const r = Math.hypot(source[base], source[base + 1], source[base + 2]);
+    const excess = r - halfLength;
+    if (excess <= 0) continue;
+    const t = excess / halfLength;
+    const multiplier = 1 / (1 + t * t);
+    const opacity = 1 / (1 + Math.exp(-source[base + 13]));
+    const faded = Math.min(1 - FADE_MIN_OPACITY, Math.max(FADE_MIN_OPACITY, opacity * multiplier));
+    output[base + 13] = Math.log(faded / (1 - faded));
+  }
+  return output;
+}
+
 /** Return a view-only transformed snapshot of stride-16 trainer parameters. */
 export function deformGaussianBuffer(
   source: Float32Array, count: number, curvature: number, halfLength = Infinity, frame?: Mat3,
