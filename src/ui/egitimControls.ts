@@ -43,19 +43,108 @@ export function flyAxes(keys: ReadonlySet<string>): FlyAxes {
  * capture order, so the space between the cameras and what they looked at is
  * free; `pay` is the margin around it, tapering toward the pivot.
  */
-export interface FlySiniri { ucgenler: [Vec3, Vec3, Vec3][]; pay: number; olcek: number }
+export interface FlySiniri {
+  ucgenler: [Vec3, Vec3, Vec3][]; pay: number; olcek: number;
+  /** The margin tapers toward it; null (forward path) = no taper. */
+  pivot: Vec3 | null;
+}
 
 /** Margin as a fraction of the median camera-to-pivot distance (lighthouse
  *  orbit: 0.4 of it past the arc end still reads, 0.9 does not). */
 export const FLY_PAY = 0.35;
+/** Forward path: margin around the walked line as a fraction of its length.
+ *  A walk only sees along its line; forest walk 3679072 is smeared 15% of the
+ *  path length to the side (T1 `stepL/R`), this stays well inside that. */
+export const YOL_PAY = 0.06;
 
-export function flySiniri(kameralar: Vec3[], pivot: Vec3): FlySiniri {
+export function flySiniri(kameralar: Vec3[], pivot: Vec3, tur: CekimTuru = 'yorunge'): FlySiniri {
+  if (tur === 'yol' && kameralar.length >= 2) {
+    // The pivot of a walk is a far background point; the fan to it would
+    // cover the whole unseen forest. Bound = the walked line itself.
+    const ucgenler = kameralar.slice(1).map((c, i): [Vec3, Vec3, Vec3] => [kameralar[i], c, c]);
+    const L = ucgenler.reduce((s, [a, b]) => s + Math.hypot(...fark(b, a)), 0) || 1;
+    return { ucgenler, pay: YOL_PAY * L, olcek: L / 4, pivot: null };
+  }
   const d = kameralar.map((c) => Math.hypot(c[0] - pivot[0], c[1] - pivot[1], c[2] - pivot[2])).sort((a, b) => a - b);
   const olcek = d.length ? d[(d.length - 1) >> 1] : 1;
   const ucgenler: [Vec3, Vec3, Vec3][] = kameralar.length < 2
     ? kameralar.map((c) => [c, c, pivot])
     : kameralar.slice(1).map((c, i) => [kameralar[i], c, pivot]);
-  return { ucgenler: ucgenler.length ? ucgenler : [[pivot, pivot, pivot]], pay: FLY_PAY * olcek, olcek };
+  return { ucgenler: ucgenler.length ? ucgenler : [[pivot, pivot, pivot]], pay: FLY_PAY * olcek, olcek, pivot };
+}
+
+// ── capture shape ─────────────────────────────────────────────────────────
+
+export type CekimTuru = 'yorunge' | 'yol' | 'karma';
+type Poz = Pick<GsKamera, 'R' | 't'>;
+const bakis = (k: Poz): Vec3 => [k.R[6], k.R[7], k.R[8]];
+
+/**
+ * Orbit, forward path or mixed, from the training poses in capture order:
+ * the median |cos| between where the camera moved (over ~10% of the capture,
+ * so handheld bob cancels) and where it looked. An orbit moves sideways (~0),
+ * a walk moves where it looks (~1). Fewer than 3 cameras or no movement at
+ * all keeps the orbit default.
+ */
+export function cekimTuru(pozlar: readonly Poz[]): CekimTuru {
+  const n = pozlar.length;
+  if (n < 3) return 'yorunge';
+  const C = pozlar.map((p) => kameraMerkezi(p as GsKamera));
+  const k = Math.max(1, Math.round(n / 10));
+  const kos: number[] = [];
+  for (let i = 0; i + k < n; i++) {
+    const m = fark(C[i + k], C[i]);
+    const lm = Math.hypot(...m);
+    const d = bakis(pozlar[i]).map((v, j) => v + bakis(pozlar[i + k])[j]) as Vec3;
+    const ld = Math.hypot(...d);
+    if (lm > 0 && ld > 0) kos.push(Math.abs(ic(m, d)) / (lm * ld));
+  }
+  // A camera that only turns in place has no path to follow.
+  const yayilim = Math.hypot(...fark(C[n - 1], C[0])) + Math.max(...C.map((c) => Math.hypot(...fark(c, C[0]))));
+  if (!kos.length || !(yayilim > 1e-9)) return 'yorunge';
+  kos.sort((a, b) => a - b);
+  const med = kos[(kos.length - 1) >> 1];
+  return med > 0.8 ? 'yol' : med < 0.5 ? 'yorunge' : 'karma';
+}
+
+/** Level camera at `C` looking along `f` (horizon perpendicular to `yukari`),
+ *  with `taban`'s intrinsics. */
+function bakanKamera(taban: GsKamera, C: Vec3, f: Vec3, yukari: Vec3): GsKamera {
+  const birim = (v: Vec3): Vec3 => { const l = Math.hypot(...v) || 1; return [v[0] / l, v[1] / l, v[2] / l]; };
+  const z = birim(f);
+  const x = birim(dis([-yukari[0], -yukari[1], -yukari[2]], z));
+  const y = dis(z, x);
+  const R = [...x, ...y, ...z];
+  return { ...taban, R, t: [0, 1, 2].map((r) => -(R[r * 3] * C[0] + R[r * 3 + 1] * C[1] + R[r * 3 + 2] * C[2])) };
+}
+
+/**
+ * Camera on the recorded path at arc-length fraction `s` (0 = first frame,
+ * 1 = last): centres and view directions are averaged over ~±10% of the
+ * capture so handheld bob and glances do not shake the view, and the horizon
+ * is levelled. It looks where the camera looked while walking.
+ */
+export function yolKamerasi(pozlar: readonly GsKamera[], yukari: Vec3, s: number): GsKamera {
+  const n = pozlar.length;
+  const w = Math.max(1, Math.round(n / 10));
+  const ort = (A: Vec3[], i: number): Vec3 => {
+    const lo = Math.max(0, i - w), hi = Math.min(n - 1, i + w), m = hi - lo + 1;
+    const o: Vec3 = [0, 0, 0];
+    for (let j = lo; j <= hi; j++) for (let a = 0; a < 3; a++) o[a] += A[j][a] / m;
+    return o;
+  };
+  const Craw = pozlar.map(kameraMerkezi), Fraw = pozlar.map(bakis);
+  const C = Craw.map((_, i) => ort(Craw, i)), F = Fraw.map((_, i) => ort(Fraw, i));
+  const L = [0];
+  for (let i = 1; i < n; i++) L.push(L[i - 1] + Math.hypot(...fark(C[i], C[i - 1])));
+  const hedef = Math.min(1, Math.max(0, s)) * L[n - 1];
+  let j = 0;
+  while (j < n - 2 && L[j + 1] < hedef) j++;
+  const seg = n > 1 ? L[j + 1] - L[j] : 0;
+  const u = seg > 0 ? Math.min(1, (hedef - L[j]) / seg) : 0;
+  const b = Math.min(n - 1, j + 1);
+  const lerp = (A: Vec3[]): Vec3 => [0, 1, 2].map((a) => A[j][a] + (A[b][a] - A[j][a]) * u) as Vec3;
+  return bakanKamera(pozlar[u < 0.5 ? j : b], lerp(C), lerp(F), yukari);
 }
 
 const fark = (a: Vec3, b: Vec3): Vec3 => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
@@ -88,7 +177,8 @@ function ucgendeEnYakin(p: Vec3, [a, b, c]: [Vec3, Vec3, Vec3]): Vec3 {
 
 /** Nearest point of the camera volume, the distance to it and the margin
  *  there. The margin tapers toward the pivot (to 10% at it): the pivot sits on
- *  the subject, and a full margin there let Q/E sink into the lighthouse. */
+ *  the subject, and a full margin there let Q/E sink into the lighthouse. A
+ *  forward path has no subject pivot, so no taper. */
 function hacmeEnYakin(p: Vec3, sinir: FlySiniri): [Vec3, number, number] {
   let best: Vec3 = p, bd = Infinity;
   for (const t of sinir.ucgenler) {
@@ -96,8 +186,9 @@ function hacmeEnYakin(p: Vec3, sinir: FlySiniri): [Vec3, number, number] {
     const d = Math.hypot(...fark(p, q));
     if (d < bd) { bd = d; best = q; }
   }
-  const pivot = sinir.ucgenler[0][2];
-  const pay = sinir.pay * Math.max(0.1, Math.min(1, Math.hypot(...fark(best, pivot)) / sinir.olcek));
+  const pay = sinir.pivot
+    ? sinir.pay * Math.max(0.1, Math.min(1, Math.hypot(...fark(best, sinir.pivot)) / sinir.olcek))
+    : sinir.pay;
   return [best, bd, pay];
 }
 

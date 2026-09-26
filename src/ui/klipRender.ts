@@ -10,6 +10,7 @@
  * deformu kare hızını düşürmez, yalnız render süresini uzatır.
  */
 import { turAcisi } from './paylasim.ts';
+import { cekimTuru, flySiniri, yolKamerasi } from './egitimControls.ts';
 import {
   kameraMerkezi, yorunge, type DeformSettings, type Egitim, type GsKamera,
 } from '../engine/reconstruction/egitim3dgs.ts';
@@ -94,6 +95,25 @@ export function kameraYolu(tur: DeformChoice, t: number, salinim: number): Kamer
 export function klipKamerasi(taban: GsKamera, pivot: Vec3, yukari: Vec3, a: KameraAdimi): GsKamera {
   const donmus = yorunge(taban, pivot, yukari, a.yaw, 0);
   return yorunge(donmus, pivot, yukari, 0, a.pitch, a.uzaklik);
+}
+
+/**
+ * İleri yürüyüş çekimi (`cekimTuru` = 'yol'): pivot uzak arka planda, onun
+ * etrafında salınmak kamerayı yolun dışına, hiç görülmemiş ormana atar.
+ * Kamera kaydedilen yolda baştan sona yumuşakça yürür, yürürken bakılan yöne
+ * bakar. Deformun yükselme/uzaklaşması (`kameraYolu`) kameranın `olcek`
+ * önündeki noktaya göre uygulanır; 'yok'ta kamera tam yol pozudur. Döngüde
+ * son kareden ilk kareye yol başına dönülür (ileri yürüyüş geri oynatılmaz).
+ */
+export function yolKlipKamerasi(
+  pozlar: readonly GsKamera[], yukari: Vec3, olcek: number, tur: DeformChoice, t: number,
+): GsKamera {
+  const k = yolKamerasi(pozlar, yukari, yumusak(t));
+  const a = kameraYolu(tur, t, 0);
+  if (a.pitch === 0 && a.uzaklik === 1) return k;
+  const C = kameraMerkezi(k);
+  const onde: Vec3 = [C[0] + k.R[6] * olcek, C[1] + k.R[7] * olcek, C[2] + k.R[8] * olcek];
+  return yorunge(k, onde, yukari, 0, a.pitch, a.uzaklik);
 }
 
 /**
@@ -279,7 +299,8 @@ export interface KlipSecimi {
 /**
  * Tarayıcı tarafı: kareleri `Egitim.kareCiz` ile çizer, derecelendirir,
  * imzalar ve mediabunny ile MP4'e (yoksa WebM) kodlar. `ev` = eğitimin ilk
- * kamerası; kamera yolu çekim yayının ortasından başlar.
+ * kamerası; kamera yolu çekim yayının ortasından başlar. İleri yürüyüş
+ * çekiminde (`cekimTuru` = 'yol') `ev` kullanılmaz: kamera kaydedilen yolu izler.
  */
 export async function klipRenderEt(
   e: Egitim, ev: GsKamera, secim: KlipSecimi,
@@ -287,8 +308,13 @@ export async function klipRenderEt(
 ): Promise<{ blob: Blob; kap: 'mp4' | 'webm'; kareSayisi: number }> {
   const { w, h } = klipBoyutu(secim.oran);
   const n = kareSayisi(secim.sureSn);
+  const yol = cekimTuru(e.pozlar) === 'yol';
+  const olcek = flySiniri(e.kameralar, e.pivot, 'yol').olcek;
   const yay = yayOrtasi(e.kameralar, e.pivot, e.yukari, kameraMerkezi(ev));
   const taban = kadrajKamerasi(yorunge(ev, e.pivot, e.yukari, yay.aci, 0), w, h);
+  const kamera = (t: number) => yol
+    ? kadrajKamerasi(yolKlipKamerasi(e.pozlar, e.yukari, olcek, secim.tur, t), w, h)
+    : klipKamerasi(taban, e.pivot, e.yukari, kameraYolu(secim.tur, t, yay.salinim));
   const ara = document.createElement('canvas');
   ara.width = w;
   ara.height = h;
@@ -311,7 +337,7 @@ export async function klipRenderEt(
     await klipKareleri(e, secim.tur, klipTepeGucu(secim.tur, secim.kaydirici), n,
       { deform: deformAyari(secim.tur, secim.kaydirici), fade: secim.fade },
       async (i, t) => {
-        e.kareCiz(klipKamerasi(taban, e.pivot, e.yukari, kameraYolu(secim.tur, t, yay.salinim)), ctx);
+        e.kareCiz(kamera(t), ctx);
         const img = ctx.getImageData(0, 0, w, h);
         derecele(img.data, maske, KLIP_DERECE);
         ctx.putImageData(img, 0, 0);

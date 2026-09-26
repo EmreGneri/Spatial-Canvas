@@ -2,7 +2,9 @@ import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import {
   egitimBaslat, kameraMerkezi, yorunge, type Egitim, type EgitimMetrik,
 } from '../engine/reconstruction/egitim3dgs';
-import { bindWheelZoom, boundedZoomFactor, flyAxes, flySiniri, flyStep, lookAround } from './egitimControls';
+import {
+  bindWheelZoom, boundedZoomFactor, cekimTuru, flyAxes, flySiniri, flyStep, lookAround, type CekimTuru,
+} from './egitimControls';
 import { egitimGpuHint } from './egitimGpuHint';
 import { ayarOzeti, egitimOnKontrol, type OnKontrol } from './egitimOnKontrol';
 import { kunyeMetni, PAYLASIM_KLIP_SN } from './paylasim';
@@ -29,6 +31,7 @@ export function Egitim3D({ dosya, onKapat, say, onIlerleme }: {
   const egitimRef = useRef<Egitim | null>(null);
   const homeDistanceRef = useRef(0);
   const homeCameraRef = useRef<Egitim['kamera'] | null>(null);
+  const cekimTuruRef = useRef<CekimTuru>('yorunge');
   // Free-fly is opt-in; orbit stays the default. The ref lets the wheel and
   // pointer handlers read the mode without re-binding.
   const [ucus, setUcus] = useState(false);
@@ -121,6 +124,13 @@ export function Egitim3D({ dosya, onKapat, say, onIlerleme }: {
       // An abort may win just as setup resolves; do not attach a closed session.
       if (iptal) { e.kapat(); return; }
       egitimRef.current = e;
+      // A forward walk opens mid-path on the camera that filmed it and walks
+      // (WASD) instead of orbiting a far background pivot; orbits unchanged.
+      cekimTuruRef.current = cekimTuru(e.pozlar);
+      if (cekimTuruRef.current === 'yol') {
+        e.kameraAyarla(e.pozlar[(e.pozlar.length - 1) >> 1]);
+        setUcus(true);
+      }
       homeCameraRef.current = e.kamera;
       const center = kameraMerkezi(e.kamera);
       homeDistanceRef.current = Math.hypot(...center.map((value, i) => value - e.pivot[i]));
@@ -147,7 +157,7 @@ export function Egitim3D({ dosya, onKapat, say, onIlerleme }: {
       ? lookAround(e.kamera, e.yukari, yaw, pitch)
       : yorunge(e.kamera, e.pivot, e.yukari, yaw, pitch, yakin));
   };
-  const ucusSiniri = (e: Egitim) => flySiniri(e.kameralar, e.pivot);
+  const ucusSiniri = (e: Egitim) => flySiniri(e.kameralar, e.pivot, cekimTuruRef.current);
 
   useEffect(() => {
     // The preflight view has no canvas; attach the wheel listener after Start.
