@@ -13,6 +13,7 @@
 
 import { segmentForeground } from './segmentation.ts';
 import { prepareSubjectFrames } from './subjectTrainingMasks.ts';
+import { deformGaussianBuffer } from './gaussianDeform.ts';
 
 export interface EgitimAyari {
   tier: 'quick' | 'standard';
@@ -163,12 +164,90 @@ export function egitimDevamEt(
   return target;
 }
 
+interface BendSession {
+  trainer: { device: { queue: { writeBuffer(buffer: unknown, offset: number, data: Float32Array): void } }; bufParams: unknown } | null;
+  exportRawState(): Promise<{ data: Float32Array; n: number }>;
+}
+
+/** Bend region from the subject the cameras frame, not from the splat cloud:
+ * trained scenes carry floaters tens of units out while the cameras orbit
+ * ~1 unit from the pivot. Half-length = median camera distance to the pivot;
+ * strength 1 is a 90 degree total bend across [-halfLength, halfLength]. */
+export function bendRegion(cameras: readonly Vec3[], pivot: Vec3, strength: number) {
+  const distances = cameras.map((c) => Math.hypot(c[0] - pivot[0], c[1] - pivot[1], c[2] - pivot[2]))
+    .sort((a, b) => a - b);
+  const median = distances[distances.length >> 1];
+  const halfLength = median > 0 ? median : 1;
+  return { halfLength, curvature: strength * (Math.PI / 4) / halfLength };
+}
+
+/** A finished run is captured once. Every slider move starts from that same
+ * trained state, so returning to zero is exact and never compounds bends. */
+export function createGaussianBendController(
+  session: BendSession, canEdit: () => boolean, redraw: () => void,
+  center: readonly number[] | (() => readonly number[]) = [0, 0, 0],
+) {
+  let snapshot: { data: Float32Array; n: number } | null = null;
+  let active = false;
+  let pending = false;
+  const write = (data: Float32Array) => {
+    if (!session.trainer) throw new Error('Training session is closed');
+    session.trainer.device.queue.writeBuffer(session.trainer.bufParams, 0, data);
+    redraw();
+  };
+  return {
+    async apply(curvature: number, halfLength = Infinity): Promise<void> {
+      if (!Number.isFinite(curvature)) throw new RangeError('Bend curvature must be finite');
+      if (curvature === 0 && !active) return;
+      if (!canEdit()) throw new Error('Bend is available after training has finished');
+      if (pending) throw new Error('A bend update is already in progress');
+      pending = true;
+      try {
+        if (!snapshot) {
+          const raw = await session.exportRawState();
+          if (!canEdit()) throw new Error('Training session is no longer ready for bending');
+          snapshot = { data: raw.data.slice(0, raw.n * 16), n: raw.n };
+        }
+        if (curvature === 0) {
+          write(snapshot.data);
+        } else {
+          const sceneCenter = typeof center === 'function' ? center() : center;
+          const local = snapshot.data.slice();
+          for (let index = 0; index < snapshot.n; index++) {
+            const base = index * 16;
+            for (let axis = 0; axis < 3; axis++) local[base + axis] -= sceneCenter[axis];
+          }
+          const deformed = deformGaussianBuffer(local, snapshot.n, curvature, halfLength);
+          for (let index = 0; index < snapshot.n; index++) {
+            const base = index * 16;
+            for (let axis = 0; axis < 3; axis++) deformed[base + axis] += sceneCenter[axis];
+          }
+          write(deformed);
+        }
+        active = curvature !== 0;
+      } finally {
+        pending = false;
+      }
+    },
+    restoreForTraining(): void {
+      if (pending) throw new Error('Wait for the bend update before resuming training');
+      if (active && snapshot) write(snapshot.data);
+      active = false;
+      snapshot = null;
+    },
+    dispose(): void { snapshot = null; active = false; },
+  };
+}
+
 export interface Egitim {
   ayar: EgitimAyari;
   /** Eğitimi durdurur ve GPU kaynaklarını bırakır. */
   kapat(): void;
   /** Resume the same Gaussian trainer after its first completed budget. */
   devamEt(moreIters?: number): number;
+  /** Strength in [-1, 1] = ±90° total bend across the camera-framed subject
+   * (`bendRegion`); zero restores the exact trained state. */
+  bend(strength: number): Promise<void>;
   plyBlob(): Promise<Blob>;
   /** Serbest kamera; `ciz` kanvası bu kamerayla çizer. */
   kamera: GsKamera;
@@ -230,6 +309,10 @@ export async function egitimBaslat(
   const s = sj.createSession({ ...egitimOturumAyari(secilen), sfm: sj.solveTierOpts(secilen.tier) });
   let closed = false;
   let complete = false;
+  // Set once the cameras are solved; the bend is only reachable after training.
+  let bendPivot: Vec3 = [0, 0, 0];
+  const bend = createGaussianBendController(s, () => !closed && complete && !s.training,
+    () => { if (s.view.camera) s.view.setCamera(s.view.camera); }, () => bendPivot);
   let trainWatch: ReturnType<typeof setInterval> | null = null;
   const clearWatch = () => {
     if (trainWatch !== null) clearInterval(trainWatch);
@@ -238,6 +321,7 @@ export async function egitimBaslat(
   const close = () => {
     if (closed) return;
     closed = true;
+    bend.dispose();
     clearWatch();
     signal?.removeEventListener('abort', close);
     s.pause();
@@ -332,6 +416,7 @@ export async function egitimBaslat(
     s.view.setCamera(kamera);
     const noktalar: Vec3[] = s.recon.points.map((p: { X: Vec3 }) => p.X);
     const pivot = bakisMerkezi(s.recon.cams, medyanNokta(noktalar));
+    bendPivot = pivot;
 
     const e: Egitim = {
       ayar: secilen,
@@ -339,6 +424,7 @@ export async function egitimBaslat(
       devamEt: (moreIters) => {
         if (closed) throw new Error('Training session is closed');
         if (!complete) throw new Error('Training has not finished yet');
+        bend.restoreForTraining();
         complete = false;
         try {
           const target = egitimDevamEt(s, secilen, moreIters);
@@ -349,6 +435,13 @@ export async function egitimBaslat(
           complete = true;
           throw error;
         }
+      },
+      bend: (strength) => {
+        if (!Number.isFinite(strength) || Math.abs(strength) > 1) {
+          return Promise.reject(new RangeError('Bend strength must be between -1 and 1'));
+        }
+        const region = bendRegion(e.kameralar, pivot, strength);
+        return bend.apply(region.curvature, region.halfLength);
       },
       plyBlob: () => s.exportPlyBlob(),
       kamera,

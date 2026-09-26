@@ -3,6 +3,28 @@
 Sözleşmeye dokunan her değişiklik buraya yazılır (`ARCHITECTURE.md` kuralı: sessiz sapma yok).
 En yeni üstte.
 
+## 2026-09-26 — 3DGS bükme (deneysel): Jacobian ile şekil de bükülür
+
+Eğitim bitince "Bükme" kaydırıcısı eğitilmiş Gaussian'ları Y ekseni etrafında
+silindirik büker. Merkezle birlikte her splat'in kovaryansı tam `J·C·Jᵀ` ile
+dönüştürülüp ölçek+quaternion'a yeniden ayrıştırılır (`gaussianDeform.ts`).
+Ham parametreler bir kez okunur; sıfır ve "sürdür" eğitilmiş durumu birebir
+geri yükler (gerçek eğitimde piksel farkı 0).
+
+Bölge özneden, uzak floater'lardan değil: bükme merkezi pivot, yarı uzunluk
+medyan kamera–pivot uzaklığı (`bendRegion`); güç ±1 = bölge boyunca ±90°.
+Bölge dışı sahne son teğet boyunca katı devam eder (Bend-SOP yakalama
+bölgesi); bükme ekseninin arkasındaki splat'ler (1 + k·z → 0) katlanmak
+yerine yumuşak bir tabana (0.2) sıkışır. İlk deneme tüm splat zarfıyla
+eğriliği sınırlıyordu: St George'da uzak floater'lar (|z| 43'e kadar) k'yı
+0.0033'e düşürdü, özne < 1° büküldü — fark görünmüyordu.
+
+Ölçüm (St George, aynı kamera): 45° ve 90°'de yalnız merkez taşıyan sürümde
+cephe pencereleri dikey şeritlere, arka duvar ve ağaçlar kıymıklara bölünür;
+Jacobian'da cephe kesintisiz eğri yüzey kalır. Bilinen: -90° yönünde derin
+arka plan eksen arkasında ince bir kabuğa sıkışır ve bulanık görünür; +90°'de
+uzak arka plan kavis boyunca yatay uzar.
+
 ## 2026-09-26 — 3DGS serbest gezinme: eğitim kameralarının hacmiyle sınırlı
 
 WASD kamerası `1.5 × nokta bulutunun %90 yarıçapı` küresiyle sınırlıydı. Asıl
