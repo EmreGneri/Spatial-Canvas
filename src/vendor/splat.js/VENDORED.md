@@ -121,3 +121,38 @@ deneme**; farkli videolarda kalite artisi
 garanti degildir. Varsayilan 3k korunur ve devam dugmesi deneysel kalir.
 Yukaridaki 27.1 dB, onceki tabloda kaydedilen 27.29 dB'den ayri bir
 calistirmanin yuvarlanmis sonucudur.
+
+## Yogunlastirma takvimi: `refineEvery` butceyle olceklenir (olculdu, 2026-09-26)
+
+Vendored dosyaya DOKUNULMADI; yalniz `egitimOturumAyari()` (egitim3dgs.ts)
+`createSession`'a `refineEvery: max(300, round(maxIters / 8))` gecer.
+
+KOK NEDEN. `session.js` refine'i `iter > 1500` VE son refine'dan
+`refineEvery` (varsayilan 2500, 60k ufka gore) sonra tetikler. Varsayilan
+motor (`engine` v2 degil) `_refineLegacy`'yi kosar: buyume `iter < growUntil`
+(varsayilan **0.75** x ufuk; 0.5 olan `_refineV3` yalniz `engine: 'v2'`de)
+ve tasima `iter < 0.75 x ufuk` iken. `lastRefine` 0'dan basladigi icin ilk
+refine ~2518'de gelir:
+- quick (3k): pencere 2250'de kapanmis -> refine BOS doner (tasima da yok,
+  log satiri bile yok). Yukaridaki "densify hic tetiklenmedi" gozlemi bu.
+- standard (10k): 2518 ve 5023'te iki buyume; 7528 pencere disi.
+
+`growUntil` gecilmedi: onerilen 2200 varsayilan 2250'den KUCUK olurdu.
+
+Olcum: RTX 5070 Laptop (`nvidia / blackwell`), `yay-100derece-stgeorge.mp4`,
+gercek `egitimBaslat()` (katman `ayar` ile zorlandi). SfM iki kosuda ayni
+(quick 58 950, standard 102 136 tohum).
+
+| kosu | refineEvery | buyuyen refine | Gaussian | holdout PSNR |
+|---|---:|---|---:|---:|
+| quick 3k, once (2 kosu) | 2500 | yok | 58 950 | 27.28 / 27.41 |
+| quick 3k, sonra (2 kosu) | 375 | @~1520, @~1900 | 77 962 | 27.79 / 28.13 |
+| standard 10k, once | 2500 | @2518, @5023 | 135 076 | 30.84 |
+| standard 10k, sonra | 1250 | @1523 ... @6568 (5) | 205 435 | **31.66** |
+| quick 3k + devam 4k, sonra | 375 | +6 (3034 ... 4952) | 180 334 | 29.31 |
+
+Kosular arasi gurultu (ayni ayar): ~0.13 dB. Kazanc quick +0.6 dB,
+standard +0.8 dB. Egitim suresi bu olcumde GUVENILIR DEGIL: ayni GPU'yu
+paylasan baska bir oturum iter/sn'yi 190'dan 30-115'e oynatti. Intel iGPU'da
+sure etkisi (daha cok splat = iterasyon basina daha pahali) OLCULMEDI;
+ozellikle deneysel devam dugmesi artik ~3x Gaussian uretir.

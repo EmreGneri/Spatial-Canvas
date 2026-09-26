@@ -123,6 +123,23 @@ yeni eğitim yolunun sonucu sayılmaz.
   koşar: `Engine.setDepth` konumlara açıkça `false` verir, renk dolumları ve
   kabuk varsayılanla aynı remap'i paylaşır (video zaten öyleydi). Kol yalnız
   eval/lab ölçümü için açılır.
+- **Özne kırpma (nesne ayırma yoğunluğu, 2026-09-26):** grid bütçesi
+  (384×384, sabit) nesne ayırma AÇIKKEN bile tüm fotoğraf karesini
+  kaplıyordu — çizilmeyen (shader/`splatOpacityGate` ile atılan) arka plan
+  aynı bütçeyi paylaşıyordu; özne kare alanının küçük bir kısmıysa (ör.
+  büst ~%19) bütçenin çoğu boşa gidiyordu. `reconstruction/crop.ts`
+  (`applySeparationCrop`, `Engine.setDepth` + nesne ayırma toggle'ı) maskenin
+  piksel bbox'ını (+ %12 pay) hesaplar ve depth/maske/rgb'yi ÖRNEKLEMEDEN
+  ÖNCE bu bbox'a kırpar — yukarıdaki önem remap'inden FARKLI bir mekanizma:
+  koordinatı bükmez, girdiyi küçültür; grid yine 1:1 düzgün kalır (aynı
+  stretch/basıklık hatasını tekrar açmaz). Sonucu: `depthWidth/depthHeight`
+  artık kırpılmış bölgenin boyutudur, yani "Koordinat Uzayı"ndaki
+  `2·aspect` kuralı özne bbox'ının en/boy oranını kullanır (kare olmayan
+  fotoğraflarda kısa eksende sıkışan/uzayan aralık de facto düzelir).
+  Yalnızca fotoğrafta (`!videoTexture`); video/kamerada dokunulmaz (bileşen
+  analizini ~10 fps'te tekrarlamamak için). Ölçüm: `verify-subject-crop.mjs`
+  (synthetic büst, ~%19 kare alanı) — tam kare grid'de özne yoğunluğu %15.0,
+  kırpılmışta %55.5 (×3.7).
 
 ## GPGPU Simülasyon (Gün 3 — Emre)
 
@@ -1107,6 +1124,13 @@ ayrıca bir sözleşme değişikliği gerekmez.
   `exportPlyBlob` standart 3DGS `.ply` dosyası üretir. Ana araç çubuğundaki
   `PLY` düğmesi D.1 surfel sahnesinindir; eğitim görünümündeki `.ply indir`
   düğmesi eğitilmiş sahnenindir.
+- **Serbest gezinme sınırı (2026-09-26):** WASD kamerası nokta bulutu
+  yarıçapıyla değil, eğitim kameralarının hacmiyle sınırlanır:
+  `Egitim.kameralar` (çekim sırasıyla kamera merkezleri) ve `pivot`'tan
+  kurulan (cam_i, cam_i+1, pivot) üçgen yelpazesi + `FLY_PAY` × medyan
+  kamera–pivot uzaklığı pay (`egitimControls.flySiniri`). Kamera sınıra
+  dayanınca yüzey boyunca kayar. Yörünge modunun yakınlaştırma sınırı
+  değişmedi.
 - GPU profili uygulamada NVIDIA için `standard`/40 kare/10.000 iterasyon,
   diğer adaptörlerde `quick`/24 kare/3.000 iterasyondur. Bu yalnız ölçülmüş
   Intel ve RTX davranışına dayalı temkinli seçimdir; diğer cihazlarda kalite
