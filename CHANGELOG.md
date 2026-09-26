@@ -3,6 +3,37 @@
 Sözleşmeye dokunan her değişiklik buraya yazılır (`ARCHITECTURE.md` kuralı: sessiz sapma yok).
 En yeni üstte.
 
+## 2026-09-26 — 3DGS serbest gezinme: eğitim kameralarının hacmiyle sınırlı
+
+WASD kamerası `1.5 × nokta bulutunun %90 yarıçapı` küresiyle sınırlıydı. Asıl
+kalite uçurumu ise eğitim KAMERALARININ hacmi: dışında fotoğraf kanıtı yok,
+sahne sise ve floater gürültüsüne dönüyor. Ölçüm (RTX, standard/40 kare/10k):
+
+- Deniz feneri yörüngesi (75° yay, kamera–pivot 2.0–2.6): eski sınır 3.93.
+  Yayın 60° ötesi (pivottan 1.96, eski sınırın içinde) tanınmaz gürültü;
+  yayın 25° ötesi bozuk ama okunur; kameralarla özne arası yakın çekim net.
+- St. George (100° yay, kamera–pivot 1.1): eski sınır **29.1** (arka plan
+  noktaları %90 yarıçapı 19'a şişirir), hız 7.3 birim/sn. Kameraların 3 katı
+  uzakta görüntü dağılmış floater yığını.
+
+Yeni sınır (`egitimControls.flySiniri`): çekim sırasıyla (cam_i, cam_i+1,
+pivot) üçgen yelpazesi + `FLY_PAY` (0.35) × medyan kamera–pivot uzaklığı pay;
+pay pivota doğru %10'a incelir (pivot öznenin üstünde, tam pay Q/E ile öznenin
+içine batırıyordu). Kamera sınırda yüzey boyunca kayar; yörüngeden dışarıda
+girilirse içeri serbest, dışarı kapalı (sıçrama yok). Hız ve tekerlek adımı
+artık medyan kamera uzaklığına göre (0.5/sn, St. George'da 7.3 → 0.56).
+`Egitim.yaricap` ve `sahneYaricapi` kaldırıldı, yerine `Egitim.kameralar`.
+Gerçek arayüzde (tutulan WASDQE tuşları) iki sahnede sınıra kadar uçuldu:
+geri/yan/yukarı sınırlarda sahne okunur kalıyor; St. George'da sınırın 1.5
+birim ilerisi zaten çizgili (sınır gereksiz dar değil). Bilinen: kamera
+yüksekliğinin altına pay kadar inilince alt yarı karanlık.
+
+**Floater temizliği (dışa aktarım) YAPILMADI** — bkz.
+`.superpowers/floater-flybound-report.md`: denenen üç süzgeç de ya bilinen iyi
+çıktıyı bozdu (iri ölçek → deniz yüzeyi silindi; <2 kamera → ilk karenin
+kenarında gerçek içerik oyuldu) ya da görünür floater'ı hiç azaltmadı
+(0 kamera → gürültü kadraj İÇİNDE; yalnız kenar dolgusu siyaha döndü).
+
 ## 2026-09-25 — Z1-Z3 (Zeynep): çıktı akışı, yetenek/ön kontrol, mobil düzen
 
 Dördü de aynı kuralın ayakları: **sessiz bozulma yerine sebep.**

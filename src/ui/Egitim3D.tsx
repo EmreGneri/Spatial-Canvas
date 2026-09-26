@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { egitimBaslat, kameraMerkezi, yorunge, type Egitim, type EgitimMetrik } from '../engine/reconstruction/egitim3dgs';
-import { bindWheelZoom, boundedZoomFactor, flyAxes, flyRadius, flyStep, lookAround } from './egitimControls';
+import { bindWheelZoom, boundedZoomFactor, flyAxes, flySiniri, flyStep, lookAround } from './egitimControls';
 import { egitimGpuHint } from './egitimGpuHint';
 import { ayarOzeti, egitimOnKontrol, type OnKontrol } from './egitimOnKontrol';
 import { kunyeMetni, PAYLASIM_KLIP_SN, turAcisi } from './paylasim';
@@ -111,7 +111,7 @@ export function Egitim3D({ dosya, onKapat, say }: { dosya: File; onKapat(): void
       ? lookAround(e.kamera, e.yukari, yaw, pitch)
       : yorunge(e.kamera, e.pivot, e.yukari, yaw, pitch, yakin));
   };
-  const ucusYaricapi = (e: Egitim) => flyRadius(homeDistanceRef.current, e.yaricap);
+  const ucusSiniri = (e: Egitim) => flySiniri(e.kameralar, e.pivot);
 
   useEffect(() => {
     // The preflight view has no canvas; attach the wheel listener after Start.
@@ -123,9 +123,9 @@ export function Egitim3D({ dosya, onKapat, say }: { dosya: File; onKapat(): void
       if (ucusRef.current) {
         // Orbit zoom toward a pivot the camera may no longer face would feel
         // random; in free-fly the wheel dollies along the view instead.
-        const radius = ucusYaricapi(e);
+        const sinir = ucusSiniri(e);
         e.kameraAyarla(flyStep(e.kamera, { forward: factor < 1 ? 1 : -1, right: 0, vertical: 0 },
-          Math.abs(Math.log(factor)) * radius * 0.1, e.pivot, radius, e.yukari));
+          Math.abs(Math.log(factor)) * sinir.olcek * 0.2, sinir, e.yukari));
         return;
       }
       const center = kameraMerkezi(e.kamera);
@@ -146,9 +146,9 @@ export function Egitim3D({ dosya, onKapat, say }: { dosya: File; onKapat(): void
       const e = egitimRef.current;
       const axes = flyAxes(keys);
       if (e && (axes.forward || axes.right || axes.vertical)) {
-        const radius = ucusYaricapi(e);
+        const sinir = ucusSiniri(e);
         const boost = keys.has('ShiftLeft') || keys.has('ShiftRight') ? 3 : 1;
-        e.kameraAyarla(flyStep(e.kamera, axes, radius * 0.25 * boost * dt, e.pivot, radius, e.yukari));
+        e.kameraAyarla(flyStep(e.kamera, axes, sinir.olcek * 0.5 * boost * dt, sinir, e.yukari));
       }
       frame = requestAnimationFrame(tick);
     });
