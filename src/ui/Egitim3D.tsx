@@ -501,7 +501,8 @@ const dugme: CSSProperties = {
   fontFamily: 'inherit', fontSize: 12, padding: '2px 8px', background: '#1a1a22', color: '#c8c8d4',
   border: '1px solid #333', borderRadius: 3, cursor: 'pointer',
 };
+// docs/tasarim-kurallari.md: dokunma hedefleri >= 32 px (Fitts yasası).
 const secim: CSSProperties = {
-  fontFamily: 'inherit', fontSize: 12, padding: '2px 4px', background: '#1a1a22', color: '#c8c8d4',
-  border: '1px solid #333', borderRadius: 3, cursor: 'pointer',
+  fontFamily: 'inherit', fontSize: 12, height: 32, minHeight: 32, padding: '0 6px',
+  background: '#1a1a22', color: '#c8c8d4', border: '1px solid #333', borderRadius: 3, cursor: 'pointer',
 };
