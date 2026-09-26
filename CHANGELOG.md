@@ -3,6 +3,19 @@
 Sözleşmeye dokunan her değişiklik buraya yazılır (`ARCHITECTURE.md` kuralı: sessiz sapma yok).
 En yeni üstte.
 
+## 2026-09-26 — Eğitim Gaussian temizleme API’si
+
+`Egitim.gaussianlar()` eğitim tabanının stride-16 düzenindeki bağımsız
+kopyasını verir. `temizle(indices)` seçilen splatların taban opaklığını
+dışa aktarma eşiğinin altına indirir; etkin deform ve fade tek GPU yazımında
+yeniden uygulanır. Sıfırlama ve klip geri yüklemesi silinenleri canlandırmaz.
+Dönen `geriAl()` belirteci ters işlem sırasıyla bit düzeyinde geri alır.
+`devamEt` temizlenmiş tabandan başlar; eğitici ölü splatları taşıyabildiği
+için devamda eski indeksler ve geri alma belirteçleri kullanılmaz.
+
+Yeni `verify-egitim-cleanup.mjs`, gerçek PLY dışa aktarma ve klip geri
+yükleme yollarını doğrular; standart doğrulama zincirine eklenmiştir.
+
 ## 2026-09-26 — Deformsiz paylaşım klibi
 
 Eğitim ekranındaki deform seçimine `yok` eklendi ve varsayılan yapıldı. Seçim,

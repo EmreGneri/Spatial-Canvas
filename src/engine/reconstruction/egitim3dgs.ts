@@ -253,62 +253,139 @@ export function createGaussianBendController(
     session.trainer.device.queue.writeBuffer(session.trainer.bufParams, 0, data);
     redraw();
   };
+  let current: { spec: DeformSpec; fadeHalfLength: number } = {
+    spec: { kind: 'bend', curvature: 0 }, fadeHalfLength: Infinity,
+  };
+  let revision = 0;
+  const checkReady = () => {
+    if (!canEdit()) throw new Error('Gaussian editing is available after training has finished');
+    if (pending) throw new Error('A bend update is already in progress');
+  };
+  const capture = async () => {
+    if (!snapshot) {
+      const raw = await session.exportRawState();
+      if (!canEdit()) throw new Error('Training session is no longer ready for bending');
+      snapshot = { data: raw.data.slice(0, raw.n * 16), n: raw.n };
+    }
+    return snapshot;
+  };
+  const render = (base: { data: Float32Array; n: number }, spec: DeformSpec, fadeHalfLength: number) => {
+    const identity = isIdentityDeform(spec);
+    const fadeActive = Number.isFinite(fadeHalfLength);
+    if (identity && !fadeActive) {
+      write(base.data);
+    } else {
+      const sceneCenter = typeof center === 'function' ? center() : center;
+      const local = base.data.slice();
+      for (let index = 0; index < base.n; index++) {
+        const offset = index * 16;
+        for (let axis = 0; axis < 3; axis++) local[offset + axis] -= sceneCenter[axis];
+      }
+      const deformed = identity ? local.slice() : deformGaussianBuffer(local, base.n, spec);
+      if (fadeActive) {
+        // Fade reads position/opacity from the PRE-bend `local` snapshot: the
+        // camera-framed region is a scene-relative fact, not something the
+        // bend itself should be able to move splats in or out of.
+        const faded = fadeGaussianOpacity(local, base.n, fadeHalfLength);
+        for (let index = 0; index < base.n; index++) deformed[index * 16 + 13] = faded[index * 16 + 13];
+      }
+      for (let index = 0; index < base.n; index++) {
+        const offset = index * 16;
+        for (let axis = 0; axis < 3; axis++) deformed[offset + axis] += sceneCenter[axis];
+      }
+      write(deformed);
+    }
+  };
   return {
-    /** `fadeHalfLength` (Infinity = off) fades opacity beyond that radius from
-     * `center`, same region source and snapshot as the bend; composed with it
-     * in the one write below, so the two effects never compound across calls. */
+    /** A detached BASE copy; mutations of this copy never affect the session. */
+    async gaussianlar(): Promise<GaussianState> {
+      checkReady();
+      pending = true;
+      try {
+        const base = await capture();
+        return { data: base.data.slice(), n: base.n, stride: 16 };
+      } finally { pending = false; }
+    },
+    async temizle(indices: readonly number[]): Promise<GaussianUndo> {
+      // Copy before readback so callers cannot change the pending selection.
+      const selected = [...new Set(indices)];
+      checkReady();
+      pending = true;
+      try {
+        const base = await capture();
+        for (const index of selected) {
+          if (!Number.isSafeInteger(index) || index < 0 || index >= base.n) {
+            throw new RangeError('Gaussian index must be an integer within the BASE state');
+          }
+        }
+        const previous = selected.map((index) => base.data[index * 16 + 13]);
+        const previousRevision = revision;
+        // logit -20 is well below exportPlyBlob's log(1/254) dead-alpha cut.
+        for (const index of selected) base.data[index * 16 + 13] = -20;
+        try { render(base, current.spec, current.fadeHalfLength); }
+        catch (error) {
+          selected.forEach((index, i) => { base.data[index * 16 + 13] = previous[i]; });
+          throw error;
+        }
+        const tokenRevision = ++revision;
+        let undone = false;
+        return { geriAl: async () => {
+          if (undone) return;
+          if (snapshot !== base) throw new Error('Gaussian undo token expired after training or disposal');
+          checkReady();
+          if (revision !== tokenRevision) throw new Error('Undo Gaussian edits in reverse order');
+          const deleted = selected.map((index) => base.data[index * 16 + 13]);
+          selected.forEach((index, i) => { base.data[index * 16 + 13] = previous[i]; });
+          try { render(base, current.spec, current.fadeHalfLength); }
+          catch (error) {
+            selected.forEach((index, i) => { base.data[index * 16 + 13] = deleted[i]; });
+            throw error;
+          }
+          revision = previousRevision;
+          undone = true;
+        } };
+      } finally { pending = false; }
+    },
+    /** Infinity disables fade; the effects compose in one GPU write. */
     async apply(deform: number | DeformSpec, halfLength = Infinity, frame?: Mat3, fadeHalfLength = Infinity): Promise<void> {
       const spec: DeformSpec = typeof deform === 'number' ? { kind: 'bend', curvature: deform, halfLength, frame } : deform;
       const identity = isIdentityDeform(spec);
       const fadeActive = Number.isFinite(fadeHalfLength);
       if (fadeActive && !(fadeHalfLength > 0)) throw new RangeError('Fade half-length must be positive');
       if (identity && !fadeActive && !active) return;
-      if (!canEdit()) throw new Error('Bend is available after training has finished');
-      if (pending) throw new Error('A bend update is already in progress');
+      checkReady();
       pending = true;
       try {
-        if (!snapshot) {
-          const raw = await session.exportRawState();
-          if (!canEdit()) throw new Error('Training session is no longer ready for bending');
-          snapshot = { data: raw.data.slice(0, raw.n * 16), n: raw.n };
-        }
-        if (identity && !fadeActive) {
-          write(snapshot.data);
-        } else {
-          const sceneCenter = typeof center === 'function' ? center() : center;
-          const local = snapshot.data.slice();
-          for (let index = 0; index < snapshot.n; index++) {
-            const base = index * 16;
-            for (let axis = 0; axis < 3; axis++) local[base + axis] -= sceneCenter[axis];
-          }
-          const deformed = identity ? local.slice() : deformGaussianBuffer(local, snapshot.n, spec);
-          if (fadeActive) {
-            // Fade reads position/opacity from the PRE-bend `local` snapshot: the
-            // camera-framed region is a scene-relative fact, not something the
-            // bend itself should be able to move splats in or out of.
-            const faded = fadeGaussianOpacity(local, snapshot.n, fadeHalfLength);
-            for (let index = 0; index < snapshot.n; index++) deformed[index * 16 + 13] = faded[index * 16 + 13];
-          }
-          for (let index = 0; index < snapshot.n; index++) {
-            const base = index * 16;
-            for (let axis = 0; axis < 3; axis++) deformed[base + axis] += sceneCenter[axis];
-          }
-          write(deformed);
-        }
+        render(await capture(), spec, fadeHalfLength);
+        current = { spec, fadeHalfLength };
         active = !identity || fadeActive;
-      } finally {
-        pending = false;
-      }
+      } finally { pending = false; }
     },
     restoreForTraining(): void {
       if (pending) throw new Error('Wait for the bend update before resuming training');
       if (active && snapshot) write(snapshot.data);
       active = false;
       snapshot = null;
+      current = { spec: { kind: 'bend', curvature: 0 }, fadeHalfLength: Infinity };
     },
     dispose(): void { snapshot = null; active = false; },
   };
 }
+
+/** Detached raw BASE parameters. Each Gaussian occupies 16 floats:
+ * 0..2 world position, 3..5 log scales (exp for world scales),
+ * 6..9 quaternion wxyz, 10..12 DC color, 13 opacity logit (sigmoid for alpha),
+ * 14..15 padding. Indices remain stable until devamEt; no SH data is exposed.
+ * Treat as read-only selection input; writes only change this copy. */
+export interface GaussianState {
+  readonly data: Float32Array;
+  readonly n: number;
+  readonly stride: 16;
+}
+
+/** Undo in reverse edit order; repeated undo is harmless. Tokens expire on
+ * devamEt/kapat because the trainer can relocate dead splats during refinement. */
+export interface GaussianUndo { geriAl(): Promise<void> }
 
 export interface Egitim {
   ayar: EgitimAyari;
@@ -330,6 +407,12 @@ export interface Egitim {
    * active (one write, never compounding); an offline clip renderer can
    * call this directly to default it on without touching UI state. */
   fade(enabled: boolean): Promise<void>;
+  /** Read trained BASE parameters independently of active deform/fade. */
+  gaussianlar(): Promise<GaussianState>;
+  /** Kill BASE splats and reapply effects in one GPU write, after training.
+   * Invalid indices reject the entire selection. devamEt preserves edits
+   * initially but may relocate dead splats: fetch fresh indices afterwards. */
+  temizle(indices: readonly number[]): Promise<GaussianUndo>;
   plyBlob(): Promise<Blob>;
   /** Serbest kamera; `ciz` kanvası bu kamerayla çizer. */
   kamera: GsKamera;
@@ -564,6 +647,8 @@ export async function egitimBaslat(
       fade: (enabled) => applyWithFlagRollback(
         (v) => { fadeOn = v; }, fadeOn, enabled, applyBendAndFade,
       ),
+      gaussianlar: () => bend.gaussianlar(),
+      temizle: (indices) => bend.temizle(indices),
       plyBlob: () => s.exportPlyBlob(),
       kamera,
       pivot,
