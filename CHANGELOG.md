@@ -3,6 +3,36 @@
 Sözleşmeye dokunan her değişiklik buraya yazılır (`ARCHITECTURE.md` kuralı: sessiz sapma yok).
 En yeni üstte.
 
+## 2026-09-26 — nesne ayırma: örnekleme grid'i özneye kırpılır
+
+Grid bütçesi (384×384, 147.456 parçacık, sabit) nesne ayırma AÇIKKEN bile tüm
+fotoğraf karesini kaplıyordu; çizilmeyen (shader/`splatOpacityGate` ile atılan)
+arka plan aynı bütçeyi paylaşıyordu. Özne kare alanının küçük bir kısmıysa
+bütçenin çoğu boşa gidiyordu (ölçüm: gerçek büst fotoğrafında maske %17.9 —
+`verify-curtain.mjs`).
+
+`src/engine/reconstruction/crop.ts` (`applySeparationCrop`) maskenin piksel
+bbox'ını (+ %12 pay) hesaplar ve depth/maske/rgb'yi ÖRNEKLEMEDEN ÖNCE bu
+bbox'a kırpar. Bu, `buildImportanceRemap`'in (14cfdfa/1fd9b87) YAPTIĞI
+şeyden kasıtlı olarak FARKLI bir mekanizma: koordinatı bükmez, girdiyi
+küçültür — grid yine 1:1 düzenli kalır, aynı basıklık/esneme hatasını
+(stretch regresyonu) tekrar açmaz. `verify-photo-geometry.mjs` değişmeden
+0 renk kayması ile geçiyor.
+
+`Engine.setDepth` (fotoğraf dalı, `!videoTexture`) ve nesne ayırma toggle'ı
+(`setObjectSeparation`, güncel depth+maskeyle yeniden örnekler) aynı kırpmayı
+paylaşır: konum, renk/AO ve 'solid' kabuk mesh'i hep aynı bbox'ı görür. Kare
+olmayan fotoğraflarda kısa eksendeki sıkışma da düzelir — dünya en/boy oranı
+artık kırpılmış bölgenin oranından gelir, tam kareninkinden değil. Video/
+kamerada dokunulmaz (bileşen analizini ~10 fps'te tekrarlamamak için).
+
+Ölçüm (`verify-subject-crop.mjs`, sentetik büst ~%19 kare alanı): tam kare
+grid'de özne yoğunluğu %15.0, kırpılmışta %55.5 (×3.7). Gerçek fotoğrafla
+(`assets/thumbnail.jpg`, dev sunucu + tarayıcı) nesne ayırma AÇIK/KAPALI
+karşılaştırması: yüz/gövde yüzeyi belirgin şekilde daha yoğun/pürüzsüz,
+siluet kenarında bozulma yok; Solid ve Splat modları da aynı kırpmayı
+kullandığı için tutarlı kaldı.
+
 ## 2026-09-25 — Z1-Z3 (Zeynep): çıktı akışı, yetenek/ön kontrol, mobil düzen
 
 Dördü de aynı kuralın ayakları: **sessiz bozulma yerine sebep.**

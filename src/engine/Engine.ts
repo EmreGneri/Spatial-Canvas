@@ -50,6 +50,7 @@ import { applyParams, collectParams, type ParamDef, type ParamValues } from './p
 import { activeNodes, createDefaultGraph, topologicalOrder, validateGraph, type Graph } from './graph';
 import { resampleBilinear } from './reconstruction/silhouette.ts';
 import { buildShellMesh, type ShellMeshData } from './reconstruction/mesh.ts';
+import { applySeparationCrop } from './reconstruction/crop.ts';
 import type { CameraPose, MediaType } from './preset';
 
 const MAX_DPR = 2;
@@ -851,6 +852,23 @@ setPointsMaterial(material: THREE.Material) {
     this.pushSharedUniformsAll();
     // The splat gate reads separation on the CPU, so the draw order is stale.
     this.splatObject?.forceResort();
+    // Nesne ayırma AÇIK/KAPALI arasında geçiş, örnekleme grid'inin hangi
+    // bbox'ı kapladığını değiştirir (applySeparationCrop, setDepth'in
+    // içinde) — fotoğraf zaten yüklüyse konum/renk/kabuk güncel
+    // depth+maskeyle yeniden örneklenmeli, aksi halde toggle yalnızca
+    // shader gate'i değiştirir (mevcut grid aynı kalır). Video/kamerada
+    // dokunulmaz: bir sonraki doğal kare zaten kendi setDepth'ini çağırır.
+    if (!this.videoTexture && this.photoData && this.currentDepthTexture) {
+      const img = this.currentDepthTexture.image;
+      this.setDepth(
+        img.data as Float32Array,
+        img.width,
+        img.height,
+        this.lastFgMask ?? undefined,
+        img.width,
+        img.height,
+      );
+    }
   }
 
   /**
@@ -1483,8 +1501,29 @@ if (entry && entry.material !== this.pointsMaterial) {
       this.videoAspect = width / height;
       if (this.renderModes) this.pushSharedUniformsAll();
     }
-    fillPositionsFromDepth(this.homeTexture, data, width, height, {
-      foregroundMask: mask,
+    // NESNE AYIRMA (yoğunluk): grid bütçesi (384×384, sabit) AÇIKKEN bile
+    // tüm kareyi kaplıyordu — özne kare alanının küçük bir kısmıysa (ör.
+    // büst ~%19) bütçenin çoğu, çizilmeyen (splatOpacityGate/shader ile
+    // atılan) arka plana gidiyordu. applySeparationCrop girdiyi özne
+    // bbox'ına (+ pay) kırpar; sampleVolumePositions/sampleImageGrid/
+    // sampleAoGrid'e HİÇ dokunmaz (importanceSampling hâlâ kapalı — bkz.
+    // aşağıdaki not), yalnızca hangi piksel bölgesini örnekledikleri
+    // küçülür. Video/kamerada uygulanmaz (pahalı bileşen analizini 10
+    // fps'te tekrarlamamak için) — yalnızca fotoğraf, `!this.videoTexture`.
+    const crop = applySeparationCrop(
+      {
+        depth: data,
+        depthWidth: width,
+        depthHeight: height,
+        mask,
+        rgb: this.photoData ?? undefined,
+        rgbWidth: this.photoData ? this.photoWidth : undefined,
+        rgbHeight: this.photoData ? this.photoHeight : undefined,
+      },
+      !this.videoTexture && this.objectSeparation,
+    );
+    fillPositionsFromDepth(this.homeTexture, crop.depth, crop.depthWidth, crop.depthHeight, {
+      foregroundMask: crop.mask,
       blend: this.videoTexture ? 1 : this.dynamicHome ? 0.8 : 1,
       // No importance remap for photos either: it bends only the sampling
       // coordinate while world xy stays on the grid, which magnified the
@@ -1500,21 +1539,23 @@ if (entry && entry.material !== this.pointsMaterial) {
 if (this.photoData) {
       fillImageColorTexture(
         this.imageColorTexture!,
-        this.photoData,
-        this.photoWidth,
-        this.photoHeight,
-data,
-        width,
-        height,
-        { foregroundMask: this.lastFgMask ?? undefined },
+        crop.rgb ?? this.photoData,
+        crop.rgbWidth ?? this.photoWidth,
+        crop.rgbHeight ?? this.photoHeight,
+        crop.depth,
+        crop.depthWidth,
+        crop.depthHeight,
+        { foregroundMask: crop.mask },
       );
       // GÜN B ('solid' modu, fotoğraf-only): depth değiştiğinde kabuk mesh'i
       // yeniden kur — aynı siluet + remap + z formülleri (parçacık yüzeyi
       // hizası). Video/kamera yolu setPhoto çağırmaz → bu blok yalnızca
       // fotoğrafta çalışır, video yolunda mesh güncellenmez (ucuz kalır).
+      // Aynı kırpma (crop) burada da uygulanır — mesh, parçacık bulutuyla
+      // aynı bbox'ı görmezse 'solid' modunda yüzey hizası kayar.
       this.setShellGeometry(
-        buildShellMesh(data, width, height, {
-          foregroundMask: this.lastFgMask ?? undefined,
+        buildShellMesh(crop.depth, crop.depthWidth, crop.depthHeight, {
+          foregroundMask: crop.mask,
         }),
       );
     }

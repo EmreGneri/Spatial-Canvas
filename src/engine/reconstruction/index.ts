@@ -32,3 +32,11 @@ export {
   MASK_DILATE_RADIUS,
   MASK_FEATHER_RADIUS,
 } from './silhouette.ts';
+export {
+  computeMaskCropRect,
+  cropChannels,
+  scaleRect,
+  applySeparationCrop,
+  type CropRect,
+  type SeparationCropInput,
+} from './crop.ts';
