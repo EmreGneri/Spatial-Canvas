@@ -128,10 +128,25 @@ export interface EgitimOlaylari {
   hata(e: Error): void;
 }
 
-/** A short quick run ends before the first refinement can grow its seed.
- * Four more thousand iterations put the next refinement inside the extended
- * growth window (measured first refinement: ~2529; cadence: 2500). Quality
- * improvement is experimental until a held-out run is measured. */
+/** splat.js yoğunlaştırması (refine = ölü splat taşıma + büyüme) yalnız
+ * `iter > 1500` ve son refine'dan `refineEvery` (varsayılan 2500) sonra
+ * tetiklenir; varsayılan eğitici `iter < 0.75 × maxIters` iken büyür. 60k
+ * ufka göre seçilmiş 2500 aralığı kısa bütçelerde pencereyi kaçırıyordu:
+ * quick (3k) ilk refine'ı ~2518'de, pencere 2250'de kapanmış — hiç büyüme,
+ * hiç taşıma yok; standard (10k) yalnız 2 büyüme. Aralık bütçeyle ölçeklenir
+ * (quick 375, standard 1250); ölçüm: src/vendor/splat.js/VENDORED.md. */
+export function egitimOturumAyari(ayar: EgitimAyari) {
+  return {
+    maxIters: ayar.maxIters,
+    holdout: 'auto' as const,
+    refineEvery: Math.max(300, Math.round(ayar.maxIters / 8)),
+  };
+}
+
+/** Continuation of a finished quick run: the extended horizon reopens the
+ * growth window (0.75 x new maxIters), so refinements every `refineEvery`
+ * grow the model again. Measured on RTX, one clip: 3k -> 7k took 78k -> 180k
+ * splats and held-out 28.1 -> 29.3 dB; iGPU time cost not yet measured. */
 export const IGPU_CONTINUE_ITERS = 4000;
 
 export function egitimDevamEt(
@@ -212,11 +227,7 @@ export async function egitimBaslat(
   const cekimNot = cekimOzeti(ex);
   if (cekimNot) olay.asama(cekimNot);
 
-  const s = sj.createSession({
-    maxIters: secilen.maxIters,
-    holdout: 'auto',
-    sfm: sj.solveTierOpts(secilen.tier),
-  });
+  const s = sj.createSession({ ...egitimOturumAyari(secilen), sfm: sj.solveTierOpts(secilen.tier) });
   let closed = false;
   let complete = false;
   let trainWatch: ReturnType<typeof setInterval> | null = null;
