@@ -3,6 +3,145 @@
 Sözleşmeye dokunan her değişiklik buraya yazılır (`ARCHITECTURE.md` kuralı: sessiz sapma yok).
 En yeni üstte.
 
+## 2026-09-26 — Z (Zeynep): splat temizleme, mod kalitesi, AR önizleme, hata sınırı, eğitim grafiği
+
+Beş iş, tek ölçüt: **kullanıcı ne olduğunu görsün, düzeltebilsin.**
+
+**Splat temizleme aracı** (`ui/splatSecim.ts`, `ui/SplatTemizleme.tsx`).
+Eğitim/füzyon sonrası havada duran Gaussian'lar ve arka plan artığı çıktıya
+giriyordu. Otomatik filtre DENENDİ ve başarısız oldu (Emre'nin raporu: üç
+filtre de ya gerçek içeriği siliyor ya floater'ı azaltmıyor) — elle seçim tek
+yol. Sahnenin üstünde 2D seçim katmanı: **fırça** (ekran dairesi), **lasso**
+(serbest poligon, içbükey şekiller dahil) ve **küre** (imleç altındaki EN
+YAKIN splat çevresinde dünya küresi — fırçanın aksine ARKADAKİ yüzeyi almaz).
+
+- **Silme = opaklık 0**, diziden çıkarma DEĞİL: indeks kaydırmak D.4 keyframe
+  kimliğini ve sıralama scratch'ini geçersizleştirir, geri almayı imkânsız
+  kılardı. Opaklık kapısı 0'lı splat'ı sıraya hiç almaz, çizim maliyeti de
+  kalkar. Geri alma adım adım ve toplu.
+- **Vurgu GaussianBuffer'ın renk kanalına YAZMAZ** — vurgu yalnız 2D katmanda
+  yaşar, orijinal veri bit bit korunur.
+- **`gez` modu varsayılan**: katman olayları yakalarken kamera kilitleniyordu,
+  oysa floater'ı bulmak için döndürmek gerekiyor. `gez` açıkken katman
+  saydam bir seyirci (`pointerEvents: none`), seçim modlar arasında korunur.
+- **KAPSAM (dürüstlük kaydı):** araç MOTORUN GaussianBuffer'ını temizler. 3D
+  eğitim görünümündeki sahne splat.js'in kendi tamponunda yaşıyor ve dışarıya
+  açılmıyor; **PLY çıktısındaki floater'lar orada.** Eğitim oturumunun
+  Gaussian dizisine bir tutamaç gelince araç aynı mantıkla çalışır
+  (`splatSecim.ts` yalnız bir xyzw dizisi ister).
+- Motor tarafında iki küçük ekleme: `splatViewProjection()` (kamera nesnesi
+  DEĞİL, matris kopyası) ve `commitSplatOpacity()`. `SplatObject.refreshOpacity`
+  bilerek `syncFromTextures` KULLANMAZ — o, keyframe kimliği verilmediğinde
+  D.4 timeline filtresini sessizce düşürüyordu.
+- **Ölçülen kusur ve düzeltmesi:** köprü doldurucusu opaklığı iki seviyeli
+  yazıyor (sentetik sahne: 140.523 splat 0.40, 6.933 splat 1.00). Nesne ayırma
+  açıkken motorun kapısı 0.50'ye çıkıyor, yani o 140 bin splat zaten
+  çizilmiyor. Araç sabit 0.02 eşiğiyle başlamıştı: onları "seçilebilir" sayıp
+  "sil (140.523)" yazacak, silme ekranda hiçbir şey değiştirmeyecekti. Eşik
+  artık motordan okunuyor (`Engine.splatOpacityThreshold`, çizimle AYNI
+  fonksiyon). Tarayıcıda uçtan uca: ayırma açık → çizilen 6.933, "kalan"
+  6.933/147.456, fırça 5.092 seçti, silme sonrası 1.841, geri alma 6.933.
+
+**Render modu varsayılan kalitesi** (`shaders/modKalite.ts`). Altı modun
+post-FX'i kod varsayılanında duruyordu ve o varsayılanlar pratikte KAPALI
+demekti (bloom 0, chromatic 0, grain 0, sis 0). Her mod aynı işlenmemiş
+görüntüyü veriyor, preset kapakları bu yüzden birbirine benziyordu. Her moda
+KENDİ malzemesine göre profil yazıldı; ortak bir "güzel" profil yok, çünkü
+aynı bloom ASCII'de harfleri okunmaz yaparken Neon'da modun bütün esprisi.
+
+Ölçüm "göz kararı" değil: iki sahnede (sentetik + `assets/thumbnail.jpg`),
+320×200 kareden `konuOran` (L > 0.05 piksel oranı) ve `konuDoyg` (yalnız o
+piksellerde doygunluk). Arka plan hariç — kadrajın ~%95'i siyah olduğu için
+genel ortalama farkı gizliyordu. thumbnail.jpg, kapalı → profil:
+
+| mod | konuOran | konuDoyg |
+|---|---|---|
+| Point Cloud | 0.0226 → 0.0306 | 0.415 → 0.455 |
+| ASCII | 0.0188 → 0.0232 | 0.480 → 0.380 (bilerek) |
+| Neon | 0.1919 → 0.5029 | 0.598 → 0.555 |
+| Solid | 0.0255 → 0.0287 | 0.292 → 0.283 |
+| Splat | 0.0238 → 0.0293 | 0.425 → 0.459 |
+| Crystal | 0.0239 → 0.0260 | 0.175 → 0.228 |
+
+Konu kapsamı altı modda da arttı, kırpılan piksel oranı altısında da %0.
+Solid'in kazancı ölçüm sınırında — o modda post-FX'in yapabileceği az, dürüst
+kayıt bu. **Kullanıcının ayarı kaybolmaz:** moddan çıkarken o modun değerleri
+oturumluk hafızaya alınır, aynı moda dönünce profil değil KULLANICININ ayarı
+uygulanır.
+
+**Grain pass — negatif ışık kelepçesi** (`shaders/grainPass.ts`). Yol boyunca
+çıktı: `uContrast` 0.5 etrafında dönüyor ve pass LİNEER uzayda çalışıyor;
+sahnenin siyah zemini lineer ~0.003, yani 1'in biraz üstündeki her kontrast
+onu EKSİYE düşürüyor. Ara tampon kayan noktalı olduğu için eksi değer hayatta
+kalıyor ve OutputPass'in sRGB `pow`'u tanımsız sonuç veriyordu. **Ölçüldü
+(ASCII, sentetik sahne): kontrast 1.05'te zemin 0.035, 1.18'de 0.34 — yani
+kontrastı ARTIRMAK zemini AYDINLATIYORDU.** Tek satır kelepçe
+(`max(col.rgb, 0.0)`) bunu kesiyor. **GÖRÜNÜR ETKİ:** varsayılan kontrast
+1.05'te siyah zemin artık gerçekten siyah (eskiden 9/255 griye kalkıyordu);
+kayıtlı preset'ler bu yüzden biraz daha kontrastlı görünecek. Kelepçeden sonra
+bile kontrast > 1 sönük KONU piksellerini siyaha düşürdüğü için (Point Cloud
+konu kapsamı 0.0060 → 0.0049) hiçbir mod profilinde kontrast 1'in üstünde
+değil; istenen güç pozlama ve doygunlukla alındı.
+
+**AR/VR hızlı önizleme** (`ui/arDurum.ts`, `ui/ArDugmesi.tsx`,
+`Engine.xrOturumuAc`). `immersive-ar` yoksa `immersive-vr` denenir — masaüstü
+başlığı kullanıcısına "AR yok" demek yanlış bilgi olurdu. Desteklenmeyen
+cihazda düğme GİZLENMEZ, kapalı ve sebepli durur (gizli düğme "bu uygulamada
+AR yok" gibi okunur, oysa sorun cihazda). Tarayıcıya özel yol: iOS'ta "başka
+tarayıcı dene" DENMEZ — hepsi aynı motoru kullanıyor, WebXR hiçbirinde yok;
+onun yerine gerçek alternatif (.ply indir) yazılır. Android'de ARCore ve https
+koşulu söylenir. Güvenli bağlam (https/localhost) ayrıca kontrol edilir.
+
+**XR'da post-FX KAPALI** ve bu onboarding'de YAZILI (sessiz sapma yok):
+EffectComposer tek kameralı tam ekran quad'larla çalışır, XR'da iki göz ve her
+karede güncellenen bir XR kamera dizisi var; quad zinciri sahneyi XR poziyla
+çizmez. Oturum boyunca sahne doğrudan çizilir ve OrbitControls kapatılır
+(dokunmatik jest hem XR poziyle hem taban kamerayla oynarsa çıkışta sahne
+başka yerde bulunur); oturum bitince ikisi de geri alınır.
+
+**React hata sınırı** (`ui/hataMesaji.ts`, `ui/HataSinir.tsx`). Render ağacı
+çökünce ekran beyaz kalıyordu. Sınır yığın izi göstermez; hatayı TANIDIĞI
+sınıfa oturtur ve o sınıfın kurtarma yolunu verir. Sınıflar gerçek olaylardan:
+`onbellek` (transformers-cache'e HTML düşmüş → "Unexpected token '<'";
+yenileme TEK BAŞINA yetmez, ayrı silme düğmesi var), `webgl` (bağlam kaybı /
+shader), `bellek`, `bilinmeyen` (hatanın KENDİ metni gösterilir — "bir şeyler
+ters gitti" tek başına kullanıcıyı kör bırakır). **React yalnız RENDER içindeki
+hatayı görür**, bu yüzden `window` üzerindeki `error` ve `unhandledrejection`
+de dinlenir: motor döngüsündeki hata sahneyi dondurup arayüzü ayakta
+bırakıyordu. "Yeniden dene" ağacı `key` ile GERÇEKTEN yeniden mount eder.
+Sınır `main.tsx`'te App'in DIŞINDA — App'in kendi mount'u (Engine kurulumu)
+çökerse de yakalanır. Tarayıcıda doğrulandı: sahte `error` olayı → doğru
+sınıf + adımlar + üç düğme, "yeniden dene" sonrası motor ve tuval geri geldi.
+
+**Eğitim ilerleme grafiği** (`ui/egitimIlerleme.ts`, `ui/EgitimGrafik.tsx`).
+Kullanıcı yalnız "eğitiliyor" ve bir yüzde görüyordu; yüzde GEÇEN ZAMANI
+söyler, KALİTEYİ söylemez. Trainer zaten iterasyon başına PSNR + Gaussian
+sayısı basıyordu (`olay.metrik`) — eksik olan tek şey onu çizmekti. Transport
+şeridinin ALTINDA (şeridin içinde değil: grafik kumanda değil DURUM) SVG
+polyline; kütüphane yok. X ekseni 0..BÜTÇE, son iterasyona kadar değil — bitişe
+ne kadar kaldığı görünsün (hedef-gradyanı etkisi). Y ekseni serinin kendi
+aralığı; sabit 0..50'de 1 dB'lik tırmanış düz çizgi gibi görünürdü. PSNR
+gelmeden nokta EKLENMEZ (0 dB uydurmak eğriyi yalan bir dipten başlatır).
+Seri 240 noktada yarıya SEYRELTİLİR — en eskiyi atmak eğrinin en dik yerini
+keserdi. Yanında dB/1k-iterasyon eğimi: "sürdür +4.000" kararı buna bakar.
+Emre'nin densification düzeltmesiyle quick katmanda artık gerçek büyüme verisi
+üretiliyor, grafik onu gösterir.
+
+**Transport şeridi düzen hatası.** Orta blok `flex: 1, minWidth: 0` idi; flex
+ona sıfıra kadar küçülme izni veriyordu, mod seçici **47 px'lik bir sütuna
+çöküp** altı düğmeyi alt alta diziyor ve şeridi **432 px** yüksekliğe
+çıkarıyordu (ölçüldü). `flex: '1 1 auto'` ile blok kendi içeriğinden dar olmaz,
+sığmazsa şeridin `flexWrap`'i devreye girer: şerit **148 px**, üç temiz satır.
+
+**Doğrulama:** `npm run verify` 70 → **75** (yeni: `verify-hata-siniri`,
+`verify-splat-temizleme`, `verify-egitim-ilerleme`, `verify-ar-onizleme`,
+`verify-mod-kalite`), hepsi geçiyor. `npm run typecheck` temiz.
+
+**Açık kalan:** eğitim grafiği gerçek bir eğitim koşusunda görülmedi (verify
+seri/kadraj matematiğini kanıtlıyor, kablo denetimi geri çağrıyı kanıtlıyor);
+AR oturumu gerçek cihazda denenmedi (masaüstünde WebXR yok — durum mantığı ve
+bypass sözleşmesi verify'da).
+
 ## 2026-09-25 — Z1-Z3 (Zeynep): çıktı akışı, yetenek/ön kontrol, mobil düzen
 
 Dördü de aynı kuralın ayakları: **sessiz bozulma yerine sebep.**

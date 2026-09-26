@@ -24,6 +24,19 @@ import { useDarEkran } from './ui/useDarEkran';
 import { bosluk, cam, dugme as temaDugme, led, MONO, renk, SANS, yaricap, yazi, yuzey } from './ui/tema';
 import { YetenekUyarisi } from './ui/YetenekUyarisi';
 import { Egitim3D } from './ui/Egitim3D';
+import { EgitimGrafik } from './ui/EgitimGrafik';
+import { seriEkle, type GrafikNoktasi } from './ui/egitimIlerleme';
+import { SplatTemizleme } from './ui/SplatTemizleme';
+import { ArDugmesi } from './ui/ArDugmesi';
+import {
+  girisDegerleri, KALITE_GRUPLARI, type KaliteGrubu, type ModHafizasi,
+} from './shaders/modKalite';
+import { BLOOM_PARAMS } from './shaders/bloomPass';
+import { CHROMATIC_PARAMS } from './shaders/chromaticPass';
+import { GRAIN_PARAMS } from './shaders/grainPass';
+import { LOOK_PARAMS } from './shaders/look';
+import { applyParams, type ParamDef } from './engine/params';
+import * as THREE from 'three';
 import { type TrackedTarget, type TrackerModu } from './engine/vision/tracker';
 import { TrackerClient } from './engine/vision/trackerClient';
 import {
@@ -222,6 +235,12 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
   // kendisini ister, <video> öğesini değil) ve eğitimi süren dosya.
   const [videoDosya, setVideoDosya] = useState<File | null>(null);
   const [egitimDosya, setEgitimDosya] = useState<File | null>(null);
+  /** 3D eğitim kalite eğrisi — transport şeridinin altında çizilir. */
+  const [egitimSeri, setEgitimSeri] = useState<GrafikNoktasi[]>([]);
+  const [egitimHedef, setEgitimHedef] = useState(0);
+  const [egitimBitti, setEgitimBitti] = useState(false);
+  /** Splat temizleme aracı açık mı (sahnenin üstünde seçim katmanı). */
+  const [temizlemeAcik, setTemizlemeAcik] = useState(false);
   // CapturePanel (hızlı 3B harita) kendi Depth Anything çıkarımını koşar —
   // splat.js eğitimiyle aynı WebGPU cihazını paylaşır. İkisi eşzamanlı
   // koşarsa DXGI_ERROR_DEVICE_HUNG riski var (VENDORED.md koruma 4); bu
@@ -279,6 +298,10 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
     // Gün 3: crystal video kaynağında da çizsin — splat varyantı ORTAK
     // uniform nesnelerini kullanır, ayrı knob seti yoktur.
     engine.setCrystalSplatMaterial(createCrystalSplatMaterial(materials.crystal));
+    // BAŞLANGIÇ MODU da profilini alır. Yalnız `changeMode`'a bağlasaydık
+    // uygulama ilk açılışta (points) post-FX'siz görünür, kullanıcı bir mod
+    // değiştirip geri gelmeden farkı göremezdi.
+    modKaliteUygula('points');
     engine.setPointsMaterial(materials.points);
     // Z3 (yerleşim): motorun tuvali AKIŞTAN çıkarılır. Sebep ölçüldü —
     // konteynere `aspect-ratio` verildiğinde tuval kendi CSS yüksekliğiyle
@@ -1085,6 +1108,63 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
    * ④ editör tazelenir — üç kol da birbirinin değişikliğini görür.
    */
   /**
+   * MOD BAŞINA POST-FX HAFIZASI (oturumluk). Kalıcı olması istenirse preset
+   * kaydı zaten var; her mod geçişini localStorage'a yazmak, kullanıcının
+   * bir kez denediği bir ayarı kalıcı hale getirirdi.
+   */
+  const modHafizaRef = useRef<ModHafizasi>({});
+
+  /** Post-FX gruplarının canlı uniform sözlükleri — tek yerde toplanır. */
+  function kaliteHedefleri(engine: Engine): Record<KaliteGrubu, {
+    defs: ParamDef[]; uniforms: Record<string, THREE.IUniform>;
+  }> {
+    return {
+      bloom: { defs: BLOOM_PARAMS, uniforms: engine.bloomUniforms as unknown as Record<string, THREE.IUniform> },
+      chromatic: { defs: CHROMATIC_PARAMS, uniforms: engine.chromaticUniforms as unknown as Record<string, THREE.IUniform> },
+      grain: { defs: GRAIN_PARAMS, uniforms: engine.grainUniforms as unknown as Record<string, THREE.IUniform> },
+      look: { defs: LOOK_PARAMS, uniforms: engine.lookUniforms as unknown as Record<string, THREE.IUniform> },
+    };
+  }
+
+  /** ParamDef listelerinin kendi `default` alanları — tek doğruluk kaynağı. */
+  function kaliteVarsayilanlari(engine: Engine): Record<KaliteGrubu, Record<string, number>> {
+    const hedef = kaliteHedefleri(engine);
+    const out = {} as Record<KaliteGrubu, Record<string, number>>;
+    for (const g of KALITE_GRUPLARI) {
+      out[g] = {};
+      for (const d of hedef[g].defs) {
+        // Renk kolları profile girmez (mod kalitesi bir RENK kararı değil).
+        if (d.kind !== 'color') out[g][d.key] = d.default;
+      }
+    }
+    return out;
+  }
+
+  function modHafizaYaz(m: RenderMode) {
+    const engine = engineRef.current;
+    if (!engine) return;
+    const hedef = kaliteHedefleri(engine);
+    const kayit = {} as Record<KaliteGrubu, Record<string, number>>;
+    for (const g of KALITE_GRUPLARI) {
+      kayit[g] = {};
+      for (const d of hedef[g].defs) {
+        const u = hedef[g].uniforms[d.key];
+        if (d.kind !== 'color' && typeof u?.value === 'number') kayit[g][d.key] = u.value;
+      }
+    }
+    modHafizaRef.current[m] = kayit;
+  }
+
+  function modKaliteUygula(m: RenderMode) {
+    const engine = engineRef.current;
+    if (!engine) return;
+    const hedef = kaliteHedefleri(engine);
+    const degerler = girisDegerleri(m, modHafizaRef.current, kaliteVarsayilanlari(engine));
+    for (const g of KALITE_GRUPLARI) applyParams(hedef[g].defs, hedef[g].uniforms, degerler[g]);
+    refreshPanel();
+  }
+
+  /**
    * Mod değiştirmenin GÜNCEL referansı. `changeMode` her render'da yeniden
    * oluşur ve içindeki `mode` o render'ın değeridir; uzun süren bir iş
    * (preset kapağı üretimi) sırasında yakalanan kopya bayatlar ve
@@ -1097,8 +1177,14 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
     const engine = engineRef.current;
     if (!engine) return;
     if (next === mode) return;
+    // MOD BAŞINA POST-FX (shaders/modKalite.ts). Çıkarken o modun o anki
+    // değerleri hafızaya alınır, girerken hafıza varsa O uygulanır — yani
+    // kullanıcının bir modda yaptığı ayar, başka modu gezip dönünce yerinde
+    // durur. Sıra önemli: önce YAZ, sonra OKU.
+    modHafizaYaz(mode);
     engine.setPointsMaterial(materials[next]);
     engine.selectRenderMode(next);
+    modKaliteUygula(next);
     setMode(next);
     setGraphTick((t) => t + 1);
     // Solid kabuk fotoğraf-only: sessiz fallback yerine sebebi söylenir.
@@ -1357,7 +1443,17 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
             rAF döngüsü de çalışmaz. Gün 2 akşam sync: mock veri yerine
             gerçek tracker.ts — kaynak yoksa (fotoğraf modu) boş dizi döner. */}
         {egitimDosya && (
-          <Egitim3D dosya={egitimDosya} onKapat={() => setEgitimDosya(null)} say={say} />
+          <Egitim3D
+            dosya={egitimDosya}
+            onKapat={() => setEgitimDosya(null)}
+            say={say}
+            onIlerleme={(m, hedef, bittiMi) => {
+              if (!m) { setEgitimSeri([]); setEgitimHedef(0); setEgitimBitti(false); return; }
+              setEgitimHedef(hedef);
+              if (bittiMi) setEgitimBitti(true);
+              setEgitimSeri((seri) => seriEkle(seri, m));
+            }}
+          />
         )}
         {trackerOn && (
           <TrackerOverlay
@@ -1383,6 +1479,12 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
             <span>işleniyor…</span>
           </div>
         )}
+        {/* SPLAT TEMİZLEME — seçim katmanı sahnenin üstünde (TrackerOverlay ile
+            aynı desen: WebGL sahnesinin DIŞINDA, 2D kanvas). Kapalıyken hiç
+            mount edilmez, kendi rAF döngüsü de çalışmaz. */}
+        {engine && temizlemeAcik && !egitimDosya && (
+          <SplatTemizleme engine={engine} say={say} onKapat={() => setTemizlemeAcik(false)} />
+        )}
         {showMask && (
           <canvas
             ref={segOverlayRef}
@@ -1405,7 +1507,31 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
               onReset={() => { say('sıfırlandı: efektler, look ve kamera başlangıç değerlerinde (görsel korundu)'); refreshPanel(); }}
             />
           }
-          cikti={<ExportBar engine={engine} say={say} />}
+          cikti={
+            <>
+              <ExportBar engine={engine} say={say} />
+              {/* AR/VR önizleme ÇIKTI bloğunda: sahneyi başka bir yere
+                  taşıyan işlemler burada toplanır (PNG · WebM · PLY · AR). */}
+              <ArDugmesi engine={engine} sahneVar={!egitimDosya} say={say} />
+            </>
+          }
+          araclar={
+            <button
+              type="button"
+              style={{ ...temaDugme(temizlemeAcik), opacity: engine.splatAvailable ? 1 : 0.45 }}
+              disabled={!engine.splatAvailable || !!egitimDosya}
+              aria-pressed={temizlemeAcik}
+              title={engine.splatAvailable
+                ? 'floater/arka plan artığını elle seç ve sil (geri alınabilir)'
+                : 'splat sahnesi yok — önce splat modu ya da füzyon gerekiyor'}
+              onClick={() => setTemizlemeAcik((v) => !v)}
+            >
+              ⌫ temizle
+            </button>
+          }
+          altSatir={egitimDosya
+            ? <EgitimGrafik seri={egitimSeri} hedefIter={egitimHedef} bitti={egitimBitti} />
+            : undefined}
         />
       )}
       </div>

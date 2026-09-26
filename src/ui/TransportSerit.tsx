@@ -22,6 +22,8 @@ export function TransportSerit({
   mod,
   modlar,
   cikti,
+  araclar,
+  altSatir,
 }: {
   engine: { setSuspended: (s: boolean) => void } | null;
   fps: number;
@@ -31,6 +33,14 @@ export function TransportSerit({
   modlar: ReactNode;
   /** Sağ blok: çıktı şeridi (ExportBar). */
   cikti: ReactNode;
+  /** Sol bloğa eklenen sahne araçları (splat temizleme düğmesi gibi). */
+  araclar?: ReactNode;
+  /**
+   * Şeridin ALTINA gelen tam genişlikte satır (3D eğitim ilerleme grafiği).
+   * Şeridin İÇİNE değil ALTINA: grafik bir kumanda değil, DURUM — kumandaların
+   * arasına girerse hangi düğmenin neyi yaptığı yine okunmaz olur.
+   */
+  altSatir?: ReactNode;
 }) {
   const [durdu, setDurdu] = useState(false);
 
@@ -62,11 +72,19 @@ export function TransportSerit({
         <span style={{ fontFamily: MONO, fontSize: yazi.kucuk, color: fps >= 30 ? renk.metinSolgun : renk.uyari }}>
           {durdu ? '—' : `${fps} fps`}
         </span>
+        {araclar}
       </div>
 
-      <div style={{ ...blok, flex: 1, minWidth: 0 }}>{modlar}</div>
+      {/* `minWidth: 0` DENENDİ VE KALDIRILDI. Flex ona sıfıra kadar küçülme
+          izni veriyordu: mod seçici 47 px'lik bir sütuna çöküp altı düğmeyi
+          alt alta diziyor, şerit 432 px yüksekliğe çıkıyordu (ölçüldü).
+          `1 1 auto` ile blok kendi içeriğinden dar olmaz; sığmazsa şeridin
+          kendi `flexWrap`'i devreye girer ve blok BÜTÜN olarak alt satıra iner. */}
+      <div style={{ ...blok, flex: '1 1 auto' }}>{modlar}</div>
 
       <div style={blok}>{cikti}</div>
+
+      {altSatir && <div style={{ flexBasis: '100%', minWidth: 0 }}>{altSatir}</div>}
     </div>
   );
 }
