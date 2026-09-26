@@ -158,6 +158,8 @@ export class Engine {
    * kurar ve renkler parÃ§acÄ±klardan kayar (GÃ¼n B).
    */
   private lastFgMask: Float32Array | null = null;
+  /** Fotoğraf kırpmasının gerçek alan oranı (tam / kırpık); ayırma düğmesinden tahmin edilmez. */
+  private neonCropDensity = 1;
   private lastFrameTime = 0;
   private suspended = false;
   private frameCount = 0;
@@ -820,6 +822,10 @@ setPointsMaterial(material: THREE.Material) {
     if (u['uObjectSeparation']) {
       u['uObjectSeparation'].value = this.objectSeparation ? 1 : 0;
     }
+    if (u['uCropDensity']) {
+      u['uCropDensity'].value = !this.videoTexture && this.objectSeparation
+        ? this.neonCropDensity : 1;
+    }
     if (u['uUseTextureColor']) {
       u['uUseTextureColor'].value = this.useTextureColor ? 1 : 0;
     }
@@ -948,6 +954,7 @@ setPointsMaterial(material: THREE.Material) {
    * varsa uHasImage yeniden 1 olur; yoksa derinlik rampasÄ±na dÃ¼ÅŸÃ¼lÃ¼r.
    */
 releasePhoto() {
+    this.neonCropDensity = 1;
     this.imageColorTexture?.dispose();
     this.imageColorTexture = null;
     this.photoData = null;
@@ -1610,6 +1617,11 @@ if (entry && entry.material !== this.pointsMaterial) {
       },
       !this.videoTexture && this.objectSeparation,
     );
+    const cropDensity = (width * height) / (crop.depthWidth * crop.depthHeight);
+    if (cropDensity !== this.neonCropDensity) {
+      this.neonCropDensity = cropDensity;
+      if (this.renderModes) this.pushSharedUniformsAll();
+    }
     fillPositionsFromDepth(this.homeTexture, crop.depth, crop.depthWidth, crop.depthHeight, {
       foregroundMask: crop.mask,
       blend: this.videoTexture ? 1 : this.dynamicHome ? 0.8 : 1,

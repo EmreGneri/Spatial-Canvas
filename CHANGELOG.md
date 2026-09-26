@@ -3,6 +3,25 @@
 Sözleşmeye dokunan her değişiklik buraya yazılır (`ARCHITECTURE.md` kuralı: sessiz sapma yok).
 En yeni üstte.
 
+## 2026-09-26 — Neon: nesne ayırma kırpmasında eşik telafisi
+
+Nesne ayırma kırpması grid'i özneye sıkıştırdığında neon yakın planda dolu
+kütle çiziyordu. Engine artık gerçek kırpma alan oranını (tam alan / kırpık
+alan) `uCropDensity` olarak yalnızca fotoğraf + nesne ayırma açıkken yollar;
+shader Sobel eşiğini bu oranla çarpar. Kullanıcının `uEdgeThreshold` değeri
+değişmez. Kırpmasız fotoğraf, video ve canlı yolda katsayı 1'dir ve çıktı
+bit düzeyinde aynıdır (960×600 GPU karelerinde doğrulandı).
+
+Ölçüm (960×600, sabit yakın plan kamera, kırpık neon kapsaması):
+thumbnail 0.0407 → 0.0252 (kırpmasız 0.0237), özüm 0.0425 → 0.0282
+(kırpmasız 0.0244). Alternatif sqrt(alan oranı) 0.0331 / 0.0349'da kaldı ve
+büstün göğüs/yüz içini hâlâ dolduruyordu; alan oranı silüeti koruyup iç
+yüzeyi tel çizgiye döndürdü.
+
+Yeni `verify-neon-crop.mjs` gerçek kırpma katsayısını, ayırma kapalı / maskesiz /
+tam kare maske / video-canlı durumlarında 1'e dönüşü doğrular; standart
+doğrulama zincirine eklenmiştir.
+
 ## 2026-09-26 — Eğitim Gaussian temizleme API’si
 
 `Egitim.gaussianlar()` eğitim tabanının stride-16 düzenindeki bağımsız
