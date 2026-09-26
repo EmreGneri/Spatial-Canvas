@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import * as egitim from '../src/engine/reconstruction/egitim3dgs.ts';
-import { bendFrame, deformGaussianBuffer } from '../src/engine/reconstruction/gaussianDeform.ts';
+import { bendFrame, deformGaussianBuffer, fadeGaussianOpacity } from '../src/engine/reconstruction/gaussianDeform.ts';
 
 const { createGaussianBendController, bendSceneFrame } = egitim;
 
@@ -145,5 +145,53 @@ const someFrame = bendFrame('yukari', [0, 1, 0], [0, 0, 1]);
 await frameBend.apply(0.3, 2, someFrame);
 const expectedFramed = deformGaussianBuffer(frameOriginal, 1, 0.3, 2, someFrame);
 nearArray(frameWrites.at(-1), expectedFramed, 'bend controller applies the supplied frame via deformGaussianBuffer', 1e-6);
+
+// ── Far-background fade (Task 2): threaded through the same controller,
+// one write per update, composing with whatever bend is active. ──────────
+{
+  const gaussian = (x, y, z, logitOpacity = 0.4) =>
+    [x, y, z, Math.log(0.1), Math.log(0.1), Math.log(0.1), 1, 0, 0, 0, 0.1, 0.2, 0.3, logitOpacity, 5, 6];
+  const fadeSource = new Float32Array([
+    ...gaussian(0, 0, 0), // inside
+    ...gaussian(10, 0, 0), // far outside along the bend spine
+  ]);
+  const fadeWrites = [];
+  const fadeSession = {
+    trainer: { device: { queue: { writeBuffer(_buffer, _offset, data) { fadeWrites.push(new Float32Array(data)); } } }, bufParams: {} },
+    async exportRawState() { return { data: fadeSource.slice(), n: 2 }; },
+  };
+  const fadeBend = createGaussianBendController(fadeSession, () => true, () => {});
+  const opacityOf = (logit) => 1 / (1 + Math.exp(-logit));
+
+  // Fade alone (no bend): only opacity of the far splat changes; position/scale/etc untouched.
+  await fadeBend.apply(0, Infinity, undefined, 3);
+  const faded = fadeWrites.at(-1);
+  assert.deepEqual(faded.slice(0, 13), fadeSource.slice(0, 13), 'fade-only: inside splat fully untouched');
+  near(faded[13], fadeSource[13], 'fade-only: inside opacity unchanged', 0);
+  assert.ok(opacityOf(faded[29]) < opacityOf(fadeSource[29]), 'fade-only: far splat opacity reduced');
+  assert.deepEqual(faded.slice(16, 29), fadeSource.slice(16, 29), 'fade-only: far splat position/scale/rotation/DC untouched');
+
+  // Turning fade off restores exactly (bit-identical), same as bend zero.
+  await fadeBend.apply(0, Infinity, undefined, Infinity);
+  assert.deepEqual(fadeWrites.at(-1), fadeSource, 'fade off restores the exact trainer parameters');
+
+  // Fade composes with an active bend in ONE write (no compounding): the
+  // written opacity must match applying the fade to the PRE-bend distances,
+  // and the position must match the plain bend (fade never touches position).
+  const region = egitim.bendRegion([[3, 0, 0], [3, 0, 0]], [0, 0, 0], 1);
+  const frame = bendFrame('yana', [0, 1, 0], [0, 0, -1]);
+  await fadeBend.apply(region.curvature, region.halfLength, frame, 3);
+  const combined = fadeWrites.at(-1);
+  const plainBend = deformGaussianBuffer(fadeSource, 2, region.curvature, region.halfLength, frame);
+  const expectedFadeOnly = fadeGaussianOpacity(fadeSource, 2, 3);
+  nearArray(combined.slice(0, 3), plainBend.slice(0, 3), 'combined: bend still moves positions');
+  near(combined[13], expectedFadeOnly[13], 'combined: inside opacity from fade applied to pre-bend distance', 1e-6);
+  near(combined[29], expectedFadeOnly[29], 'combined: far opacity from fade applied to pre-bend distance', 1e-6);
+  assert.equal(fadeWrites.length, 3, 'exactly one write per apply() call (bend+fade composed, never compounding)');
+
+  // Zero everything restores exactly again.
+  await fadeBend.apply(0, Infinity, undefined, Infinity);
+  assert.deepEqual(fadeWrites.at(-1), fadeSource, 'zero bend + fade off restores exact trainer parameters');
+}
 
 console.log('3DGS post-training bend integration: OK');

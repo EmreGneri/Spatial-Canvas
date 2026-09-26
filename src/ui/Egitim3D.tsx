@@ -36,6 +36,9 @@ export function Egitim3D({ dosya, onKapat, say }: { dosya: File; onKapat(): void
   const [bendStrength, setBendStrength] = useState(0);
   const [bendDirection, setBendDirection] = useState<BendDirection>('yana');
   const [bendBusy, setBendBusy] = useState(false);
+  // Off by default in normal viewing; the offline clip renderer (Task 5) turns
+  // it on by calling `Egitim.fade` directly, not through this UI state.
+  const [fadeOn, setFadeOn] = useState(false);
   /** Z1 — paylaşım klibi kaydı sürüyor mu (kalan saniye). */
   const [klipKalan, setKlipKalan] = useState<number | null>(null);
   /** Eğitimin gerçek süresi — künyeye girer. */
@@ -277,6 +280,7 @@ export function Egitim3D({ dosya, onKapat, say }: { dosya: File; onKapat(): void
     try {
       const target = e.devamEt();
       setBendStrength(0);
+      setFadeOn(false);
       setGpu((current) => current ? { ...current, iter: target } : current);
       setBitti(false);
       setHata(null);
@@ -295,6 +299,21 @@ export function Egitim3D({ dosya, onKapat, say }: { dosya: File; onKapat(): void
       await e.bend(strength, direction);
       setBendStrength(strength);
       setBendDirection(direction);
+      setHata(null);
+    } catch (error) {
+      setHata(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBendBusy(false);
+    }
+  }
+
+  async function applyFade(enabled: boolean) {
+    const e = egitimRef.current;
+    if (!e || bendBusy) return;
+    setBendBusy(true);
+    try {
+      await e.fade(enabled);
+      setFadeOn(enabled);
       setHata(null);
     } catch (error) {
       setHata(error instanceof Error ? error.message : String(error));
@@ -427,6 +446,22 @@ export function Egitim3D({ dosya, onKapat, say }: { dosya: File; onKapat(): void
           </label>
         )}
         {bitti && (
+          <label
+            style={{ display: 'flex', alignItems: 'center', gap: 4, minHeight: 32 }}
+            title="Bükme ile aynı özne bölgesinin dışında, uzaklıkla birlikte saydamlaşır"
+          >
+            <input
+              type="checkbox"
+              style={{ width: 18, height: 18 }}
+              aria-label="Arka plan saydamlaşması"
+              checked={fadeOn}
+              disabled={bendBusy || plyBusy}
+              onChange={(event) => void applyFade(event.target.checked)}
+            />
+            arka plan saydamlaşması
+          </label>
+        )}
+        {bitti && (
           <button
             style={dugme}
             disabled={klipKalan !== null}
@@ -451,6 +486,7 @@ export function Egitim3D({ dosya, onKapat, say }: { dosya: File; onKapat(): void
               setMetrik(null);
               setBitti(false);
               setBendStrength(0);
+              setFadeOn(false);
               setAsama('başlıyor');
               setStarted(false);
             }}

@@ -13,7 +13,7 @@
 
 import { segmentForeground } from './segmentation.ts';
 import { prepareSubjectFrames } from './subjectTrainingMasks.ts';
-import { bendFrame, deformGaussianBuffer, type BendDirection, type Mat3 } from './gaussianDeform.ts';
+import { bendFrame, deformGaussianBuffer, fadeGaussianOpacity, type BendDirection, type Mat3 } from './gaussianDeform.ts';
 
 export type { BendDirection } from './gaussianDeform.ts';
 
@@ -208,9 +208,14 @@ export function createGaussianBendController(
     redraw();
   };
   return {
-    async apply(curvature: number, halfLength = Infinity, frame?: Mat3): Promise<void> {
+    /** `fadeHalfLength` (Infinity = off) fades opacity beyond that radius from
+     * `center`, same region source and snapshot as the bend; composed with it
+     * in the one write below, so the two effects never compound across calls. */
+    async apply(curvature: number, halfLength = Infinity, frame?: Mat3, fadeHalfLength = Infinity): Promise<void> {
       if (!Number.isFinite(curvature)) throw new RangeError('Bend curvature must be finite');
-      if (curvature === 0 && !active) return;
+      const fadeActive = Number.isFinite(fadeHalfLength);
+      if (fadeActive && !(fadeHalfLength > 0)) throw new RangeError('Fade half-length must be positive');
+      if (curvature === 0 && !fadeActive && !active) return;
       if (!canEdit()) throw new Error('Bend is available after training has finished');
       if (pending) throw new Error('A bend update is already in progress');
       pending = true;
@@ -220,7 +225,7 @@ export function createGaussianBendController(
           if (!canEdit()) throw new Error('Training session is no longer ready for bending');
           snapshot = { data: raw.data.slice(0, raw.n * 16), n: raw.n };
         }
-        if (curvature === 0) {
+        if (curvature === 0 && !fadeActive) {
           write(snapshot.data);
         } else {
           const sceneCenter = typeof center === 'function' ? center() : center;
@@ -229,14 +234,21 @@ export function createGaussianBendController(
             const base = index * 16;
             for (let axis = 0; axis < 3; axis++) local[base + axis] -= sceneCenter[axis];
           }
-          const deformed = deformGaussianBuffer(local, snapshot.n, curvature, halfLength, frame);
+          const deformed = curvature !== 0 ? deformGaussianBuffer(local, snapshot.n, curvature, halfLength, frame) : local.slice();
+          if (fadeActive) {
+            // Fade reads position/opacity from the PRE-bend `local` snapshot: the
+            // camera-framed region is a scene-relative fact, not something the
+            // bend itself should be able to move splats in or out of.
+            const faded = fadeGaussianOpacity(local, snapshot.n, fadeHalfLength);
+            for (let index = 0; index < snapshot.n; index++) deformed[index * 16 + 13] = faded[index * 16 + 13];
+          }
           for (let index = 0; index < snapshot.n; index++) {
             const base = index * 16;
             for (let axis = 0; axis < 3; axis++) deformed[base + axis] += sceneCenter[axis];
           }
           write(deformed);
         }
-        active = curvature !== 0;
+        active = curvature !== 0 || fadeActive;
       } finally {
         pending = false;
       }
@@ -261,6 +273,12 @@ export interface Egitim {
    * (`bendRegion`); zero restores the exact trained state. `direction`
    * picks the free bend axis (`bendSceneFrame`), default 'yana'. */
   bend(strength: number, direction?: BendDirection): Promise<void>;
+  /** Far-background opacity fade, off by default: beyond the same
+   * camera-framed region as `bend` (`bendRegion`), opacity fades out
+   * smoothly with distance from the pivot. Composes with whatever bend is
+   * active (one write, never compounding); an offline clip renderer can
+   * call this directly to default it on without touching UI state. */
+  fade(enabled: boolean): Promise<void>;
   plyBlob(): Promise<Blob>;
   /** Serbest kamera; `ciz` kanvası bu kamerayla çizer. */
   kamera: GsKamera;
@@ -430,6 +448,16 @@ export async function egitimBaslat(
     const noktalar: Vec3[] = s.recon.points.map((p: { X: Vec3 }) => p.X);
     const pivot = bakisMerkezi(s.recon.cams, medyanNokta(noktalar));
     bendPivot = pivot;
+    // Last-applied bend/fade settings: both `bend` and `fade` re-issue the
+    // combined controller call, since they share one snapshot and one write.
+    let currentBendStrength = 0;
+    let currentBendDirection: BendDirection = 'yana';
+    let fadeOn = false;
+    const applyBendAndFade = () => {
+      const region = bendRegion(e.kameralar, pivot, currentBendStrength);
+      const frame = bendSceneFrame(currentBendDirection, e.yukari, pivot, e.kameralar[0] ?? pivot);
+      return bend.apply(region.curvature, region.halfLength, frame, fadeOn ? region.halfLength : Infinity);
+    };
 
     const e: Egitim = {
       ayar: secilen,
@@ -438,6 +466,9 @@ export async function egitimBaslat(
         if (closed) throw new Error('Training session is closed');
         if (!complete) throw new Error('Training has not finished yet');
         bend.restoreForTraining();
+        currentBendStrength = 0;
+        currentBendDirection = 'yana';
+        fadeOn = false;
         complete = false;
         try {
           const target = egitimDevamEt(s, secilen, moreIters);
@@ -453,9 +484,13 @@ export async function egitimBaslat(
         if (!Number.isFinite(strength) || Math.abs(strength) > 1) {
           throw new RangeError('Bend strength must be between -1 and 1');
         }
-        const region = bendRegion(e.kameralar, pivot, strength);
-        const frame = bendSceneFrame(direction, e.yukari, pivot, e.kameralar[0] ?? pivot);
-        return bend.apply(region.curvature, region.halfLength, frame);
+        currentBendStrength = strength;
+        currentBendDirection = direction;
+        return applyBendAndFade();
+      },
+      fade: async (enabled) => {
+        fadeOn = enabled;
+        return applyBendAndFade();
       },
       plyBlob: () => s.exportPlyBlob(),
       kamera,

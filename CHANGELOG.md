@@ -3,6 +3,30 @@
 Sözleşmeye dokunan her değişiklik buraya yazılır (`ARCHITECTURE.md` kuralı: sessiz sapma yok).
 En yeni üstte.
 
+## 2026-09-26 — 3DGS uzak arka plan solması
+
+Bükme ile aynı özne bölgesi (`bendRegion`, kameraların pivota medyan
+uzaklığı) dışında kalan Gaussian'ların opaklığı uzaklıkla düzgün ve
+tekdüze (monoton) azalır; bölge içi tamamen dokunulmamış kalır — kapatınca
+bayt bayt aynı eğitilmiş duruma döner. `gaussianDeform.ts`'e
+`fadeGaussianOpacity` eklendi: yalnızca 16'lık şeritteki opaklık logit'ini
+(indeks 13) değiştirir, `1 / (1 + (fazla/yarıUzunluk)²)` çarpanıyla —
+bölge sınırında türevi sıfır (süreklilik), hiçbir splat'i sıfıra kilitlemez.
+
+`createGaussianBendController.apply` artık isteğe bağlı dördüncü bir
+`fadeHalfLength` parametresi alıyor; solma, bükmeden ÖNCEKİ (merkezlenmiş)
+konumlardan hesaplanıp bükülmüş arabelleğin opaklığına uygulanıyor — tek
+anlık görüntü, tek yazma, katlanma yok. `Egitim.fade(enabled)` bükmeyle
+aynı API'de dışa açıldı (klip render'ı Task 5'te UI'ya dokunmadan
+doğrudan çağırabilir); `Egitim3D.tsx`'e bükme kaydırıcısının yanına 18 px
+onay kutusu eklendi, varsayılan kapalı.
+
+Gerçek sahne kontrolü (St George, eğitilmiş sahne, 205k splat): solma
+açıkken heykel (özne) tam kalıyor, arkasındaki bina/gökyüzü karanlığa
+gömülüyor; bükmeyle birleşince ikisi de aynı anda görünüyor; kapatıp
+sıfırlayınca piksel/bayt eşit
+(`.superpowers/sdd/2026-09-26-deform-effects/shots/t2-*.png`).
+
 ## 2026-09-26 — 3DGS bükme: serbest eksen/yön (yukarı kıvrılma)
 
 Bükme ekseni artık ilk kameranın (SfM gauge'unun rastgele seçtiği) dikey
