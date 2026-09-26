@@ -14,7 +14,17 @@ import { ayarSec, type EgitimAyari } from '../engine/reconstruction/egitim3dgs';
  * after the preflight choice; unmount releases the GPU session. The training
  * rasterizer renders its own scene, independent of the engine's render modes.
  */
-export function Egitim3D({ dosya, onKapat, say }: { dosya: File; onKapat(): void; say(m: string): void }) {
+export function Egitim3D({ dosya, onKapat, say, onIlerleme }: {
+  dosya: File;
+  onKapat(): void;
+  say(m: string): void;
+  /**
+   * İlerleme ÜST KATMANA da verilir: grafik transport şeridinin altında,
+   * eğitim tuvalinin DIŞINDA çiziliyor (bkz. EgitimGrafik). `null` = seri
+   * sıfırlanır (yeni deneme, kapanış).
+   */
+  onIlerleme?(m: EgitimMetrik | null, hedefIter: number, bitti?: boolean): void;
+}) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const egitimRef = useRef<Egitim | null>(null);
   const homeDistanceRef = useRef(0);
@@ -56,6 +66,12 @@ export function Egitim3D({ dosya, onKapat, say }: { dosya: File; onKapat(): void
   // her render eğitimi baştan başlatır. Ref üzerinden çağrılır.
   const sayRef = useRef(say);
   sayRef.current = say;
+  // `say` ile aynı sebep: her render'da yeni fonksiyon geliyor, effect
+  // bağımlılığı olsaydı eğitim baştan başlardı.
+  const ilerlemeRef = useRef(onIlerleme);
+  ilerlemeRef.current = onIlerleme;
+  /** Bütçe metrikten ÖNCE bilinir (ayar geri çağrısı); grafiğin X ekseni bu. */
+  const hedefIterRef = useRef(0);
 
   // Ön ayar ekranı açılır açılmaz cihaz sorulur: WebGPU var mı, hangi GPU
   // seçilir, hangi ayar katmanı uygulanır. Eskiden bu ancak "başlat"tan
@@ -85,12 +101,17 @@ export function Egitim3D({ dosya, onKapat, say }: { dosya: File; onKapat(): void
     const controller = new AbortController();
     const t0 = performance.now();
     egitimBaslat(dosya, canvasRef.current!, {
-      ayar: (selected) => { if (!iptal) setGpu({ ad: selected.gpu, entegre: selected.entegreGpu, iter: selected.maxIters }); },
+      ayar: (selected) => {
+        if (iptal) return;
+        hedefIterRef.current = selected.maxIters;
+        setGpu({ ad: selected.gpu, entegre: selected.entegreGpu, iter: selected.maxIters });
+      },
       asama: (m) => { if (!iptal) setAsama(m); },
-      metrik: (m) => { if (!iptal) setMetrik(m); },
+      metrik: (m) => { if (iptal) return; setMetrik(m); ilerlemeRef.current?.(m, hedefIterRef.current); },
       bitti: (m) => {
         if (iptal) return;
         setBitti(true);
+        ilerlemeRef.current?.(m, hedefIterRef.current, true);
         sureRef.current = (performance.now() - t0) / 1000;
         sayRef.current(`3D eğitim bitti · ${Math.round((performance.now() - t0) / 1000)} sn · ` +
           `${m?.splats.toLocaleString('tr-TR') ?? '?'} Gaussian · test ${subjectOnly ? 'özne ' : ''}PSNR ${m?.psnrHold?.toFixed(1) ?? '?'}`);
@@ -111,6 +132,8 @@ export function Egitim3D({ dosya, onKapat, say }: { dosya: File; onKapat(): void
       controller.abort();
       egitimRef.current?.kapat();
       egitimRef.current = null;
+      // Seri bu oturuma aittir: yeni deneme eskisinin eğrisi üstüne çizmesin.
+      ilerlemeRef.current?.(null, 0);
     };
   }, [dosya, started, subjectOnly]);
 
@@ -261,6 +284,7 @@ export function Egitim3D({ dosya, onKapat, say }: { dosya: File; onKapat(): void
       const target = e.devamEt();
       setBendStrength(0);
       setFadeOn(false);
+      hedefIterRef.current = target;
       setGpu((current) => current ? { ...current, iter: target } : current);
       setBitti(false);
       setHata(null);

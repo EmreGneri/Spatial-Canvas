@@ -112,6 +112,11 @@ export class Engine {
    */
   private objectSeparation = false;
   /**
+   * XR (AR/VR) oturumu SUNUYOR mu. Açıkken post-FX zinciri BYPASS edilir —
+   * sebebi `xrOturumuAc`'ta yazılı.
+   */
+  private xrSunuyor = false;
+  /**
    * Renk modu (Tur 12 â€” ÅŸikayet 3): AÃ‡IK (varsayÄ±lan) â†’ parÃ§acÄ±k rengi
    * doÄŸrudan gÃ¶rselin RGB dokusundan; KAPALI â†’ dokular yok sayÄ±lÄ±r, renk
    * saÄŸ paneldeki Near/Far derinlik gradyanÄ±ndan tÃ¼retilir.
@@ -429,7 +434,17 @@ export class Engine {
         );
       }
       this.tickPasses(time / 1000);
-      this.composer.render();
+      if (this.xrSunuyor) {
+        // XR'DA POST-FX YOK — ve bu bir eksiklik değil, zincirin yapısı.
+        // EffectComposer TEK kamerayla, tam ekran quad'lar üzerinden çalışır;
+        // XR'da iki göz ve her karede güncellenen bir XR kamera dizisi var.
+        // Quad zinciri sahneyi XR pozuyla çizmez, eski kareyi iki göze birden
+        // yamar. Sahne doğrudan çizilir; kullanıcıya AR onboarding'inde
+        // "efektler kapalı" YAZILIR (sessiz sapma yok).
+        this.renderer.render(this.scene, this.camera);
+      } else {
+        this.composer.render();
+      }
       // ÇİZİM SONRASI KANCA — konumu KRİTİK. `preserveDrawingBuffer` kapalı
       // olduğu için çizim tamponu yalnızca render ile kompozit arasında
       // geçerlidir (export.ts'teki aynı kural). Kanca dışarıdan bir rAF
@@ -1082,6 +1097,79 @@ releasePhoto() {
   /** Sahnedeki keyframe sayısı (timeline uzunluğu). */
   get keyframeCount(): number {
     return Math.max(this.poseTrack.length, this.splatObject?.keyframeCount ?? 0);
+  }
+
+  /**
+   * Z — SPLAT TEMİZLEME (src/ui/SplatTemizleme.tsx) için İKİ KANCA.
+   *
+   * 1. `splatViewProjection` — seçim, splat merkezlerini ekran uzayına
+   *    projekte eder. Kamera nesnesi DIŞARI VERİLMEZ (private kalır); yalnız
+   *    o karenin görünüm-izdüşüm matrisinin bir KOPYASI çıkar. Böylece UI
+   *    kamerayı yanlışlıkla hareket ettiremez.
+   * 2. `commitSplatOpacity` — UI, `gaussianSnapshot().a` üzerinde YERİNDE
+   *    opaklığı 0'a çektikten sonra çağırır. Opaklık kapısı (splatSort ·
+   *    minOpacity) 0'lı splat'ı sıraya hiç almaz, yani çizim de durur.
+   *
+   * `null` = sahnede splat yok (fotoğraf modu); UI aracı hiç açmaz.
+   */
+  splatViewProjection(): Float32Array | null {
+    if (!this.splatObject?.ready) return null;
+    this.camera.updateMatrixWorld();
+    this.camera.updateProjectionMatrix();
+    const m = new THREE.Matrix4().multiplyMatrices(
+      this.camera.projectionMatrix,
+      this.camera.matrixWorldInverse,
+    );
+    return Float32Array.from(m.elements);
+  }
+
+  commitSplatOpacity() {
+    this.splatObject?.refreshOpacity();
+  }
+
+  /**
+   * Z — ETKİN OPAKLIK KAPISI. Temizleme aracının "görünür" tanımı çizimin
+   * tanımıyla AYNI olmalı.
+   *
+   * ÖLÇÜLDÜ (sentetik sahne): köprü doldurucusu opaklığı İKİ SEVİYELİ yazıyor
+   * — 140.523 splat 0.40 (arka plan), 6.933 splat 1.00 (ön plan). Nesne
+   * ayırma AÇIKKEN kapı 0.50'ye çıkıyor, yani o 140 bin splat zaten
+   * çizilmiyor. Araç sabit 0.02 eşiğiyle çalışsaydı onları "seçilebilir"
+   * sayar, "sil (140.523)" yazar ve silme ekranda HİÇBİR ŞEY değiştirmezdi.
+   */
+  get splatOpacityThreshold(): number {
+    return splatOpacityGate(this.splatMinOpacity, this.objectSeparation, this.gaussianSource);
+  }
+
+  /**
+   * Z — AR/VR HIZLI ÖNİZLEME. Verilen XRSession'ı renderer'a bağlar; three.js
+   * `setAnimationLoop`'u oturumun kendi kare döngüsüne geçirir, yani mevcut
+   * döngü OLDUĞU GİBİ çalışmaya devam eder (ayrı bir rAF kurulmaz).
+   *
+   * Oturum boyunca:
+   *  - post-FX BYPASS edilir (render döngüsündeki gerekçeye bak),
+   *  - OrbitControls kapatılır: dokunmatik jest hem XR poziyle hem taban
+   *    kamerayla oynarsa çıkışta sahne başka bir yerde bulunur.
+   * Oturum bitince ikisi de geri alınır ve `resize` ekran tamponunu tazeler
+   * (XR kendi çözünürlüğünü kurmuş olur).
+   */
+  async xrOturumuAc(session: XRSession): Promise<void> {
+    this.renderer.xr.enabled = true;
+    await this.renderer.xr.setSession(session);
+    this.xrSunuyor = true;
+    this.controls.enabled = false;
+    const bitti = () => {
+      this.xrSunuyor = false;
+      this.renderer.xr.enabled = false;
+      this.controls.enabled = true;
+      this.resize();
+    };
+    session.addEventListener('end', bitti, { once: true });
+  }
+
+  /** XR oturumu sürüyor mu — UI düğmeyi buna göre kilitler. */
+  get xrSunumda(): boolean {
+    return this.xrSunuyor;
   }
 
   /** Splat modu çizilebilir mi (GaussianBuffer dolu)? UI bunu söyler. */

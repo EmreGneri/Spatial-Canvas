@@ -27,3 +27,4 @@ public/*.MOV
 public/*.mov
 public/*.mp4
 assets/test-clips/
+.claude/
