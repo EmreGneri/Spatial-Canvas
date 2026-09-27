@@ -221,3 +221,190 @@ export function engelUzakligi(p: Vec3, tohum: number = VARSAYILAN_TOHUM): number
   }
   return en;
 }
+
+// ── analitik ışın kesişimi (GT derinlik kaynağı) ─────────────────────────
+//
+// Sözleşme: `isinKes` `d`'yi İÇERİDE normalize eder ve en yakın kesişimin
+// GERÇEK ÖKLİD uzaklığını döner (t parametresi = |d| birimiyle DEĞİL);
+// yani `isinKes(o, d)` ile `isinKes(o, k·d)` (k > 0) aynı sonucu verir. Hiç
+// kesişim yoksa Infinity. Bu, `gtDerinlik`'in piksel yönünü (kamera-uzayı
+// z=1 olacak şekilde, yani birim değil) doğrudan besleyip sonucu
+// `× cos(açı)` ile derinliğe çevirmesini basitleştirir (bkz. aşağı).
+
+const ISIN_EPS = 1e-6;
+
+/** A·t² + B·t + C = 0 köklerini küçükten büyüğe sıralı döner; yoksa null.
+ * A ≈ 0 ise doğrusala düşer (tek kök, iki kere tekrarlanır). */
+function ikinciDerece(A: number, B: number, C: number): [number, number] | null {
+  if (Math.abs(A) < 1e-12) {
+    if (Math.abs(B) < 1e-12) return null;
+    const t = -C / B;
+    return [t, t];
+  }
+  const disk = B * B - 4 * A * C;
+  if (disk < 0) return null;
+  const kok = Math.sqrt(disk);
+  const t1 = (-B - kok) / (2 * A);
+  const t2 = (-B + kok) / (2 * A);
+  return t1 <= t2 ? [t1, t2] : [t2, t1];
+}
+
+/** Gövdenin sonlu yan yüzeyi (silindir ekseni dünya y ekseni — dikey). */
+function govdeYanKes(o: Vec3, u: Vec3, n: Govde): number {
+  const dx = o[0] - n.x, dz = o[2] - n.z;
+  const A = u[0] * u[0] + u[2] * u[2];
+  if (A < 1e-12) return Infinity; // ışın eksene paralel: yan yüzeyi kesmez
+  const B = 2 * (dx * u[0] + dz * u[2]);
+  const C = dx * dx + dz * dz - n.r * n.r;
+  const kokler = ikinciDerece(A, B, C);
+  if (!kokler) return Infinity;
+  const yMin = n.y - n.yukseklik / 2, yMax = n.y + n.yukseklik / 2;
+  for (const t of kokler) {
+    if (t > ISIN_EPS) {
+      const yAt = o[1] + t * u[1];
+      if (yAt >= yMin && yAt <= yMax) return t;
+    }
+  }
+  return Infinity;
+}
+
+/** Gövdenin üst ya da alt kapağı (y = yDuzlem düzleminde disk, yarıçap r). */
+function govdeKapakKes(o: Vec3, u: Vec3, n: Govde, yDuzlem: number): number {
+  if (Math.abs(u[1]) < 1e-12) return Infinity;
+  const t = (yDuzlem - o[1]) / u[1];
+  if (t <= ISIN_EPS) return Infinity;
+  const xAt = o[0] + t * u[0], zAt = o[2] + t * u[2];
+  const dx = xAt - n.x, dz = zAt - n.z;
+  if (dx * dx + dz * dz > n.r * n.r) return Infinity;
+  return t;
+}
+
+/** Gövde: yan yüzey + üst kapak + alt kapak (renderer `openEnded=false` ile
+ * her ikisini de çizer — bkz. sentetikCizim.ts `CylinderGeometry`). Ucuz
+ * ret testi: ışının sonsuz doğrusuna gövdenin sınırlayıcı küresinden uzaksa
+ * atlanır. */
+function govdeKes(o: Vec3, u: Vec3, n: Govde): number {
+  const merkezVek: Vec3 = [n.x - o[0], n.y - o[1], n.z - o[2]];
+  const boyuna = merkezVek[0] * u[0] + merkezVek[1] * u[1] + merkezVek[2] * u[2];
+  const dikeyKareUzaklik =
+    merkezVek[0] * merkezVek[0] + merkezVek[1] * merkezVek[1] + merkezVek[2] * merkezVek[2]
+    - boyuna * boyuna;
+  const sinirR = Math.hypot(n.r, n.yukseklik / 2);
+  if (dikeyKareUzaklik > sinirR * sinirR) return Infinity;
+
+  let en = govdeYanKes(o, u, n);
+  const ust = govdeKapakKes(o, u, n, n.y - n.yukseklik / 2);
+  if (ust < en) en = ust;
+  const alt = govdeKapakKes(o, u, n, n.y + n.yukseklik / 2);
+  if (alt < en) en = alt;
+  return en;
+}
+
+/** Çalı: tam küre. */
+function caliKes(o: Vec3, u: Vec3, n: Cali): number {
+  const dx = o[0] - n.x, dy = o[1] - n.y, dz = o[2] - n.z;
+  const B = 2 * (dx * u[0] + dy * u[1] + dz * u[2]);
+  const C = dx * dx + dy * dy + dz * dz - n.r * n.r;
+  const disk = B * B - 4 * C; // A = 1 (u birim)
+  if (disk < 0) return Infinity;
+  const kok = Math.sqrt(disk);
+  const t1 = (-B - kok) / 2, t2 = (-B + kok) / 2;
+  if (t1 > ISIN_EPS) return t1;
+  if (t2 > ISIN_EPS) return t2;
+  return Infinity;
+}
+
+/** Zemin: y = ZEMIN_Y düzlemi, [xMin,xMax] × [zMin,zMax] ile sınırlı. */
+function zeminKes(o: Vec3, u: Vec3, n: Zemin): number {
+  if (Math.abs(u[1]) < 1e-12) return Infinity;
+  const t = (ZEMIN_Y - o[1]) / u[1];
+  if (t <= ISIN_EPS) return Infinity;
+  const xAt = o[0] + t * u[0], zAt = o[2] + t * u[2];
+  if (xAt < n.xMin || xAt > n.xMax || zAt < n.zMin || zAt > n.zMax) return Infinity;
+  return t;
+}
+
+/** Fon: z = n.z (FON_Z) düzlemi, [xMin,xMax] × [yMin,yMax] ile sınırlı. */
+function fonKes(o: Vec3, u: Vec3, n: Fon): number {
+  if (Math.abs(u[2]) < 1e-12) return Infinity;
+  const t = (n.z - o[2]) / u[2];
+  if (t <= ISIN_EPS) return Infinity;
+  const xAt = o[0] + t * u[0], yAt = o[1] + t * u[1];
+  if (xAt < n.xMin || xAt > n.xMax || yAt < n.yMin || yAt > n.yMax) return Infinity;
+  return t;
+}
+
+/** `u` zaten birim varsayılarak sahnedeki en yakın pozitif kesişimi bulur. */
+function enYakinKesisim(o: Vec3, u: Vec3, sahne: SahneVerisi): number {
+  let en = Infinity;
+  for (const n of sahne.nesneler) {
+    let t: number;
+    if (n.tur === 'govde') t = govdeKes(o, u, n);
+    else if (n.tur === 'cali') t = caliKes(o, u, n);
+    else if (n.tur === 'zemin') t = zeminKes(o, u, n);
+    else t = fonKes(o, u, n);
+    if (t < en) en = t;
+  }
+  return en;
+}
+
+/**
+ * `o`'dan `d` yönünde fırlatılan ışının sahnedeki en yakın kesişimine
+ * ÖKLİD uzaklığı (`d` içeride normalize edilir — büyüklüğü sonucu etkilemez).
+ * Kesişim yoksa Infinity. Nesneler: gövde (sonlu dikey silindir yan yüzeyi +
+ * iki kapak), çalı (küre), zemin/fon (sınırlı düzlemler) — `sentetikCizim.ts`
+ * ile birebir aynı geometri.
+ */
+export function isinKes(o: Vec3, d: Vec3, tohum: number = VARSAYILAN_TOHUM): number {
+  const uzunluk = Math.hypot(d[0], d[1], d[2]);
+  if (!(uzunluk > 0)) return Infinity;
+  const u: Vec3 = [d[0] / uzunluk, d[1] / uzunluk, d[2] / uzunluk];
+  return enYakinKesisim(o, u, sahneTanimi(tohum));
+}
+
+/**
+ * Her piksel merkezinden (`u = x + 0.5`, `v = y + 0.5`) kamera ışını
+ * fırlatıp analitik GT derinliğini (kamera-uzayı z, IŞIN UZUNLUĞU DEĞİL)
+ * hesaplar. `w`/`h` `k.w`/`k.h`'ten farklıysa içsel parametreler oranla
+ * ölçeklenir. Kesişim yoksa Infinity. Row-major, uzunluk `w*h`.
+ *
+ * Derinlik = ışın uzunluğu × optik eksene açının kosinüsü: piksel yönü
+ * kamera uzayında `dCam = ((u−cx)/f, (v−cy)/fy, 1)`; `dCam`'i normalize
+ * edip `Rᵀ` ile dünyaya taşıyınca hem `isinKes`'e verilecek birim yön hem
+ * de kosinüs (`dCam`'in normalize z bileşeni, yani `1/|dCam|`) tek geçişte
+ * çıkar — `C = -Rᵀt` kamera merkezi.
+ */
+export function gtDerinlik(
+  k: GsKamera, w: number = k.w, h: number = k.h, tohum: number = VARSAYILAN_TOHUM,
+): Float32Array {
+  const out = new Float32Array(w * h);
+  const sahne = sahneTanimi(tohum);
+  const { R, t } = k;
+  const C: Vec3 = [
+    -(R[0] * t[0] + R[3] * t[1] + R[6] * t[2]),
+    -(R[1] * t[0] + R[4] * t[1] + R[7] * t[2]),
+    -(R[2] * t[0] + R[5] * t[1] + R[8] * t[2]),
+  ];
+  const olcekX = w / k.w, olcekY = h / k.h;
+  const f = k.f * olcekX;
+  const fy = (k.fy ?? k.f) * olcekY;
+  const cx = k.cx * olcekX;
+  const cy = k.cy * olcekY;
+
+  let idx = 0;
+  for (let y = 0; y < h; y++) {
+    const dvy = (y + 0.5 - cy) / fy;
+    for (let x = 0; x < w; x++, idx++) {
+      const dcx = (x + 0.5 - cx) / f;
+      const kameraUzunluk = Math.hypot(dcx, dvy, 1); // |dCam|, z bileşeni 1
+      const kosinus = 1 / kameraUzunluk; // dCam'in normalize z'si = optik eksene açının kosinüsü
+      const bx = dcx * kosinus, by = dvy * kosinus, bz = kosinus; // birim kamera yönü
+      const wx = R[0] * bx + R[3] * by + R[6] * bz;
+      const wy = R[1] * bx + R[4] * by + R[7] * bz;
+      const wz = R[2] * bx + R[5] * by + R[8] * bz;
+      const isinUzunlugu = enYakinKesisim(C, [wx, wy, wz], sahne);
+      out[idx] = isinUzunlugu === Infinity ? Infinity : isinUzunlugu * kosinus;
+    }
+  }
+  return out;
+}
