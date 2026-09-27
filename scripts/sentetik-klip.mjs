@@ -25,8 +25,12 @@ function bicimBayt(n) {
 }
 
 async function klipBekle(page) {
+  // NOT: `waitForFunction(fn, opts)` iki argümanla çağrılırsa ikinci argümanı
+  // `arg` sanır (options değil) — üçüncü konumda geçmek gerekir, yoksa
+  // varsayılan 30 sn zaman aşımı sessizce devreye girer.
   await page.waitForFunction(
     () => Boolean(window.__klip) || Boolean(window.__klipHata),
+    undefined,
     { timeout: ZAMAN_ASIMI_MS, polling: 250 },
   );
   const hata = await page.evaluate(() => window.__klipHata ?? null);
