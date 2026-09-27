@@ -127,6 +127,26 @@ KORUNUR — seç → gez → doğrula → sil akışı bozulmaz.
 kapalı kalır ve sebebi söylenir. Gizli düğme kullanıcıya "bu uygulamada bu
 özellik yok" der; oysa doğru bilgi "bu CİHAZDA yok" ve çoğu zaman bir yol var.
 
+## Son denetim — 3. tur (2026-09-27)
+
+| kural | bulgu | sonuç |
+|---|---|---|
+| Fitts / Jakob | 3DGS kontrol şeridinde `flexWrap` yoktu: 800 px'de **5 düğme** (600 px'de 6) kadraj dışına taşıyordu, klip ve .ply hiç tıklanamıyordu | sarma açıldı · 800 px'de 0 taşan, şerit 86 px; 1400 px'te tek satır 48 px (gerileme yok) |
+| Yakınlık | temizleme düğmesi çıktı düğmelerinden sonra duruyordu | `.ply indir`in ÖNÜNE alındı — floater çıktı alınmadan ayıklanır |
+| Zeigarnik | uzun süren oturum çağrısında düğme hâlâ basılabilir görünüyordu | işlem sürerken kilit + `…` göstergesi |
+| Benzerlik | araç iki farklı sahnede çalışıyor, hangisinde olduğu belirsizdi | şerit başlığı sahneyi yazıyor ("temizle · motor" / "temizle · 3D eğitim") |
+
+**Taşma kuralı (yeni).** Sahnenin üstüne oturan her kontrol şeridi `flexWrap`
+ile gelir. Ölçüldü: sarmayan bir şeritte esneyen bir durum metni, kendisinden
+sonraki düğmeleri sessizce kadraj dışına itiyor — düğme görünmüyor ama DOM'da
+duruyor, yani ne kullanıcı ne de bir yükseklik denetimi fark ediyor. Sığmayan
+kontrol alt satıra inmeli; hiçbir koşulda gizlenmemeli.
+
+**Ödünç alınan sözleşme kuralı (yeni).** Başka bir katmanın API'si arayüze
+bağlanırken onun KISITLARI da arayüze işlenir: tek işlem → düğme kilidi, ters
+sıralı geri alma → yığın, süresi dolan jeton → görünür hata. Kısıt yalnız
+belgede kalırsa arayüz onu er geç çiğner.
+
 ## Denetim listesi (yeni arayüz işinden önce)
 
 1. Yeni kontrol ≥ 32 px mi, etiketi var mı? (Fitts)
@@ -139,3 +159,6 @@ kapalı kalır ve sebebi söylenir. Gizli düğme kullanıcıya "bu uygulamada b
 8. Sahnenin üstüne olay yakalayan katman koyuyorsam `gez` modu var mı ve
    varsayılan mı? (Araç modu kuralı)
 9. Cihazda olmayan bir yetenek için düğmeyi gizliyor muyum? (Kapalı düğme kuralı)
+10. Yeni kontrol şeridi dar pencerede sarıyor mu? (Taşma kuralı)
+11. Başka katmanın API'sini bağlıyorsam kısıtları arayüzde görünür mü?
+    (Ödünç alınan sözleşme kuralı)

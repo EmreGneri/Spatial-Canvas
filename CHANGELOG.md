@@ -263,6 +263,98 @@ Jacobian'da cephe kesintisiz eğri yüzey kalır. Bilinen: -90° yönünde derin
 arka plan eksen arkasında ince bir kabuğa sıkışır ve bulanık görünür; +90°'de
 uzak arka plan kavis boyunca yatay uzar.
 
+## 2026-09-27 — Z (Zeynep): temizleme 3DGS'e bağlandı, neon yeniden ayarlandı, eğitim şeridi taşması
+
+Veri katmanının 5220205 raporundaki dört maddenin karşılığı.
+
+**Splat temizleme 3DGS oturumuna bağlandı** (`ui/gsKamera.ts`,
+`ui/temizlemeKaynagi.ts`). Araç bugüne kadar yalnız MOTORUN GaussianBuffer'ını
+temizliyordu; PLY çıktısındaki floater'lar eğitim oturumunun kendi tamponunda
+duruyordu. `gaussianlar()` / `temizle()` / `geriAl()` geldi, bağlandı.
+
+İki dünya arasında iki çeviri gerekti:
+- **Kamera.** Seçim mantığı three.js sözleşmesiyle çalışıyor (kolon-major
+  görünüm-izdüşüm, `wClip > 0` = önde). `GsKamera` ise COLMAP: R SATIR sıralı
+  dünya→kamera, **y AŞAĞI, z İLERİ**, piksel içsel parametreleri.
+  `gsGorunumIzdusumu` matrisi doğrudan pinhole eşitliğinden türetiyor
+  (`clip.w = z_cam` seçilerek), böylece aracın geri kalanı DEĞİŞMEDEN iki
+  sahnede de çalışıyor. y işareti bir kez çevriliyor; iki kez çevrilseydi
+  seçim dikey aynalanır ve kullanıcı tıkladığının simetriğini silerdi —
+  verify bunu ayrı bir iddia olarak tutuyor.
+- **Kadraj.** Eğitim tuvali `object-fit: contain`; izdüşüm kameranın kendi
+  piksel ölçüsünde. İmleç eleman koordinatından kamera pikseline çevriliyor ve
+  fırça yarıçapı AYNI ölçeğe bölünüyor — x ve y ayrı ölçeklenseydi fırça
+  dairesi elips olurdu.
+
+Oturumun üç sözleşmesi araca işlendi: **kopya önbelleğe alınır** (fırça her
+`pointermove`'da okuyor, her seferinde GPU geri okuması yapılsaydı araç
+kullanılamazdı; silme sonrası önbellek yerinde güncelleniyor, geri alma
+sonrası düşürülüyor çünkü gerçek opaklıklar oturumda), **geri alma TERS
+SIRADA** (toplu geri alma yığını sondan tüketiyor), **tek işlem** (oturum
+eşzamanlı çağrıyı reddediyor → düğmeler kilitleniyor). Jetonlar `devamEt` ve
+`kapat` sonrasında geçersizleştiği için araç ikisinde de kapanıyor ve kaynak
+bırakılıyor; jeton yine de reddederse hata YUTULMUYOR, şeritte yazıyor.
+
+Görünürlük eşiği PLY dışa aktarımıyla hizalandı: oturum ölü splat'a logit −20
+yazıyor (alfa ≈ 2e-9), dışa aktarımın ölü eşiği log(1/254) ≈ −5.54. Arayüzün
+kapısı 0.004 — dışa aktarımın attığı her şey araçta da ölü sayılır, canlı
+hiçbir splat yanlışlıkla elenmez.
+
+Temizleme düğmesi `.ply indir`in ÖNÜNE kondu: floater'lar çıktı alınmadan
+ayıklanır. Deform/klip/PLY sürerken kapalı (oturum ikinci çağrıyı reddediyor).
+
+**SINIR (dürüstlük kaydı):** bu yol gerçek bir eğitim koşusunda, gerçek
+floater'lar üzerinde HENÜZ denenmedi — veri katmanı da API'yi yalnız sentetik
+bir oturumla test etmiş. Verify, COLMAP izdüşümünü bilinen bir kamerayla
+(pinhole eşitliği, dönmüş kamera, arka yarım uzay), contain kadrajını,
+sigmoid/indeks eşlemesini ve önbellek+geri alma davranışını sahte bir oturumla
+kanıtlıyor; kalan risk gerçek veride.
+
+**Neon profili İKİNCİ KEZ değişti — ilk değişimin gerekçesi ortadan kalktı.**
+Veri katmanı Sobel eşiğini kırpmanın alan oranıyla telafi edince
+(`uCropDensity`) mod tel kafese geri döndü: AYNI fotoğrafta ham kapsam
+**0.610 → 0.0114**, kırpılan **%0.350 → %0**. Dün yazdığım dizginlenmiş profil
+(0.40 / eşik 0.62 / pozlama 0.95) artık gereksiz temkinliydi.
+
+Bildirilen "kırpılmışta doygunluk düşüyor" için doygunluk iki banda ayrıldı —
+ortalama doygunluk hâleyi de sayıyor ve asıl soruyu gizliyor: TÜPÜN KENDİSİ
+canlı mı? Çekirdek = L > 0.30. thumbnail.jpg, kırpma açık:
+
+| profil | çekirdek oran | çekirdek doyg | hâle oran | kırpılan |
+|---|---|---|---|---|
+| post-FX kapalı | 0.0060 | 0.340 | 0.0054 | %0 |
+| 1. tur (0.40) | 0.0083 | 0.462 | 0.0253 | %0 |
+| **sevk (0.70)** | **0.0140** | **0.427** | **0.0517** | **%0** |
+| denendi (1.00) | 0.0290 | 0.398 | 0.0867 | %0 |
+
+Hepsi çekirdek doygunluğunu ham moddan yukarı çekiyor — bildirilen düşüşün
+cevabı bu. 0.40 en yüksek doygunluğu veriyor ama ışıklı alan neredeyse ham mod
+kadar; 1.00 alanı büyütürken rengi düzleştiriyor. **0.70** ortası: ışıklı
+çekirdek ham modun 2.3 katı, doygunluk hâlâ %26 yukarıda, kırpma sıfır.
+Kırpmasız yolda da güvenli (sentetik sahne: çekirdek 0.0003 → 0.0014,
+doygunluk 0.280 → 0.327, kırpılan %0). Verify'daki "bloom ≤ 0.6" iddiası bu
+ölçümle çürüdü; yerine ölçülen aralık kondu (0.45 ≤ bloom ≤ 0.9) ve iki turun
+sayıları da script'e yazıldı.
+
+**Eğitim şeridi dar pencerede taşıyordu** (bildirilen sorun). Şerit
+`display: flex` idi ama **`flexWrap` YOKTU**; durum metni `flex: 1` ile alanı
+yiyor, kalan düğmeler şeridin sağından taşıp kadraj dışında kalıyordu.
+Ölçüldü:
+
+| kadraj | önce | sonra |
+|---|---|---|
+| 800 px | **5 düğme kadraj dışında**, içerik 1130 px'e uzanıyor | 0 taşan · şerit 86 px |
+| 600 px | **6 düğme dışarıda** | 0 taşan · şerit 124 px |
+| 1400 px | — | 0 taşan · şerit 48 px (tek satır, gerileme yok) |
+
+Sarma açıldı, durum metni `flex: 1 1 240px` ile dar pencerede kendi satırına
+iniyor, şerit taşarsa kendi içinde kaydırılıyor (düğme gizlemekten iyidir).
+
+**Doğrulama:** `npm run verify` 97 → **98** (yeni: `verify-gs-temizleme`),
+hepsi geçiyor. `npm run typecheck` temiz. Motor yolu refaktör sonrası
+tarayıcıda uçtan uca doğrulandı: fırça 22.739 splat seçti, silme sonrası
+çizilen 147.456 → 124.717, geri alma sonrası 147.456.
+
 ## 2026-09-26 — Z (Zeynep): splat temizleme, mod kalitesi, AR önizleme, hata sınırı, eğitim grafiği
 
 Beş iş, tek ölçüt: **kullanıcı ne olduğunu görsün, düzeltebilsin.**

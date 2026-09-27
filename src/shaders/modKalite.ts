@@ -98,34 +98,48 @@ export const MOD_KALITE: Record<RenderMode, KaliteProfili> = {
   },
 
   /**
-   * NEON — modun esprisi bloom AMA bu mod artık kendi başına zaten parlak.
+   * NEON — İKİ KEZ ÖLÇÜLDÜ, İKİ KEZ DEĞİŞTİ. Kaydı olduğu gibi bırakıyorum,
+   * çünkü ikinci değişim birincinin GEREKÇESİNİ ortadan kaldırdı.
    *
-   * İLK PROFİL AGRESİFTİ VE ÖLÇÜMDE DÜŞTÜ. Emre'nin nesne-ayırma kırpması
-   * (2026-09-26) ızgarayı özneye yoğunlaştırınca neon kenarları siluetin
-   * İÇİNİ de dolduruyor; üstüne güçlü bloom binince kadraj beyazlıyor.
-   * Ölçüldü (thumbnail.jpg, kırpma sonrası, aynı temiz oturumda arka arkaya):
+   * 1. TUR (nesne ayırma kırpması geldikten sonra). Kırpma ızgarayı özneye
+   *    sıkıştırınca neon kenarları siluetin İÇİNİ de dolduruyordu; mod kendi
+   *    başına taşıyordu (kapsam 0.610, kırpılan %0.350) ve güçlü bloom kadrajı
+   *    beyazlatıyordu. Profil DİZGİNLENDİ (bloom 0.40, eşik 0.62, pozlama
+   *    0.95) ve kırpma on altıda bire indi.
    *
-   *   post-FX kapalı        kapsam 0.610 · doyg 0.592 · kırpılan %0.350
-   *   eski profil (1.15)    kapsam 0.915 · doyg 0.550 · kırpılan %0.402
-   *   ara aday   (0.55)     kapsam 0.890 · doyg 0.556 · kırpılan %0.247
-   *   BU PROFİL  (0.40)     kapsam 0.477 · doyg 0.606 · kırpılan %0.022
+   * 2. TUR (veri katmanı Sobel eşiğini kırpmanın alan oranıyla telafi etti —
+   *    `uCropDensity`). Mod tel kafese geri döndü: AYNI fotoğrafta ham kapsam
+   *    0.610 → 0.0114, kırpılan %0.350 → %0. Yani dizginlemenin sebebi kalmadı;
+   *    dizginlenmiş profil artık gereksiz temkinliydi.
    *
-   * Yani doğru yön GÜÇLENDİRMEK değil DİZGİNLEMEKTİ: yüksek eşik + düşük
-   * şiddet + koyu vignette + 0.95 pozlama, ham moddan bile AZ kırpıyor
-   * (%0.350 → %0.022, on altıda bir) ve doygunluğu yükseltiyor. Hafif
-   * chromatic cam kırılmasının karşılığı.
+   * ÖLÇÜM (thumbnail.jpg, kırpma AÇIK, telafi sonrası). Doygunluk iki banda
+   * ayrıldı — ortalama doygunluk hâleyi de sayıyor ve "renk soldu mu"
+   * sorusunu gizliyordu; asıl soru TÜPÜN KENDİSİ canlı mı:
    *
-   * AÇIK KALAN (veri katmanıyla ortak karar): yakın plan öznede neon artık
-   * tel kafes değil dolu bir kütle çiziyor. Asıl kol post-FX değil modun
-   * KENDİ `uEdgeThreshold`'u (varsayılan 0.10); onu yükseltmek çizgileri geri
-   * inceltir ama mevcut her sahnenin neon görünümünü değiştirir, o yüzden
-   * tek taraflı değiştirilmedi.
+   *   profil              çekirdek(L>0.30)      hâle        kırpılan
+   *                       oran     doygunluk    oran
+   *   post-FX kapalı      0.0060   0.340        0.0054      %0
+   *   1. tur (0.40)       0.0083   0.462        0.0253      %0
+   *   BU PROFİL (0.70)    0.0140   0.427        0.0517      %0
+   *   denendi   (1.00)    0.0290   0.398        0.0867      %0
+   *
+   * Hepsi çekirdek doygunluğunu ham moddan YUKARI çekiyor (veri katmanının
+   * bildirdiği "kırpılmışta doygunluk düşüyor" sorusunun cevabı bu). 0.40 en
+   * yüksek doygunluğu veriyor ama ışıklı alan neredeyse ham mod kadar; 1.00
+   * alanı büyütürken rengi düzleştiriyor. 0.70 ikisinin ortası: ışıklı
+   * çekirdek ham modun 2.3 katı, doygunluk hâlâ %26 yukarıda, kırpma sıfır.
+   *
+   * Kırpmasız yolda da güvenli (sentetik sahne, aynı sweep): çekirdek
+   * 0.0003 → 0.0014, doygunluk 0.280 → 0.327, kırpılan %0.
+   *
+   * Hafif chromatic cam kırılmasının karşılığı; doygunluk yukarı, renk bu
+   * modda tek anlam taşıyıcısı.
    */
   neon: {
-    bloom: { uBloomStrength: 0.4, uBloomRadius: 0.75, uBloomThreshold: 0.62 },
+    bloom: { uBloomStrength: 0.7, uBloomRadius: 0.8, uBloomThreshold: 0.5 },
     chromatic: { uAmount: 0.0022, uRadial: 1 },
-    grain: { uGrainAmount: 0.02, uVignette: 0.8, uContrast: 1, uSaturation: 1.3 },
-    look: { uExposure: 0.95 },
+    grain: { uGrainAmount: 0.02, uVignette: 0.75, uContrast: 1, uSaturation: 1.3 },
+    look: { uExposure: 1 },
   },
 
   /**
