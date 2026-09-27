@@ -48,9 +48,10 @@ import { SIM_PARAMS } from './simulation';
 import { GRAIN_PARAMS } from '../shaders/grainPass';
 import { applyParams, collectParams, type ParamDef, type ParamValues } from './params';
 import { activeNodes, createDefaultGraph, topologicalOrder, validateGraph, type Graph } from './graph';
-import { resampleBilinear } from './reconstruction/silhouette.ts';
+import { buildSilhouette, resampleBilinear } from './reconstruction/silhouette.ts';
 import { buildShellMesh, type ShellMeshData } from './reconstruction/mesh.ts';
 import { applySeparationCrop } from './reconstruction/crop.ts';
+import { inpaintMaskedPhoto } from './reconstruction/photo-inpaint.ts';
 import type { CameraPose, MediaType } from './preset';
 
 const MAX_DPR = 2;
@@ -92,6 +93,9 @@ export class Engine {
   private photoData: Float32Array | null = null;
   private photoWidth = 0;
   private photoHeight = 0;
+  private photoBackdrop: THREE.Mesh | null = null;
+  private photoBackdropTexture: THREE.CanvasTexture | null = null;
+  private photoBackdropCanvas: HTMLCanvasElement | null = null;
 
   /**
    * VÄ°DEO RENK DOKUSU (Tur 12): aktif video kaynaÄŸÄ± canlÄ± VideoTexture olarak
@@ -763,6 +767,9 @@ setPointsMaterial(material: THREE.Material) {
     const flatActive = this.flatVideoOn && Boolean(this.videoTexture);
     const flat = flatActive ? this.ensureFlatMesh() : this.flatMesh;
     if (flat) flat.visible = flatActive;
+    if (this.photoBackdrop) {
+      this.photoBackdrop.visible = !flatActive && !this.objectSeparation && Boolean(this.photoData);
+    }
     const solidActive = Engine.usesShellMesh(this.renderModeName) && !crystalOnSplat;
     // 'splat' aktif + GaussianBuffer dolu → nokta bulutu gizlenir, splat
     // nesnesi görünür. Buffer boşsa (fotoğraf yüklenmemiş) nokta bulutunda
@@ -953,13 +960,21 @@ setPointsMaterial(material: THREE.Material) {
    * resimâ†’video geÃ§iÅŸinde parÃ§acÄ±k renklerinde hayalet kalmaz. Video dokusu
    * varsa uHasImage yeniden 1 olur; yoksa derinlik rampasÄ±na dÃ¼ÅŸÃ¼lÃ¼r.
    */
-releasePhoto() {
+  releasePhoto() {
     this.neonCropDensity = 1;
     this.imageColorTexture?.dispose();
     this.imageColorTexture = null;
     this.photoData = null;
     this.photoWidth = 0;
     this.photoHeight = 0;
+    if (this.photoBackdrop) {
+      this.scene.remove(this.photoBackdrop);
+      this.photoBackdrop.geometry.dispose();
+      this.photoBackdrop = null;
+    }
+    this.photoBackdropTexture?.dispose();
+    this.photoBackdropTexture = null;
+    this.photoBackdropCanvas = null;
     // GÃœN B: fotoÄŸraf bÄ±rakÄ±ldÄ± â†’ kabuk mesh gÃ¼ncel deÄŸil (video/boÅŸ
     // kaynak sÃ¶zleÅŸmesinde dÃ¶kÃ¼lÃ¼r; solid kaldÄ±ysa nokta bulutu geri dÃ¶ner).
     this.setShellGeometry(null);
@@ -1572,6 +1587,7 @@ if (entry && entry.material !== this.pointsMaterial) {
     // GÃ¼n B: renk grid'inin remap'i konum grid'ininkiyle birebir aynÄ± olmalÄ±
     // (mask-aware); setPhoto sonradan gelirse buraya yazÄ±lan maske kullanÄ±lÄ±r.
     this.lastFgMask = mask ?? null;
+    if (!this.videoTexture && this.photoData) this.updatePhotoBackdrop(data, width, height, mask);
     const current = this.currentDepthTexture;
     // CanlÄ± kamera saniyede ~10 kez Ã§aÄŸÄ±rÄ±r; boyut aynÄ±ysa texture'Ä± yeniden
     // ayÄ±rmak yerine yerinde gÃ¼ncelle (GPU tahsisi/dispose Ã§Ã¶pÃ¼ olmasÄ±n).
@@ -1749,12 +1765,103 @@ depth,
         this.currentDepthTexture.image.height,
         { foregroundMask: this.lastFgMask ?? undefined },
       );
+      this.updatePhotoBackdrop(
+        depth,
+        this.currentDepthTexture.image.width,
+        this.currentDepthTexture.image.height,
+        this.lastFgMask ?? undefined,
+      );
     }
     // Ortak uniform'larÄ± tÃ¼m render modlarÄ±na iÅŸle (gelecekte takÄ±lacak
     // material'lar iÃ§in setPointsMaterial aynÄ± ÅŸeyi yapar).
     this.pushSharedUniformsAll();
     // Splat köprüsü: renk grid'i (gSplatC kaynağı) az önce doldu.
     this.refreshGaussians();
+  }
+
+  /** Keep an inpainted, silhouette-only image behind the photo point cloud. */
+  private updatePhotoBackdrop(
+    depth: Float32Array,
+    depthWidth: number,
+    depthHeight: number,
+    foregroundMask?: Float32Array,
+  ) {
+    if (typeof document === 'undefined' || !this.photoData || !this.photoWidth || !this.photoHeight) return;
+    const scale = Math.min(1, 1024 / Math.max(this.photoWidth, this.photoHeight));
+    const width = Math.max(1, Math.round(this.photoWidth * scale));
+    const height = Math.max(1, Math.round(this.photoHeight * scale));
+    const mask = foregroundMask
+      ? resampleBilinear(foregroundMask, depthWidth, depthHeight, width, height)
+      : resampleBilinear(
+        buildSilhouette(depth, depthWidth, depthHeight).alpha,
+        depthWidth,
+        depthHeight,
+        width,
+        height,
+      );
+    const rgb = new Float32Array(width * height * 3);
+    for (let y = 0; y < height; y++) {
+      const sy = Math.min(this.photoHeight - 1, Math.floor((y + 0.5) / scale));
+      for (let x = 0; x < width; x++) {
+        const sx = Math.min(this.photoWidth - 1, Math.floor((x + 0.5) / scale));
+        const from = (sy * this.photoWidth + sx) * 3;
+        const to = (y * width + x) * 3;
+        rgb[to] = this.photoData[from];
+        rgb[to + 1] = this.photoData[from + 1];
+        rgb[to + 2] = this.photoData[from + 2];
+      }
+    }
+    const filled = inpaintMaskedPhoto(rgb, width, height, mask);
+    if (!this.photoBackdropCanvas) this.photoBackdropCanvas = document.createElement('canvas');
+    const canvas = this.photoBackdropCanvas;
+    if (canvas.width !== width || canvas.height !== height) {
+      canvas.width = width;
+      canvas.height = height;
+      this.photoBackdropTexture?.dispose();
+      this.photoBackdropTexture = null;
+    }
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    const image = ctx.createImageData(width, height);
+    for (let i = 0; i < width * height; i++) {
+      const m = THREE.MathUtils.clamp((mask[i] - 0.15) / 0.7, 0, 1);
+      image.data[i * 4] = Math.round(filled[i * 3] * 255);
+      image.data[i * 4 + 1] = Math.round(filled[i * 3 + 1] * 255);
+      image.data[i * 4 + 2] = Math.round(filled[i * 3 + 2] * 255);
+      // A faint full-frame base bridges small shifts; the inpainted subject
+      // region is fully opaque so large disocclusion holes are actually filled.
+      image.data[i * 4 + 3] = Math.round((0.28 + 0.72 * m) * 255);
+    }
+    ctx.putImageData(image, 0, 0);
+    if (!this.photoBackdropTexture) {
+      this.photoBackdropTexture = new THREE.CanvasTexture(canvas);
+      this.photoBackdropTexture.colorSpace = THREE.SRGBColorSpace;
+      this.photoBackdropTexture.minFilter = THREE.LinearFilter;
+      this.photoBackdropTexture.magFilter = THREE.LinearFilter;
+      this.photoBackdropTexture.generateMipmaps = false;
+    } else {
+      this.photoBackdropTexture.needsUpdate = true;
+    }
+    if (!this.photoBackdrop) {
+      const material = new THREE.MeshBasicMaterial({
+        map: this.photoBackdropTexture,
+        transparent: true,
+        side: THREE.DoubleSide,
+        depthTest: false,
+        depthWrite: false,
+        toneMapped: true,
+      });
+      this.photoBackdrop = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), material);
+      this.photoBackdrop.position.z = -2.25;
+      this.photoBackdrop.renderOrder = -1;
+      this.photoBackdrop.frustumCulled = false;
+      this.scene.add(this.photoBackdrop);
+    } else {
+      (this.photoBackdrop.material as THREE.MeshBasicMaterial).map = this.photoBackdropTexture;
+      (this.photoBackdrop.material as THREE.MeshBasicMaterial).needsUpdate = true;
+    }
+    this.photoBackdrop.scale.set((width / height) * 2, 2, 1);
+    this.photoBackdrop.visible = !this.objectSeparation && !this.flatVideoActive;
   }
 
   /** Konum texture'Ä± â€” artÄ±k simÃ¼lasyonun ping-pong RT texture'Ä±. */
@@ -1952,6 +2059,9 @@ depth,
     this.currentDepthTexture?.dispose();
     this.homeTexture.dispose();
     this.imageColorTexture?.dispose();
+    this.photoBackdrop?.geometry.dispose();
+    (this.photoBackdrop?.material as THREE.Material | undefined)?.dispose();
+    this.photoBackdropTexture?.dispose();
     this.videoTexture?.dispose();
 this.simulation.dispose();
     this.points.geometry.dispose();
