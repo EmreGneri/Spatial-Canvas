@@ -2094,6 +2094,26 @@ export class GSTrainer {
     const bigDonors = [...donors]
       .sort((a, b) => meanLogScale(b) - meanLogScale(a))
       .slice(0, Math.max(16, donors.length >> 2));
+    // opts.growRegion: an optional (x, y, z) -> boolean predicate that
+    // restricts GROWTH donors (this call's new capacity: the bigDonors split
+    // pool and the uniform draw below, wherever spawnAt runs with
+    // allowSplit = true) to a spatial region — e.g. "near the walkable empty
+    // space", so new capacity converts to sharpness where it is useful
+    // instead of wherever splats already happen to be biggest. Relocation
+    // (the `dead` loop just below) is untouched: it always passes
+    // allowSplit = false and keeps drawing from the full, unfiltered
+    // `donors` / `bigDonors` pools. growBigDonors is derived from
+    // growDonors with the SAME sort/slice as bigDonors above, so it is never
+    // empty unless growDonors itself is — spawnAt needs no fallback branch.
+    // Undefined growRegion leaves both null and every rng() call below is
+    // identical in count and order to the pre-existing code path.
+    const growRegion = this.opts.growRegion;
+    const growDonors = growRegion
+      ? donors.filter((i) => growRegion(params[i * STRIDE], params[i * STRIDE + 1], params[i * STRIDE + 2]))
+      : null;
+    const growBigDonors = growRegion
+      ? [...growDonors].sort((a, b) => meanLogScale(b) - meanLogScale(a)).slice(0, Math.max(16, growDonors.length >> 2))
+      : null;
     // error-weighted donor draw (only when the window carries any mass)
     let drawErr = null;
     if (emass) {
@@ -2112,6 +2132,13 @@ export class GSTrainer {
     const splitV2 = this.opts.splitV2 === true;
     const usedSplit = new Set();
     const spawnAt = (bi, allowSplit) => {
+      // growRegion narrows only GROWTH calls — allowSplit is true at
+      // exactly one call site (the growth loop below); the relocation loop
+      // (`for (const i of dead) ...`) always passes allowSplit = false, so
+      // useGrowPool is false there and it keeps reading the full pools.
+      const useGrowPool = allowSplit && !!growRegion;
+      const poolBig = useGrowPool ? growBigDonors : bigDonors;
+      const poolDonors = useGrowPool ? growDonors : donors;
       const doSplit = splitV2
         ? true
         : (allowSplit && rng() < 0.7 && (drawErr ? donors.length > 16 : bigDonors.length > 16));
@@ -2123,12 +2150,12 @@ export class GSTrainer {
           usedSplit.add(don);
         }
       } else if (doSplit && !splitV2) {
-        const di = (rng() * bigDonors.length) | 0;
-        don = bigDonors[di];
-        bigDonors[di] = bigDonors[bigDonors.length - 1];
-        bigDonors.pop(); // a splat splits at most once per refine call
+        const di = (rng() * poolBig.length) | 0;
+        don = poolBig[di];
+        poolBig[di] = poolBig[poolBig.length - 1];
+        poolBig.pop(); // a splat splits at most once per refine call
       } else {
-        don = donors[(rng() * donors.length) | 0];
+        don = poolDonors[(rng() * poolDonors.length) | 0];
       }
       const bd = don * STRIDE;
       if (splitV2) {
@@ -2193,8 +2220,15 @@ export class GSTrainer {
     // growLimit: a soft, raisable ceiling below cap — LOD training holds the
     // model at each detail level, snapshots it, then lets it grow on
     const limit = Math.min(this.cap, this.growLimit || this.cap);
-    const grown = this.iter < (this.opts.growUntil ?? 0.75 * this.horizon)
+    let grown = this.iter < (this.opts.growUntil ?? 0.75 * this.horizon)
       ? Math.max(0, Math.min(Math.ceil(this.n * (this.opts.growRate ?? 0.15)), limit - this.n)) : 0;
+    if (grown > 0 && growRegion && growDonors.length === 0) {
+      // the region excludes every current donor: nothing is spatially valid
+      // to grow from this round. Skip rather than silently fall back to an
+      // unrestricted draw (relocation above already ran, unaffected).
+      console.warn('[trainer] growRegion matched no donors this refine; skipping growth');
+      grown = 0;
+    }
     for (let k = 0; k < grown; k++) spawnAt((this.n + k) * STRIDE, true);
     if (grown > 0) {
       this.n += grown;

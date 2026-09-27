@@ -228,3 +228,44 @@ Not: yogun gradcheck sahnesinde (derinlik riginde) RENK kaybinin rot.x/rot.y
 poz turevi 4-46 % sapiyor; ayni sapma DEGISTIRILMEMIS egiticide de birebir
 var (derinlikten bagimsiz, onceden var olan; seyrek taban rigde yok).
 Gercek GPU'da derinlikli adim maliyeti OLCULMEDI.
+
+## Bolgesel yogunlastirma kancasi: `growRegion` (2026-09-27, Gezinme Parca 4 Gorev 2)
+
+Yerel yama (upstream'de yok). Yalniz `gs/trainer.js` (`_refineLegacy` donor
+secimi), `session.js` (secenek gecisi, `depthWeight` ile ayni desen).
+
+- Secenek `growRegion?: (x, y, z) => boolean`: `Session` -> `GSTrainer`
+  `opts.growRegion` (`seed()` ve `seedFrom()` icindeki `trainerOpts`'a
+  `this.opts.growRegion` varsa eklenir, `...this.opts.trainer` her zaman
+  ustune yazabilir). Verilirse yalniz BUYUME donorleri (`bigDonors` bolunme
+  havuzu ve `allowSplit=true` iken duzgun donor secimi) `growRegion`'i
+  saglayan splat'larla sinirlanir; `growBigDonors`, `growDonors`'tan AYNI
+  siralama/dilimleme ile turetilir, bu yuzden `growDonors` bos olmadikca asla
+  bos degildir (spawnAt'ta donor tukenmesi/cokme riski yok). Tasima
+  (relocation, `dead` dongusu, her zaman `allowSplit=false`) HIC etkilenmez:
+  donor havuzu her zaman tam/suzulmemis `donors`/`bigDonors`
+  (`useGrowPool = allowSplit && !!growRegion`, relocation cagrilarinda her
+  zaman `false`). Filtrelenmis buyume havuzu bossa (`growDonors.length===0`)
+  bu turda buyume atlanir (`grown=0`, `console.warn` ile BIR KEZ loglanir);
+  tasima yine calisir. Verilmezse (`growRegion` `undefined`) donor secimi
+  bugunkuyle bayt bayt ayni: RNG cagri sayisi/sirasi hic degismez
+  (`useGrowPool` her zaman `false`, `poolBig`/`poolDonors` = eski
+  `bigDonors`/`donors` referanslarinin ta kendisi).
+- Dogrulama: `node scripts/verify-grow-region.mjs` — GPU'suz saf CPU
+  denetimi, `GSTrainer.prototype._refineLegacy`'yi sahte bir WebGPU
+  aygitiyla (yalniz `createBuffer`/`createCommandEncoder`/`createBindGroup`
+  + `queue.writeBuffer`/`submit`, duz `Uint8Array` destekli) dogrudan kosar;
+  `params` yerel degisken oldugu ve fonksiyondan hic donmedigi icin
+  `_refinePatch`'in `writeBuffer` cagrilarini (dokunulan satirlarin NIHAI
+  parametreleri) geri okuyarak gozlemler. Uc senaryo: (1) `growRegion=x>0`:
+  tasima HER IKI taraftan donor kullanir (20 tasimanin bir kismi pozitif bir
+  kismi negatif tarafta -- kisitlanmadigini kanitlar), buyuyen HER splat
+  x>500'de (donor ayrismasi +-1000, jitter <0.1 -- yanlis tarafa gecmek
+  imkansiz); (2) `growRegion` verilmezse: `git show HEAD:.../trainer.js`'den
+  (bu degisiklik henuz commit edilmedi, HEAD Gorev 2 oncesi) cikarilan ESKI
+  `_refineLegacy` ile AYNI tohumlu RNG'yle karsilastirilir -- dokunulan
+  satirlarin TUMU 16 alaniyla birebir eslesir; (3) bos bolge (`() => false`):
+  buyume atlanir (`grown=0`), tam olarak 1 uyari loglanir, tasima yine
+  calisir. `node --check` (`trainer.js`, `session.js`, yeni betik) ve mevcut
+  `verify-egitim-densify.mjs`, `verify-egitim-continue.mjs`,
+  `verify-egitim-cleanup.mjs`, `verify-gaussian-ownership.mjs` yesil kaldi.
