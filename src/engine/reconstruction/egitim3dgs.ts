@@ -467,6 +467,10 @@ export interface Egitim {
   /** Ölçüm kancasıyla ayrılan (held-out) karelerin pozu + PSNR'ı, kanvas
    *  ölçeğinde (`pozlar`'ın ölçeği). Kanca yoksa boş dizi. */
   degerlendir(): Promise<{ ad: string; kamera: GsKamera; psnr: number }[]>;
+  /** Every registered camera (training and held-out) with its frame name,
+   *  video timestamp and canvas-scale pose, sorted by `t` — lets a measurement
+   *  align the reconstruction to a ground-truth path by timestamp. */
+  kayitliKameralar(): { ad: string; t: number; ayrilan: boolean; kamera: GsKamera }[];
 }
 
 /**
@@ -590,6 +594,8 @@ export async function egitimBaslat(
   });
 
   const BEKCI_MS = 90_000;
+  // Frame name -> video timestamp, for `kayitliKameralar()`.
+  const kareZamani = new Map<string, number>();
   let releaseMasks: (() => void) | null = null;
   let maskAbort: AbortController | null = null;
   const armTrainWatch = () => {
@@ -607,6 +613,7 @@ export async function egitimBaslat(
     // mask treatment as extracted frames when that path runs; with no held-out
     // frames `trainingFrames` is `ex.frames` itself (unchanged default path).
     let trainingFrames = olcumKareleriniBirlestir(ex.frames, ayrilanKareler);
+    for (const f of trainingFrames) kareZamani.set(f.name, f.t);
     if (options?.subjectOnly) {
       // Masks run before SfM allocates its training GPU device. The IS-Net
       // inference uses the app's WebGPU queue; nesting it inside a GPU job
@@ -739,6 +746,13 @@ export async function egitimBaslat(
           sonuc.push({ ad, kamera: kameraOlcekle(meta, olcek), psnr: await s.trainer.evalCamPsnr(ci) });
         }
         return sonuc;
+      },
+      kayitliKameralar: () => {
+        if (closed) throw new Error('Training session is closed');
+        return (s.trainer.camMeta as (GsKamera & { imgIdx: number })[]).map((m) => {
+          const ad: string = s.frames[m.imgIdx]?.name ?? '';
+          return { ad, t: kareZamani.get(ad) ?? NaN, ayrilan: ayrilanMi(m.imgIdx), kamera: kameraOlcekle(m, olcek) };
+        }).sort((a, b) => (Number.isNaN(a.t) ? Infinity : a.t) - (Number.isNaN(b.t) ? Infinity : b.t) || 0);
       },
     };
     signal?.throwIfAborted();

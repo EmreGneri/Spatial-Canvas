@@ -52,7 +52,9 @@ function chromiumYuruturebiliriBul() {
 export async function tarayiciOturumu({ chrome = false, yazilimGpu = false, basli = false, fsAllow = [] } = {}) {
   const server = await createServer({
     root: REPO_KOKU,
-    server: { port: 0, fs: { allow: [REPO_KOKU, ...fsAllow] } },
+    // No HMR / file watching: a measurement page runs for minutes to hours and
+    // a full reload on any source edit would silently restart it.
+    server: { port: 0, hmr: false, watch: null, fs: { allow: [REPO_KOKU, ...fsAllow] } },
     logLevel: 'error',
   });
   await server.listen();
