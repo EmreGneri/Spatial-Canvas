@@ -1,4 +1,5 @@
 import { kameraMerkezi, yorunge, type GsKamera } from '../engine/reconstruction/egitim3dgs.ts';
+import { aciklik, serbestAdim, type BosAlan } from '../engine/reconstruction/bosAlan.ts';
 
 /** Use a non-passive listener so zooming the training canvas never scrolls the page. */
 export function bindWheelZoom(
@@ -201,24 +202,63 @@ function hacmeEnYakin(p: Vec3, sinir: FlySiniri): [Vec3, number, number] {
 }
 
 /**
+ * Free-fly bound from the reconstructed empty-space grid (`bosAlan.ts`),
+ * used instead of the camera-volume fan/segment (`FlySiniri`) once a
+ * training run has one: the clearance grid (`aciklik`, an O(voxel count)
+ * Euclidean distance transform) is expensive enough to compute once and
+ * reuse across every `flyStep` call, not per frame.
+ */
+export interface BosAlanSiniri {
+  alan: BosAlan;
+  /** `aciklik(alan)`, precomputed once. */
+  aciklik: Float32Array;
+  /** Minimum clearance a step may land in (`oran` × `birim`). */
+  yaricap: number;
+}
+
+/**
+ * Precomputes the clearance grid for `alan` and turns a fraction of the
+ * capture's own scale into a world-unit radius: `birim` is the path length
+ * for a forward walk (`FlySiniri.pay` is a fraction of it, so a comparable
+ * fraction here reads the same way) or the median camera-to-pivot distance
+ * for an orbit (`FlySiniri.olcek`) — the caller passes whichever matches
+ * the capture, since `bosAlan.ts` carries no capture shape of its own.
+ */
+export function bosAlanSiniri(alan: BosAlan, birim: number, oran = 0.02): BosAlanSiniri {
+  return { alan, aciklik: aciklik(alan), yaricap: oran * birim };
+}
+
+/**
  * Translate without rotating: forward/right follow the camera (R rows 2 and 0,
  * COLMAP x right, z forward), vertical follows world up so rising never drifts
- * sideways on a tilted view. The centre stays within `pay` of the camera
- * volume, sliding along its surface; a camera already outside (orbit zooms out
- * further) may only move closer, so entering fly mode never snaps the pose.
+ * sideways on a tilted view. Without `bos`, the centre stays within `pay` of
+ * the camera volume, sliding along its surface; a camera already outside
+ * (orbit zooms out further) may only move closer, so entering fly mode never
+ * snaps the pose. With `bos`, the bound is the reconstructed empty space
+ * instead (`serbestAdim`): the centre may reach `next` only through voxels
+ * that are `'bos'` with clearance ≥ `bos.yaricap`, sliding along the nearest
+ * such surface otherwise (`sinir` is then unused, but still required so
+ * callers do not need to special-case the switch).
  */
-export function flyStep(k: GsKamera, axes: FlyAxes, distance: number, sinir: FlySiniri, up: Vec3): GsKamera {
+export function flyStep(
+  k: GsKamera, axes: FlyAxes, distance: number, sinir: FlySiniri, up: Vec3, bos?: BosAlanSiniri,
+): GsKamera {
   const len = Math.hypot(axes.forward, axes.right, axes.vertical);
   if (!(len > 0) || !(distance > 0)) return k;
   const s = distance / len;
   const C = kameraMerkezi(k);
   const next = [0, 1, 2].map((i) =>
     C[i] + s * (axes.forward * k.R[6 + i] + axes.right * k.R[i] + axes.vertical * up[i])) as Vec3;
-  // Distances in units of the local margin: > 1 is outside the bound.
-  const [P, d, pay] = hacmeEnYakin(next, sinir);
-  const [, dC, payC] = hacmeEnYakin(C, sinir);
-  const limit = Math.max(1, dC / payC);
-  const C2 = d > limit * pay ? next.map((v, i) => P[i] + (v - P[i]) * (limit * pay / d)) : next;
+  let C2: Vec3;
+  if (bos) {
+    C2 = serbestAdim(bos.alan, bos.aciklik, C, next, bos.yaricap);
+  } else {
+    // Distances in units of the local margin: > 1 is outside the bound.
+    const [P, d, pay] = hacmeEnYakin(next, sinir);
+    const [, dC, payC] = hacmeEnYakin(C, sinir);
+    const limit = Math.max(1, dC / payC);
+    C2 = (d > limit * pay ? next.map((v, i) => P[i] + (v - P[i]) * (limit * pay / d)) : next) as Vec3;
+  }
   const t = [0, 1, 2].map((r) => -(k.R[r * 3] * C2[0] + k.R[r * 3 + 1] * C2[1] + k.R[r * 3 + 2] * C2[2]));
   return { ...k, t };
 }
