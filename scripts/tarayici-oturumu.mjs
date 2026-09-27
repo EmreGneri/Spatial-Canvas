@@ -17,6 +17,9 @@ const YAZILIM_GPU_BAYRAKLARI = [
   '--use-vulkan=swiftshader',
   '--use-webgpu-adapter=swiftshader',
   '--disable-vulkan-surface',
+  // Without ANGLE on SwiftShader the GPU process cannot create shared images
+  // for WebGPU canvases: the first present loses the device.
+  '--use-angle=swiftshader',
   // CPU-emulated GPU work takes seconds per dispatch; the GPU watchdog would
   // call it a hang and lose the device mid-training.
   '--disable-gpu-watchdog',
