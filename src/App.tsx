@@ -780,8 +780,14 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
       say(`canlı derinlik başlıyor · video ${video.videoWidth}x${video.videoHeight} · ${video.duration.toFixed(1)} sn`);
       let devraldi = false;
       let sayac = 0;
-      let ageTotalMs = 0;
-      let ageMaxMs = 0;
+      const ageSamples: number[] = [];
+      let flowCoverageTotal = 0;
+      let staleDrops = 0;
+      const percentile = (values: number[], q: number) => {
+        if (!values.length) return 0;
+        const sorted = [...values].sort((a, b) => a - b);
+        return sorted[Math.min(sorted.length - 1, Math.ceil(q * sorted.length) - 1)];
+      };
       let sonLog = performance.now();
       const stopDriver = startLiveDepth(
         video,
@@ -807,16 +813,16 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
           }
           sayac++;
           if (video.currentTime >= d.mediaTime) {
-            const ageMs = (video.currentTime - d.mediaTime) * 1000;
-            ageTotalMs += ageMs;
-            ageMaxMs = Math.max(ageMaxMs, ageMs);
+            ageSamples.push((video.currentTime - d.mediaTime) * 1000);
           }
+          flowCoverageTotal += d.flowCoverage ?? 0;
           const simdi = performance.now();
           if (simdi - sonLog > 3000) {
-            say(`canlı derinlik · ${(sayac / ((simdi - sonLog) / 1000)).toFixed(1)} Hz · ${d.width}x${d.height} · kare yaşı ${Math.round(ageTotalMs / sayac)} ms (maks ${Math.round(ageMaxMs)})`);
+            say(`canlı derinlik · ${(sayac / ((simdi - sonLog) / 1000)).toFixed(1)} Hz · ${d.width}x${d.height} · kare yaşı p50/p95 ${Math.round(percentile(ageSamples, 0.5))}/${Math.round(percentile(ageSamples, 0.95))} ms · akış kapsaması ${Math.round(100 * flowCoverageTotal / Math.max(1, sayac))}% · eski kare atlandı ${staleDrops}`);
             sayac = 0;
-            ageTotalMs = 0;
-            ageMaxMs = 0;
+            ageSamples.length = 0;
+            flowCoverageTotal = 0;
+            staleDrops = 0;
             sonLog = simdi;
           }
         },
@@ -836,6 +842,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
               lastMaskAttempt = -Infinity;
             }
           },
+          onStaleDrop: () => { staleDrops++; },
           onError: (err, ardisik) =>
             say(`canlı derinlik hatası (${ardisik}/3): ${err instanceof Error ? err.message : String(err)}`),
           onVazgec: () => {

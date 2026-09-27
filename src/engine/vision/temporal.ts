@@ -78,14 +78,15 @@ function sampleBilinear(
 /**
  * Seyrek akış kümesini YOĞUN alana yayar: her piksel EN YAKIN köşenin (u,v)
  * değerini alır (nearest-neighbor; IDW ölçümde 55× kötü çıktı — belge yukarıda).
- * radius 64 px'lik yerel pencere: NN mesafesi 64 px'i aşabilen piksel (köşe
- * yoğunluğu ~11 px² olduğundan pratikte hiç) u=v=0 kalır ve d2 büyük olur →
- * coverage eşiği onları oklüzyona iter (güvenli varsayılan).
+ * Yerel arama penceresi varsayılan 64 px'tir. Çağıran daha küçük bir
+ * `searchRadius` verebilir; bunun dışındaki pikseller u=v=0 ve d2=Infinity
+ * alır, dolayısıyla coverage eşiği onları güvenle oklüzyona iter.
  */
 export function densifyFlow(
   flow: FlowPoint[],
   width: number,
   height: number,
+  searchRadius = 64,
 ): DenseFlow {
   const n = width * height;
   const u = new Float32Array(n);
@@ -93,7 +94,7 @@ export function densifyFlow(
   const d2 = new Float32Array(n);
   d2.fill(Infinity);
   if (flow.length === 0) return { u, v, d2 };
-  const r = 64;
+  const r = Math.max(1, searchRadius);
   for (const c of flow) {
     const x0 = Math.max(0, c.x - r);
     const x1 = Math.min(width - 1, c.x + r);
@@ -224,8 +225,9 @@ export function stabilizeDepth(
   const fbThreshold = opts?.fbThreshold ?? 0.1;
   const coverRadius = opts?.coverRadius ?? 28;
 
-  const fwd = densifyFlow(flowFwd, width, height);
-  const bwd = densifyFlow(flowBwd, width, height);
+  const searchRadius = opts?.coverRadius ?? 64;
+  const fwd = densifyFlow(flowFwd, width, height, searchRadius);
+  const bwd = densifyFlow(flowBwd, width, height, searchRadius);
   const fb = forwardBackwardOccFromDense(fwd, bwd, width, height, fbThreshold);
 
   const n = width * height;
