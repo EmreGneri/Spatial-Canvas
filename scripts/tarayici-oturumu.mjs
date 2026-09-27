@@ -69,6 +69,8 @@ export async function tarayiciOturumu({ chrome = false, yazilimGpu = false, basl
 
   const args = ['--enable-unsafe-webgpu'];
   if (yazilimGpu) args.push(...YAZILIM_GPU_BAYRAKLARI);
+  // Extra Chromium switches for debugging (space separated), e.g. '--enable-logging=stderr --v=1'.
+  if (process.env.TARAYICI_EK_BAYRAKLAR) args.push(...process.env.TARAYICI_EK_BAYRAKLAR.split(/\s+/).filter(Boolean));
   const baseOpts = { headless: !basli, args };
 
   let browser;
