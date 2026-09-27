@@ -1,5 +1,5 @@
 import { estimateDepth, type DepthResult } from '../../depth.ts';
-import { bosAlanKur, type BosAlan } from './bosAlan.ts';
+import { bosAlanKur, vokselDurumu, type BosAlan } from './bosAlan.ts';
 import { kareyiHizala, tutarlilikSuz } from './derinlikHizalama.ts';
 import type { GsKamera } from './egitim3dgs.ts';
 
@@ -26,8 +26,39 @@ export interface GezinmeDerinligi {
   alan: BosAlan;
   hizaliKare: number;
   gecerliPiksel: number;
+  guven: GezinmeGuveni;
   /** Camera-space depth at the model output resolution, after cross-view filtering. */
   haritalar: { kamera: GsKamera; derinlik: Float32Array }[];
+}
+
+export interface GezinmeGuveni {
+  alignedFrames: number;
+  validPixelRatio: number;
+  unknownVoxelRatio: number;
+  /** Median per-frame residual divided by fitted inverse-depth slope. */
+  medianRelativeFitRmse: number;
+  /** Worst accepted frame; prevents a few bad alignments hiding in the median. */
+  worstRelativeFitRmse: number;
+  /** Maximum camera baseline divided by median observed camera-space depth. */
+  baselineRatio: number;
+  serbestGezinmeUygun: boolean;
+  nedenler: string[];
+}
+
+/** Conservative product gate, not a collision-safety certification. */
+export function gezinmeHazirlikDegerlendir(stats: Pick<GezinmeGuveni,
+  'alignedFrames' | 'validPixelRatio' | 'unknownVoxelRatio' | 'medianRelativeFitRmse' |
+  'worstRelativeFitRmse' | 'baselineRatio'>): GezinmeGuveni {
+  const nedenler: string[] = [];
+  if (stats.alignedFrames < 4) nedenler.push('en az 4 hizalı kare gerekli');
+  if (!Number.isFinite(stats.validPixelRatio) || stats.validPixelRatio < 0.05) nedenler.push('geçerli derinlik kapsamı düşük');
+  if (!Number.isFinite(stats.unknownVoxelRatio) || stats.unknownVoxelRatio >= 0.98) nedenler.push('ızgaranın çoğu bilinmiyor');
+  if (!Number.isFinite(stats.baselineRatio) || stats.baselineRatio < 0.02) nedenler.push('kamera açı/konum çeşitliliği yetersiz');
+  // Fit residual has real irreducible pixel/visibility noise even on exact
+  // synthetic geometry (~0.25 at the worst view); reject gross failures while
+  // keeping the worst-frame signal visible to the caller.
+  if (!Number.isFinite(stats.worstRelativeFitRmse) || stats.worstRelativeFitRmse > 0.30) nedenler.push('en az bir karede derinlik hizalama hatası yüksek');
+  return { ...stats, serbestGezinmeUygun: nedenler.length === 0, nedenler };
 }
 
 export function egitimKamerasi(camera: CozulmusKamera, frame: GezinmeKaresi): GsKamera {
@@ -90,7 +121,7 @@ export async function gezinmeDerinligiHazirla(
     const frame = frames[solved.imgIdx];
     return { camera: egitimKamerasi(solved, frame), time: times.get(frame.name) ?? NaN };
   });
-  const aligned: { camera: GsKamera; depth: Float32Array; frame: GezinmeKaresi }[] = [];
+  const aligned: { camera: GsKamera; depth: Float32Array; frame: GezinmeKaresi; relativeFitRmse: number }[] = [];
   for (const [i, solved] of ordered.entries()) {
     signal?.throwIfAborted();
     const frame = frames[solved.imgIdx];
@@ -107,7 +138,13 @@ export async function gezinmeDerinligiHazirla(
     const mapCamera = haritaKamerasi(camera, prediction.width, prediction.height);
     const fit = kareyiHizala(prediction.data, prediction.width, prediction.height, mapCamera, points);
     if (fit.uydurma && fit.kullanilan >= 20) {
-      aligned.push({ camera: mapCamera, depth: fit.derinlik, frame });
+      aligned.push({ camera: mapCamera, depth: fit.derinlik, frame,
+        // `rmse` and scaleA share inverse-depth units. Normalize by fitted
+        // disparity span (the slope), as scaleVerdict does; normalizing by
+        // scene median inverse-depth incorrectly rejects clean but narrow-FOV
+        // scenes and doesn't measure how well this affine fit explains data.
+        relativeFitRmse: Math.abs(fit.uydurma.scaleA) > 1e-9
+          ? fit.uydurma.rmse / Math.abs(fit.uydurma.scaleA) : NaN });
     }
     progress?.(i + 1, ordered.length);
   }
@@ -138,12 +175,47 @@ export async function gezinmeDerinligiHazirla(
   for (let attempt = 0; attempt < 5; attempt++) {
     try {
       area = bosAlanKur(maps.map((m) => ({ derinlik: m.derinlik, kamera: m.kamera })),
-        { voksel: voxel * 2 ** attempt, yukari: up, guvenPayiOrani: 0.08 });
+        // Narrow poles/branches can occupy only a few pixels; denser ray
+        // sampling reduces phase-dependent misses before voxelization.
+        { voksel: voxel * 2 ** attempt, yukari: up, adimPx: 2, guvenPayiOrani: 0.08 });
       break;
     } catch (error) {
       if (!(error instanceof RangeError) || !error.message.includes('voksel sınırı')) throw error;
     }
   }
   if (!area) throw new Error('Free-space grid exceeds the memory budget');
-  return { alan: area, hizaliKare: maps.length, gecerliPiksel: valid, haritalar: maps };
+  let unknown = 0;
+  for (let i = 0; i < area.bos.length; i++) {
+    if (vokselDurumu(area.bos[i], area.dolu[i], area.bosKare[i], area.enAzKare) === 'bilinmiyor') unknown++;
+  }
+  const fits = aligned.map((a) => a.relativeFitRmse).filter(Number.isFinite).sort((a, b) => a - b);
+  const mappedCentres = maps.map(({ kamera }) => {
+    const camera = kamera;
+    const { R, t } = camera;
+    return [-R[0] * t[0] - R[3] * t[1] - R[6] * t[2],
+      -R[1] * t[0] - R[4] * t[1] - R[7] * t[2],
+      -R[2] * t[0] - R[5] * t[1] - R[8] * t[2]] as Vec3;
+  });
+  let maxBaseline = 0;
+  for (let i = 0; i < mappedCentres.length; i++) for (let j = i + 1; j < mappedCentres.length; j++) {
+    maxBaseline = Math.max(maxBaseline, Math.hypot(...mappedCentres[i].map((v, axis) => v - mappedCentres[j][axis])));
+  }
+  const sampledDepths: number[] = [];
+  const stride = Math.max(1, Math.ceil(points.length / 1000));
+  for (const { kamera: camera } of maps) for (let i = 0; i < points.length; i += stride) {
+    const p = points[i];
+    const z = camera.R[6] * p[0] + camera.R[7] * p[1] + camera.R[8] * p[2] + camera.t[2];
+    if (Number.isFinite(z) && z > 0) sampledDepths.push(z);
+  }
+  sampledDepths.sort((a, b) => a - b);
+  const medianSceneDepth = sampledDepths.length ? sampledDepths[sampledDepths.length >> 1] : NaN;
+  const guven = gezinmeHazirlikDegerlendir({
+    alignedFrames: maps.length,
+    validPixelRatio: valid / Math.max(1, maps.reduce((sum, m) => sum + m.derinlik.length, 0)),
+    unknownVoxelRatio: unknown / area.bos.length,
+    medianRelativeFitRmse: fits.length ? fits[fits.length >> 1] : NaN,
+    worstRelativeFitRmse: fits.length ? fits[fits.length - 1] : NaN,
+    baselineRatio: medianSceneDepth > 0 ? maxBaseline / medianSceneDepth : NaN,
+  });
+  return { alan: area, hizaliKare: maps.length, gecerliPiksel: valid, guven, haritalar: maps };
 }

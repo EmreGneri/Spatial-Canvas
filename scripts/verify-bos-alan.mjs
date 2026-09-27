@@ -19,16 +19,16 @@ const idx = (alan, ix, iy, iz) => ix + alan.boyut[0] * (iy + alan.boyut[1] * iz)
 
 // ── 1. voksel sınıflandırma kuralı ──────────────────────────────────────
 assert.equal(vokselDurumu(2, 0, 2), 'bos');
-assert.equal(vokselDurumu(10, 1, 2), 'bos', 'dolu ≤ 0.1·bos');
-assert.equal(vokselDurumu(19, 2, 5), 'dolu', 'dolu > 0.1·bos and dolu ≥ 2');
-assert.equal(vokselDurumu(20, 2, 2), 'bos');
+assert.equal(vokselDurumu(10, 1, 2), 'bilinmiyor', 'any surface hit denies free-space');
+assert.equal(vokselDurumu(19, 2, 5), 'dolu', 'two surface observations mark occupied');
+assert.equal(vokselDurumu(20, 2, 2), 'dolu');
 assert.equal(vokselDurumu(1, 0, 1), 'bilinmiyor', 'a single ray is not enough');
 assert.equal(vokselDurumu(0, 1, 0), 'bilinmiyor');
 assert.equal(vokselDurumu(0, 2, 0), 'dolu');
 assert.equal(vokselDurumu(0, 0, 0), 'bilinmiyor');
 // Farklı kare kanıtı: tek karenin çok geçişi 'bos' yapmaz.
 assert.equal(vokselDurumu(40, 0, 1), 'bilinmiyor', 'many crossings from one frame are not enough');
-assert.equal(vokselDurumu(40, 5, 1), 'dolu', 'one-frame crossings do not mask a surface');
+assert.equal(vokselDurumu(40, 5, 1), 'dolu', 'one-frame surface hits cannot be hidden by free-ray votes');
 assert.equal(vokselDurumu(40, 0, 1, 1), 'bos', 'enAzKare = 1 restores the crossing-only rule');
 assert.equal(vokselDurumu(40, 0, 2, 3), 'bilinmiyor', 'enAzKare = 3');
 
@@ -459,8 +459,8 @@ assert.ok(yanSayisi >= 5, `enough lateral trunk approaches (${yanSayisi})`);
   const derin = serbestAdim(alan, izgara, C, [6, 0, 3], YARICAP);
   assert.ok(Math.hypot(derin[0] - C[0], derin[1] - C[1], derin[2] - C[2]) < 0.05, `moving deeper into unknown is refused: ${derin}`);
   const geri = serbestAdim(alan, izgara, C, [0, 0, 3], YARICAP);
-  assert.ok(geri[0] < 4, `moving back toward the path is allowed: ${geri}`);
-  assert.ok(aciklikAt(alan, geri, izgara) >= c0, 'recovery never lowers clearance');
+  assert.deepEqual(geri, C, 'an unknown start stays put; navigation must return to orbit instead of guessing a recovery path');
+  assert.equal(aciklikAt(alan, geri, izgara), c0, 'unknown start does not claim a safer clearance');
 }
 
 console.log(

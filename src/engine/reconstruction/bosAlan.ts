@@ -168,6 +168,7 @@ function haritaBoyutu(kare: BosAlanKaresi): [number, number] {
 function pikselleriGez(
   kare: BosAlanKaresi, adimPx: number,
   ziyaret: (Dx: number, Dy: number, Dz: number, z: number) => void,
+  fazX?: number, fazY?: number,
 ): void {
   const k = kare.kamera;
   const [w, h] = haritaBoyutu(kare);
@@ -175,9 +176,11 @@ function pikselleriGez(
   const f = k.f * sx, fy = (k.fy ?? k.f) * sy, cx = k.cx * sx, cy = k.cy * sy;
   const R = k.R, D = kare.derinlik;
   const bas = Math.floor(adimPx / 2) % adimPx;
-  for (let py = Math.min(bas, h - 1); py < h; py += adimPx) {
+  const startX = fazX == null ? bas : ((fazX % adimPx) + adimPx) % adimPx;
+  const startY = fazY == null ? bas : ((fazY % adimPx) + adimPx) % adimPx;
+  for (let py = Math.min(startY, h - 1); py < h; py += adimPx) {
     const yc = (py + 0.5 - cy) / fy;
-    for (let px = Math.min(bas, w - 1); px < w; px += adimPx) {
+    for (let px = Math.min(startX, w - 1); px < w; px += adimPx) {
       const xc = (px + 0.5 - cx) / f;
       ziyaret(
         R[0] * xc + R[3] * yc + R[6],
@@ -399,6 +402,9 @@ export function bosAlanKur(kareler: BosAlanKaresi[], secenek: BosAlanSecenek): B
     const etiket = (k % DOYMA) + 1;
     const C = kameraMerkezi(kare.kamera);
     const g0x = (C[0] - min[0]) / v, g0y = (C[1] - min[1]) / v, g0z = (C[2] - min[2]) / v;
+    const bazFaz = Math.floor(adimPx / 2) % adimPx;
+    const fazX = adimPx === 2 ? (bazFaz + k % 2) % 2 : undefined;
+    const fazY = adimPx === 2 ? (bazFaz + Math.floor(k / 2) % 2) % 2 : undefined;
     pikselleriGez(kare, adimPx, (Dx, Dy, Dz, z) => {
       if (!(z > 0)) return; // NaN, 0, negatif: geçersiz
       const Dn = Math.hypot(Dx, Dy, Dz);
@@ -416,7 +422,7 @@ export function bosAlanKur(kareler: BosAlanKaresi[], secenek: BosAlanSecenek): B
       isinTasi(alan, sonKare, etiket, g0x, g0y, g0z, dx, dy, dz,
         L - Math.max(v, guvenPayiOrani * L), yuzey);
       if (yuzey >= 0 && dolu[yuzey] !== DOYMA) dolu[yuzey]++;
-    });
+    }, fazX, fazY);
   }
   return alan;
 }
@@ -424,12 +430,12 @@ export function bosAlanKur(kareler: BosAlanKaresi[], secenek: BosAlanSecenek): B
 // ── durum ───────────────────────────────────────────────────────────────
 
 /**
- * Sayaç kuralı: `bos ≥ 2`, `dolu ≤ 0.1·bos` ve en az `enAzKare` farklı
- * karenin serbest geçişi (`bosKare`) → 'bos'; aksi `dolu ≥ 2` → 'dolu';
- * aksi 'bilinmiyor'.
+ * Conservative vote: free requires zero surface hits, at least two free
+ * crossings, and distinct-frame support. Any surface hit denies free-space;
+ * two surface hits label occupied, one remains unknown.
  */
 export function vokselDurumu(bos: number, dolu: number, bosKare: number, enAzKare = 2): VokselDurumu {
-  if (bos >= 2 && dolu * 10 <= bos && bosKare >= enAzKare) return 'bos';
+  if (bos >= 2 && dolu === 0 && bosKare >= enAzKare) return 'bos';
   if (dolu >= 2) return 'dolu';
   return 'bilinmiyor';
 }
@@ -709,31 +715,62 @@ export function serbestAdim(
   const nokta = (s: number): Vec3 => [C[0] + s * fark[0], C[1] + s * fark[1], C[2] + s * fark[2]];
   const acik = (p: Vec3) => aciklikAt(alan, p, aciklikIzgarasi);
   const izinli = (p: Vec3) => durum(alan, p) === 'bos' && acik(p) >= yaricap;
+  // Recovery from unknown space by non-decreasing clearance was unsafe:
+  // constant clearance allowed arbitrarily long tangential motion. Free-fly
+  // is only valid when it starts in observed free space with enough clearance.
+  if (!izinli(C)) return [C[0], C[1], C[2]];
 
-  const c0 = acik(C);
-  const tolerans = 1e-6 * alan.voksel;
-  let kurtarma = !izinli(C);
-  const kurtarmaUygun = (p: Vec3) => izinli(p) || acik(p) >= c0 - tolerans;
-
-  const n = Math.max(1, Math.ceil(uzunluk / (0.5 * alan.voksel)));
-  let sOnce = 0;
-  for (let k = 1; k <= n; k++) {
-    const s = k / n;
-    const p = nokta(s);
-    let uygun: boolean;
-    if (kurtarma) {
-      if (izinli(p)) { kurtarma = false; uygun = true; } else uygun = acik(p) >= c0 - tolerans;
-    } else {
-      uygun = izinli(p);
+  // Amanatides–Woo supercover traversal. Point sampling can tunnel through a
+  // voxel touched only briefly by a diagonal segment. At tied boundary
+  // crossings, inspect every adjacent cell touched at the edge/corner too.
+  const v = alan.voksel;
+  const size = alan.boyut;
+  const cell = (p: Vec3) => p.map((value, axis) => Math.floor((value - alan.min[axis]) / v));
+  const insideAndFree = (c: number[]) => c.every((q, axis) => q >= 0 && q < size[axis])
+    && vokselDurumuAt(alan, c[0] + size[0] * (c[1] + size[1] * c[2])) === 'bos';
+  const current = cell(C);
+  if (!insideAndFree(current)) return [C[0], C[1], C[2]];
+  const step = fark.map((d) => Math.sign(d));
+  const tDelta = fark.map((d) => d === 0 ? Infinity : v / Math.abs(d));
+  const tMax = fark.map((d, axis) => {
+    if (d === 0) return Infinity;
+    const boundary = alan.min[axis] + (current[axis] + (d > 0 ? 1 : 0)) * v;
+    return (boundary - C[axis]) / d;
+  });
+  let limit = 1;
+  while (true) {
+    const t = Math.min(...tMax);
+    if (!(t <= limit) || t > 1) break;
+    const tied = [0, 1, 2].filter((axis) => Math.abs(tMax[axis] - t) <= 1e-10);
+    let blocked = false;
+    for (let mask = 1; mask < 1 << tied.length; mask++) {
+      const adjacent = [...current];
+      for (let bit = 0; bit < tied.length; bit++) if (mask & (1 << bit)) adjacent[tied[bit]] += step[tied[bit]];
+      if (!insideAndFree(adjacent)) { blocked = true; break; }
     }
-    if (uygun) { sOnce = s; continue; }
-    const kosul = kurtarma ? kurtarmaUygun : izinli;
-    let lo = sOnce, hi = s;
-    for (let t = 0; t < 30; t++) {
-      const orta = 0.5 * (lo + hi);
-      if (kosul(nokta(orta))) lo = orta; else hi = orta;
+    if (blocked) {
+      limit = Math.max(0, t - 1e-5 * v / uzunluk);
+      break;
+    }
+    for (const axis of tied) {
+      current[axis] += step[axis];
+      tMax[axis] += tDelta[axis];
+    }
+  }
+
+  // The voxel sweep blocks unknown/occupied cells; this smaller clearance
+  // sampling additionally enforces the user's body radius in the distance map.
+  const n = Math.max(1, Math.ceil(uzunluk * limit / (0.5 * v)));
+  let safeT = 0;
+  for (let k = 1; k <= n; k++) {
+    const t = limit * k / n;
+    if (izinli(nokta(t))) { safeT = t; continue; }
+    let lo = safeT, hi = t;
+    for (let i = 0; i < 30; i++) {
+      const mid = 0.5 * (lo + hi);
+      if (izinli(nokta(mid))) lo = mid; else hi = mid;
     }
     return nokta(lo);
   }
-  return [hedef[0], hedef[1], hedef[2]];
+  return nokta(safeT);
 }

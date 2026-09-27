@@ -4,7 +4,7 @@
 // derinlik (24 poz, `verify-bos-alan.mjs` ile aynı sahne) üzerinde.
 import assert from 'node:assert/strict';
 import { performance } from 'node:perf_hooks';
-import { bosAlanKur, durum } from '../src/engine/reconstruction/bosAlan.ts';
+import { aciklikAt, aciklik, bosAlanKur, durum } from '../src/engine/reconstruction/bosAlan.ts';
 import { kameraMerkezi } from '../src/engine/reconstruction/egitim3dgs.ts';
 import {
   flyStep, flyStepBirlesik, flySiniri, bosAlanSiniri,
@@ -158,30 +158,31 @@ assert.ok(govdeDurumu, 'a clear-corridor line-of-sight trunk approach exists in 
   var govdeRapor = { yaricap: bos.yaricap, bosluk };
 }
 
-// ── 4. (c) patika boyunca ileri yürüyüş serbest ──────────────────────────
-// `flyStep`'in kendi ileri ekseni (kameranın R satır-2'si) boyunca hareket:
-// patika hafifçe kıvrıldığından (`yolPozu` meander + yaw), bir sonraki GT
-// pozuna TAM ulaşmaz (o küçük fark yön değil, patikanın eğriliğidir) — asıl
-// test, istenen adımın boş-alan sınırınca KISALTILMADIĞI (kırpılmadığı).
+// ── 4. (c) patika boyunca hareket bilinmeyen/dolu hacmi geçmez ───────────
+// Coverage is sparse at the capture endpoints, so safe behavior may stop.
 {
+  const clearance = aciklik(alan);
   let adim = 0;
   for (let s = 0.1; s < 0.95; s += 0.1 / 14) {
     const k = yolPozu(s);
     const C = merkez(k);
     const uzunluk = 0.1;
-    const next = [0, 1, 2].map((i) => C[i] + uzunluk * k.R[6 + i]);
     const S = merkez(flyStep(k, { forward: 1, right: 0, vertical: 0 }, uzunluk, yolSiniriBugun, YUKARI, bos));
-    near(S[0], next[0], 1e-9, `forward step at s=${s.toFixed(3)} (x)`);
-    near(S[1], next[1], 1e-9, `forward step at s=${s.toFixed(3)} (y)`);
-    near(S[2], next[2], 1e-9, `forward step at s=${s.toFixed(3)} (z)`);
+    const moved = mesafe(C, S);
+    assert.ok(moved <= uzunluk + 1e-8, 'step never exceeds requested distance');
+    for (let d = 0; d <= moved; d += VOKSEL / 4) {
+      const p = [0, 1, 2].map((i) => C[i] + (moved ? (S[i] - C[i]) * d / moved : 0));
+      assert.equal(durum(alan, p), 'bos', `swept path at s=${s.toFixed(3)} stays in observed free voxels`);
+      assert.ok(aciklikAt(alan, p, clearance) >= bos.yaricap - VOKSEL / 2, 'swept path keeps clearance');
+    }
     adim++;
   }
   assert.ok(adim > 90, `enough forward steps checked (${adim})`);
-  // Uzun tek ileri adım da serbest.
+  // Long steps also stop safely at uncertain coverage.
   const k = yolPozu(0.3);
   const C = merkez(k);
   const S = merkez(flyStep(k, { forward: 1, right: 0, vertical: 0 }, 2, yolSiniriBugun, YUKARI, bos));
-  near(mesafe(S, C), 2, 1e-6, 'a long forward step is unobstructed too');
+  assert.ok(mesafe(S, C) <= 2 + 1e-8, 'long step does not exceed requested distance');
 }
 
 // ── 5. (d) `bos` verilmezse flyStep bugünküyle bit-bit aynı ─────────────

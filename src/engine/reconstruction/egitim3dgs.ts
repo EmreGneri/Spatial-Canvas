@@ -15,7 +15,7 @@ import { segmentForeground } from './segmentation.ts';
 import { prepareSubjectFrames } from './subjectTrainingMasks.ts';
 import { yenilikIncelemesi } from './kareSecimi.ts';
 import { siraliCiftler } from './ciftGrafigi.ts';
-import { gezinmeDerinligiHazirla, type GezinmeDerinlikKaynagi } from './gezinmeDerinligi.ts';
+import { gezinmeDerinligiHazirla, type GezinmeDerinlikKaynagi, type GezinmeGuveni } from './gezinmeDerinligi.ts';
 import { durum, type BosAlan } from './bosAlan.ts';
 import {
   bendFrame, deformGaussianBuffer, fadeGaussianOpacity, isIdentityDeform, noiseAmplitudeLimit,
@@ -67,6 +67,17 @@ export interface OlcumKancasi {
    *  `evalFrames` (poses solved, excluded from the loss, scored). Names must
    *  be unique and must not collide with extracted `frame_#####.jpg`. */
   ayrilanKareler?: { source: Blob; name: string; t: number }[];
+  /** Explicit training settings used only by the browser benchmark. */
+  egitim?: EgitimOlcumAyari;
+  /** Includes no-op refinements; `finalN` lets the benchmark recover each count. */
+  refineMarks?: (marks: { kind: 'refine'; iter: number; moved: number; grown: number; ms: number }[], finalN: number, cap: number) => void;
+}
+
+export interface EgitimOlcumAyari {
+  refineEvery?: number;
+  capMult?: number;
+  maxSplats?: number;
+  seed?: number;
 }
 
 const CIKARILAN_KARE_ADI = /^frame_\d+\.jpg$/;
@@ -260,11 +271,22 @@ export async function kameraCoz(
  * quick (3k) ilk refine'ı ~2518'de, pencere 2250'de kapanmış — hiç büyüme,
  * hiç taşıma yok; standard (10k) yalnız 2 büyüme. Aralık bütçeyle ölçeklenir
  * (quick 375, standard 1250); ölçüm: src/vendor/splat.js/VENDORED.md. */
-export function egitimOturumAyari(ayar: EgitimAyari) {
-  return {
+export function egitimOturumAyari(ayar: EgitimAyari, olcum?: EgitimOlcumAyari) {
+  const defaults = {
     maxIters: ayar.maxIters,
     holdout: 'auto' as const,
     refineEvery: Math.max(300, Math.round(ayar.maxIters / 8)),
+  };
+  if (!olcum) return defaults;
+  const trainer = {
+    ...(olcum.capMult !== undefined ? { capMult: olcum.capMult } : {}),
+    ...(olcum.maxSplats !== undefined ? { maxSplats: olcum.maxSplats } : {}),
+    ...(olcum.seed !== undefined ? { seed: olcum.seed } : {}),
+  };
+  return {
+    ...defaults,
+    refineEvery: olcum.refineEvery ?? defaults.refineEvery,
+    ...(Object.keys(trainer).length ? { trainer } : {}),
   };
 }
 
@@ -542,6 +564,8 @@ export interface Egitim {
   /** Multi-view verified free space, when optional geometry preparation succeeds. */
   bosAlan?: BosAlan;
   derinlikOzeti?: { hizaliKare: number; gecerliPiksel: number };
+  gezinmeGuveni?: GezinmeGuveni;
+  gezinmeHazirlikHatasi?: string;
   /** Training camera poses in capture order, at canvas scale (`kamera`'s). */
   pozlar: GsKamera[];
   /** Kameraların baskın yukarı ekseni (dünya). */
@@ -611,6 +635,8 @@ export async function egitimBaslat(
   }
   let bosAlan: BosAlan | undefined;
   let derinlikOzeti: Egitim['derinlikOzeti'];
+  let gezinmeGuveni: GezinmeGuveni | undefined;
+  let gezinmeHazirlikHatasi: string | undefined;
   const growRegion = kisit?.bolgesel
     ? (x: number, y: number, z: number) => bosAlan != null && durum(bosAlan, [x, y, z]) === 'dolu'
     : undefined;
@@ -642,7 +668,7 @@ export async function egitimBaslat(
 
   const ayrilanKareler = options?.olcum?.ayrilanKareler;
   const s = sj.createSession({
-    ...egitimOturumAyari(secilen), sfm: { ...sj.solveTierOpts(secilen.tier), ...cozAyarlari.sfm },
+    ...egitimOturumAyari(secilen, options?.olcum?.egitim), sfm: { ...sj.solveTierOpts(secilen.tier), ...cozAyarlari.sfm },
     ...(kisit ? { depthWeight: kisit.agirlik } : {}),
     ...(growRegion ? { growRegion } : {}),
     // Explicit test set by frame name (session.js ~614-624): SfM still solves
@@ -687,7 +713,16 @@ export async function egitimBaslat(
   });
   s.on('event', (e: { kind: string }) => {
     if (closed) return;
-    if (e.kind === 'train-complete') { complete = true; clearWatch(); olay.bitti(sonMetrik); }
+    if (e.kind === 'train-complete') {
+      complete = true;
+      clearWatch();
+      if (options?.olcum?.refineMarks) {
+        const marks = (s.perf?.marks ?? []).filter((mark: { kind: string }) => mark.kind === 'refine')
+          .map((mark: { iter: number; moved: number; grown: number; ms: number }) => ({ kind: 'refine' as const, ...mark }));
+        options.olcum.refineMarks(marks, s.trainer.n, s.trainer.cap);
+      }
+      olay.bitti(sonMetrik);
+    }
     if (e.kind === 'device-lost') {
       olay.hata(new Error('GPU cihazı kayboldu — eğitim durdu. Sayfayı yenile.'));
       close();
@@ -749,16 +784,25 @@ export async function egitimBaslat(
     const kaynak = kisit?.kaynak ?? options?.geometri?.kaynak;
     if (kaynak) {
       olay.asama('derinlik ve boş alan hazırlanıyor');
-      const result = await bekcili(gezinmeDerinligiHazirla(
-        s.frames, s.recon.cams.filter((c: { imgIdx: number }) =>
-          !ayrilanKareler?.some((f) => f.name === s.frames[c.imgIdx]?.name)),
-        s.recon.points.map((p: { X: Vec3 }) => p.X),
-        s._camerasUp(), kaynak, kareZamani,
-        (done, total) => { hareket(); olay.asama(`derinlik ${done}/${total}`); }, signal,
-      ), () => son, BEKCI_MS, 'derinlik ve boş alan', signal);
-      bosAlan = result.alan;
-      derinlikOzeti = { hizaliKare: result.hizaliKare, gecerliPiksel: result.gecerliPiksel };
-      olay.asama(`derinlik: ${result.hizaliKare} kare, ${result.gecerliPiksel} tutarlı piksel`);
+      try {
+        const result = await bekcili(gezinmeDerinligiHazirla(
+          s.frames, s.recon.cams.filter((c: { imgIdx: number }) =>
+            !ayrilanKareler?.some((f) => f.name === s.frames[c.imgIdx]?.name)),
+          s.recon.points.map((p: { X: Vec3 }) => p.X),
+          s._camerasUp(), kaynak, kareZamani,
+          (done, total) => { hareket(); olay.asama(`derinlik ${done}/${total}`); }, signal,
+        ), () => son, BEKCI_MS, 'derinlik ve boş alan', signal);
+        bosAlan = result.alan;
+        gezinmeGuveni = result.guven;
+        derinlikOzeti = { hizaliKare: result.hizaliKare, gecerliPiksel: result.gecerliPiksel };
+        olay.asama(`derinlik: ${result.hizaliKare} kare, ${result.gecerliPiksel} tutarlı piksel`);
+      } catch (error) {
+        // Geometry is an optional navigation aid. Do not discard a completed
+        // 3DGS training run because depth alignment or its grid failed.
+        if (signal?.aborted || kisit?.kaynak) throw error;
+        gezinmeHazirlikHatasi = error instanceof Error ? error.message : String(error);
+        olay.asama(`gezilebilir alan hazırlanamadı; yörünge modu kullanılacak (${gezinmeHazirlikHatasi})`);
+      }
     }
     await bekcili(s.seed(), () => son, BEKCI_MS, 'Gaussian tohumlama', signal);
     signal?.throwIfAborted();
@@ -833,6 +877,8 @@ export async function egitimBaslat(
         .sort((a: { imgIdx: number }, b: { imgIdx: number }) => a.imgIdx - b.imgIdx).map(kameraMerkezi),
       ...(bosAlan ? { bosAlan } : {}),
       ...(derinlikOzeti ? { derinlikOzeti } : {}),
+      ...(gezinmeGuveni ? { gezinmeGuveni } : {}),
+      ...(gezinmeHazirlikHatasi ? { gezinmeHazirlikHatasi } : {}),
       pozlar: [...s.trainer.camMeta as (GsKamera & { imgIdx: number })[]].filter((m) => !ayrilanMi(m.imgIdx))
         .sort((a, b) => a.imgIdx - b.imgIdx)
         .map((m) => kameraOlcekle(m, olcek)),

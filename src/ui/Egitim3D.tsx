@@ -6,7 +6,7 @@ import {
   bindWheelZoom, boundedZoomFactor, bosAlanSiniri, cekimTuru, flyAxes, flySiniri, flyStepBirlesik, lookAround,
   type BosAlanSiniri, type CekimTuru,
 } from './egitimControls';
-import { durum } from '../engine/reconstruction/bosAlan';
+import { aciklikAt, durum } from '../engine/reconstruction/bosAlan';
 import { egitimGpuHint } from './egitimGpuHint';
 import { ayarOzeti, egitimOnKontrol, type OnKontrol } from './egitimOnKontrol';
 import { kunyeMetni, PAYLASIM_KLIP_SN } from './paylasim';
@@ -46,6 +46,7 @@ export function Egitim3D({ dosya, onKapat, say, onIlerleme }: {
   const [subjectOnly, setSubjectOnly] = useState(false);
   const [gezilebilir, setGezilebilir] = useState(false);
   const bosSiniriRef = useRef<BosAlanSiniri | null>(null);
+  const [gezinmeNotu, setGezinmeNotu] = useState<string | null>(null);
   const [asama, setAsama] = useState('başlıyor');
   const [metrik, setMetrik] = useState<EgitimMetrik | null>(null);
   const [bitti, setBitti] = useState(false);
@@ -143,14 +144,36 @@ export function Egitim3D({ dosya, onKapat, say, onIlerleme }: {
       // A forward walk opens mid-path on the camera that filmed it and walks
       // (WASD) instead of orbiting a far background pivot; orbits unchanged.
       cekimTuruRef.current = cekimTuru(e.pozlar, e.pivot);
-      if (e.bosAlan) {
+      const yurumeKamerasi = cekimTuruRef.current === 'yol'
+        ? e.pozlar[(e.pozlar.length - 1) >> 1] : e.kamera;
+      const guven = e.gezinmeGuveni;
+      if (e.bosAlan && guven?.serbestGezinmeUygun) {
         const sinir = flySiniri(e.kameralar, e.pivot, cekimTuruRef.current);
-        bosSiniriRef.current = bosAlanSiniri(e.bosAlan,
+        const bosSiniri = bosAlanSiniri(e.bosAlan,
           sinir.pivot === null ? sinir.olcek * 4 : sinir.olcek, 0.04);
-      }
-      if (cekimTuruRef.current === 'yol') {
-        e.kameraAyarla(e.pozlar[(e.pozlar.length - 1) >> 1]);
-        setUcus(true);
+        const merkez = kameraMerkezi(yurumeKamerasi);
+        const baslangicGuvenli = durum(e.bosAlan, merkez) === 'bos'
+          && aciklikAt(e.bosAlan, merkez, bosSiniri.aciklik) >= bosSiniri.yaricap;
+        if (baslangicGuvenli) {
+          bosSiniriRef.current = bosSiniri;
+          if (cekimTuruRef.current === 'yol') {
+            e.kameraAyarla(yurumeKamerasi);
+            setUcus(true);
+          }
+          setGezinmeNotu(`Deneysel gezinme · ${guven.alignedFrames} kare · bilinmeyen hacim %${(guven.unknownVoxelRatio * 100).toFixed(0)} · en kötü hizalama artığı %${(guven.worstRelativeFitRmse * 100).toFixed(1)} · taban/derinlik ${guven.baselineRatio.toFixed(2)}. İnce/görülmeyen engelleri algılayamaz; çarpışma garantisi değildir.`);
+        } else {
+          bosSiniriRef.current = null;
+          setUcus(false);
+          setGezinmeNotu('Başlangıç kamerası doğrulanmış boş alanda değil; yörünge modunda kaldın.');
+        }
+      } else if (gezilebilir) {
+        bosSiniriRef.current = null;
+        setUcus(false);
+        const why = e.gezinmeHazirlikHatasi ?? guven?.nedenler.join(', ') ?? 'güven ölçümü üretilemedi';
+        setGezinmeNotu(`Serbest gezinme açılmadı; yörünge modunda kaldın (${why}).`);
+      } else {
+        bosSiniriRef.current = null;
+        setGezinmeNotu(null);
       }
       homeCameraRef.current = e.kamera;
       const center = kameraMerkezi(e.kamera);
@@ -164,6 +187,7 @@ export function Egitim3D({ dosya, onKapat, say, onIlerleme }: {
       egitimRef.current?.kapat();
       egitimRef.current = null;
       bosSiniriRef.current = null;
+      setGezinmeNotu(null);
       // Oturum kapanınca temizleme jetonları geçersizleşir (Emre'nin kaydı:
       // eğitici ölü splat'ları taşıyabiliyor). Araç açık kalırsa geri alma
       // düğmesi çalışmayan bir jetonu vaat ederdi.
@@ -187,8 +211,10 @@ export function Egitim3D({ dosya, onKapat, say, onIlerleme }: {
   };
   const ucusSiniri = (e: Egitim) => flySiniri(e.kameralar, e.pivot, cekimTuruRef.current);
   const aktifBosSiniri = (e: Egitim) => {
-    const bos = bosSiniriRef.current;
-    return bos && durum(bos.alan, kameraMerkezi(e.kamera)) === 'bos' ? bos : undefined;
+    // Keep the grid authoritative even if the current camera is already in
+    // unknown space: serbestAdim then fails closed instead of using the wider
+    // camera-volume fallback.
+    return bosSiniriRef.current ?? undefined;
   };
 
   useEffect(() => {
@@ -474,11 +500,16 @@ export function Egitim3D({ dosya, onKapat, say, onIlerleme }: {
                 ? `eğitim ${metrik.iter}/${gpu?.iter} · ${metrik.itersPerSec} iter/sn · ${metrik.splats.toLocaleString('tr-TR')} Gaussian`
                 : asama}
         </span>
+        {gezinmeNotu && <span role="status" style={{ color: '#9ab', maxWidth: 420 }}>{gezinmeNotu}</span>}
         <button
           style={dugme}
           aria-pressed={ucus}
-          title="Açıkken WASD ile sahnede yürü, Q/E ile alçal/yüksel, sürükleyerek etrafa bak"
-          onClick={() => { setUcus((on) => !on); canvasRef.current?.focus(); }}
+          title={bosSiniriRef.current ? 'Deneysel boş alan sınırı içinde WASD gezinme' : 'Serbest gezinme için güvenilir boş alan hazır değil; yörünge modu kullanılabilir'}
+          disabled={!ucus && gezilebilir && !bosSiniriRef.current}
+          onClick={() => {
+            if (!ucus && gezilebilir && !bosSiniriRef.current) return;
+            setUcus((on) => !on); canvasRef.current?.focus();
+          }}
         >
           {ucus ? 'yörüngeye dön' : 'serbest gezin (WASD)'}
         </button>

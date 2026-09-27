@@ -37,6 +37,8 @@ const result = await gezinmeDerinligiHazirla(frames, cameras, points, YUKARI,
   }, new Map());
 assert.equal(result.hizaliKare, 24);
 assert.ok(result.gecerliPiksel > W * H, 'multi-view filter retains visible surfaces');
+assert.equal(result.guven.serbestGezinmeUygun, true,
+  `clean synthetic multi-view geometry should pass the experimental trust gate: ${JSON.stringify(result.guven)}`);
 assert.equal(frames.filter((f) => f.depth?.length === W * H).length, 24);
 assert.equal(durum(result.alan, kameraMerkezi(cameras[12])), 'bos', 'recorded path is free');
 const distorted = await gezinmeDerinligiHazirla(frames, cameras, points, YUKARI,
@@ -54,5 +56,9 @@ for (let i = 0; i < nx * ny * nz; i += 17) {
   free++;
   if (engelUzakligi(p) < -area.voksel) { collisions++; if (p[1] > 1.6 + area.voksel) belowFloor++; }
 }
-console.log(`distorted source: ${collisions}/${free} raw free voxels overlap GT obstacles (${belowFloor} below floor)`);
+assert.ok(collisions > 0, 'monocular distortion fixture must contain real obstacle leaks');
+assert.equal(distorted.guven.serbestGezinmeUygun, false,
+  'high alignment residual in the distorted monocular map must keep navigation in orbit mode');
+assert.ok(distorted.guven.worstRelativeFitRmse > 0.30);
+console.log(`distorted source: ${collisions}/${free} raw free voxels overlap GT obstacles; trust gate correctly keeps orbit mode`);
 console.log('verify-gezinme-derinligi: OK');
