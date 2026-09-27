@@ -55,6 +55,40 @@ export interface GsKamera {
 
 type Vec3 = [number, number, number];
 
+/** Optional measurement hook: fixed held-out frames (by video timestamp),
+ * appended to the extracted set. SfM solves their poses (`evalFrames`) but
+ * training excludes them; `Egitim.degerlendir()` scores them afterwards. */
+export interface OlcumKancasi {
+  /** Frames appended to the extracted set; their names become the session's
+   *  `evalFrames` (poses solved, excluded from the loss, scored). Names must
+   *  be unique and must not collide with extracted `frame_#####.jpg`. */
+  ayrilanKareler?: { source: Blob; name: string; t: number }[];
+}
+
+const CIKARILAN_KARE_ADI = /^frame_\d+\.jpg$/;
+
+/** Pure merge for the measurement hook: extracted frames first, held-out
+ * frames appended. Empty/undefined `ayrilan` returns `cikan` itself (same
+ * reference) so the default path is bit-for-bit untouched. Throws on a
+ * duplicate name within `ayrilan`, a collision with an extracted name, or a
+ * held-out name that looks like an extracted `frame_#####.jpg` name. */
+export function olcumKareleriniBirlestir<T extends { name: string }>(
+  cikan: T[], ayrilan?: T[],
+): T[] {
+  if (!ayrilan || ayrilan.length === 0) return cikan;
+  const cikanAdlari = new Set(cikan.map((f) => f.name));
+  const gorulen = new Set<string>();
+  for (const f of ayrilan) {
+    if (CIKARILAN_KARE_ADI.test(f.name)) {
+      throw new Error(`Held-out frame name looks like an extracted frame: ${f.name}`);
+    }
+    if (gorulen.has(f.name)) throw new Error(`Duplicate held-out frame name: ${f.name}`);
+    if (cikanAdlari.has(f.name)) throw new Error(`Held-out frame name collides with an extracted frame: ${f.name}`);
+    gorulen.add(f.name);
+  }
+  return [...cikan, ...ayrilan];
+}
+
 interface GpuAdapterLike { info?: { vendor?: string; architecture?: string; device?: string; description?: string } }
 type GpuLike = { requestAdapter(o?: object): Promise<GpuAdapterLike | null> };
 
@@ -430,6 +464,9 @@ export interface Egitim {
    * ve sekme görünürlüğüne bağlı değildir; son `deform`/`fade` yazımını
    * görür (GPU kuyruğu sıralı). */
   kareCiz(k: GsKamera, hedef: CanvasRenderingContext2D): void;
+  /** Ölçüm kancasıyla ayrılan (held-out) karelerin pozu + PSNR'ı, kanvas
+   *  ölçeğinde (`pozlar`'ın ölçeği). Kanca yoksa boş dizi. */
+  degerlendir(): Promise<{ ad: string; kamera: GsKamera; psnr: number }[]>;
 }
 
 /**
@@ -461,7 +498,7 @@ export async function egitimBaslat(
   olay: EgitimOlaylari,
   ayar?: EgitimAyari,
   signal?: AbortSignal,
-  options?: { subjectOnly?: boolean },
+  options?: { subjectOnly?: boolean; olcum?: OlcumKancasi },
 ): Promise<Egitim> {
   signal?.throwIfAborted();
   const secilen = ayar ?? await ayarSec();
@@ -496,7 +533,13 @@ export async function egitimBaslat(
   const cekimNot = cekimOzeti(ex);
   if (cekimNot) olay.asama(cekimNot);
 
-  const s = sj.createSession({ ...egitimOturumAyari(secilen), sfm: sj.solveTierOpts(secilen.tier) });
+  const ayrilanKareler = options?.olcum?.ayrilanKareler;
+  const s = sj.createSession({
+    ...egitimOturumAyari(secilen), sfm: sj.solveTierOpts(secilen.tier),
+    // Explicit test set by frame name (session.js ~614-624): SfM still solves
+    // their pose, training excludes them, `degerlendir()` scores them.
+    ...(ayrilanKareler && ayrilanKareler.length ? { evalFrames: ayrilanKareler.map((k) => k.name) } : {}),
+  });
   let closed = false;
   let complete = false;
   // Set once the cameras are solved; the bend is only reachable after training.
@@ -560,7 +603,10 @@ export async function egitimBaslat(
     }, 1000);
   };
   try {
-    let trainingFrames = ex.frames;
+    // Held-out frames merge in BEFORE subjectOnly prep so they get the same
+    // mask treatment as extracted frames when that path runs; with no held-out
+    // frames `trainingFrames` is `ex.frames` itself (unchanged default path).
+    let trainingFrames = olcumKareleriniBirlestir(ex.frames, ayrilanKareler);
     if (options?.subjectOnly) {
       // Masks run before SfM allocates its training GPU device. The IS-Net
       // inference uses the app's WebGPU queue; nesting it inside a GPU job
@@ -569,8 +615,9 @@ export async function egitimBaslat(
       const maskSignal = signal
         ? AbortSignal.any([signal, maskAbort.signal])
         : maskAbort.signal;
+      const toplamKare = trainingFrames.length;
       const prepared = await bekcili(
-        prepareSubjectFrames(ex.frames, segmentForeground, maskSignal, (done, total, skipped) => {
+        prepareSubjectFrames(trainingFrames, segmentForeground, maskSignal, (done, total, skipped) => {
           hareket();
           olay.asama(`nesne maskeleri ${done}/${total}${skipped ? ` · ${skipped} atlandı` : ''}`);
         }),
@@ -578,7 +625,7 @@ export async function egitimBaslat(
       );
       trainingFrames = prepared.frames;
       releaseMasks = prepared.release;
-      olay.asama(`nesne maskeleri hazır · ${prepared.frames.length}/${ex.frames.length} kare · ` +
+      olay.asama(`nesne maskeleri hazır · ${prepared.frames.length}/${toplamKare} kare · ` +
         `${prepared.skipped} atlandı`);
     }
     await bekcili(s.load(trainingFrames, { signal }), () => son, BEKCI_MS, 'kareler yükleniyor', signal);
@@ -605,7 +652,14 @@ export async function egitimBaslat(
     s.view.attach(canvas);
     s.view.setCamera(kamera);
     const noktalar: Vec3[] = s.recon.points.map((p: { X: Vec3 }) => p.X);
-    const pivot = bakisMerkezi(s.recon.cams, medyanNokta(noktalar));
+    // Held-out cameras drive `degerlendir()` only; they must not skew the
+    // pivot, the navigation bound or the capture-shape classifier (fed by
+    // `pivot`, `pozlar` and `kameralar`). Identified by frame NAME (imgIdx -> s.frames[..].name),
+    // since camMeta/recon.cams indices renumber once excluded cams exist.
+    const ayrilanAdlari = new Set((ayrilanKareler ?? []).map((k) => k.name));
+    const ayrilanMi = (imgIdx: number) => ayrilanAdlari.has(s.frames[imgIdx]?.name);
+    const pivot = bakisMerkezi(s.recon.cams.filter((c: { imgIdx: number }) => !ayrilanMi(c.imgIdx)),
+      medyanNokta(noktalar));
     bendPivot = pivot;
     // Last-applied bend/fade settings: both `bend` and `fade` re-issue the
     // combined controller call, since they share one snapshot and one write.
@@ -654,8 +708,10 @@ export async function egitimBaslat(
       plyBlob: () => s.exportPlyBlob(),
       kamera,
       pivot,
-      kameralar: [...s.recon.cams].sort((a: { imgIdx: number }, b: { imgIdx: number }) => a.imgIdx - b.imgIdx).map(kameraMerkezi),
-      pozlar: [...s.trainer.camMeta as (GsKamera & { imgIdx: number })[]].sort((a, b) => a.imgIdx - b.imgIdx)
+      kameralar: [...s.recon.cams].filter((c: { imgIdx: number }) => !ayrilanMi(c.imgIdx))
+        .sort((a: { imgIdx: number }, b: { imgIdx: number }) => a.imgIdx - b.imgIdx).map(kameraMerkezi),
+      pozlar: [...s.trainer.camMeta as (GsKamera & { imgIdx: number })[]].filter((m) => !ayrilanMi(m.imgIdx))
+        .sort((a, b) => a.imgIdx - b.imgIdx)
         .map((m) => kameraOlcekle(m, olcek)),
       yukari: s._camerasUp(),
       kameraAyarla: (k) => { e.kamera = k; s.view.setCamera(k); },
@@ -672,6 +728,17 @@ export async function egitimBaslat(
         if (c.width !== k.w || c.height !== k.h) { c.width = k.w; c.height = k.h; }
         s.trainer.renderView(k, ctx, 0, 0);
         hedef.drawImage(c, 0, 0);
+      },
+      degerlendir: async () => {
+        if (closed) throw new Error('Training session is closed');
+        const sonuc: { ad: string; kamera: GsKamera; psnr: number }[] = [];
+        for (const ci of s.testCams as number[]) {
+          const meta = s.trainer.camMeta[ci] as GsKamera & { imgIdx: number };
+          const ad: string | undefined = s.frames[meta.imgIdx]?.name;
+          if (ad == null || !ayrilanAdlari.has(ad)) continue;
+          sonuc.push({ ad, kamera: kameraOlcekle(meta, olcek), psnr: await s.trainer.evalCamPsnr(ci) });
+        }
+        return sonuc;
       },
     };
     signal?.throwIfAborted();
