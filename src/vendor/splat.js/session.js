@@ -130,6 +130,9 @@ export function undistortFrames(frames, recon) {
  * @property {number} [depthWeight=0]    depth-supervision weight (trainer
  *   opts.depthWeight) against frame.depth — Float32Array of camera-space z at the
  *   training resolution (tw x th), NaN = invalid; metrics then carry depthLoss
+ * @property {function} [growRegion]     trainer opts.growRegion: optional
+ *   (x, y, z) => boolean restricting refine's GROWTH donors to a region
+ *   (relocation is unaffected); undefined = unrestricted, as before
  * @property {object} [frames]           FrameOptions passed to load()
  */
 
@@ -505,6 +508,7 @@ export class Session {
       // the cleared area at full photometric strength
       ...(masked && this.frames && this.frames.some((f) => f.emptyFrac > 0) ? { randomBg: true } : {}),
       ...(this.opts.depthWeight > 0 ? { depthWeight: this.opts.depthWeight } : {}),
+      ...(this.opts.growRegion ? { growRegion: this.opts.growRegion } : {}),
       ...this.opts.trainer, ...extra.trainer,
       gpu: this.gpu,
     };
@@ -687,6 +691,7 @@ export class Session {
       // converged person grew opaque dark needles out of the subject)
       ...(this.opts.maskTraining !== false && this.frames && this.frames.some((f) => f.emptyFrac > 0) ? { randomBg: true } : {}),
       ...(this.opts.depthWeight > 0 ? { depthWeight: this.opts.depthWeight } : {}),
+      ...(this.opts.growRegion ? { growRegion: this.opts.growRegion } : {}),
       ...this.opts.trainer, ...opts.trainer,
       gpu: this.gpu,
     };
