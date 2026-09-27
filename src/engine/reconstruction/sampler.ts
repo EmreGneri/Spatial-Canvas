@@ -52,10 +52,11 @@
  *  texture'ı, render'da material/uPositions takası ve BACKDROP_Z_PUSH ile
  *  oynamak ortadan kalktı: fg + bg TEK GPGPU buffer'ında yaşar, render tek
  *  draw call'dır. Arka plan texel'leri fotoğrafın GERÇEK arka plan
- *  pikselleri olduğu için inpaint'e gerek yoktur — renkler uImageTexture
- *  (sampleImageGrid) ile aynı remap üzerinden fotoğraftan gelir; öznenin
- *  arkasındaki boşluk ön plan kabuğu (kenar dökümü + ince kabuk) ve sabit
- *  arka plan düzlemi tarafından kapanır.
+ *  pikselleri olduğu için sampler'ın nokta katmanında inpaint'e gerek yoktur —
+ *  renkler uImageTexture (sampleImageGrid) ile aynı remap üzerinden fotoğraftan
+ *  gelir. Öznenin ARKASINDAKİ açılma boşlukları Engine'in ayrı, düşük
+ *  çözünürlüklü ve maskeli photo-backdrop düzleminde tamamlanır; bu düzlem
+ *  sampler/GPGPU grid'ini veya fotoğrafın ön plan renklerini değiştirmez.
  * Boyut/karakter jitter'ı için tohum üretimi render shader'larına
  * aUv hash'i olarak taşındı (pointCloudMaterial.ts, asciiMaterial.ts).
  * Sözleşmeler (ARCHITECTURE.md): aUv grid, y-flip (yalnızca upload'da),
