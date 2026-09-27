@@ -118,6 +118,12 @@ export function ozetMd(r) {
   if (r.bosAlan) {
     out.push('## Derinlikle doğrulanmış boş alan', '');
     out.push(`- hizalı kare: ${r.bosAlan.hizaliKare}, voksel: ${bicim(r.bosAlan.voksel, 4)}, ızgara: ${r.bosAlan.boyut.join('×')}`, '');
+    if (r.bosAlan.guven) {
+      const g = r.bosAlan.guven;
+      out.push(`- serbest gezinme kapısı: ${g.serbestGezinmeUygun ? 'açık (deneysel)' : 'kapalı — ' + g.nedenler.join(', ')}`,
+        `- güven sinyalleri: ${g.alignedFrames} kare, bilinmeyen hacim %${bicim(g.unknownVoxelRatio * 100, 1)}, en kötü hizalama artığı %${bicim(g.worstRelativeFitRmse * 100, 1)}, taban/derinlik ${bicim(g.baselineRatio, 3)}`,
+        '- uyarı: tek göz derinliği vokselden ince veya hiç örneklenmeyen engelleri kaçırabilir; çarpışma garantisi değildir.', '');
+    }
     if (r.bosAlan.gtBosOrnek != null) out.push(`- GT engel ihlali (ham boş): ${r.bosAlan.gtEngelIhlali}/${r.bosAlan.gtBosOrnek} örnek`,
       `- GT engel ihlali (kameranın erişebildiği boşluk): ${r.bosAlan.gtErisilirIhlal}/${r.bosAlan.gtErisilirOrnek} örnek`, '');
     out.push(tablo(['bölge', 'yön', 'bugünkü sınır', 'boş alan sınırı'], BOLGELER.flatMap((bolge) =>
@@ -136,6 +142,17 @@ export function ozetMd(r) {
     ...(r.ayrilan ?? []).map((a) => [a.ad, bicim(a.psnr, 2), bicim(a.ssim, 3)]),
     ['**ortalama**', bicim(ort.psnr, 2), bicim(ort.ssim, 3)],
   ]), '');
+
+  if (r.egitimOlcumu) {
+    const b = r.egitimOlcumu;
+    const c = b.settings;
+    out.push('## Training benchmark', '',
+      `- settings: refineEvery ${c.refineEvery}, capMult ${c.capMult}, maxSplats ${c.maxSplats}, seed ${c.seed ?? 'unseeded'}, actualCap ${c.actualCap}`,
+      `- initial Gaussians: ${b.initialN}; training: ${bicim(sn(b.elapsedMs), 1)} s; held-out PSNR: ${bicim(b.heldoutPsnrMean, 2)} dB`, '',
+      tablo(['iter', 'moved', 'grown', 'n', 'ms'], (b.refinements ?? []).map((event) => [
+        String(event.iter), String(event.moved), String(event.grown), String(event.n), String(event.ms),
+      ])), '');
+  }
 
   out.push('## Aşama süreleri', '');
   const anahtarlar = asamaAnahtarlari(r);

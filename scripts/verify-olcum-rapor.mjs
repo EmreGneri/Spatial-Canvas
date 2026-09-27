@@ -82,6 +82,19 @@ assert.match(ozet, satir('features', '5.0'), 'stage duration row (features)');
 assert.match(ozet, satir('egitim', '60.0'), 'stage duration row (egitim)');
 assert.match(ozet, /0\.0015|0\.15 ?%/, 'alignment rms ratio is shown');
 
+const trainingReport = sahteRapor('training');
+trainingReport.egitimOlcumu = {
+  settings: { refineEvery: 375, capMult: 2, maxSplats: 90000, seed: 17, actualCap: 24000 },
+  initialN: 12000,
+  refinements: [{ iter: 1520, moved: 2, grown: 100, n: 12100, ms: 25 }],
+  elapsedMs: 60000,
+  heldoutPsnrMean: 21.5,
+};
+const trainingSummary = ozetMd(trainingReport);
+assert.match(trainingSummary, /Training benchmark/);
+assert.match(trainingSummary, /refineEvery 375.*capMult 2.*maxSplats 90000.*seed 17.*actualCap 24000/);
+assert.match(trainingSummary, satir('1520', '2', '100', '12100', '25'));
+
 // Without GT: psnr/ssim cells are blank, no alignment line, no throw.
 const gtsiz = ozetMd(sahteRapor('gtsiz', { gt: false }));
 assert.match(gtsiz, satir('orta', 'sag', '0.06', '0.10', '—', '—', '0.950'), 'no-GT row shows blanks for psnr/ssim');

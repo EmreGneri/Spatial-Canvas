@@ -8,6 +8,7 @@
 //     [--chrome] [--yazilim-gpu] [--basli] [--yalniz-sfm]
 //     [--secim yenilik] [--eslestirme sirali] [--odak-alt N]
 //     [--geometri model|sentetik] [--derinlik-kisiti WEIGHT] [--bolgesel]
+//     [--refine-every N] [--cap-mult N] [--max-splats N] [--trainer-seed N]
 // Karşılaştırma:
 //   node scripts/olc-gezinme.mjs --karsilastir <raporA.json> <raporB.json> [--cikti dizin]
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
@@ -23,7 +24,8 @@ const ILERLEME_ARALIGI_MS = 20_000;
 
 const BAYRAKLAR = new Set(['--chrome', '--yazilim-gpu', '--basli', '--yalniz-sfm', '--bolgesel']);
 const DEGERLI = new Set(['--gt', '--etiket', '--katman', '--kare', '--iter', '--ayrilan', '--genislik', '--cikti',
-  '--secim', '--eslestirme', '--odak-alt', '--geometri', '--derinlik-kisiti']);
+  '--secim', '--eslestirme', '--odak-alt', '--geometri', '--derinlik-kisiti',
+  '--refine-every', '--cap-mult', '--max-splats', '--trainer-seed']);
 
 function kullanim(mesaj) {
   if (mesaj) console.error(`olc-gezinme: ${mesaj}`);
@@ -32,6 +34,7 @@ function kullanim(mesaj) {
     + '          [--kare N] [--iter N] [--ayrilan N] [--genislik N] [--chrome] [--yazilim-gpu] [--basli]\n'
     + '          [--yalniz-sfm] [--secim yenilik] [--eslestirme sirali] [--odak-alt N]\n'
     + '          [--geometri model|sentetik] [--derinlik-kisiti WEIGHT] [--bolgesel]\n'
+    + '          [--refine-every N] [--cap-mult N] [--max-splats N] [--trainer-seed N]\n'
     + '          node scripts/olc-gezinme.mjs --karsilastir <raporA.json> <raporB.json> [--cikti dizin]',
   );
   process.exit(2);
@@ -76,6 +79,17 @@ async function olc(secenek) {
     const v = secenek.deger[k];
     if (v != null && !/^\d+$/.test(v)) kullanim(`--${k} bir tamsayı olmalı: ${v}`);
   }
+  for (const k of ['refine-every', 'max-splats']) {
+    const raw = secenek.deger[k];
+    if (raw != null && (!/^\d+$/.test(raw) || !Number.isSafeInteger(Number(raw)) || Number(raw) === 0))
+      kullanim(`--${k} must be a positive integer`);
+  }
+  const capMult = secenek.deger['cap-mult'];
+  if (capMult != null && (!Number.isFinite(Number(capMult)) || Number(capMult) < 1))
+    kullanim('--cap-mult must be a finite number >= 1');
+  const trainerSeed = secenek.deger['trainer-seed'];
+  if (trainerSeed != null && (!/^\d+$/.test(trainerSeed) || !Number.isSafeInteger(Number(trainerSeed))))
+    kullanim('--trainer-seed must be a non-negative integer');
   if (secenek.deger.secim && secenek.deger.secim !== 'yenilik') kullanim('--secim yenilik olmalı');
   if (secenek.deger.eslestirme && secenek.deger.eslestirme !== 'sirali') kullanim('--eslestirme sirali olmalı');
   if (secenek.deger.geometri && !['model', 'sentetik'].includes(secenek.deger.geometri)) kullanim('--geometri model|sentetik olmalı');
@@ -87,13 +101,16 @@ async function olc(secenek) {
   if (secenek.deger['odak-alt'] && !/^\d+$/.test(secenek.deger['odak-alt'])) kullanim('--odak-alt tamsayı olmalı');
   if (secenek.bayrak.has('--yalniz-sfm') && (secenek.deger.geometri || secenek.deger['derinlik-kisiti']))
     kullanim('--yalniz-sfm ile derinlik seçenekleri kullanılamaz');
+  if (secenek.bayrak.has('--yalniz-sfm') && ['refine-every', 'cap-mult', 'max-splats', 'trainer-seed'].some((k) => secenek.deger[k] != null))
+    kullanim('Training benchmark flags require a training run');
   const etiket = secenek.deger.etiket ?? new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-');
   if (/[\\/]/.test(etiket) || etiket.startsWith('.')) kullanim(`geçersiz etiket: ${etiket}`);
   const cikis = resolve(REPO_KOKU, 'olcum-out', etiket, klipKoku(klip));
 
   const q = new URLSearchParams({ klip: fsUrl(klip), etiket });
   if (gt) q.set('gt', fsUrl(gt));
-  for (const k of ['katman', 'kare', 'iter', 'ayrilan', 'genislik', 'secim', 'eslestirme', 'odak-alt', 'geometri', 'derinlik-kisiti'])
+  for (const k of ['katman', 'kare', 'iter', 'ayrilan', 'genislik', 'secim', 'eslestirme', 'odak-alt', 'geometri', 'derinlik-kisiti',
+    'refine-every', 'cap-mult', 'max-splats', 'trainer-seed'])
     if (secenek.deger[k] != null) q.set(k, secenek.deger[k]);
   for (const k of ['yalniz-sfm', 'bolgesel']) if (secenek.bayrak.has(`--${k}`)) q.set(k, '1');
 

@@ -12,8 +12,8 @@
 // ile GT'si çizilir.
 
 import {
-  ayarSec, egitimBaslat, kameraCoz, kameraMerkezi,
-  type Egitim, type EgitimAyari, type EgitimMetrik, type GsKamera,
+  ayarSec, egitimBaslat, egitimOturumAyari, kameraCoz, kameraMerkezi,
+  type Egitim, type EgitimAyari, type EgitimMetrik, type EgitimOlcumAyari, type GsKamera,
 } from '../engine/reconstruction/egitim3dgs.ts';
 import {
   BOLGELER, MESAFELER, bugunkuSinir, kaplama, keskinlik, kullanilabilirMesafe, olcumBirimi, psnr,
@@ -56,6 +56,7 @@ export interface GezinmeRaporu {
   sureler: Record<string, number>;
   sfm: { kayitli: number; toplamKare: number; medErr?: number; rmsBA?: number };
   gauss: number;
+  egitimOlcumu: EgitimOlcumRaporu;
   ayrilan: { ad: string; psnr: number; ssim: number }[];
   sondalar: SondaSonucu[];
   kullanilabilir: Record<Bolge, Record<Yon, number>>;
@@ -68,8 +69,47 @@ export interface GezinmeRaporu {
   zamanCizelgesi: { ms: number; asama: string }[];
   mod?: { secim?: string; eslestirme?: string; odakAlt?: number; geometri?: string; depthWeight?: number; bolgesel?: boolean };
   bosAlan?: { hizaliKare: number; voksel: number; boyut: [number, number, number]; kullanilabilir: Record<Bolge, Record<Yon, number>>;
+    guven?: Egitim['gezinmeGuveni'];
     gtBosOrnek?: number; gtEngelIhlali?: number;
     gtErisilirOrnek?: number; gtErisilirIhlal?: number };
+}
+
+type RefineMark = { kind: string; iter: number; moved: number; grown: number; ms: number };
+export interface EgitimOlcumRaporu {
+  settings: { refineEvery: number; capMult: number; maxSplats: number; seed: number | null; actualCap: number };
+  initialN: number;
+  refinements: { iter: number; moved: number; grown: number; n: number; ms: number }[];
+  elapsedMs: number;
+  heldoutPsnrMean: number | null;
+}
+
+export function egitimOlcumRaporu(
+  ayar: EgitimAyari, override: EgitimOlcumAyari | undefined, marks: readonly RefineMark[],
+  finalN: number, actualCap: number, elapsedMs: number, holdouts: readonly { psnr: number }[],
+): EgitimOlcumRaporu {
+  const session = egitimOturumAyari(ayar, override);
+  const refines = marks.filter((mark) => mark.kind === 'refine');
+  let n = finalN - refines.reduce((sum, mark) => sum + mark.grown, 0);
+  if (n < 0) throw new Error('Refinement growth exceeds final Gaussian count');
+  const initialN = n;
+  const refinements = refines.map((mark) => {
+    n += mark.grown;
+    return { iter: mark.iter, moved: mark.moved, grown: mark.grown, n, ms: mark.ms };
+  });
+  const psnrValues = holdouts.map((item) => item.psnr).filter(Number.isFinite);
+  return {
+    settings: {
+      refineEvery: session.refineEvery,
+      capMult: override?.capMult ?? 4,
+      maxSplats: override?.maxSplats ?? 600000,
+      seed: override?.seed ?? null,
+      actualCap,
+    },
+    initialN,
+    refinements,
+    elapsedMs,
+    heldoutPsnrMean: psnrValues.length ? psnrValues.reduce((sum, value) => sum + value, 0) / psnrValues.length : null,
+  };
 }
 
 export interface SfmRaporu {
@@ -91,6 +131,7 @@ interface Parametreler {
   katman?: 'quick' | 'standard';
   kare?: number;
   iter?: number;
+  egitim?: EgitimOlcumAyari;
   ayrilan: number;
   genislik: number;
   yalnizSfm: boolean;
@@ -119,6 +160,31 @@ function tamsayi(v: string | null, ad: string): number | undefined {
   return n;
 }
 
+function egitimOlcumuOku(q: URLSearchParams): EgitimOlcumAyari | undefined {
+  const keys = ['refine-every', 'cap-mult', 'max-splats', 'trainer-seed'];
+  if (!keys.some((key) => q.has(key))) return undefined;
+  const positiveInt = (key: string): number | undefined => {
+    const raw = q.get(key);
+    if (raw === null) return undefined;
+    const n = tamsayi(raw, key);
+    if (n === undefined || n === 0) throw new Error(`${key} must be a positive integer`);
+    return n;
+  };
+  const capRaw = q.get('cap-mult');
+  const capMult = capRaw === null ? undefined : Number(capRaw);
+  if (capRaw !== null && (!Number.isFinite(capMult) || capMult! < 1))
+    throw new Error('cap-mult must be a finite number >= 1');
+  const seedRaw = q.get('trainer-seed');
+  const seed = seedRaw === null ? undefined : tamsayi(seedRaw, 'trainer-seed');
+  if (seedRaw !== null && seed === undefined) throw new Error('trainer-seed must be a non-negative integer');
+  return {
+    ...(q.has('refine-every') ? { refineEvery: positiveInt('refine-every') } : {}),
+    ...(capMult !== undefined ? { capMult } : {}),
+    ...(q.has('max-splats') ? { maxSplats: positiveInt('max-splats') } : {}),
+    ...(seed !== undefined ? { seed } : {}),
+  };
+}
+
 export function parametreleriOku(arama: string): Parametreler {
   const q = new URLSearchParams(arama);
   const klip = q.get('klip');
@@ -142,6 +208,7 @@ export function parametreleriOku(arama: string): Parametreler {
     katman,
     kare: tamsayi(q.get('kare'), 'kare'),
     iter: tamsayi(q.get('iter'), 'iter'),
+    egitim: egitimOlcumuOku(q),
     ayrilan: tamsayi(q.get('ayrilan'), 'ayrilan') ?? 6,
     genislik: tamsayi(q.get('genislik'), 'genislik') ?? 640,
     yalnizSfm: q.has('yalniz-sfm'), secim, eslestirme,
@@ -407,6 +474,9 @@ async function olc(p: Parametreler): Promise<{ rapor: GezinmeRaporu | SfmRaporu;
   const bittiSozu = new Promise<EgitimMetrik | null>((res, rej) => { bittiCoz = res; bittiRed = rej; });
   bittiSozu.catch(() => undefined); // surfaced by the await below
   let sonMetrikLog = 0;
+  let refineMarks: RefineMark[] = [];
+  let finalN = 0;
+  let finalCap = 0;
   const depthSource: GezinmeDerinlikKaynagi | undefined = p.geometri === 'sentetik'
     ? sentetikDerinlikKaynagi(gt!)
     : p.geometri === 'model' || p.depthWeight ? 'model' : undefined;
@@ -422,7 +492,11 @@ async function olc(p: Parametreler): Promise<{ rapor: GezinmeRaporu | SfmRaporu;
     bitti: (m) => bittiCoz(m),
     hata: (err) => bittiRed(err),
   }, ayar, undefined, {
-    olcum: { ayrilanKareler }, kamera: kameraSecenekleri,
+    olcum: {
+      ayrilanKareler,
+      egitim: p.egitim,
+      refineMarks: (marks, n, cap) => { refineMarks = marks; finalN = n; finalCap = cap; },
+    }, kamera: kameraSecenekleri,
     ...(depthSource ? { geometri: { kaynak: depthSource } } : {}),
     ...(p.depthWeight && depthSource ? { derinlikKisiti: {
       agirlik: p.depthWeight, kaynak: depthSource, bolgesel: p.bolgesel,
@@ -536,6 +610,7 @@ async function olc(p: Parametreler): Promise<{ rapor: GezinmeRaporu | SfmRaporu;
     const gauss = sonMetrik?.splats ?? (await e.gaussianlar()).n;
 
     const sonMs = isaretle('son');
+    const sureler = asamaSureleri(cizelge, tohumSonu, bittiMs, sonMs);
     const rapor: GezinmeRaporu = {
       surum: 1,
       etiket: p.etiket,
@@ -545,9 +620,10 @@ async function olc(p: Parametreler): Promise<{ rapor: GezinmeRaporu | SfmRaporu;
       ayar: { ...ayar, ayrilan: p.ayrilan, genislik: p.genislik },
       tur,
       birim,
-      sureler: asamaSureleri(cizelge, tohumSonu, bittiMs, sonMs),
+      sureler,
       sfm: { kayitli: kayitli.length, toplamKare },
       gauss,
+      egitimOlcumu: egitimOlcumRaporu(ayar, p.egitim, refineMarks, finalN || gauss, finalCap, sureler.egitim ?? 0, ayrilan),
       ayrilan,
       sondalar: sonuclar,
       kullanilabilir,
@@ -555,7 +631,7 @@ async function olc(p: Parametreler): Promise<{ rapor: GezinmeRaporu | SfmRaporu;
       mod: { ...kameraSecenekleri, geometri: p.geometri, depthWeight: p.depthWeight, bolgesel: p.bolgesel },
       ...(e.bosAlan && bosMesafe ? { bosAlan: {
         hizaliKare: e.derinlikOzeti?.hizaliKare ?? 0, voksel: e.bosAlan.voksel, boyut: e.bosAlan.boyut,
-        kullanilabilir: bosMesafe,
+        kullanilabilir: bosMesafe, ...(e.gezinmeGuveni ? { guven: e.gezinmeGuveni } : {}),
         ...(gt ? { gtBosOrnek, gtEngelIhlali, gtErisilirOrnek, gtErisilirIhlal } : {}),
       } } : {}),
       esikler: { olcut: hizalama ? 'gt' : 'gtsiz', ...ESIKLER },
