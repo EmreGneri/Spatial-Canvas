@@ -218,8 +218,14 @@ const uiKod = ui.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
 assert.ok(!/gSplatC|snapshot\(\)\.c\b|\.c\[/.test(uiKod), 'vurgu renk kanalına yazıyor — orijinal veri bozulur');
 // 4. GEZ modu ŞART: katman olayları yakalarken kamera kilitlenir, floater bulunamaz.
 assert.match(ui, /pointerEvents: arac === 'gez' \? 'none' : 'auto'/, 'gez modunda katman olayları bırakmıyor');
-// 5. Seçim eşiği MOTORDAN okunmalı (yukarıdaki ölçüm).
-assert.match(ui, /engine\.splatOpacityThreshold/, 'seçim eşiği motordan okunmuyor — sabit eşik sayaç yalanı üretir');
+// 5. Seçim eşiği ÇİZİMİN KAPISINDAN okunmalı (yukarıdaki ölçüm). Araç 3DGS'e
+//    de bağlanınca eşik `kaynak.esik()` arkasına taşındı; kural DEĞİŞMEDİ,
+//    yalnız yeri değişti — motor bağlantısı artık temizlemeKaynagi.ts'te.
+assert.match(uiKod, /esik: kaynakRef\.current\.esik\(\)|kaynakRef\.current\.esik\(\)/,
+  'seçim eşiği kaynaktan okunmuyor — sabit eşik sayaç yalanı üretir');
+const kaynakKodu = readFileSync(new URL('../src/ui/temizlemeKaynagi.ts', import.meta.url), 'utf8');
+assert.match(kaynakKodu, /esik: \(\) => engine\.splatOpacityThreshold/,
+  'motor kaynağı eşiği motordan almıyor');
 assert.match(engine, /get splatOpacityThreshold\(\): number/, 'motor etkin opaklık kapısını açmıyor');
 assert.match(engine, /splatOpacityGate\(this\.splatMinOpacity, this\.objectSeparation, this\.gaussianSource\)/,
   'kapı çizimdekiyle aynı fonksiyondan gelmiyor — ikisi ayrı ayrı bayatlar');

@@ -27,6 +27,7 @@ import { Egitim3D } from './ui/Egitim3D';
 import { EgitimGrafik } from './ui/EgitimGrafik';
 import { seriEkle, type GrafikNoktasi } from './ui/egitimIlerleme';
 import { SplatTemizleme } from './ui/SplatTemizleme';
+import { motorKaynagi } from './ui/temizlemeKaynagi';
 import { ArDugmesi } from './ui/ArDugmesi';
 import {
   girisDegerleri, KALITE_GRUPLARI, type KaliteGrubu, type ModHafizasi,
@@ -1483,7 +1484,14 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
             aynı desen: WebGL sahnesinin DIŞINDA, 2D kanvas). Kapalıyken hiç
             mount edilmez, kendi rAF döngüsü de çalışmaz. */}
         {engine && temizlemeAcik && !egitimDosya && (
-          <SplatTemizleme engine={engine} say={say} onKapat={() => setTemizlemeAcik(false)} />
+          <SplatTemizleme
+            kaynak={motorKaynagi(engine, () => {
+              const c = engine.renderer.domElement;
+              return { en: c.clientWidth, boy: c.clientHeight };
+            })}
+            say={say}
+            onKapat={() => setTemizlemeAcik(false)}
+          />
         )}
         {showMask && (
           <canvas

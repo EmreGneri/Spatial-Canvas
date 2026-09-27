@@ -1,43 +1,44 @@
 import { useEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react';
 import {
-  ekranaProjekte, ekranYaricapiniDunyaya, enYakinSplat, fircaSecimi, geriAl, gorunurSayisi,
-  hepsiniGeriAl, kureSecimi, lassoSecimi, silmeUygula, type SecimAraci, type SilmeKaydi,
+  ekranaProjekte, ekranYaricapiniDunyaya, enYakinSplat, fircaSecimi, gorunurSayisi,
+  kureSecimi, lassoSecimi, type SecimAraci,
 } from './splatSecim';
+import { elemandanKameraya, icerikDonusumu, kameradanElemana } from './gsKamera';
+import type { TemizlemeGeri, TemizlemeKaynagi } from './temizlemeKaynagi';
 import { bosluk, cam, dugme, MONO, renk, SANS, yaricap, yazi } from './tema';
 
 /**
  * SPLAT TEMİZLEME ARACI — sahnenin üstünde 2D seçim katmanı.
  *
- * Sahne WebGL'de çizilir; seçim ve vurgu 2D kanvasta. Vurgu için GaussianBuffer'ın
- * RENK kanalına (gSplatC) DOKUNULMAZ: renk yazmak orijinal veriyi bozar ve geri
- * alma iki kanalı birden takip etmek zorunda kalırdı. Vurgu yalnız bu katmanda
- * yaşar — seçim kaybolunca sahne bit bit aynı kalır.
+ * Sahne (motorun WebGL'i ya da eğitim oturumunun WebGPU'su) altta çizilir;
+ * seçim ve vurgu bu 2D kanvasta. Vurgu splat verisinin RENK kanalına
+ * DOKUNMAZ: renk yazmak orijinal veriyi bozar ve geri alma iki kanalı birden
+ * takip etmek zorunda kalırdı. Vurgu yalnız bu katmanda yaşar — seçim
+ * kaybolunca sahne bit bit aynı kalır.
  *
  * DÖRT MOD, BİRİ SEÇİM DEĞİL: `gez` açıkken katman hiçbir olayı almaz
- * (`pointerEvents: none`) ve OrbitControls eskisi gibi çalışır. Sebep ölçülebilir:
- * katman sahnenin ÜSTÜNDE olduğu için olayları yakaladığında kamera kilitlenir —
- * floater'ı bulmak için döndürmek gerekiyor, dolayısıyla "gez" varsayılan mod.
- * Seçim modlar arasında KORUNUR: seç → gez → doğrula → sil akışı bozulmaz.
+ * (`pointerEvents: none`) ve alttaki kamera denetimi eskisi gibi çalışır.
+ * Sebep ölçülebilir: katman sahnenin ÜSTÜNDE olduğu için olayları
+ * yakaladığında kamera kilitlenir — floater'ı bulmak için döndürmek
+ * gerekiyor, dolayısıyla "gez" varsayılan mod. Seçim modlar arasında
+ * KORUNUR: seç → gez → doğrula → sil akışı bozulmaz.
  *
- * KAPSAM (dürüstlük kaydı): bu araç MOTORUN GaussianBuffer'ını temizler (splat
- * modu, füzyon/köprü çıktısı). 3D eğitim görünümündeki sahne splat.js'in KENDİ
- * tamponunda yaşar ve dışarıya açılmıyor — PLY çıktısındaki floater'lar orada.
- * Onu temizlemek için eğitim oturumunun Gaussian dizisine bir tutamaç gerekiyor
- * (veri katmanı işi); araç o tutamaç gelince aynı seçim mantığıyla çalışır,
- * çünkü `splatSecim.ts` yalnız bir xyzw dizisi ister.
+ * İKİ SAHNE, TEK ARAÇ: hangi sahnede olduğunu `kaynak` biliyor
+ * (`temizlemeKaynagi.ts`). Motor yolunda silme yerinde opaklık yazmak,
+ * eğitim yolunda oturumun `temizle()`si. Araç ikisini de yalnız ASENKRON
+ * arayüzden görür.
+ *
+ * KADRAJ: eğitim tuvali `object-fit: contain` ile gösteriliyor ve izdüşüm
+ * kameranın KENDİ piksel ölçüsünde. İmleç eleman koordinatından kamera
+ * pikseline çevrilir (`icerikDonusumu`); fırça yarıçapı da aynı ölçeğe
+ * bölünür, yoksa daire eleman büyüdükçe sahnede küçülürdü.
  */
 export function SplatTemizleme({
-  engine,
+  kaynak,
   onKapat,
   say,
 }: {
-  engine: {
-    gaussianSnapshot(): { a: Float32Array; count: number } | null;
-    splatViewProjection(): Float32Array | null;
-    commitSplatOpacity(): void;
-    /** Çizimin kullandığı opaklık kapısı — seçimin "görünür" tanımı buna eşit olmalı. */
-    splatOpacityThreshold: number;
-  };
+  kaynak: TemizlemeKaynagi;
   onKapat(): void;
   say(m: string): void;
 }) {
@@ -47,9 +48,12 @@ export function SplatTemizleme({
   /** Seçili indeksler — Set, fırça darbeleri birikerek genişlesin diye. */
   const secimRef = useRef<Set<number>>(new Set());
   const [secimSayisi, setSecimSayisi] = useState(0);
-  const gecmisRef = useRef<SilmeKaydi[]>([]);
+  const gecmisRef = useRef<TemizlemeGeri[]>([]);
   const [gecmisBoy, setGecmisBoy] = useState(0);
   const [kalan, setKalan] = useState<{ gorunur: number; toplam: number } | null>(null);
+  /** Eğitim oturumu tek işlem kabul ediyor: sürerken düğmeler kilitlenir. */
+  const [mesgul, setMesgul] = useState(false);
+  const [hata, setHata] = useState<string | null>(null);
 
   /** İmleç (fırça halkası) ve lasso yolu — çizim döngüsü bunları okur. */
   const imlecRef = useRef<{ x: number; y: number } | null>(null);
@@ -62,42 +66,49 @@ export function SplatTemizleme({
   boyutRef.current = boyut;
   const sayRef = useRef(say);
   sayRef.current = say;
+  const kaynakRef = useRef(kaynak);
+  kaynakRef.current = kaynak;
 
-  /** Splat verisi + o ANIN matrisi; her seçimde tazelenir (kamera döner). */
-  function veri(genislik: number, yukseklik: number) {
-    const snap = engine.gaussianSnapshot();
-    const vp = engine.splatViewProjection();
-    if (!snap || !vp) return null;
-    const ekran = ekranaProjekte(snap.a, snap.count, vp, genislik, yukseklik, ekranRef.current ?? undefined);
+  /**
+   * Splat verisi + o ANIN matrisi. `kaynak.oku()` eğitim yolunda önbellekli
+   * olduğu için her fırça darbesinde çağrılabilir; matris her seferinde taze
+   * alınır (kamera dönüyor olabilir).
+   */
+  async function veri() {
+    const k = kaynakRef.current.kare();
+    const s = await kaynakRef.current.oku();
+    if (!k || !s) return null;
+    const ekran = ekranaProjekte(s.xyzw, s.count, k.vp, k.en, k.boy, ekranRef.current ?? undefined);
     ekranRef.current = ekran;
-    return { a: snap.a, count: snap.count, vp, ekran };
+    return { ...s, ...k, ekran, esik: kaynakRef.current.esik() };
   }
 
-  function kalanTazele() {
-    const snap = engine.gaussianSnapshot();
-    // Kapı motordan okunur: nesne ayırma açıkken 0.50'ye çıkıyor ve arka plan
-    // splat'ları ZATEN çizilmiyor. Sabit eşik burada yalan bir "kalan" yazardı.
-    if (snap) {
+  async function kalanTazele() {
+    const s = await kaynakRef.current.oku();
+    if (s) {
       setKalan({
-        gorunur: gorunurSayisi(snap.a, snap.count, engine.splatOpacityThreshold),
-        toplam: snap.count,
+        gorunur: gorunurSayisi(s.xyzw, s.count, kaynakRef.current.esik()),
+        toplam: s.count,
       });
     }
   }
 
   useEffect(() => {
-    kalanTazele();
-    // Araç kapanırken seçim vurgusu da gitmeli; motor sahnesine hiçbir iz
-    // bırakılmaz (vurgu zaten yalnız bu katmanda yaşıyordu).
-    return () => { secimRef.current.clear(); };
+    void kalanTazele();
+    const k = kaynakRef.current;
+    return () => { secimRef.current.clear(); k.birak?.(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   /**
-   * ÇİZİM DÖNGÜSÜ. Kamera motorun kendi rAF'ında döndüğü için vurgu her karede
-   * yeniden projekte edilmeli, yoksa noktalar sahnenin gerisinde kalır.
-   * Matris DEĞİŞMEDİYSE projeksiyon atlanır — durağan sahnede 147k çarpma boşa
-   * gitmesin.
+   * ÇİZİM DÖNGÜSÜ. Kamera alttaki sahnenin kendi döngüsünde döndüğü için
+   * vurgu her karede yeniden projekte edilmeli, yoksa noktalar sahnenin
+   * gerisinde kalır. Matris DEĞİŞMEDİYSE projeksiyon atlanır — durağan
+   * sahnede yüz binlerce çarpma boşa gitmesin.
+   *
+   * Döngü `kaynak.oku()`yu BEKLEMEZ: son okunan anlık görüntüyü kullanır,
+   * çünkü bir rAF karesinde `await` etmek bir sonraki kareyi de geciktirirdi.
+   * Anlık görüntü seçimde ve saniyede bir tazelenir.
    */
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -105,6 +116,8 @@ export function SplatTemizleme({
     let raf = 0;
     let sonVp: Float32Array | null = null;
     let sonSecim = -1;
+    let anlik: { xyzw: Float32Array; count: number } | null = null;
+    void kaynakRef.current.oku().then((s) => { anlik = s; });
 
     const ciz = () => {
       raf = requestAnimationFrame(ciz);
@@ -120,14 +133,18 @@ export function SplatTemizleme({
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       ctx.clearRect(0, 0, w, h);
 
+      const kare = kaynakRef.current.kare();
+      if (!kare) return;
+      const d = icerikDonusumu(w, h, kare.en, kare.boy);
       const secim = secimRef.current;
-      const vp = engine.splatViewProjection();
-      const snap = engine.gaussianSnapshot();
-      if (vp && snap && secim.size > 0) {
-        const degisti = !sonVp || vp.some((v, i) => v !== sonVp![i]) || sonSecim !== secim.size;
+
+      if (anlik && secim.size > 0) {
+        const degisti = !sonVp || kare.vp.some((v, i) => v !== sonVp![i]) || sonSecim !== secim.size;
         if (degisti) {
-          ekranRef.current = ekranaProjekte(snap.a, snap.count, vp, w, h, ekranRef.current ?? undefined);
-          sonVp = Float32Array.from(vp);
+          ekranRef.current = ekranaProjekte(
+            anlik.xyzw, anlik.count, kare.vp, kare.en, kare.boy, ekranRef.current ?? undefined,
+          );
+          sonVp = Float32Array.from(kare.vp);
           sonSecim = secim.size;
         }
         const ekran = ekranRef.current!;
@@ -137,7 +154,8 @@ export function SplatTemizleme({
         for (const i of secim) {
           const k = i * 3;
           if (!(ekran[k + 2] > 0)) continue;
-          ctx.fillRect(ekran[k] - 1, ekran[k + 1] - 1, 2.5, 2.5);
+          const p = kameradanElemana(d, ekran[k], ekran[k + 1]);
+          ctx.fillRect(p.x - 1, p.y - 1, 2.5, 2.5);
         }
       } else if (secim.size === 0) {
         sonSecim = -1;
@@ -167,89 +185,137 @@ export function SplatTemizleme({
       }
     };
     ciz();
-    return () => cancelAnimationFrame(raf);
-  }, [engine]);
+    const tazele = window.setInterval(() => {
+      void kaynakRef.current.oku().then((s) => { anlik = s; });
+    }, 1000);
+    return () => { cancelAnimationFrame(raf); clearInterval(tazele); };
+  }, []);
 
   function yerel(ev: ReactPointerEvent<HTMLCanvasElement>) {
     const r = ev.currentTarget.getBoundingClientRect();
     return { x: ev.clientX - r.left, y: ev.clientY - r.top, w: r.width, h: r.height };
   }
 
-  function fircaVur(x: number, y: number, w: number, h: number) {
-    const d = veri(w, h);
+  /** Eleman noktası + fırça yarıçapı → kamera piksel uzayı. */
+  function kameraya(x: number, y: number, w: number, h: number, en: number, boy: number) {
+    const d = icerikDonusumu(w, h, en, boy);
+    const p = elemandanKameraya(d, x, y);
+    return { ...p, yaricap: boyutRef.current / (d.olcek || 1) };
+  }
+
+  async function fircaVur(x: number, y: number, w: number, h: number) {
+    const d = await veri();
     if (!d) return;
-    const bulunan = fircaSecimi(d.ekran, d.a, d.count, w, h, x, y, boyut, engine.splatOpacityThreshold);
+    const c = kameraya(x, y, w, h, d.en, d.boy);
+    const bulunan = fircaSecimi(d.ekran, d.xyzw, d.count, d.en, d.boy, c.x, c.y, c.yaricap, d.esik);
     const s = secimRef.current;
     for (const i of bulunan) s.add(i);
     setSecimSayisi(s.size);
   }
 
-  function kureVur(x: number, y: number, w: number, h: number) {
-    const d = veri(w, h);
+  async function kureVur(x: number, y: number, w: number, h: number) {
+    const d = await veri();
     if (!d) return;
-    const merkezIdx = enYakinSplat(d.ekran, d.a, d.count, w, h, x, y, boyut, engine.splatOpacityThreshold);
+    const c = kameraya(x, y, w, h, d.en, d.boy);
+    const merkezIdx = enYakinSplat(d.ekran, d.xyzw, d.count, d.en, d.boy, c.x, c.y, c.yaricap, d.esik);
     if (merkezIdx === null) {
       sayRef.current('temizleme: imleç altında splat yok');
       return;
     }
     const o = merkezIdx * 4;
     const wClip = d.ekran[merkezIdx * 3 + 2];
-    const r = ekranYaricapiniDunyaya(d.vp, wClip, boyut, w);
-    const bulunan = kureSecimi(d.a, d.count, [d.a[o], d.a[o + 1], d.a[o + 2]], r, engine.splatOpacityThreshold);
+    const r = ekranYaricapiniDunyaya(d.vp, wClip, c.yaricap, d.en);
+    const bulunan = kureSecimi(d.xyzw, d.count, [d.xyzw[o], d.xyzw[o + 1], d.xyzw[o + 2]], r, d.esik);
     const s = secimRef.current;
     for (const i of bulunan) s.add(i);
     setSecimSayisi(s.size);
   }
 
-  function lassoBitir(w: number, h: number) {
+  async function lassoBitir(w: number, h: number) {
     const yol = lassoRef.current;
-    if (yol.length >= 6) {
-      const d = veri(w, h);
-      if (d) {
-        const bulunan = lassoSecimi(d.ekran, d.a, d.count, w, h, yol, engine.splatOpacityThreshold);
-        const s = secimRef.current;
-        for (const i of bulunan) s.add(i);
-        setSecimSayisi(s.size);
-      }
-    }
     lassoRef.current = [];
+    if (yol.length < 6) return;
+    const d = await veri();
+    if (!d) return;
+    const donusum = icerikDonusumu(w, h, d.en, d.boy);
+    const kameraYolu: number[] = [];
+    for (let p = 0; p < yol.length; p += 2) {
+      const q = elemandanKameraya(donusum, yol[p], yol[p + 1]);
+      kameraYolu.push(q.x, q.y);
+    }
+    const bulunan = lassoSecimi(d.ekran, d.xyzw, d.count, d.en, d.boy, kameraYolu, d.esik);
+    const s = secimRef.current;
+    for (const i of bulunan) s.add(i);
+    setSecimSayisi(s.size);
+  }
+
+  /** Kaynak çağrılarını tek sarmalayıcıdan geçir: kilit + hata görünür olsun. */
+  async function islem(ad: string, f: () => Promise<void>) {
+    if (mesgul) return;
+    setMesgul(true);
+    setHata(null);
+    try {
+      await f();
+    } catch (e) {
+      const m = e instanceof Error ? e.message : String(e);
+      setHata(m);
+      sayRef.current(`temizleme ${ad} HATA: ${m}`);
+    } finally {
+      setMesgul(false);
+    }
   }
 
   function sil() {
-    const snap = engine.gaussianSnapshot();
-    const s = secimRef.current;
-    if (!snap || s.size === 0) return;
-    const kayit = silmeUygula(snap.a, Int32Array.from(s));
-    s.clear();
-    setSecimSayisi(0);
-    if (!kayit) { sayRef.current('temizleme: seçilenler zaten silinmişti'); return; }
-    gecmisRef.current.push(kayit);
-    setGecmisBoy(gecmisRef.current.length);
-    engine.commitSplatOpacity();
-    kalanTazele();
-    sayRef.current(`temizleme: ${kayit.indeksler.length.toLocaleString('tr-TR')} splat silindi · geri alınabilir`);
+    void islem('silme', async () => {
+      const s = secimRef.current;
+      if (s.size === 0) return;
+      const geri = await kaynakRef.current.sil(Int32Array.from(s));
+      s.clear();
+      setSecimSayisi(0);
+      if (!geri) { sayRef.current('temizleme: seçilenler zaten silinmişti'); return; }
+      gecmisRef.current.push(geri);
+      setGecmisBoy(gecmisRef.current.length);
+      await kalanTazele();
+      sayRef.current(
+        `temizleme (${kaynakRef.current.ad}): ${geri.adet.toLocaleString('tr-TR')} splat silindi · geri alınabilir`,
+      );
+    });
   }
 
   function sonuGeriAl() {
-    const snap = engine.gaussianSnapshot();
-    const kayit = gecmisRef.current.pop();
-    if (!snap || !kayit) return;
-    const n = geriAl(snap.a, kayit);
-    setGecmisBoy(gecmisRef.current.length);
-    engine.commitSplatOpacity();
-    kalanTazele();
-    sayRef.current(`temizleme: ${n.toLocaleString('tr-TR')} splat geri geldi`);
+    void islem('geri alma', async () => {
+      const geri = gecmisRef.current[gecmisRef.current.length - 1];
+      if (!geri) return;
+      // Jeton reddedebilir (devamEt/kapat sonrası süresi dolar). Hata
+      // YUTULMAZ; jeton yığından da düşer, çünkü bir daha çalışmayacak.
+      try {
+        await geri.geriAl();
+      } finally {
+        gecmisRef.current.pop();
+        setGecmisBoy(gecmisRef.current.length);
+      }
+      await kalanTazele();
+      sayRef.current(`temizleme: ${geri.adet.toLocaleString('tr-TR')} splat geri geldi`);
+    });
   }
 
   function tumunuGeriAl() {
-    const snap = engine.gaussianSnapshot();
-    if (!snap || gecmisRef.current.length === 0) return;
-    const n = hepsiniGeriAl(snap.a, gecmisRef.current);
-    gecmisRef.current = [];
-    setGecmisBoy(0);
-    engine.commitSplatOpacity();
-    kalanTazele();
-    sayRef.current(`temizleme: tüm silmeler geri alındı · ${n.toLocaleString('tr-TR')} splat`);
+    void islem('toplu geri alma', async () => {
+      let n = 0;
+      // TERS SIRADA: eğitim oturumu başka sırayı reddediyor.
+      while (gecmisRef.current.length) {
+        const geri = gecmisRef.current[gecmisRef.current.length - 1];
+        try {
+          await geri.geriAl();
+          n += geri.adet;
+        } finally {
+          gecmisRef.current.pop();
+        }
+      }
+      setGecmisBoy(0);
+      await kalanTazele();
+      sayRef.current(`temizleme: tüm silmeler geri alındı · ${n.toLocaleString('tr-TR')} splat`);
+    });
   }
 
   const secimVar = secimSayisi > 0;
@@ -263,34 +329,34 @@ export function SplatTemizleme({
           inset: 0,
           width: '100%',
           height: '100%',
-          // GEZ modunda katman saydam bir seyirci: olaylar OrbitControls'a gider.
+          // GEZ modunda katman saydam bir seyirci: olaylar alttaki kamera
+          // denetimine gider.
           pointerEvents: arac === 'gez' ? 'none' : 'auto',
           cursor: arac === 'lasso' ? 'crosshair' : 'none',
           touchAction: 'none',
-          zIndex: 4,
+          zIndex: 6,
         }}
         onPointerDown={(ev) => {
-          if (ev.button !== 0) return;
+          if (ev.button !== 0 || mesgul) return;
           const { x, y, w, h } = yerel(ev);
           // Yakalama BAŞARISIZ OLABİLİR (işaretçi artık etkin değilse tarayıcı
           // NotFoundError atar). Atarsa seçim hiç başlamıyordu — tek bir fırça
-          // darbesi sessizce yutuluyordu. Yakalama bir KOLAYLIK (imleç tuvalden
-          // çıkınca da boyamaya devam etsin); seçimin ön koşulu değil.
+          // darbesi sessizce yutuluyordu. Yakalama bir KOLAYLIK, ön koşul değil.
           try { ev.currentTarget.setPointerCapture(ev.pointerId); } catch { /* yakalamasız devam */ }
           basiliRef.current = true;
           imlecRef.current = { x, y };
-          if (arac === 'firca') fircaVur(x, y, w, h);
-          else if (arac === 'kure') kureVur(x, y, w, h);
+          if (arac === 'firca') void fircaVur(x, y, w, h);
+          else if (arac === 'kure') void kureVur(x, y, w, h);
           else if (arac === 'lasso') lassoRef.current = [x, y];
         }}
         onPointerMove={(ev) => {
           const { x, y, w, h } = yerel(ev);
           imlecRef.current = { x, y };
           if (!basiliRef.current) return;
-          if (arac === 'firca') fircaVur(x, y, w, h);
+          if (arac === 'firca') void fircaVur(x, y, w, h);
           else if (arac === 'lasso') {
             const yol = lassoRef.current;
-            // Nokta seyreltme: her pixelde bir nokta eklemek poligonu 2000
+            // Nokta seyreltme: her pikselde bir nokta eklemek poligonu 2000
             // köşeye çıkarıyordu; ışın atma maliyeti köşe sayısıyla çarpılır.
             const n = yol.length;
             if (n < 2 || Math.hypot(x - yol[n - 2], y - yol[n - 1]) > 4) yol.push(x, y);
@@ -299,7 +365,7 @@ export function SplatTemizleme({
         onPointerUp={(ev) => {
           const { w, h } = yerel(ev);
           basiliRef.current = false;
-          if (arac === 'lasso') lassoBitir(w, h);
+          if (arac === 'lasso') void lassoBitir(w, h);
         }}
         onPointerCancel={() => { basiliRef.current = false; lassoRef.current = []; }}
         onLostPointerCapture={() => { basiliRef.current = false; }}
@@ -307,7 +373,9 @@ export function SplatTemizleme({
       />
 
       <div style={serit}>
-        <span style={{ fontSize: yazi.kucuk, color: renk.metinSolgun, fontWeight: 600 }}>temizle</span>
+        <span style={{ fontSize: yazi.kucuk, color: renk.metinSolgun, fontWeight: 600 }}>
+          temizle · {kaynak.ad}
+        </span>
         <span style={ayrac} />
         {(['gez', 'firca', 'lasso', 'kure'] as const).map((a) => (
           <button
@@ -341,28 +409,28 @@ export function SplatTemizleme({
         <span style={ayrac} />
         <button
           type="button"
-          style={{ ...dugme(secimVar), minHeight: 32, padding: '7px 12px', opacity: secimVar ? 1 : 0.5 }}
-          disabled={!secimVar}
-          title="seçili splat'ların opaklığı 0'a çekilir — geri alınabilir"
+          style={{ ...dugme(secimVar), minHeight: 32, padding: '7px 12px', opacity: secimVar && !mesgul ? 1 : 0.5 }}
+          disabled={!secimVar || mesgul}
+          title="seçili splat'lar öldürülür — geri alınabilir"
           onClick={sil}
         >
-          sil{secimVar ? ` (${secimSayisi.toLocaleString('tr-TR')})` : ''}
+          {mesgul ? '…' : `sil${secimVar ? ` (${secimSayisi.toLocaleString('tr-TR')})` : ''}`}
         </button>
         <button
           type="button"
-          style={{ ...dugme(), minHeight: 32, padding: '7px 10px', opacity: gecmisBoy ? 1 : 0.5 }}
-          disabled={!gecmisBoy}
+          style={{ ...dugme(), minHeight: 32, padding: '7px 10px', opacity: gecmisBoy && !mesgul ? 1 : 0.5 }}
+          disabled={!gecmisBoy || mesgul}
           onClick={sonuGeriAl}
-          title="son silmeyi geri al"
+          title="son silmeyi geri al (yalnız ters sırada çalışır)"
         >
           ↶ geri al{gecmisBoy ? ` (${gecmisBoy})` : ''}
         </button>
         <button
           type="button"
-          style={{ ...dugme(), minHeight: 32, padding: '7px 10px', opacity: gecmisBoy ? 1 : 0.5 }}
-          disabled={!gecmisBoy}
+          style={{ ...dugme(), minHeight: 32, padding: '7px 10px', opacity: gecmisBoy && !mesgul ? 1 : 0.5 }}
+          disabled={!gecmisBoy || mesgul}
           onClick={tumunuGeriAl}
-          title="tüm silmeleri geri al"
+          title="tüm silmeleri ters sırada geri al"
         >
           hepsi
         </button>
@@ -373,6 +441,8 @@ export function SplatTemizleme({
           {kalan ? `${kalan.gorunur.toLocaleString('tr-TR')} / ${kalan.toplam.toLocaleString('tr-TR')}` : '—'}
         </span>
         <button type="button" style={{ ...dugme(), minHeight: 32, padding: '7px 10px' }} onClick={onKapat}>kapat</button>
+        {/* Hata sessizce yutulmaz: jetonun süresi dolduysa kullanıcı bilmeli. */}
+        {hata && <span style={hataSatiri}>{hata}</span>}
       </div>
     </>
   );
@@ -397,7 +467,7 @@ const serit: CSSProperties = {
   left: bosluk.s,
   top: bosluk.s,
   right: bosluk.s,
-  zIndex: 6,
+  zIndex: 8,
   ...cam({ blur: 20, radius: yaricap.kart }),
   display: 'flex',
   flexWrap: 'wrap',
@@ -413,4 +483,10 @@ const ayrac: CSSProperties = {
   minHeight: 20,
   background: renk.kenar,
   flex: '0 0 auto',
+};
+
+const hataSatiri: CSSProperties = {
+  flexBasis: '100%',
+  fontSize: yazi.kucuk,
+  color: renk.kotu,
 };

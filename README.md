@@ -65,8 +65,10 @@ kümesine aittir; yüklediğiniz videonun canlı kalite puanı değildir.
 > Commit mesajı yalnızca ne + neden; yazar alanı yalnızca insan (Emre / Zeynep).
 
 - **Z (splat temizleme + mod kalitesi + AR + hata sınırı + eğitim grafiği):**
-  sahne üstünde fırça/lasso/küre ile floater temizleme (silme = opaklık 0, geri
-  alınabilir; eşik motorun çizim kapısından okunur), altı render moduna ÖLÇÜLMÜŞ
+  sahne üstünde fırça/lasso/küre ile floater temizleme — HEM motorun
+  GaussianBuffer'ında HEM 3D eğitim oturumunda (`gaussianlar`/`temizle`/
+  `geriAl`; COLMAP kamerası ve `object-fit: contain` kadrajı `ui/gsKamera.ts`
+  ile çevrilir), silme geri alınabilir ve eşik çizimin kendi kapısından okunur, altı render moduna ÖLÇÜLMÜŞ
   post-FX profili (`shaders/modKalite.ts` — konu kapsamı altı modda da arttı,
   kırpma %0), `navigator.xr` ile AR/VR hızlı önizleme (cihaza özel sebep ve yol;
   XR'da post-FX bypass, onboarding'de yazılı), beyaz ekran yerine sınıflandırılmış

@@ -9,6 +9,8 @@ import { egitimGpuHint } from './egitimGpuHint';
 import { ayarOzeti, egitimOnKontrol, type OnKontrol } from './egitimOnKontrol';
 import { kunyeMetni, PAYLASIM_KLIP_SN } from './paylasim';
 import { deformAyari, deformGostergesi, klipRenderEt, type DeformChoice, type KlipOrani } from './klipRender';
+import { SplatTemizleme } from './SplatTemizleme';
+import { egitimKaynagi, type TemizlemeKaynagi } from './temizlemeKaynagi';
 import { ayarSec, type EgitimAyari } from '../engine/reconstruction/egitim3dgs';
 
 /**
@@ -45,6 +47,13 @@ export function Egitim3D({ dosya, onKapat, say, onIlerleme }: {
   const [bitti, setBitti] = useState(false);
   const [hata, setHata] = useState<string | null>(null);
   const [plyBusy, setPlyBusy] = useState(false);
+  /**
+   * Splat temizleme aracı açık mı. Kaynak nesnesi REF'te tutulur: içinde
+   * Gaussian kopyasının önbelleği var, her render'da yenilenirse her fırça
+   * darbesi bir GPU geri okuması yapar.
+   */
+  const [temizleAcik, setTemizleAcik] = useState(false);
+  const temizleKaynakRef = useRef<TemizlemeKaynagi | null>(null);
   const [bendStrength, setBendStrength] = useState(0);
   // The clip defaults to an undeformed orbit; choosing a deform applies it live.
   const [deformChoice, setDeformChoice] = useState<DeformChoice>('yok');
@@ -142,6 +151,12 @@ export function Egitim3D({ dosya, onKapat, say, onIlerleme }: {
       controller.abort();
       egitimRef.current?.kapat();
       egitimRef.current = null;
+      // Oturum kapanınca temizleme jetonları geçersizleşir (Emre'nin kaydı:
+      // eğitici ölü splat'ları taşıyabiliyor). Araç açık kalırsa geri alma
+      // düğmesi çalışmayan bir jetonu vaat ederdi.
+      temizleKaynakRef.current?.birak?.();
+      temizleKaynakRef.current = null;
+      setTemizleAcik(false);
       // Seri bu oturuma aittir: yeni deneme eskisinin eğrisi üstüne çizmesin.
       ilerlemeRef.current?.(null, 0);
     };
@@ -292,6 +307,11 @@ export function Egitim3D({ dosya, onKapat, say, onIlerleme }: {
     if (!e) return;
     try {
       const target = e.devamEt();
+      // devamEt ölü splat'ları başka yere taşıyabiliyor: eski indeksler ve
+      // geri alma jetonları geçersiz. Araç kapatılır, açılınca taze okur.
+      temizleKaynakRef.current?.birak?.();
+      temizleKaynakRef.current = null;
+      setTemizleAcik(false);
       setBendStrength(0);
       setFadeOn(false);
       hedefIterRef.current = target;
@@ -419,7 +439,7 @@ export function Egitim3D({ dosya, onKapat, say, onIlerleme }: {
         onLostPointerCapture={() => { surukle.current = null; }}
       />
       <div style={serit}>
-        <span style={{ flex: 1 }}>
+        <span style={seritDurum}>
           {hata
             ? <b style={{ color: '#e66' }}>HATA: {hata}</b>
             : bitti
@@ -510,6 +530,25 @@ export function Egitim3D({ dosya, onKapat, say, onIlerleme }: {
             ⤓ paylaşım klibi
           </button>
         ))}
+        {/* TEMİZLEME — .ply'nin ÖNÜNDE: floater'lar çıktı alınmadan ayıklanır.
+            Yalnız eğitim bittikten sonra; oturum bir işlem sürerken ikinci
+            çağrıyı reddediyor, o yüzden deform/klip/PLY sırasında kapalı. */}
+        {bitti && (
+          <button
+            style={dugmeBuyuk}
+            aria-pressed={temizleAcik}
+            disabled={bendBusy || plyBusy || klipIlerleme !== null}
+            title="floater ve arka plan artığını elle seç, sil (geri alınabilir) — sonra .ply al"
+            onClick={() => {
+              const e = egitimRef.current;
+              if (!e) return;
+              if (!temizleAcik && !temizleKaynakRef.current) temizleKaynakRef.current = egitimKaynagi(e);
+              setTemizleAcik((v) => !v);
+            }}
+          >
+            ⌫ temizle
+          </button>
+        )}
         {bitti && <button style={dugme} disabled={plyBusy || bendBusy} onClick={plyIndir}>{plyBusy ? 'PLY hazırlanıyor…' : '.ply indir'}</button>}
         {/* Z2 — KURTARMA YOLU: hata sonrası tek yol "kapat" idi; kullanıcı
             videoyu yeniden seçmek zorunda kalıyordu. Şimdi aynı dosyayla ön
@@ -535,6 +574,13 @@ export function Egitim3D({ dosya, onKapat, say, onIlerleme }: {
         )}
         <button style={dugme} onClick={onKapat}>kapat</button>
       </div>
+      {temizleAcik && temizleKaynakRef.current && (
+        <SplatTemizleme
+          kaynak={temizleKaynakRef.current}
+          say={sayRef.current}
+          onKapat={() => setTemizleAcik(false)}
+        />
+      )}
       {!bitti && !hata && <div style={{ ...cubuk, width: `${yuzde}%` }} />}
       {klipIlerleme !== null && <div role="progressbar" aria-label="Klip render ilerlemesi" aria-valuenow={Math.round(klipIlerleme * 100)} style={{ ...cubuk, transition: 'none', width: `${klipIlerleme * 100}%` }} />}
       {/* Z2 — SEÇİLEN GPU VE AYAR KATMANI her cihazda görünür. Eskiden yalnız
@@ -569,9 +615,19 @@ const onAyarlama: CSSProperties = {
   borderRadius: 8, background: '#15151d', color: '#c8c8d4', fontSize: 13,
 };
 const serit: CSSProperties = {
-  position: 'absolute', left: 0, right: 0, bottom: 0, display: 'flex', gap: 8, alignItems: 'center',
-  padding: '4px 8px', background: 'rgba(0,0,0,0.7)', color: '#c8c8d4', fontSize: 12,
+  // `flexWrap` YOKTU: ~800 px genişlikte durum metni (flex: 1) alanı yiyor,
+  // kalan düğmeler şeridin SAĞINDAN TAŞIP kadraj dışında kalıyordu — klip ve
+  // .ply düğmeleri hiç tıklanamıyordu. Sarma açıldı; sığmayan düğme alt
+  // satıra iner, hiçbiri kaybolmaz.
+  position: 'absolute', left: 0, right: 0, bottom: 0, display: 'flex',
+  flexWrap: 'wrap', gap: 8, rowGap: 6, alignItems: 'center',
+  padding: '6px 8px', background: 'rgba(0,0,0,0.7)', color: '#c8c8d4', fontSize: 12,
+  // Çok dar pencerede şerit tuvalin yarısını kaplamasın; taşarsa kendi içinde
+  // kaydırılır (düğme gizlemekten iyidir).
+  maxHeight: '55%', overflowY: 'auto', boxSizing: 'border-box',
 };
+/** Durum metni: geniş pencerede büyür, dar pencerede KENDİ satırına iner. */
+const seritDurum: CSSProperties = { flex: '1 1 240px', minWidth: 0 };
 const cubuk: CSSProperties = { position: 'absolute', left: 0, bottom: 0, height: 2, background: '#6af', transition: 'width 0.5s' };
 const dugme: CSSProperties = {
   fontFamily: 'inherit', fontSize: 12, padding: '2px 8px', background: '#1a1a22', color: '#c8c8d4',

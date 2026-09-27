@@ -58,21 +58,29 @@ for (const m of MODLAR) {
 // modun tek görsel dayanağı glif keskinliği.
 assert.equal(MOD_KALITE.ascii.bloom?.uBloomStrength, 0, 'ASCII’ye bloom girmiş — harfler okunmaz olur');
 assert.ok((MOD_KALITE.ascii.grain?.uSaturation ?? 1) < 1, 'ASCII doygunluğu düşürülmemiş (terminal dili)');
-// NEON DİZGİNLENMİŞ KALMALI. Bu kural bir ÖLÇÜMÜN sonucu ve tersi denendi:
-// Emre'nin nesne-ayırma kırpmasından sonra ızgara özneye yoğunlaşıyor, neon
-// kenarları siluetin içini de dolduruyor ve mod KENDİ BAŞINA zaten taşıyor
-// (post-FX kapalı: kapsam 0.610, kırpılan %0.350). Guclu bloom bunu beyaza
-// çeviriyordu — thumbnail.jpg, aynı oturumda arka arkaya:
-//   1.15 siddet / 0.28 esik -> kapsam 0.915 · kirpilan %0.402
-//   0.55 siddet / 0.55 esik -> kapsam 0.890 · kirpilan %0.247
-//   0.40 siddet / 0.62 esik -> kapsam 0.477 · kirpilan %0.022  (sevk edilen)
-// Bu satirlar duserse biri bloom'u yine yukari cekmis demektir.
-assert.ok(MOD_KALITE.neon.bloom.uBloomStrength <= 0.6,
-  `Neon bloom ${MOD_KALITE.neon.bloom.uBloomStrength} — 0.6 ustu kadraji beyazlatiyor (olculdu)`);
-assert.ok(MOD_KALITE.neon.bloom.uBloomThreshold >= 0.5,
-  `Neon bloom esigi ${MOD_KALITE.neon.bloom.uBloomThreshold} — dusuk esik sonuk kenarlari da yakip kadraji dolduruyor`);
-assert.ok((MOD_KALITE.neon.look?.uExposure ?? 1) <= 1,
-  'Neon pozlamasi 1 ustu — mod kirpmanin esiginde, pozlama onu tasirir');
+// NEON: BLOOM VAR AMA KADRAJI BEYAZLATMAYACAK KADAR. Bu sınır iki ölçümün
+// ortak sonucu ve ikisi de tersini denedi:
+//   1. tur — nesne ayırma kırpması neon kenarlarını siluetin içine yayıyordu,
+//      mod kendi başına taşıyordu (kapsam 0.610, kırpılan %0.350). Güçlü
+//      bloom (1.15/0.28) kadrajı beyazlattı: kapsam 0.915, kırpılan %0.402.
+//   2. tur — veri katmanı Sobel eşiğini kırpmanın alan oranıyla telafi etti
+//      (uCropDensity). Mod tel kafese döndü: ham kapsam 0.0114, kırpılan %0.
+//      Dizginlemenin sebebi kalktı, eşik yeniden açıldı.
+// Çekirdek bandı (L>0.30) ölçümü, thumbnail.jpg, kırpma açık:
+//      kapali  cekirdek 0.0060 doyg 0.340
+//      0.40    cekirdek 0.0083 doyg 0.462
+//      0.70    cekirdek 0.0140 doyg 0.427   (sevk edilen)
+//      1.00    cekirdek 0.0290 doyg 0.398   — alan buyuyor, renk duzlesiyor
+// Ust sinir 0.9: 1.00 ve ustunde cekirdek doygunlugu ham modun kazancini
+// yemeye basliyor. Alt esik 0.45: daha dusugu bloom'u anlamsiz kiliyor.
+assert.ok(MOD_KALITE.neon.bloom.uBloomStrength <= 0.9,
+  `Neon bloom ${MOD_KALITE.neon.bloom.uBloomStrength} — 0.9 ustu cekirdek rengini duzlestiriyor (olculdu)`);
+assert.ok(MOD_KALITE.neon.bloom.uBloomStrength >= 0.45,
+  `Neon bloom ${MOD_KALITE.neon.bloom.uBloomStrength} — modun esprisi bloom, bu kadari gorunmez`);
+assert.ok(MOD_KALITE.neon.bloom.uBloomThreshold >= 0.45,
+  `Neon bloom esigi ${MOD_KALITE.neon.bloom.uBloomThreshold} — cok dusuk esik sonuk kenarlari da yakiyor`);
+assert.ok((MOD_KALITE.neon.look?.uExposure ?? 1) <= 1.05,
+  'Neon pozlamasi yuksek — mod parlak, pozlama onu kirpmaya tasir');
 // Chromatic YALNIZ cam/tup karakteri olan iki modda: sus degil, dispersiyon.
 for (const m of MODLAR) {
   const c = MOD_KALITE[m].chromatic?.uAmount ?? 0;
