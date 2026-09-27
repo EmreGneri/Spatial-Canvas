@@ -139,6 +139,21 @@ function buildPairs(n, profile = 'walk') {
   return pairs;
 }
 
+// Local patch 2026-09-27 (VENDORED.md): opts.pairs = (n) => [[i, j], ...] replaces the
+// built-in graph (a sequential graph for walks). Kept: integer pairs with 0 <= i < j < n,
+// first occurrence wins. runSfM falls back to the built-in graph when it under-registers.
+function sanitizePairs(list, n) {
+  if (!Array.isArray(list)) throw new Error('opts.pairs(n) must return an array of [i, j] pairs');
+  const out = [], seen = new Set();
+  for (const p of list) {
+    const i = p && p[0], j = p && p[1];
+    if (!Number.isInteger(i) || !Number.isInteger(j) || i < 0 || i >= j || j >= n) continue;
+    if (seen.has(i * n + j)) continue;
+    seen.add(i * n + j); out.push([i, j]);
+  }
+  return out;
+}
+
 // ---- subpixel observation refinement (Lucas-Kanade) ----
 // Corner detections are pixel-quantized (~1.5px BA residual floor); a chain
 // of short-baseline cameras with that much obs noise has smooth low-frequency
@@ -538,6 +553,7 @@ async function runSfMOnce(images, log, sampleColor, opts = {}) {
   }
 
   }   // end of feature extraction (skipped when opts._feats is cached)
+  if (opts._onFeats) opts._onFeats(feats);   // local patch 2026-09-27: runSfMCustomPairs reuses them even when this pass throws
 
   // ---- pairwise matching ----
   // Mutual matches build the track graph. When an essential matrix fits a
@@ -556,8 +572,11 @@ async function runSfMOnce(images, log, sampleColor, opts = {}) {
   // loop pinned so loosely that two 8-16 camera clusters registered ~5 units
   // off (a ghost truck in training). Dense long-range: truck-250 ATE
   // 2.18% -> 0.00% vs COLMAP. GPU matching absorbs the extra pairs.
-  const pairs = buildPairs(n, opts.graph || (useSift ? 'dense' : 'walk'));
-  log(`matching ${pairs.length} image pairs ...`);
+  // opts.pairs (local patch 2026-09-27): a caller-supplied graph, see sanitizePairs / runSfM
+  const pairs = opts.pairs
+    ? sanitizePairs(opts.pairs(n), n)
+    : buildPairs(n, opts.graph || (useSift ? 'dense' : 'walk'));
+  log(`matching ${pairs.length} image pairs${opts.pairs ? ' (custom graph)' : ''} ...`);
   const t0m = performance.now();
   const pairInfo = []; // { i, j, matches: [[fa, fb], ...] }
   const failedRich = []; // many matches but failed the E-gate (rescue candidates)
@@ -2161,6 +2180,53 @@ async function runSfMOnce(images, log, sampleColor, opts = {}) {
   return final;
 }
 
+/** Local patch 2026-09-27 (VENDORED.md): a custom pair graph (opts.pairs) is a speed bet —
+ *  a sequential graph matches far fewer pairs on a walk, but it drops most of the long-range
+ *  pairs the 'dense' default keeps for loop closure (the ghost-truck note at buildPairs' call
+ *  site). When the custom pass registers fewer than opts.pairsFallbackRatio (default 0.9) of
+ *  the images, leaves >= 3 consecutive frames unregistered in capture order, or throws, the
+ *  solve reruns on the default graph with the SAME features and keeps the pass that registered
+ *  more; a tie goes to the default graph (the trusted path). Returns the kept pass and the
+ *  opts that produced it, so runSfM's relaxed-gate retry reruns that same graph. */
+async function runSfMCustomPairs(images, log, sampleColor, opts) {
+  const n = images.length;
+  const { pairs: _customPairs, ...defaultOpts } = opts;
+  const aborted = (e) => (e && e.name === 'AbortError') || (opts.signal && opts.signal.aborted);
+  let feats = null, custom = null, customErr = null;
+  try {
+    custom = await runSfMOnce(images, log, sampleColor, { ...opts, _onFeats: (f) => { feats = f; } });
+  } catch (e) {
+    if (aborted(e) || !feats) throw e;   // no features yet: the default graph would fail the same way
+    customErr = e;
+  }
+  let gap = 0;
+  if (custom) {
+    const reg = new Set(custom.cams.map((c) => c.imgIdx)); let run = 0;
+    for (let i = 0; i < n; i++) { run = reg.has(i) ? 0 : run + 1; if (run > gap) gap = run; }
+    if (custom.cams.length >= (opts.pairsFallbackRatio ?? 0.9) * n && gap < 3) return { res: custom, opts };
+  }
+  log(custom
+    ? `custom pair graph registered ${custom.cams.length}/${n} (gap ${gap}) — falling back to the default graph`
+    : `custom pair graph failed (${customErr.message || customErr}) — falling back to the default graph`);
+  // every geometry pass restores feats[].x/y from the detected keypoints, but matching runs
+  // before that and would see the custom pass's LK-moved coordinates; restore them here so
+  // the fallback is the solve the default graph would have produced on its own
+  for (const f of feats) if (f.x0) { f.x.set(f.x0); f.y.set(f.y0); }
+  let fallback = null;
+  try {
+    fallback = await runSfMOnce(images, log, sampleColor, { ...defaultOpts, _feats: feats });
+  } catch (e) {
+    if (aborted(e) || !custom) throw e;
+    log(`default graph failed (${e.message || e}) — keeping the custom graph (${custom.cams.length}/${n})`);
+    return { res: custom, opts };
+  }
+  const keepDefault = !custom || fallback.cams.length >= custom.cams.length;
+  log(`default graph registered ${fallback.cams.length}/${n}` +
+      (custom ? ` against custom ${custom.cams.length}/${n}` : '') +
+      ` — keeping the ${keepDefault ? 'default' : 'custom'} graph`);
+  return keepDefault ? { res: fallback, opts: defaultOpts } : { res: custom, opts };
+}
+
 /** The solve, with one automatic retry: when the strict pair gate (E-inliers >= 40 %
  *  of raw matches) registers fewer than 70 % of the images, rerun the geometry
  *  (features cached, matching is seconds on the GPU) with the absolute gates —
@@ -2170,7 +2236,11 @@ async function runSfMOnce(images, log, sampleColor, opts = {}) {
  *  retries — the absolute gates as a DEFAULT perturbed its reconstruction path
  *  (250/251, 22.67 dB vs 25.72). opts.pairRelax = false disables the retry. */
 export async function runSfM(images, log, sampleColor, opts = {}) {
-  const first = await runSfMOnce(images, log, sampleColor, opts);
+  // opts.pairs (local patch 2026-09-27): the custom graph, with its default-graph fallback,
+  // runs first; the retry below then reruns the graph of the kept pass (opts is replaced)
+  let first;
+  if (opts.pairs) ({ res: first, opts } = await runSfMCustomPairs(images, log, sampleColor, opts));
+  else first = await runSfMOnce(images, log, sampleColor, opts);
   const n = images.length;
   const relaxable = opts.pairRelax !== false && opts.pairMinInliers == null && opts.pairMinInliersAdj == null && !opts.rigs && n >= 6;
   // a video is a chain: a run of unregistered frames in capture order is a

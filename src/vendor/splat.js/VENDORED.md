@@ -14,6 +14,27 @@ upstream commit uzerine yeniden uygula veya upstream karsiligini kontrol et.
   (dur sonrasi dongu senkron bitip `pumping`i bayat birakiyor, sonraki kareler
   kapanmiyor, `flush()` asili kaliyordu); `runDecoder` test icin export edildi
   (`scripts/verify-egitim-decoder-drain.mjs`).
+- 2026-09-27 `sfm/sfm.js` ozel cift grafigi + guvenli geri donus (Gezinme
+  Parca 2: yuruyus kliplerinde sirali eslestirme). `opts.pairs = (n) => [i, j][]`
+  varsa `runSfMOnce` `buildPairs` yerine onu kullanir (`sanitizePairs`: tamsayi,
+  `0 <= i < j < n`, yinelenen atilir; log `matching N image pairs (custom graph)`).
+  `runSfM` -> `runSfMCustomPairs`: ozel grafik `< opts.pairsFallbackRatio ?? 0.9`
+  oraninda kayit yaparsa, cekim sirasinda `>= 3` ardisik kayitsiz kare birakirsa
+  ya da hata atarsa, AYNI oznitelikleri (`_feats`; hata durumunda yeni
+  `opts._onFeats` kancasi yakalar) kullanarak `opts.pairs` OLMADAN (varsayilan
+  grafik) yeniden cozer ve cok kaydedeni tutar, esitlikte varsayilani. Geri
+  donusten once `feats[].x/y` algilanan noktalara geri yuklenir (eslestirme
+  `runGeometry`'nin geri yuklemesinden once kosuyor): geri donus sonucu, yamasiz
+  varsayilan cozumle bit bit ayni (sentetik sahnede dogrulandi). Mevcut `pairRelax`
+  yeniden denemesi bundan SONRA, tutulan gecisin opts'uyla (grafigiyle) degismeden
+  calisir. `opts.pairs` verilmezse yol bugunkuyle ayni. Varsayilan grafik 'dense'
+  KALIR: sfm.js'teki not (`'dense' since 2026-08-21`) seyrek uzak-bag izgarasinin
+  250 karelik dongude iki kume kaymasina (egitimde hayalet kamyon) yol actigini,
+  yogun uzak baglarin truck-250 ATE'yi %2,18 -> %0,00'a indirdigini soyler;
+  sirali grafik bu dongu kapanisini zayiflatabilecegi icin yalniz istege bagli ve
+  geri donuslu. Yardimcilar `src/engine/reconstruction/ciftGrafigi.ts`
+  (`siraliCiftler`, `ciftSayisi`); test `scripts/verify-cift-grafigi.mjs`
+  (`buildPairs` ve `sanitizePairs`'i kaynak metinden okuyup karsilastirir).
 
 ## Lisanslar (ticari kullanim denetimi, 2026-09-24)
 
