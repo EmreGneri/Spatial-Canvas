@@ -14,9 +14,12 @@ const TILE = 16;
  *    (await import('./js/gs/gradcheck.js')).gradCheckPose() */
 export async function gradCheckPose(opts = {}) {
   const { rodrigues, m3mul } = await import('../sfm/geometry.js');
-  const { trainer, destroy } = await makeRig();
+  // opts.depth (true | 'only'): the pose gradients WITH the depth loss (it
+  // reaches the camera through the chain's dL/dpc.z) — see gradCheckSmall
+  const { trainer, destroy, depth } = await makeRig(opts.depth ? { depthWeight: opts.depthWeight ?? 1 } : {}, opts.depth);
   const meta = trainer.camMeta[0];
   try {
+    if (opts.depth) await maskDepthGate(trainer, depth);
     // analytic
     const a0 = await trainer._evalPass(0);
     const nr = trainer.camMeta.length;
@@ -41,7 +44,7 @@ export async function gradCheckPose(opts = {}) {
     };
     const lossOf = async (override) => {
       const d2 = trainer.device;
-      d2.queue.writeBuffer(trainer.bufStats, 0, new Uint32Array(4));
+      d2.queue.writeBuffer(trainer.bufStats, 0, trainer.statsZero);
       const uni = trainer._camUniform({ ...meta, ...(override || {}) }, 1, meta.offset, 0);
       d2.queue.writeBuffer(trainer.uniTrain, 0, uni);
       d2.queue.writeBuffer(trainer.bufTileCnt, 0, trainer.tileZero);
@@ -92,8 +95,71 @@ export async function gradCheckPose(opts = {}) {
   }
 }
 
+/** Depth-supervision rig (opts.depth): a smooth target depth over the 64x64
+ *  camera (the splats sit at z 2..4) with an invalid (NaN) column band.
+ *  depth === 'only' also invalidates the COLOUR target (the -1 sentinel), so
+ *  the loss is pure depth — the colour-invalid-but-depth-valid path. */
+function rigTarget(W, H, rgb, depth) {
+  if (!depth) return { tw: W, th: H, rgb };
+  if (depth === 'only') rgb.fill(-1);
+  const dep = new Float32Array(W * H);
+  for (let y = 0; y < H; y++)
+    for (let x = 0; x < W; x++)
+      dep[y * W + x] = x >= 40 && x < 44 ? NaN : 3 + 0.6 * Math.sin(x * 0.13) * Math.cos(y * 0.09);
+  return { tw: W, th: H, rgb, depth: dep };
+}
+
+/** Depth rigs render denser (bigger, more opaque splats): the depth loss needs
+ *  coverage O > 0.5, which the sparse colour rig reaches on few pixels. */
+function densifyRig(data, n) {
+  for (let i = 0; i < n; i++) {
+    const b = i * 16;
+    for (let k = 3; k < 6; k++) data[b + k] += Math.log(1.5);
+    data[b + 13] += 1.5;
+  }
+}
+
+/** The depth loss applies only where the rendered coverage O > 0.5 — a step.
+ *  Invalidate the target where O sits within +-band of it, so no central
+ *  difference straddles the gate (the colour loss has no such step). Returns
+ *  { supervised, gated } pixel counts. */
+async function maskDepthGate(trainer, dep, band = 0.1) {
+  const d = trainer.device;
+  const meta = trainer.camMeta[0];
+  d.queue.writeBuffer(trainer.uniTrain, 0, trainer.camUniforms[0]);
+  d.queue.writeBuffer(trainer.bufTileCnt, 0, trainer.tileZero);
+  d.queue.writeBuffer(trainer.bufStats, 0, trainer.statsZero);
+  const np = meta.w * meta.h;
+  const rb = d.createBuffer({ size: np * 16, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+  const enc = d.createCommandEncoder();
+  const p = enc.beginComputePass();
+  trainer.encodeRaster(p, meta, true);
+  p.setPipeline(trainer.pipeChain); p.setBindGroup(0, trainer.bgChain); // drains gradP
+  p.dispatchWorkgroups(Math.ceil(trainer.n / 256));
+  p.end();
+  enc.copyBufferToBuffer(trainer.bufOut, 0, rb, 0, np * 16);
+  d.queue.submit([enc.finish()]);
+  // drain what this pass accumulated outside gradP (the pose check reads it)
+  d.queue.writeBuffer(trainer.bufCamGrad, 0, new Int32Array((trainer.camMeta.length + 1) * 8));
+  d.queue.writeBuffer(trainer.bufStats, 0, trainer.statsZero);
+  await rb.mapAsync(GPUMapMode.READ);
+  const out = new Float32Array(rb.getMappedRange().slice(0));
+  rb.unmap(); rb.destroy();
+  const masked = new Float32Array(np);
+  let supervised = 0, gated = 0;
+  for (let i = 0; i < np; i++) {
+    const z = dep[i], O = out[i * 4 + 3];
+    if (!(z > 0 && z < Infinity)) continue;
+    if (Math.abs(O - 0.5) < band) { gated++; continue; }
+    masked[i] = z;
+    if (O > 0.5) supervised++;
+  }
+  d.queue.writeBuffer(trainer.bufTarget, meta.depthOff * 4, masked);
+  return { supervised, gated };
+}
+
 /** Shared tiny-rig construction (also used by gradCheckSmall). */
-async function makeRig(extraOpts = {}) {
+async function makeRig(extraOpts = {}, depth = false) {
   const { GSTrainer } = await import('./trainer.js');
   const trainer = await GSTrainer.create({ eCut: 9, aMin: 1e-4, radClamp: 10, anisoReg: 0, camGrads: true, ...extraOpts });
   const n = 160;
@@ -127,11 +193,12 @@ async function makeRig(extraOpts = {}) {
       rgb[i + 1] = 0.5 + 0.4 * Math.sin(x * 0.11 + 1) * Math.cos(y * 0.23 + 2);
       rgb[i + 2] = 0.5 + 0.4 * Math.sin((x + y) * 0.19);
     }
-  const images = [{ tw: W, th: H, rgb }];
+  if (depth) densifyRig(data, n);
+  const images = [rigTarget(W, H, rgb, depth)];
   // fy != f on purpose: exercises the per-axis focal paths (aspect 0.95)
   const cams = [{ imgIdx: 0, R: [1, 0, 0, 0, 1, 0, 0, 0, 1], t: [0, 0, 0], f: 60, fy: 57, cx: W / 2, cy: H / 2, w: W, h: H }];
   trainer.setup({ data, n }, cams, images, W, H, 1.5);
-  return { trainer, destroy: () => trainer.device.destroy() };
+  return { trainer, depth: images[0].depth, destroy: () => trainer.device.destroy() };
 }
 
 /** Build a small dedicated trainer (160 splats, one 64x64 camera with a
@@ -139,6 +206,9 @@ async function makeRig(extraOpts = {}) {
  *  right rig for validating backward-pass math.
  *    const { gradCheckSmall } = await import('./js/gs/gradcheck.js');
  *    await gradCheckSmall();
+ *  opts.depth: true adds a target depth (the depth-supervision loss, weight
+ *  opts.depthWeight, default 1, on top of the colour loss); 'only' makes the
+ *  colour target invalid so the checked loss is the depth term alone.
  */
 export async function gradCheckSmall(opts = {}) {
   const { GSTrainer } = await import('./trainer.js');
@@ -146,7 +216,8 @@ export async function gradCheckSmall(opts = {}) {
   // differences measure the smooth gradient. opts.trainer forwards extra
   // trainer options (e.g. { tileGrad: true } to validate that shader variant)
   const trainer = await GSTrainer.create({
-    eCut: 9, aMin: 1e-4, radClamp: 10, anisoReg: 0, camGrads: true, ...(opts.trainer || {}),
+    eCut: 9, aMin: 1e-4, radClamp: 10, anisoReg: 0, camGrads: true,
+    ...(opts.depth ? { depthWeight: opts.depthWeight ?? 1 } : {}), ...(opts.trainer || {}),
   });
   const n = 160;
   const stride = 16;
@@ -180,11 +251,16 @@ export async function gradCheckSmall(opts = {}) {
       rgb[i + 1] = 0.5 + 0.4 * Math.sin(x * 0.11 + 1) * Math.cos(y * 0.23 + 2);
       rgb[i + 2] = 0.5 + 0.4 * Math.sin((x + y) * 0.19);
     }
-  const images = [{ tw: W, th: H, rgb }];
+  if (opts.depth) densifyRig(data, n);
+  const images = [rigTarget(W, H, rgb, opts.depth)];
   // fy != f on purpose: exercises the per-axis focal paths (aspect 0.95)
   const cams = [{ imgIdx: 0, R: [1, 0, 0, 0, 1, 0, 0, 0, 1], t: [0, 0, 0], f: 60, fy: 57, cx: W / 2, cy: H / 2, w: W, h: H }];
   trainer.setup({ data, n }, cams, images, W, H, 1.5);
-  const res = await gradCheck(trainer, { samples: 80, tol: 0.05, ...opts });
+  if (opts.depth && !trainer.hasDepth) throw new Error('gradCheckSmall: depth requested but the trainer built no depth variant');
+  const gate = opts.depth ? await maskDepthGate(trainer, images[0].depth) : null;
+  const { depth, depthWeight, trainer: _t, ...checkOpts } = opts;
+  const res = await gradCheck(trainer, { samples: 80, tol: 0.05, ...checkOpts });
+  if (gate) res.depthPixels = gate;
   trainer.device.destroy();
   return res;
 }
@@ -214,7 +290,7 @@ export async function gradCheckSH(deg = 3, { samples = 60, tol = 0.05, trainer: 
     const runPass = () => {
       d.queue.writeBuffer(trainer.uniTrain, 0, trainer.camUniforms[0]);
       d.queue.writeBuffer(trainer.bufTileCnt, 0, trainer.tileZero);
-      d.queue.writeBuffer(trainer.bufStats, 0, new Uint32Array(4));
+      d.queue.writeBuffer(trainer.bufStats, 0, trainer.statsZero);
       const enc = d.createCommandEncoder();
       const p = enc.beginComputePass();
       trainer.encodeRaster(p, meta, true);
@@ -278,7 +354,7 @@ export async function gradCheck(trainer, { camIdx = 0, samples = 48, seed = 7, t
   const runPass = () => {
     d.queue.writeBuffer(trainer.uniTrain, 0, uni);
     d.queue.writeBuffer(trainer.bufTileCnt, 0, trainer.tileZero);
-    d.queue.writeBuffer(trainer.bufStats, 0, new Uint32Array(4));
+    d.queue.writeBuffer(trainer.bufStats, 0, trainer.statsZero);
     const enc = d.createCommandEncoder();
     const p = enc.beginComputePass();
     trainer.encodeRaster(p, meta, true);

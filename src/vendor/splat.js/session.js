@@ -2,7 +2,7 @@
 //
 //   const s = createSession();
 //   s.on('stage',   e => ...)   // { stage, done, total, detail }
-//   s.on('metrics', e => ...)   // { iter, splats, itersPerSec, psnrTrain, psnrHold }
+//   s.on('metrics', e => ...)   // { iter, splats, itersPerSec, psnrTrain, psnrHold, depthLoss? }
 //   s.on('event',   e => ...)   // { kind: 'refine' | 'train-complete', ... }
 //   s.on('log',     m => ...)   // prose, for consoles
 //
@@ -90,6 +90,22 @@ export function undistortFrames(frames, recon) {
       }
       im.alpha = adst;
     }
+    if (im.depth && im.depth.length === im.tw * im.th) {
+      // a depth target (trainer opts.depthWeight) rides along like the alpha
+      // (nearest — interpolating across a depth edge invents surfaces); out of
+      // frame = NaN (invalid)
+      const ddst = new Float32Array(im.depth.length);
+      for (let y = 0; y < im.th; y++) {
+        for (let x = 0; x < im.tw; x++) {
+          const xp = (x + 0.5 - cx) / f, yp = (y + 0.5 - cy) / f;
+          const r2 = xp * xp + yp * yp;
+          const D = 1 + k1 * r2 + k2 * r2 * r2;
+          const rx = Math.round(f * xp * D + cx - 0.5), ry = Math.round(f * yp * D + cy - 0.5);
+          ddst[y * im.tw + x] = (rx < 0 || ry < 0 || rx >= im.tw || ry >= im.th) ? NaN : im.depth[ry * im.tw + rx];
+        }
+      }
+      im.depth = ddst;
+    }
     im.rgb = dst;
   }
   return true;
@@ -111,6 +127,9 @@ export function undistortFrames(frames, recon) {
  *   a fixed ruler when the frame set itself is what varies, e.g. video extraction variants)
  * @property {object} [sfm]              SfmOptions passed to solve()
  * @property {object} [trainer]          extra GSTrainer options (shDeg, ...)
+ * @property {number} [depthWeight=0]    depth-supervision weight (trainer
+ *   opts.depthWeight) against frame.depth — Float32Array of camera-space z at the
+ *   training resolution (tw x th), NaN = invalid; metrics then carry depthLoss
  * @property {object} [frames]           FrameOptions passed to load()
  */
 
@@ -485,6 +504,7 @@ export class Session {
       // default (gs/shaders.js randBg) — the thing that keeps splats out of
       // the cleared area at full photometric strength
       ...(masked && this.frames && this.frames.some((f) => f.emptyFrac > 0) ? { randomBg: true } : {}),
+      ...(this.opts.depthWeight > 0 ? { depthWeight: this.opts.depthWeight } : {}),
       ...this.opts.trainer, ...extra.trainer,
       gpu: this.gpu,
     };
@@ -666,6 +686,7 @@ export class Session {
       // its empty pixels against BLACK (2026-09-12: 200 steps from a
       // converged person grew opaque dark needles out of the subject)
       ...(this.opts.maskTraining !== false && this.frames && this.frames.some((f) => f.emptyFrac > 0) ? { randomBg: true } : {}),
+      ...(this.opts.depthWeight > 0 ? { depthWeight: this.opts.depthWeight } : {}),
       ...this.opts.trainer, ...opts.trainer,
       gpu: this.gpu,
     };
@@ -1026,6 +1047,7 @@ export class Session {
       m.psnrTrain = -10 * Math.log10(mse);
       this.lossHistory.push([trainer.iter, m.psnrTrain]);
     }
+    if (trainer.hasDepth && trainer.depthLoss != null) m.depthLoss = trainer.depthLoss;
     const holdEvery = this.opts.evalHoldEvery ?? 4000;
     if (this.holdout >= 0 &&
         (final || trainer.iter - this._lastHoldEval >= holdEvery)) {

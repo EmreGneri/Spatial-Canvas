@@ -25,7 +25,8 @@
 //    7 opacity, 8-10 rgb, 11 visible flag, 12-14 cov2D (a,b,c), 15 radius]
 // Screen-space gradient accumulator (stride 16 atomic<i32>, fixed point):
 //   [0 dMeanX, 1 dMeanY, 2 dConicA, 3 dConicB, 4 dConicC, 5 dComp,
-//    6 dLogitOpacity, 7-9 dRGB]
+//    6 dLogitOpacity, 7-9 dRGB, 10-12 refine stats, 13 windowed max,
+//    14 dDepth (camera-space z of the centre; depth supervision only)]
 // Entry buffer (interleaved pairs): [2k] = depth key (f32 bits), [2k+1] = id.
 
 export const STRIDE = 16;
@@ -585,6 +586,38 @@ fn main(@builtin(workgroup_id) wg: vec3u,
 export const ALPHA_EMPTY = 64;
 export const ALPHA_PHOTO = 191;
 
+// ---- depth supervision (feat.depth, mode 0 only; local patch 2026-09-27) ----
+// Compiled in ONLY when the trainer has a depth target (opts.depthWeight > 0 and
+// frame.depth given); without it the kernel text is byte-identical to before.
+// Target: camera-space z per pixel as f32 bits in tgtImg after the RGBA block,
+// base pixel index in cam.R0.w (u32 bits), weight lambda in cam.R1.w (0 = this
+// camera has no depth -> uniform skip). A target <= 0 / non-finite is invalid.
+//
+// Forward (per pixel, splats i front to back, T_i = prod_{j<i} (1 - a_j)):
+//   D = sum_i T_i a_i z_i          (z_i = cam-space z of the centre, proj slot 2)
+//   O = 1 - T_final = sum_i T_i a_i
+//   Dn = D / max(O, 1e-4)          (= D / O wherever the loss is active)
+// Loss (target valid AND O > 0.5), relative Charbonnier, DDELTA = 0.01:
+//   e = (Dn - Dt) / Dt,  r = sqrt(e^2 + DDELTA^2),  L = lambda (r - DDELTA)
+//   gDn = dL/dDn = lambda e / (r Dt)
+//   gD  = dL/dD  = gDn / O                 (dDn/dD = 1/O)
+//   gOd = dL/dO  = -gDn D / O^2 = -gDn Dn / O
+// Backward, per splat k (Tb = T_k, the transmittance in front of k):
+//   dD/dz_k = T_k a_k                                  -> gz_k = gD a_k T_k
+//   dD/da_k = T_k z_k - SD_k / (1 - a_k),  SD_k = sum_{j>k} T_j a_j z_j
+//             (every T_j behind k carries the factor (1 - a_k))
+//   dO/da_k = prod_{j!=k} (1 - a_j) = T_final / (1 - a_k)
+//   => galpha_k += gD (z_k T_k - SD_k / (1 - a_k)) + gOd T_final / (1 - a_k)
+//   SD is accumulated back to front exactly like the colour S (no background
+//   depth: SD starts at 0). galpha then follows the existing alpha chain
+//   (mean, conic, comp, opacity; zero when a_k is clamped at 0.99), gz goes to
+//   gradP slot 14 and the chain pass adds it to dL/dpc.z (which also feeds the
+//   camera pose gradients). A pixel whose COLOUR target is invalid but whose
+//   depth is valid runs the backward with gC = 0 (depth terms only).
+// Stats: the weighted loss joins stats[1] (grad-check), and the UNWEIGHTED
+// per-pixel loss r - DDELTA goes to stats[4] (x4096, dithered; carry into
+// stats[6]) with its pixel count in stats[5] -> trainer.depthLoss.
+
 const makeRenderSrcRaw = (E = DEFAULT_E_CUT, A = DEFAULT_A_MIN, tileGrad = false, subgroups = false, mode = 0, ssimW = 0.2, ssaa = 2, D = 0.3, spread = 1, batch = 1, zskip = false,
   // P partial shared accumulators per gradient slot, lane-interleaved (li % P): 256 threads
   // adding to the SAME 13 shared addresses serialize; partials cut same-address collisions
@@ -617,10 +650,20 @@ const makeRenderSrcRaw = (E = DEFAULT_E_CUT, A = DEFAULT_A_MIN, tileGrad = false
   // their photometric target — original-3DGS random_background. See the loss.
   randBg = !!feat.randBg,
   emptyAware = cov || randBg,
-  NS = useStats ? 13 : 10) =>
+  NS = useStats ? 13 : 10,
+  // depth supervision (see above): one extra shared gradient slot (index NS,
+  // flushed to gradP slot 14); NSD === NS when off, so the text is unchanged
+  depth = !!feat.depth && mode === 0,
+  NSD = NS + (depth ? 1 : 0),
+  // with depth, a colour-invalid pixel runs the backward for its depth alone:
+  // the refine rendered-mass stat keeps counting colour-valid pixels only
+  rmass = depth ? 'select(0.0, alpha * Tb, lossOk)' : 'alpha * Tb',
+  // shared slot -> gradP slot: the extra depth slot NS lands in slot 14
+  gslot = (x) => (depth ? `select(${x}, 14u, ${x} == ${NS}u)` : x)) =>
   (subgroups ? 'enable subgroups;\n' : '') + CAM_STRUCT + cutConsts(E, A, 1.0, D) + /* wgsl */ `
 ${cov ? `const COVW: f32 = ${covW};
-const COVS: f32 = ${covS};` : ''}
+const COVS: f32 = ${covS};` : ''}${depth ? `
+const DDELTA: f32 = 0.01; // depth loss: relative Charbonnier width` : ''}
 @group(0) @binding(1) var<storage, read> proj: array<f32>;
 @group(0) @binding(2) var<storage, read> tileStart: array<u32>;
 @group(0) @binding(3) var<storage, read> entries: array<u32>;
@@ -643,7 +686,7 @@ fn camAdd(idx: u32, v: f32) {
 ` + (tileGrad ? /* wgsl */ `
 var<workgroup> wgEnd: atomic<u32>;
 var<workgroup> wgEndU: u32;
-var<workgroup> sg: array<atomic<i32>, ${NS * P * K}>; // 0-9 grads, 10-11 error mass, 12 grad-stat (x P partials, x K batched splats; NS = 10 with the stats compiled out)
+var<workgroup> sg: array<atomic<i32>, ${NSD * P * K}>; // 0-9 grads, 10-11 error mass, 12 grad-stat (x P partials, x K batched splats; NS = 10 with the stats compiled out)
 var<private> sgPart: u32;
 ${K > 1 ? 'var<private> sgBase: u32; // batched flush: the current splat’s NS*P block in sg' : ''}
 ` + (mode === 0 ? /* wgsl */ `
@@ -752,7 +795,7 @@ ${mode >= 2 ? /* wgsl */ `
   var T = 1.0;
   var Crgb = vec3f(0.0);
   var end = segS; // one past the last processed entry
-` + (tileGrad ? '  if (pxOk) {' : '  {') + /* wgsl */ `
+${depth ? '  var Dz = 0.0; // D = sum T_i a_i z_i (depth supervision)\n' : ''}` + (tileGrad ? '  if (pxOk) {' : '  {') + /* wgsl */ `
   for (var k = segS; k < segE; k++) {
     if (entries[2u * k] == 0xFFFFFFFFu) { break; } // segment padding
     end = k + 1u;
@@ -771,7 +814,8 @@ ${mode >= 2 ? /* wgsl */ `
     let araw = proj[b + 7u] * proj[b + 6u] * exp(-e);
     let alpha = min(0.99, araw);
     if (alpha < A_MIN) { continue; }
-    Crgb += T * alpha * vec3f(proj[b + 8u], proj[b + 9u], proj[b + 10u]);
+    Crgb += T * alpha * vec3f(proj[b + 8u], proj[b + 9u], proj[b + 10u]);${depth ? `
+    Dz += T * alpha * proj[b + 2u];` : ''}
     T *= 1.0 - alpha;
     if (T < 1e-4) { break; }
   }
@@ -866,7 +910,35 @@ ${camGrad ? `      let ci8 = u32(cam.misc2.y) * 8u;
       }`}
     }
   }
-`) + (tileGrad && mode === 0 && robust ? /* wgsl */ `
+`) + (depth ? /* wgsl */ `
+  // ---- depth supervision loss (derivation above makeRenderSrcRaw) ----
+  var gD = 0.0;   // dL/dD
+  var gOd = 0.0;  // dL/dO through the Dn = D / O normalisation
+  var dOk = false;
+  let dLam = cam.R1.w; // 0: this camera has no depth target (uniform skip)
+  if (${tileGrad ? 'pxOk && ' : ''}dLam > 0.0) {
+    let dbits = tgtImg[bitcast<u32>(cam.R0.w) + pi];
+    let Dt = bitcast<f32>(dbits);
+    let Ocov = 1.0 - T;
+    // bit test instead of a NaN compare (WGSL may fold x != x away)
+    if ((dbits & 0x7F800000u) != 0x7F800000u && Dt > 1e-6 && Ocov > 0.5) {
+      dOk = true;
+      let Dn = Dz / max(Ocov, 1e-4);
+      let de = (Dn - Dt) / Dt;
+      let dr = sqrt(de * de + DDELTA * DDELTA);
+      let gDn = dLam * de / (dr * Dt);
+      gD = gDn / Ocov;
+      gOd = -gDn * Dn / Ocov;
+      let dl = dr - DDELTA;
+      atomicAdd(&stats[1], u32(min(dLam * dl, 1.0e4) * 32768.0)); // training loss (grad-check)
+      // unweighted depth loss readout: dithered, 64-bit via a carry word
+      let dq = u32(min(dl, 1.0e5) * 4096.0 + fract(sin(f32(pi) * 78.233) * 43758.5453));
+      let dold = atomicAdd(&stats[4], dq);
+      if (dq > 0xFFFFFFFFu - dold) { atomicAdd(&stats[6], 1u); }
+      atomicAdd(&stats[5], 1u);
+    }
+  }
+${cov ? '  if (!lossOk) { gO = 0.0; } // unchanged: the coverage term needs a valid colour target\n' : ''}` : '') + (tileGrad && mode === 0 && robust ? /* wgsl */ `
   // RobustNeRF-style tile vote (misc3.y = threshold, 0 = off): a 16x16 tile
   // whose MEAN residual exceeds kappa x the running mean per-pixel loss
   // (CPU-fed each step) is treated as a transient — a mover, its shadow, a
@@ -882,7 +954,8 @@ ${camGrad ? `      let ci8 = u32(cam.misc2.y) * 8u;
     let nv = f32(atomicLoad(&wgValid));
     if (nv > 0.0 && f32(atomicLoad(&wgErr)) / 4096.0 > cam.misc3.y * nv) {
       gC = vec3f(0.0);
-      perr = 0.0;
+      perr = 0.0;${depth ? `
+      gD = 0.0; gOd = 0.0; // a transient corrupts the depth target too` : ''}
     }
   }
 ` : '') + (mode === 1 ? /* wgsl */ `
@@ -890,7 +963,8 @@ ${camGrad ? `      let ci8 = u32(cam.misc2.y) * 8u;
 ` /* forward-only: backward OMITTED (dead code still counts toward the
      per-stage storage-buffer limit); the SSIM passes + bwd kernel follow */
 : /* wgsl */ `
-${tileGrad ? '' : '  if (!lossOk) { return; }'}
+${tileGrad ? '' : (depth ? '  if (!lossOk && !dOk) { return; } // colour-invalid pixels still carry depth'
+                          : '  if (!lossOk) { return; }')}
 
   // ---- backward: back-to-front transmittance recursion ----
   // dC/da_i = c_i T_i - S_i / (1 - a_i),
@@ -905,22 +979,22 @@ ${tileGrad ? /* wgsl */ `
 ` : '  let endMax = end;'}
   var S = bg * T;
   var Ta = T;
-${K > 1 ? /* wgsl */ `
+${depth ? '  var SD = 0.0; // depth mass behind the current splat (no background depth)\n' : ''}${K > 1 ? /* wgsl */ `
   // batched flush: K splats share one zero/flush barrier pair (the original
   // 3DGS backward pays one barrier per 256 splats; ours paid two per splat).
   // Each splat k accumulates into its own 13*P block of sg; the flush maps
   // 13*K threads onto (splat, slot). Underflow-safe stride on u32.
   for (var kk0 = endMax; kk0 > segS; kk0 = select(segS, kk0 - ${K}u, kk0 >= segS + ${K}u)) {
-    if (li < ${NS * P * K}u) { atomicStore(&sg[li], 0); }
+    if (li < ${NSD * P * K}u) { atomicStore(&sg[li], 0); }
     workgroupBarrier();
     for (var k = 0u; k < ${K}u; k++) {
     if (kk0 > segS + k) {
     let kk = kk0 - k;
-    sgBase = k * ${NS * P}u;
+    sgBase = k * ${NSD * P}u;
 ` : /* wgsl */ `
   for (var kk = endMax; kk > segS; kk--) {
 ${tileGrad ? /* wgsl */ `
-    if (li < ${NS * P}u) { atomicStore(&sg[li], 0); }
+    if (li < ${NSD * P}u) { atomicStore(&sg[li], 0); }
     workgroupBarrier();
 ` : ''}`}${tileGrad && subgroups ? /* wgsl */ `
     // subgroup variant only: contributions land in locals so the aggregated
@@ -928,11 +1002,11 @@ ${tileGrad ? /* wgsl */ `
     // builtins in divergent flow — a lesson bought with a dead pipeline)
     var q0 = 0.0; var q1 = 0.0; var q2 = 0.0; var q3 = 0.0; var q4 = 0.0;
     var q5 = 0.0; var q6 = 0.0; var q7 = 0.0; var q8 = 0.0; var q9 = 0.0;
-    var q10 = 0.0; var q11 = 0.0; var q12 = 0.0;
+    var q10 = 0.0; var q11 = 0.0; var q12 = 0.0;${depth ? ' var q13 = 0.0;' : ''}
 ` : ''}
     let i = entries[2u * (kk - 1u) + 1u];
     let b = i * 16u;
-${tileGrad ? '    if (lossOk && kk <= end) {' : '    {'}
+${tileGrad ? (depth ? '    if ((lossOk || dOk) && kk <= end) {' : '    if (lossOk && kk <= end) {') : '    {'}
     let d = px - vec2f(proj[b], proj[b + 1u]);
     let cA = proj[b + 3u];
     let cB = proj[b + 4u];
@@ -955,7 +1029,11 @@ ${tileGrad ? '    if (lossOk && kk <= end) {' : '    {'}
     // per-splat constant, so the chain pass applies it once after summation
     let gcv = gC * (alpha * Tb);
     var galpha = dot(gC, c * Tb - S / (1.0 - alpha));
-${cov ? '    galpha += gO * (T / (1.0 - alpha)); // dO/da_k = prod_{j!=k}(1-a_j)' : ''}
+${cov ? '    galpha += gO * (T / (1.0 - alpha)); // dO/da_k = prod_{j!=k}(1-a_j)' : ''}${depth ? `
+    // depth: dD/da_k = z_k T_k - SD_k/(1-a_k), dO/da_k = T_final/(1-a_k); dD/dz_k = a_k T_k
+    let zc = proj[b + 2u];
+    galpha += gD * (zc * Tb - SD / (1.0 - alpha)) + gOd * (T / (1.0 - alpha));
+    let gzv = gD * (alpha * Tb);` : ''}
     if (araw > 0.99) { galpha = 0.0; } // alpha clamped: no gradient through it
 
     let ga = galpha * araw;
@@ -979,9 +1057,10 @@ ${tileGrad ? (subgroups ? /* wgsl */ `    q2 = -ga * 0.5 * d.x * d.x * cnorm;
     q7 = gcv.r;
     q8 = gcv.g;
     q9 = gcv.b;
-    q10 = alpha * Tb;
+    q10 = ${rmass};
     q11 = alpha * Tb * perr;
-    q12 = abs(gmean.x) + abs(gmean.y);` : /* wgsl */ `    atomAddC(2u, -ga * 0.5 * d.x * d.x * cnorm);
+    q12 = abs(gmean.x) + abs(gmean.y);${depth ? `
+    q13 = gzv;                      // d/dz (depth; flushed to gradP slot 14)` : ''}` : /* wgsl */ `    atomAddC(2u, -ga * 0.5 * d.x * d.x * cnorm);
     atomAddC(3u, -ga * d.x * d.y * cnorm);
     atomAddC(4u, -ga * 0.5 * d.y * d.y * cnorm);
     atomAdd(5u, galpha * opa * G);          // d/dcomp
@@ -989,9 +1068,10 @@ ${tileGrad ? (subgroups ? /* wgsl */ `    q2 = -ga * 0.5 * d.x * d.x * cnorm;
     atomAdd(7u, gcv.r);
     atomAdd(8u, gcv.g);
     atomAdd(9u, gcv.b);${useStats ? `
-    atomAddW(10u, alpha * Tb);              // rendered mass (refine sampling)
+    atomAddW(10u, ${rmass});              // rendered mass (refine sampling)
     atomAddW(11u, alpha * Tb * perr);       // error mass (refine sampling)
-    atomAddW(12u, abs(gmean.x) + abs(gmean.y)); // grad-stat (v2 growth)` : ''}`) : /* wgsl */ `    atomAddC(b + 2u, -ga * 0.5 * d.x * d.x * cnorm);
+    atomAddW(12u, abs(gmean.x) + abs(gmean.y)); // grad-stat (v2 growth)` : ''}${depth ? `
+    if (dOk) { atomAdd(${NS}u, gzv); }      // d/dz (depth; flushed to gradP slot 14)` : ''}`) : /* wgsl */ `    atomAddC(b + 2u, -ga * 0.5 * d.x * d.x * cnorm);
     atomAddC(b + 3u, -ga * d.x * d.y * cnorm);
     atomAddC(b + 4u, -ga * 0.5 * d.y * d.y * cnorm);
     atomAdd(b + 5u, galpha * opa * G);          // d/dcomp
@@ -999,11 +1079,13 @@ ${tileGrad ? (subgroups ? /* wgsl */ `    q2 = -ga * 0.5 * d.x * d.x * cnorm;
     atomAdd(b + 7u, gcv.r);
     atomAdd(b + 8u, gcv.g);
     atomAdd(b + 9u, gcv.b);${useStats ? `
-    atomAddW(b + 10u, alpha * Tb);              // rendered mass (refine sampling)
+    atomAddW(b + 10u, ${rmass});              // rendered mass (refine sampling)
     atomAddW(b + 11u, alpha * Tb * perr);       // error mass (refine sampling)
-    atomAddW(b + 12u, abs(gmean.x) + abs(gmean.y)); // grad-stat (v2 growth)` : ''}`}
+    atomAddW(b + 12u, abs(gmean.x) + abs(gmean.y)); // grad-stat (v2 growth)` : ''}${depth ? `
+    if (dOk) { atomAdd(b + 14u, gzv); }         // d/dz (depth supervision)` : ''}`}
 
-    S += c * alpha * Tb;
+    S += c * alpha * Tb;${depth ? `
+    SD += zc * alpha * Tb;` : ''}
     Ta = Tb;
     }
     }
@@ -1021,24 +1103,24 @@ ${K > 1 ? '    }\n    }\n' : ''}${tileGrad ? (subgroups ? /* wgsl */ `
     atomAddC(2u, q2); atomAddC(3u, q3); atomAddC(4u, q4);
     atomAdd(5u, q5); atomAdd(6u, q6);
     atomAdd(7u, q7); atomAdd(8u, q8); atomAdd(9u, q9);
-    atomAddW(10u, q10); atomAddW(11u, q11); atomAddW(12u, q12);
+    atomAddW(10u, q10); atomAddW(11u, q11); atomAddW(12u, q12);${depth ? ` atomAdd(${NS}u, q13);` : ''}
 ` : '') + /* wgsl */ `
     workgroupBarrier();
 ${K > 1 ? /* wgsl */ `
-    if (li < ${NS * K}u) {
-      let k = li / ${NS}u;
-      let slot = li - k * ${NS}u;
+    if (li < ${NSD * K}u) {
+      let k = li / ${NSD}u;
+      let slot = li - k * ${NSD}u;
       if (kk0 > segS + k) {
         var v = 0;
-        for (var pp = 0u; pp < ${P}u; pp++) { v += atomicLoad(&sg[k * ${NS * P}u + slot * ${P}u + pp]); }
-        if (v != 0) { atomicAdd(&gradP[entries[2u * (kk0 - k - 1u) + 1u] * 16u + slot], v); }
+        for (var pp = 0u; pp < ${P}u; pp++) { v += atomicLoad(&sg[k * ${NSD * P}u + slot * ${P}u + pp]); }
+        if (v != 0) { atomicAdd(&gradP[entries[2u * (kk0 - k - 1u) + 1u] * 16u + ${gslot('slot')}], v); }
       }
     }
 ` : /* wgsl */ `
-    if (li < ${NS}u) {
+    if (li < ${NSD}u) {
       var v = 0;
       for (var pp = 0u; pp < ${P}u; pp++) { v += atomicLoad(&sg[li * ${P}u + pp]); }
-      if (v != 0) { atomicAdd(&gradP[b + li], v); }
+      if (v != 0) { atomicAdd(&gradP[b + ${gslot('li')}], v); }
     }
 `}` : ''}
   }
@@ -1062,11 +1144,15 @@ const projVec = (src) => {
   return s;
 };
 export const makeRenderSrc = (E, A, tileGrad, subgroups, mode, ssimW, ssaa, D, spread, batch, zskip, pvec = false, feat = {}) => {
+  // depth adds a 14th shared slot: the batched flush maps 14*K threads, so K <= 18
+  if (feat && feat.depth && mode === 0 && batch > 18) batch = 18;
   const s = makeRenderSrcRaw(E, A, tileGrad, subgroups, mode, ssimW, ssaa, D, spread, batch, zskip, undefined, undefined, feat);
   return pvec ? projVec(s) : s;
 };
 
-export const makeChainSrc = (AREG = 0.02, shDeg = 0, dc = 'sigmoid', statMax = false, D = 0.3, C = true, compact = false, camGrad = true, NREG = 0, NRATIO = 3, OREG = 0) => CAM_STRUCT + /* wgsl */ `
+// depth: the render kernel's depth-supervision variant is live — read and zero
+// gradP slot 14 (dL/dz of the splat centre) and add it to dL/dpc.z
+export const makeChainSrc = (AREG = 0.02, shDeg = 0, dc = 'sigmoid', statMax = false, D = 0.3, C = true, compact = false, camGrad = true, NREG = 0, NRATIO = 3, OREG = 0, depth = false) => CAM_STRUCT + /* wgsl */ `
 const AREG = ${AREG.toExponential()};
 const OREG = ${OREG.toExponential()};
 const NREG = ${NREG.toExponential()};
@@ -1142,7 +1228,10 @@ ${camGrad ? '' : `  // camera gradients compiled out: keep gradCam statically re
     let scale = select(FIXED, FIXEDC, k >= 2u && k <= 4u);
     gp[k] = f32(atomicLoad(&gradP[b + k])) / scale;
     atomicStore(&gradP[b + k], 0);
-  }
+  }${depth ? `
+  // depth supervision: dL/dz of the centre (render slot 14), drained with the rest
+  let gzd = f32(atomicLoad(&gradP[b + 14u])) / FIXED;
+  atomicStore(&gradP[b + 14u], 0);` : ''}
   // undo the render pass's per-splat conic range normalization (the factor
   // projection stored in slot 12; stale or zero for culled splats, whose
   // gradients are zero anyway)
@@ -1238,7 +1327,8 @@ ${shDeg > 0 ? /* wgsl */ `
   // ---- mean path ----
   dpc.x += gp[0] * fx * iz;
   dpc.y += gp[1] * fy * iz;
-  dpc.z += -(fx * gp[0] * g.pc.x + fy * gp[1] * g.pc.y) * iz * iz;
+  dpc.z += -(fx * gp[0] * g.pc.x + fy * gp[1] * g.pc.y) * iz * iz;${depth ? `
+  dpc.z += gzd; // depth supervision: z_i = pc.z enters D directly` : ''}
 
   // dL/dp_world = W^T dpc
   gradF[b]      = cam.R0.x * dpc.x + cam.R1.x * dpc.y + cam.R2.x * dpc.z;

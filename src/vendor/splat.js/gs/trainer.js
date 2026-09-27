@@ -9,6 +9,9 @@ import {
 import { rodrigues, m3mul, makeRng } from '../sfm/geometry.js';
 import { createGpu } from '../gpu/context.js';
 
+// depthWeight with ssimWeight / ssaa: logged once per page, then ignored
+let depthModeLogged = false;
+
 export class GSTrainer {
   /** opts.gpu: a GpuContext from createGpu() — share ONE device between the
    *  trainer and the SIFT matcher. When omitted, a private one is created. */
@@ -41,8 +44,47 @@ export class GSTrainer {
     // channel-major buffer of 3*shK floats per splat)
     this.shDeg = opts.shDeg ?? 3;   // degree 3 is the standard since 2026-08-24 (matches the INRIA reference)
     this.shK = this.shDeg > 0 ? shRestCoefs(this.shDeg) : 0;
+    // opts.depthWeight: lambda of the depth-supervision loss against frame.depth
+    // (camera-space z at training resolution, NaN = invalid; see shaders.js).
+    // 0 = off. The depth kernels are built in setup() only when a camera
+    // actually brings a depth target — otherwise nothing changes.
+    this.depthWeight = opts.depthWeight ?? 0;
+    this.hasDepth = false;
+    this.depthLoss = null; // mean unweighted depth loss since the last readLoss()
     this.canvasFormat = navigator.gpu.getPreferredCanvasFormat();
     this._buildPipelines();
+  }
+
+  /** Depth supervision: swap in the render (mode 0) and chain variants that
+   *  carry the depth loss (same arguments as _buildPipelines plus the depth
+   *  flag), or back to the plain ones. Called by setup() before its bind groups. */
+  _setDepthVariant(on) {
+    if (!!this._depthVariant === on) return;
+    if (!this._plainPipes) this._plainPipes = { render: this.pipeRender, chain: this.pipeChain, chainC: this.pipeChainC };
+    if (on && !this._depthPipes) {
+      const d = this.device;
+      const mk = (code, label) => d.createShaderModule({ code, label });
+      const chainSrc = (compact) => makeChainSrc(this.opts.anisoReg ?? 0, this.shDeg, this.dcMode, this.opts.statMax ?? false, this.dilate, this.mipComp, compact, this.camGrads, this.opts.needleReg ?? 0, this.opts.needleRatio ?? 3, this.opts.orientReg ?? 0, true);
+      this._depthPipes = {
+        render: d.createComputePipeline({
+          label: 'render-depth', layout: 'auto',
+          compute: { module: mk(makeRenderSrc(this.opts.eCut, this.opts.aMin, this.tileGrad, this.subgroupAgg, 0, 0.2, 2, this.dilate, this.opts.gradSpread ?? 1, this.opts.gradBatch ?? 16, this.opts.gradZeroSkip ?? false, this.opts.projVec ?? false, { ...this.renderFeat, depth: true }), 'render-depth'), entryPoint: 'main', constants: { FIXED: this.gradFixed } },
+        }),
+        chain: d.createComputePipeline({
+          label: 'chain-depth', layout: 'auto',
+          compute: { module: mk(chainSrc(false), 'chain-depth'), entryPoint: 'main', constants: { FIXED: this.gradFixed } },
+        }),
+        chainC: this.compact ? d.createComputePipeline({
+          label: 'chain-compact-depth', layout: 'auto',
+          compute: { module: mk(chainSrc(true), 'chain-compact-depth'), entryPoint: 'main', constants: { FIXED: this.gradFixed } },
+        }) : this.pipeChainC,
+      };
+    }
+    const p = on ? this._depthPipes : this._plainPipes;
+    this.pipeRender = p.render;
+    this.pipeChain = p.chain;
+    this.pipeChainC = p.chainC;
+    this._depthVariant = on;
   }
 
   _buildPipelines() {
@@ -289,12 +331,28 @@ export class GSTrainer {
       total += im.tw * im.th;
       return meta;
     });
+    // depth supervision (opts.depthWeight > 0 and at least one image with a
+    // training-resolution frame.depth): the fused mode-0 kernel only
+    let hasDepth = this.depthWeight > 0 && this.camMeta.some((m) => {
+      const dp = images[m.imgIdx] && images[m.imgIdx].depth;
+      return !!dp && dp.length === m.w * m.h;
+    });
+    if (hasDepth && (this.ssimW > 0 || this.ssaa >= 2)) {
+      if (!depthModeLogged) {
+        depthModeLogged = true;
+        console.log('[trainer] depthWeight ignored: depth supervision runs in the fused render kernel only (no ssimWeight / ssaa)');
+      }
+      hasDepth = false;
+    }
+    this.hasDepth = hasDepth;
+    this._setDepthVariant(hasDepth);
+    const tgtWords = hasDepth ? total * 2 : total; // depth: f32 bits after the RGBA block
     const limit = this.device.limits.maxStorageBufferBindingSize;
-    if (total * 4 > limit) {
-      throw new Error(`training targets (${(total * 4 / 1e6).toFixed(0)}MB) exceed the device ` +
+    if (tgtWords * 4 > limit) {
+      throw new Error(`training targets (${(tgtWords * 4 / 1e6).toFixed(0)}MB) exceed the device ` +
         `binding limit (${(limit / 1e6).toFixed(0)}MB) — reduce image count or resolution`);
     }
-    const targetData = new Uint32Array(total);
+    const targetData = new Uint32Array(tgtWords);
     let nEmpty = 0, nPartial = 0, nInvalid = 0;
     for (const meta of this.camMeta) {
       const im = images[meta.imgIdx];
@@ -320,6 +378,27 @@ export class GSTrainer {
         + `${(nPartial / total * 100).toFixed(1)}% partial, ${(nEmpty / total * 100).toFixed(1)}% empty `
         + `(soft-composited; randomBg=${!!this.opts.randomBg}, covW=${this.opts.covW ?? 0}), `
         + `${(nInvalid / total * 100).toFixed(1)}% excluded`);
+    }
+    if (hasDepth) {
+      // per camera: depthOff = the pixel index of its depth block (cam uniform
+      // R0.w), depthW = lambda (R1.w; 0 for a camera without depth). A depth
+      // <= 0 or non-finite stays 0 bits = invalid.
+      const dv = new Float32Array(targetData.buffer, total * 4, total);
+      let nCam = 0, nValid = 0;
+      for (const meta of this.camMeta) {
+        const dp = images[meta.imgIdx].depth;
+        const np = meta.w * meta.h;
+        meta.depthOff = total + meta.offset;
+        meta.depthW = dp && dp.length === np ? this.depthWeight : 0;
+        if (!meta.depthW) continue;
+        nCam++;
+        for (let p = 0; p < np; p++) {
+          const z = dp[p];
+          if (z > 0 && z < Infinity) { dv[meta.offset + p] = z; nValid++; }
+        }
+      }
+      console.log(`[trainer] depth supervision: weight ${this.depthWeight}, ${nCam}/${this.camMeta.length} cameras, `
+        + `${(nValid / total * 100).toFixed(1)}% of target pixels valid`);
     }
 
     const maxPix = Math.max(maxViewW * maxViewH,
@@ -358,11 +437,15 @@ export class GSTrainer {
     this.bufTileCursor = buf(this.maxTiles * 4, B.STORAGE | B.COPY_SRC, 'tileCursor');
     this.bufEntries = buf(this.entriesCap * 2 * 4, B.STORAGE | B.COPY_SRC, 'entries');
     this.bufOut = buf(maxPix * ssq * 4 * 4, B.STORAGE | B.COPY_SRC, 'outImg');
-    this.bufTarget = buf(Math.max(16, total * 4), B.STORAGE | B.COPY_DST, 'targets');
+    this.bufTarget = buf(Math.max(16, tgtWords * 4), B.STORAGE | B.COPY_DST, 'targets');
     d.queue.writeBuffer(this.bufTarget, 0, targetData);
-    this.bufStats = buf(16, B.STORAGE | B.COPY_DST | B.COPY_SRC, 'stats');
-    d.queue.writeBuffer(this.bufStats, 0, new Uint32Array(4));
-    this.bufStatsRead = buf(16, B.COPY_DST | B.MAP_READ, 'statsRead');
+    // stats: [0] SSE x16, [1] loss x32768, [2] valid px, [3] entry overflow;
+    // with depth also [4] depth loss x4096 (lo), [5] depth px, [6] (hi carry)
+    this.statsWords = hasDepth ? 8 : 4;
+    this.statsZero = new Uint32Array(this.statsWords);
+    this.bufStats = buf(this.statsWords * 4, B.STORAGE | B.COPY_DST | B.COPY_SRC, 'stats');
+    d.queue.writeBuffer(this.bufStats, 0, this.statsZero);
+    this.bufStatsRead = buf(this.statsWords * 4, B.COPY_DST | B.MAP_READ, 'statsRead');
     this.bufParamsRead = buf(nb, B.COPY_DST | B.MAP_READ, 'paramsRead'); // cap-sized
     this.bufCamGrad = buf((cams.length + 1) * 8 * 4, B.STORAGE | B.COPY_DST | B.COPY_SRC, 'camGrad');
     d.queue.writeBuffer(this.bufCamGrad, 0, new Int32Array((cams.length + 1) * 8));
@@ -768,7 +851,7 @@ export class GSTrainer {
     ];
   }
 
-  _camUniform({ R, t, f, fy, cx, cy, w, h, g = 0, b = 0, bg = null }, trainMode, offset, camIdx = 0) {
+  _camUniform({ R, t, f, fy, cx, cy, w, h, g = 0, b = 0, bg = null, depthOff = 0, depthW = 0 }, trainMode, offset, camIdx = 0) {
     const u = new Float32Array(40);
     // shup: horizontal-only SH (opts.shUp = the scene's up axis, unit)
     if (this.opts.shUp) { u[36] = this.opts.shUp[0]; u[37] = this.opts.shUp[1]; u[38] = this.opts.shUp[2]; u[39] = 1; }
@@ -794,6 +877,11 @@ export class GSTrainer {
     // target buffers exceed that) — shader reads it via bitcast
     new Uint32Array(u.buffer)[27] = offset >>> 0;
     new Uint32Array(u.buffer)[35] = (this.cap * 16) >>> 0; // misc3.w: proj tail index (compaction list)
+    if (depthW > 0 && this.hasDepth) {
+      // depth supervision (setup): R0.w = depth block pixel index (u32 bits), R1.w = lambda
+      new Uint32Array(u.buffer)[3] = depthOff >>> 0;
+      u[7] = depthW;
+    }
     return u;
   }
 
@@ -1290,7 +1378,8 @@ export class GSTrainer {
   }
 
   /** One training-path pass for camera ci (optionally with a pose override);
-   *  returns { psnr, camGrad (Int32Array row ci + focal row) }. Drains all
+   *  returns { psnr, camGrad (Int32Array row ci + focal row) } (+ depthLoss,
+   *  the mean unweighted depth loss, when depth supervision is on). Drains all
    *  gradient pollution so training state stays clean. */
   async _evalPass(ci, override) {
     const d = this.device;
@@ -1300,7 +1389,7 @@ export class GSTrainer {
       : new Float32Array(this.camUniforms[ci]);
     uni[24] = 0; uni[25] = 0; uni[26] = 0; // evaluate on black whatever the training background was
     const rows = this.camMeta.length + 1;
-    d.queue.writeBuffer(this.bufStats, 0, new Uint32Array(4));
+    d.queue.writeBuffer(this.bufStats, 0, this.statsZero);
     this._writeTrainUniforms(uni);
     d.queue.writeBuffer(this.bufTileCnt, 0, this.tileZero);
     const enc = d.createCommandEncoder();
@@ -1309,7 +1398,7 @@ export class GSTrainer {
     p.setPipeline(this.pipeChain); p.setBindGroup(0, this.bgChain); // zeroes gradP
     p.dispatchWorkgroups(Math.ceil(this.n / 256));
     p.end();
-    enc.copyBufferToBuffer(this.bufStats, 0, this.bufStatsRead, 0, 16);
+    enc.copyBufferToBuffer(this.bufStats, 0, this.bufStatsRead, 0, this.statsWords * 4);
     const rbC = d.createBuffer({ size: rows * 32, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
     enc.copyBufferToBuffer(this.bufCamGrad, 0, rbC, 0, rows * 32);
     d.queue.submit([enc.finish()]);
@@ -1318,13 +1407,14 @@ export class GSTrainer {
     const sarr = new Uint32Array(this.bufStatsRead.getMappedRange());
     const v = sarr[0];
     const validPx = Math.max(1, sarr[2]);
+    const depthLoss = this.hasDepth && sarr[5] > 0 ? (sarr[6] * 4294967296 + sarr[4]) / 4096 / sarr[5] : null;
     this.bufStatsRead.unmap();
     const camGrad = new Int32Array(rbC.getMappedRange()).slice();
     rbC.unmap(); rbC.destroy();
-    d.queue.writeBuffer(this.bufStats, 0, new Uint32Array(4));
+    d.queue.writeBuffer(this.bufStats, 0, this.statsZero);
     this.pixelsSeen = 0; // running train-psnr window was clobbered
     const mse = v / 16 / (validPx * 3);
-    return { psnr: mse > 0 ? -10 * Math.log10(mse) : Infinity, camGrad };
+    return { psnr: mse > 0 ? -10 * Math.log10(mse) : Infinity, camGrad, ...(this.hasDepth ? { depthLoss } : {}) };
   }
 
   /** PSNR of one camera (typically the holdout) at its current pose. */
@@ -1369,9 +1459,9 @@ export class GSTrainer {
   async readLoss() {
     const d = this.device;
     const enc = d.createCommandEncoder();
-    enc.copyBufferToBuffer(this.bufStats, 0, this.bufStatsRead, 0, 16);
+    enc.copyBufferToBuffer(this.bufStats, 0, this.bufStatsRead, 0, this.statsWords * 4);
     d.queue.submit([enc.finish()]);
-    d.queue.writeBuffer(this.bufStats, 0, new Uint32Array(4));
+    d.queue.writeBuffer(this.bufStats, 0, this.statsZero);
     const px = this.pixelsSeen;
     this.pixelsSeen = 0;
     await this.bufStatsRead.mapAsync(GPUMapMode.READ);
@@ -1379,6 +1469,12 @@ export class GSTrainer {
     const v = s[0];
     const validPx = s[2]; // valid-pixel count (undistortion borders excluded)
     this.entryOverflowTiles = (this.entryOverflowTiles || 0) + s[3];
+    if (this.hasDepth) {
+      // mean UNWEIGHTED relative-Charbonnier depth loss per supervised pixel
+      // (target valid and coverage > 0.5): 64-bit sum s[6]:s[4] at x4096
+      this.depthLoss = s[5] > 0 ? (s[6] * 4294967296 + s[4]) / 4096 / s[5] : null;
+      this.depthPixels = s[5];
+    }
     this.bufStatsRead.unmap();
     if (px === 0 || validPx === 0) return null;
     const mse = v / 16 / (validPx * 3);

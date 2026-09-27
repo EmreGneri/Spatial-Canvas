@@ -177,3 +177,54 @@ standard +0.8 dB. Egitim suresi bu olcumde GUVENILIR DEGIL: ayni GPU'yu
 paylasan baska bir oturum iter/sn'yi 190'dan 30-115'e oynatti. Intel iGPU'da
 sure etkisi (daha cok splat = iterasyon basina daha pahali) OLCULMEDI;
 ozellikle deneysel devam dugmesi artik ~3x Gaussian uretir.
+
+## Derinlik denetimi: `depthWeight` + `frame.depth` (2026-09-27, Gezinme Parca 4 Gorev 1)
+
+Yerel yama (upstream'de yok). `gs/shaders.js`, `gs/trainer.js`, `gs/gradcheck.js`,
+`session.js`. Kapaliyken (varsayilan `depthWeight` 0 ya da hicbir karede
+`frame.depth` yok) uretilen WGSL eskisiyle BAYT BAYT ayni (render tum mod /
+tileGrad / subgroup / batch / stats / cov / randBg kombinasyonlari + zincir,
+`scripts/gradcheck-derinlik.mjs` [1]); adim basina is ayni (istatistik tamponu
+16 bayt kalir, pipeline'lar degismez).
+
+- Girdi: `frame.depth` Float32Array, egitim cozunurlugunde (tw x th) kamera
+  uzayi z; NaN / <= 0 gecersiz. `undistortFrames` onu alpha gibi en yakin
+  komsuyla yeniden orneklendirir (cerceve disi NaN). Secenek: oturum
+  `depthWeight` (egitici `opts.depthWeight`'e gecer) ya da dogrudan egitici
+  secenegi. Metrik: `trainer.depthLoss` (readLoss; agirliksiz ortalama) ve
+  oturum `metrics` olayinda `depthLoss`; `_evalPass` de `depthLoss` dondurur.
+- Kayit: yeni tampon YOK (render 8 depolama baglamasinda). Hedef derinlik
+  `bufTarget`'ta RGBA blogundan sonra f32 bitleri (`total + meta.offset`);
+  taban piksel indeksi kamera uniform'u `R0.w` (u32 bitleri), lambda `R1.w`
+  (derinliksiz kamera 0 = uniform atlama). gradP yuva 14 = dL/dz; tileGrad
+  paylasimli yuvasi NS (10 ya da 13) bosaltmada 14'e eslenir (K<=18); zincir
+  `dpc.z += gz` (kamera poz gradyani da buradan gelir). stats[4] agirliksiz
+  kayip x4096 (titretilmis, stats[6] tasima), stats[5] piksel sayisi;
+  agirlikli kayip stats[1]'e (gradcheck) eklenir.
+- Kayip (mod 0; SSIM/SSAA'da bir kez log + yok sayilir): D = sum T a z,
+  O = 1 - T, Dn = D / max(O, 1e-4); hedef gecerli ve O > 0.5 iken
+  e = (Dn - Dt)/Dt, L = lambda (sqrt(e^2 + 0.01^2) - 0.01). Geri: turetme
+  `shaders.js`'te `makeRenderSrcRaw` ustunde. Renk hedefi gecersiz ama
+  derinlik gecerli pikselde geri gecis gC = 0 ile calisir; refine "rendered
+  mass" istatistigi yalniz renk-gecerli pikselleri sayar; RobustNeRF oylamasi
+  derinlik gradyanini da dusurur.
+- Dogrulama (SwiftShader, bu ortam): `node scripts/gradcheck-derinlik.mjs` —
+  WGSL ozdesligi, gradCheckSmall derinliksiz/derinlikli/yalniz-derinlik (+
+  tileGrad kapali, K=1, useStats, subgroup, poz), 50 adim determinizm (eski
+  kodla kayip dizisi ve son parametreler birebir), sentetik GT derinlikle 100
+  adimda depthLoss dususu. Sonuclar asagida.
+
+| denetim (SwiftShader) | sonuc |
+|---|---|
+| WGSL ozdesligi, derinlik kapali | 8480 varyant, 0 fark |
+| gradCheckSmall taban / renk+derinlik (lambda 4) / yalniz derinlik (lambda 4) | gecti; en kotu grup medyani 0.019 / 0.011 / 0.010 (tol 0.05) |
+| yalniz derinlik: tileGrad kapali, K=1, useStats, subgroup | gecti (ayni medyanlar) |
+| gradCheckPose yalniz derinlik (lambda 4) | tum eksenler <= 0.3 % |
+| mutasyon: gOd / SD terimi / zincirde gz kaldirilinca | 76 / 70 / 12 ornek tol ustu, BASARISIZ (denetim duyarli) |
+| determinizm, 50 adim (12 kamera 320x240, 12k splat) | kayip dizisi + son parametre ozeti eski kodla birebir |
+| 100 adim depthLoss (tum kameralar, agirliksiz) | lambda ~0: 0.0693 -> 0.0252; 0.2: -> 0.0199; 1: -> 0.0122 (PSNR 21.28 / 21.44 / 21.64) |
+
+Not: yogun gradcheck sahnesinde (derinlik riginde) RENK kaybinin rot.x/rot.y
+poz turevi 4-46 % sapiyor; ayni sapma DEGISTIRILMEMIS egiticide de birebir
+var (derinlikten bagimsiz, onceden var olan; seyrek taban rigde yok).
+Gercek GPU'da derinlikli adim maliyeti OLCULMEDI.
