@@ -17,6 +17,9 @@ const YAZILIM_GPU_BAYRAKLARI = [
   '--use-vulkan=swiftshader',
   '--use-webgpu-adapter=swiftshader',
   '--disable-vulkan-surface',
+  // CPU-emulated GPU work takes seconds per dispatch; the GPU watchdog would
+  // call it a hang and lose the device mid-training.
+  '--disable-gpu-watchdog',
 ];
 
 function chromiumYuruturebiliriBul() {
