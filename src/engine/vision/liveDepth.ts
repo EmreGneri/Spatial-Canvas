@@ -18,6 +18,7 @@ import {
 } from '../../depth.ts';
 import { resampleBilinear } from '../reconstruction/silhouette.ts';
 import { localInference, localInferenceAvailable, type RawTensor } from '../sidecarClient.ts';
+import { isLiveDepthResultStale, stabilizeLiveDepthPair } from './liveDepthFlow.ts';
 
 /**
  * CANLI VİDEO DERİNLİĞİ — düz video yükleme yolunun (sürükle-bırak → canlı 3B)
@@ -1311,6 +1312,8 @@ export interface LiveDepthResult extends DepthResult {
   mediaTime: number;
   /** RGB from the same decoded frame as depth; never read the advancing video later. */
   colorFrame?: ImageData;
+  /** Fraction of pixels whose inter-frame optical flow was trusted. */
+  flowCoverage?: number;
 }
 
 /** Keep shader warmup and live inference from mutating one shared model state concurrently. */
@@ -1516,6 +1519,7 @@ export function startLiveDepth(
     onError?: (err: unknown, ardisik: number) => void;
     onVazgec?: () => void;
     onDiscontinuity?: (reason: 'seek' | 'loop') => void;
+    onStaleDrop?: (ageMs: number) => void;
   } = {},
 ): () => void {
   const maxErrors = 3;
@@ -1533,10 +1537,12 @@ export function startLiveDepth(
   let processedTime = Number.NaN;
   let processedSize = inputSize();
   let processedMask = opts.maskeAl?.() ?? null;
+  let previousAccepted: LiveDepthResult | null = null;
   let frameCallback: number | null = null;
   const invalidate = (reason: 'seek' | 'loop') => {
     revision++;
     processedTime = Number.NaN;
+    previousAccepted = null;
     resetLiveDepthState();
     opts.onDiscontinuity?.(reason);
   };
@@ -1584,6 +1590,7 @@ export function startLiveDepth(
   const cleanup = () => {
     if (!active) return;
     active = false;
+    previousAccepted = null;
     activeLiveDrivers--;
     video.removeEventListener('seeking', seeking);
     video.removeEventListener('seeked', seeked);
@@ -1613,6 +1620,7 @@ export function startLiveDepth(
       if (mask !== processedMask) {
         processedMask = mask;
         processedTime = Number.NaN;
+        previousAccepted = null;
         resetLiveDepthState();
         // A mask arriving while a model call is in flight changes the
         // post-processing contract. Invalidate that call instead of allowing
@@ -1621,6 +1629,7 @@ export function startLiveDepth(
       }
       if (size !== processedSize) {
         resetLiveDepthState();
+        previousAccepted = null;
         processedTime = Number.NaN;
         processedSize = size;
         // A quality change also changes processor dimensions and temporal
@@ -1653,7 +1662,23 @@ export function startLiveDepth(
       }
     },
     onDepth: (result) => {
-      const depth = result as LiveDepthResult;
+      const raw = result as LiveDepthResult;
+      if (isLiveDepthResultStale(raw.mediaTime, video.currentTime)) {
+        opts.onStaleDrop?.((video.currentTime - raw.mediaTime) * 1000);
+        return;
+      }
+      let depth = raw;
+      const previous = previousAccepted;
+      if (previous && raw.mediaTime > previous.mediaTime && raw.mediaTime - previous.mediaTime <= 1.5
+        && previous.width === raw.width && previous.height === raw.height) {
+        const aligned = stabilizeLiveDepthPair(
+          previous.data, raw.data, previous.colorFrame, raw.colorFrame, raw.width, raw.height,
+        );
+        depth = { ...raw, data: aligned.depth, flowCoverage: aligned.coverage };
+      } else {
+        depth = { ...raw, flowCoverage: 0 };
+      }
+      previousAccepted = depth;
       const uploadStart = performance.now();
       onDepth(depth);
       if (autoQuality && !video.paused) {
@@ -1671,6 +1696,7 @@ export function startLiveDepth(
   });
   return () => {
     cleanup();
+    previousAccepted = null;
     stopDriver();
   };
 }
