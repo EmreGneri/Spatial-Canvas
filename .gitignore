@@ -28,3 +28,7 @@ public/*.mov
 public/*.mp4
 assets/test-clips/
 .claude/
+
+# Gezinme ölçümü çıktıları — regenerate with scripts/olc-gezinme.mjs
+olcum-out/
+.bench-tmp/
