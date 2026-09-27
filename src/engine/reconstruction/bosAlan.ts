@@ -82,6 +82,10 @@ export interface BosAlanSecenek {
   enUzak?: number;
   /** `'bos'` için en az kaç FARKLI karenin serbest geçişi gerekir (varsayılan 2). */
   enAzKare?: number;
+  /** Keep this fraction of each finite ray uncarved before the estimated surface.
+   *  Model depth is uncertain near occlusion edges; default 0 preserves the
+   *  exact-depth behavior used by analytic and LiDAR sources. */
+  guvenPayiOrani?: number;
 }
 
 export interface ZeminDuzlemi {
@@ -364,6 +368,8 @@ export function bosAlanKur(kareler: BosAlanKaresi[], secenek: BosAlanSecenek): B
   const sonsuzBos = secenek.sonsuzBos ?? false;
   const enUzak = secenek.enUzak ?? Infinity;
   const enAzKare = Math.max(1, Math.floor(secenek.enAzKare ?? 2));
+  const guvenPayiOrani = secenek.guvenPayiOrani ?? 0;
+  if (!(guvenPayiOrani >= 0 && guvenPayiOrani < 1)) throw new RangeError('bosAlanKur: güven payı 0..1 arasında olmalı');
   for (const k of kareler) haritaBoyutu(k); // boyut hatası ızgara ayrılmadan yakalanır
 
   const sinir = secenek.sinir ?? varsayilanSinir(kareler, secenek.yukari, adimPx, enUzak);
@@ -407,7 +413,8 @@ export function bosAlanKur(kareler: BosAlanKaresi[], secenek: BosAlanSecenek): B
       if (ix >= 0 && ix < boyut[0] && iy >= 0 && iy < boyut[1] && iz >= 0 && iz < boyut[2]) {
         yuzey = ix + boyut[0] * (iy + boyut[1] * iz);
       }
-      isinTasi(alan, sonKare, etiket, g0x, g0y, g0z, dx, dy, dz, L - v, yuzey);
+      isinTasi(alan, sonKare, etiket, g0x, g0y, g0z, dx, dy, dz,
+        L - Math.max(v, guvenPayiOrani * L), yuzey);
       if (yuzey >= 0 && dolu[yuzey] !== DOYMA) dolu[yuzey]++;
     });
   }

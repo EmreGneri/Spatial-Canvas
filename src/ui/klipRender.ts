@@ -339,7 +339,7 @@ export async function klipRenderEt(
     await klipKareleri(e, secim.tur, klipTepeGucu(secim.tur, secim.kaydirici), n,
       { deform: deformAyari(secim.tur, secim.kaydirici), fade: secim.fade },
       async (i, t) => {
-        e.kareCiz(kamera(t), ctx);
+        await e.kareCiz(kamera(t), ctx);
         const img = ctx.getImageData(0, 0, w, h);
         derecele(img.data, maske, KLIP_DERECE);
         ctx.putImageData(img, 0, 0);

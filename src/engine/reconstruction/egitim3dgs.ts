@@ -13,6 +13,10 @@
 
 import { segmentForeground } from './segmentation.ts';
 import { prepareSubjectFrames } from './subjectTrainingMasks.ts';
+import { yenilikIncelemesi } from './kareSecimi.ts';
+import { siraliCiftler } from './ciftGrafigi.ts';
+import { gezinmeDerinligiHazirla, type GezinmeDerinlikKaynagi } from './gezinmeDerinligi.ts';
+import { durum, type BosAlan } from './bosAlan.ts';
 import {
   bendFrame, deformGaussianBuffer, fadeGaussianOpacity, isIdentityDeform, noiseAmplitudeLimit,
   type BendDirection, type DeformSpec, type Mat3,
@@ -166,6 +170,87 @@ export interface EgitimOlaylari {
   metrik(m: EgitimMetrik): void;
   bitti(m: EgitimMetrik | null): void;
   hata(e: Error): void;
+}
+
+export interface KameraCozSecenekleri {
+  secim?: 'yenilik';
+  eslestirme?: 'sirali';
+  odakAlt?: number;
+}
+
+export interface DerinlikKisitiSecenekleri {
+  agirlik: number;
+  kaynak: GezinmeDerinlikKaynagi;
+  bolgesel?: boolean;
+}
+
+export function kameraCozAyarlari(kamera?: KameraCozSecenekleri) {
+  const inceleme = kamera?.secim === 'yenilik' ? yenilikIncelemesi() : null;
+  return {
+    kare: inceleme ? { review: inceleme.review, thumbs: inceleme.thumbs } : {},
+    sfm: {
+      ...(kamera?.eslestirme === 'sirali' ? { pairs: siraliCiftler } : {}),
+      ...(kamera?.odakAlt != null ? { searchSubsetAbove: kamera.odakAlt } : {}),
+    },
+  };
+}
+
+export interface KameraCozSonucu {
+  secilen: number;
+  kayitli: { ad: string; t: number; kamera: GsKamera }[];
+  ciftSayisi: number;
+  medErr: number;
+  rmsBA: number | null;
+  cizelge: { ms: number; asama: string }[];
+}
+
+/** Camera-only benchmark path. It uses the exact extractor, frame decoder and
+ *  SfM options of egitimBaslat, but never allocates a Gaussian trainer. */
+export async function kameraCoz(
+  video: File, ayar: EgitimAyari, kamera?: KameraCozSecenekleri,
+  signal?: AbortSignal, progress?: (stage: string) => void,
+): Promise<KameraCozSonucu> {
+  // @ts-expect-error vendored JS has no declaration file
+  const sj = await import('../../vendor/splat.js/index.js');
+  const settings = kameraCozAyarlari(kamera);
+  const t0 = performance.now();
+  const cizelge: KameraCozSonucu['cizelge'] = [];
+  const mark = (asama: string) => {
+    cizelge.push({ ms: Math.round(performance.now() - t0), asama });
+    progress?.(asama);
+  };
+  mark('kareler seçiliyor');
+  const extracted = await sj.extractSharpFrames(video, {
+    maxFrames: ayar.maxFrames, backgroundSafe: true, signal, ...settings.kare,
+    onProgress: (p: { stage: string; done: number; total: number }) => mark(`${p.stage} ${p.done}/${p.total}`),
+  });
+  const times = new Map<string, number>(extracted.frames.map((f: { name: string; t: number }) => [f.name, f.t]));
+  const session = sj.createSession({ ...egitimOturumAyari(ayar), sfm: { ...sj.solveTierOpts(ayar.tier), ...settings.sfm } });
+  let ciftSayisi = 0;
+  session.on('stage', (e: { stage: string; done?: number; total?: number }) =>
+    mark(`${e.stage} ${e.done ?? ''}/${e.total ?? ''}`));
+  session.on('log', (line: string) => {
+    const match = /matching (\d+) image pairs/.exec(line);
+    if (match) ciftSayisi += Number(match[1]);
+  });
+  try {
+    await session.load(extracted.frames, { signal });
+    await session.solve({ signal });
+    mark('solved');
+    const r = session.recon;
+    return {
+      secilen: extracted.frames.length,
+      kayitli: r.cams.map((c: GsKamera & { imgIdx: number }) => {
+        const frame = session.frames[c.imgIdx];
+        return { ad: frame.name, t: times.get(frame.name) ?? NaN,
+          kamera: { R: c.R, t: c.t, f: c.f, fy: c.fy,
+            cx: c.cx ?? frame.fw / 2, cy: c.cy ?? frame.fh / 2, w: frame.fw, h: frame.fh } };
+      }).sort((a: { t: number }, b: { t: number }) => a.t - b.t),
+      ciftSayisi, medErr: r.medErr, rmsBA: r.rmsBA, cizelge,
+    };
+  } finally {
+    session.dispose();
+  }
 }
 
 /** splat.js yoğunlaştırması (refine = ölü splat taşıma + büyüme) yalnız
@@ -454,16 +539,17 @@ export interface Egitim {
   pivot: Vec3;
   /** Training camera centres in capture order; free-fly stays near their volume. */
   kameralar: Vec3[];
+  /** Multi-view verified free space, when optional geometry preparation succeeds. */
+  bosAlan?: BosAlan;
+  derinlikOzeti?: { hizaliKare: number; gecerliPiksel: number };
   /** Training camera poses in capture order, at canvas scale (`kamera`'s). */
   pozlar: GsKamera[];
   /** Kameraların baskın yukarı ekseni (dünya). */
   yukari: Vec3;
   kameraAyarla(k: GsKamera): void;
-  /** Offline klip karesi: `k` kamerasıyla (`k.w`×`k.h`) ayrı bir WebGPU
-   * yüzeyine çizer ve AYNI görevde `hedef`e kopyalar. Görünür tuvale, rAF'a
-   * ve sekme görünürlüğüne bağlı değildir; son `deform`/`fade` yazımını
-   * görür (GPU kuyruğu sıralı). */
-  kareCiz(k: GsKamera, hedef: CanvasRenderingContext2D): void;
+  /** Render an arbitrary camera into CPU-readable RGBA, independent of the
+   * interactive canvas. The caller awaits GPU readback before inspecting it. */
+  kareCiz(k: GsKamera, hedef: CanvasRenderingContext2D): Promise<void>;
   /** Ölçüm kancasıyla ayrılan (held-out) karelerin pozu + PSNR'ı, kanvas
    *  ölçeğinde (`pozlar`'ın ölçeği). Kanca yoksa boş dizi. */
   degerlendir(): Promise<{ ad: string; kamera: GsKamera; psnr: number }[]>;
@@ -502,7 +588,13 @@ export async function egitimBaslat(
   olay: EgitimOlaylari,
   ayar?: EgitimAyari,
   signal?: AbortSignal,
-  options?: { subjectOnly?: boolean; olcum?: OlcumKancasi },
+  options?: {
+    subjectOnly?: boolean;
+    olcum?: OlcumKancasi;
+    kamera?: KameraCozSecenekleri;
+    geometri?: { kaynak: GezinmeDerinlikKaynagi };
+    derinlikKisiti?: DerinlikKisitiSecenekleri;
+  },
 ): Promise<Egitim> {
   signal?.throwIfAborted();
   const secilen = ayar ?? await ayarSec();
@@ -512,6 +604,16 @@ export async function egitimBaslat(
   // @ts-expect-error vendored JS, tip dosyası yok
   const sj = await import('../../vendor/splat.js/index.js');
   signal?.throwIfAborted();
+  const cozAyarlari = kameraCozAyarlari(options?.kamera);
+  const kisit = options?.derinlikKisiti;
+  if (kisit && (!(kisit.agirlik > 0) || !Number.isFinite(kisit.agirlik))) {
+    throw new RangeError('Depth weight must be a positive finite number');
+  }
+  let bosAlan: BosAlan | undefined;
+  let derinlikOzeti: Egitim['derinlikOzeti'];
+  const growRegion = kisit?.bolgesel
+    ? (x: number, y: number, z: number) => bosAlan != null && durum(bosAlan, [x, y, z]) === 'dolu'
+    : undefined;
   let son = performance.now();
   const hareket = () => { son = performance.now(); };
 
@@ -523,6 +625,7 @@ export async function egitimBaslat(
     analysis?: { t: number }[];
   }>(sj.extractSharpFrames(video, {
     maxFrames: secilen.maxFrames,
+    ...cozAyarlari.kare,
     signal,
     backgroundSafe: true,
     onProgress: (p: { stage: string; done: number; total: number }) => {
@@ -539,7 +642,9 @@ export async function egitimBaslat(
 
   const ayrilanKareler = options?.olcum?.ayrilanKareler;
   const s = sj.createSession({
-    ...egitimOturumAyari(secilen), sfm: sj.solveTierOpts(secilen.tier),
+    ...egitimOturumAyari(secilen), sfm: { ...sj.solveTierOpts(secilen.tier), ...cozAyarlari.sfm },
+    ...(kisit ? { depthWeight: kisit.agirlik } : {}),
+    ...(growRegion ? { growRegion } : {}),
     // Explicit test set by frame name (session.js ~614-624): SfM still solves
     // their pose, training excludes them, `degerlendir()` scores them.
     ...(ayrilanKareler && ayrilanKareler.length ? { evalFrames: ayrilanKareler.map((k) => k.name) } : {}),
@@ -641,6 +746,20 @@ export async function egitimBaslat(
     releaseMasks?.();
     releaseMasks = null;
     await bekcili(s.solve({ signal }), () => son, BEKCI_MS, 'kamera pozu (SfM)', signal);
+    const kaynak = kisit?.kaynak ?? options?.geometri?.kaynak;
+    if (kaynak) {
+      olay.asama('derinlik ve boş alan hazırlanıyor');
+      const result = await bekcili(gezinmeDerinligiHazirla(
+        s.frames, s.recon.cams.filter((c: { imgIdx: number }) =>
+          !ayrilanKareler?.some((f) => f.name === s.frames[c.imgIdx]?.name)),
+        s.recon.points.map((p: { X: Vec3 }) => p.X),
+        s._camerasUp(), kaynak, kareZamani,
+        (done, total) => { hareket(); olay.asama(`derinlik ${done}/${total}`); }, signal,
+      ), () => son, BEKCI_MS, 'derinlik ve boş alan', signal);
+      bosAlan = result.alan;
+      derinlikOzeti = { hizaliKare: result.hizaliKare, gecerliPiksel: result.gecerliPiksel };
+      olay.asama(`derinlik: ${result.hizaliKare} kare, ${result.gecerliPiksel} tutarlı piksel`);
+    }
     await bekcili(s.seed(), () => son, BEKCI_MS, 'Gaussian tohumlama', signal);
     signal?.throwIfAborted();
   } catch (e) {
@@ -678,11 +797,6 @@ export async function egitimBaslat(
       return bend.apply(spec, Infinity, undefined, fadeOn ? bendRegion(e.kameralar, pivot, 0).halfLength : Infinity);
     };
 
-    // Offline frame surface, created on first use. A WebGPU canvas texture is
-    // only readable in the task that rendered it (drawImage afterwards gives
-    // black), so render + copy happen together in `kareCiz`.
-    let kareYuzeyi: { canvas: HTMLCanvasElement; ctx: { configure(o: object): void } } | null = null;
-
     const e: Egitim = {
       ayar: secilen,
       kapat: close,
@@ -717,24 +831,17 @@ export async function egitimBaslat(
       pivot,
       kameralar: [...s.recon.cams].filter((c: { imgIdx: number }) => !ayrilanMi(c.imgIdx))
         .sort((a: { imgIdx: number }, b: { imgIdx: number }) => a.imgIdx - b.imgIdx).map(kameraMerkezi),
+      ...(bosAlan ? { bosAlan } : {}),
+      ...(derinlikOzeti ? { derinlikOzeti } : {}),
       pozlar: [...s.trainer.camMeta as (GsKamera & { imgIdx: number })[]].filter((m) => !ayrilanMi(m.imgIdx))
         .sort((a, b) => a.imgIdx - b.imgIdx)
         .map((m) => kameraOlcekle(m, olcek)),
       yukari: s._camerasUp(),
       kameraAyarla: (k) => { e.kamera = k; s.view.setCamera(k); },
-      kareCiz: (k, hedef) => {
+      kareCiz: async (k, hedef) => {
         if (closed || !s.trainer) throw new Error('Training session is closed');
-        if (!kareYuzeyi) {
-          const c = document.createElement('canvas');
-          const ctx = c.getContext('webgpu') as unknown as { configure(o: object): void } | null;
-          if (!ctx) throw new Error('WebGPU canvas unavailable');
-          ctx.configure({ device: s.trainer.device, format: s.trainer.canvasFormat, alphaMode: 'opaque' });
-          kareYuzeyi = { canvas: c, ctx };
-        }
-        const { canvas: c, ctx } = kareYuzeyi;
-        if (c.width !== k.w || c.height !== k.h) { c.width = k.w; c.height = k.h; }
-        s.trainer.renderView(k, ctx, 0, 0);
-        hedef.drawImage(c, 0, 0);
+        const pixels = await s.trainer.renderViewPixels(k, 0, 0);
+        hedef.putImageData(new ImageData(pixels.data, pixels.width, pixels.height), 0, 0);
       },
       degerlendir: async () => {
         if (closed) throw new Error('Training session is closed');

@@ -5,7 +5,9 @@
 // Ölçüm:
 //   node scripts/olc-gezinme.mjs <klip-yolu> [--gt yol] [--etiket ad]
 //     [--katman quick|standard] [--kare N] [--iter N] [--ayrilan N] [--genislik N]
-//     [--chrome] [--yazilim-gpu] [--basli]
+//     [--chrome] [--yazilim-gpu] [--basli] [--yalniz-sfm]
+//     [--secim yenilik] [--eslestirme sirali] [--odak-alt N]
+//     [--geometri model|sentetik] [--derinlik-kisiti WEIGHT] [--bolgesel]
 // Karşılaştırma:
 //   node scripts/olc-gezinme.mjs --karsilastir <raporA.json> <raporB.json> [--cikti dizin]
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
@@ -19,14 +21,17 @@ const REPO_KOKU = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const ZAMAN_ASIMI_MS = 3 * 60 * 60 * 1000;
 const ILERLEME_ARALIGI_MS = 20_000;
 
-const BAYRAKLAR = new Set(['--chrome', '--yazilim-gpu', '--basli']);
-const DEGERLI = new Set(['--gt', '--etiket', '--katman', '--kare', '--iter', '--ayrilan', '--genislik', '--cikti']);
+const BAYRAKLAR = new Set(['--chrome', '--yazilim-gpu', '--basli', '--yalniz-sfm', '--bolgesel']);
+const DEGERLI = new Set(['--gt', '--etiket', '--katman', '--kare', '--iter', '--ayrilan', '--genislik', '--cikti',
+  '--secim', '--eslestirme', '--odak-alt', '--geometri', '--derinlik-kisiti']);
 
 function kullanim(mesaj) {
   if (mesaj) console.error(`olc-gezinme: ${mesaj}`);
   console.error(
     'kullanım: node scripts/olc-gezinme.mjs <klip-yolu> [--gt yol] [--etiket ad] [--katman quick|standard]\n'
     + '          [--kare N] [--iter N] [--ayrilan N] [--genislik N] [--chrome] [--yazilim-gpu] [--basli]\n'
+    + '          [--yalniz-sfm] [--secim yenilik] [--eslestirme sirali] [--odak-alt N]\n'
+    + '          [--geometri model|sentetik] [--derinlik-kisiti WEIGHT] [--bolgesel]\n'
     + '          node scripts/olc-gezinme.mjs --karsilastir <raporA.json> <raporB.json> [--cikti dizin]',
   );
   process.exit(2);
@@ -71,13 +76,26 @@ async function olc(secenek) {
     const v = secenek.deger[k];
     if (v != null && !/^\d+$/.test(v)) kullanim(`--${k} bir tamsayı olmalı: ${v}`);
   }
+  if (secenek.deger.secim && secenek.deger.secim !== 'yenilik') kullanim('--secim yenilik olmalı');
+  if (secenek.deger.eslestirme && secenek.deger.eslestirme !== 'sirali') kullanim('--eslestirme sirali olmalı');
+  if (secenek.deger.geometri && !['model', 'sentetik'].includes(secenek.deger.geometri)) kullanim('--geometri model|sentetik olmalı');
+  if (secenek.deger.geometri === 'sentetik' && !gt) kullanim('--geometri sentetik için --gt gerekli');
+  if (secenek.deger['derinlik-kisiti'] && !(Number(secenek.deger['derinlik-kisiti']) > 0))
+    kullanim('--derinlik-kisiti pozitif sayı olmalı');
+  if (secenek.bayrak.has('--bolgesel') && !secenek.deger['derinlik-kisiti'])
+    kullanim('--bolgesel için --derinlik-kisiti gerekli');
+  if (secenek.deger['odak-alt'] && !/^\d+$/.test(secenek.deger['odak-alt'])) kullanim('--odak-alt tamsayı olmalı');
+  if (secenek.bayrak.has('--yalniz-sfm') && (secenek.deger.geometri || secenek.deger['derinlik-kisiti']))
+    kullanim('--yalniz-sfm ile derinlik seçenekleri kullanılamaz');
   const etiket = secenek.deger.etiket ?? new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-');
   if (/[\\/]/.test(etiket) || etiket.startsWith('.')) kullanim(`geçersiz etiket: ${etiket}`);
   const cikis = resolve(REPO_KOKU, 'olcum-out', etiket, klipKoku(klip));
 
   const q = new URLSearchParams({ klip: fsUrl(klip), etiket });
   if (gt) q.set('gt', fsUrl(gt));
-  for (const k of ['katman', 'kare', 'iter', 'ayrilan', 'genislik']) if (secenek.deger[k] != null) q.set(k, secenek.deger[k]);
+  for (const k of ['katman', 'kare', 'iter', 'ayrilan', 'genislik', 'secim', 'eslestirme', 'odak-alt', 'geometri', 'derinlik-kisiti'])
+    if (secenek.deger[k] != null) q.set(k, secenek.deger[k]);
+  for (const k of ['yalniz-sfm', 'bolgesel']) if (secenek.bayrak.has(`--${k}`)) q.set(k, '1');
 
   const oturumSecenekleri = {
     chrome: secenek.bayrak.has('--chrome'),

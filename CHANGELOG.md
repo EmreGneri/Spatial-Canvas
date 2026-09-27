@@ -3,6 +3,20 @@
 Sözleşmeye dokunan her değişiklik buraya yazılır (`ARCHITECTURE.md` kuralı: sessiz sapma yok).
 En yeni üstte.
 
+## 2026-09-27 — Gezilebilir 3DGS ölçümü ve deneysel derinlik sınırı
+
+Kamera çözümünde yenilik seçimi, sıralı çift grafiği ve odak alt örneklemesi
+isteğe bağlı seçenekler olarak eğitim ve ölçüm komutuna bağlandı. Derinlik
+haritaları SfM ölçeğine hizalanıp çoklu görünümle süzülüyor; boş alan ve
+isteğe bağlı derinlik kaybı aynı haritaları kullanıyor. Ölçüm PNG'leri artık
+GPU çizim dokusundan okunuyor; siyah offscreen görüntü hatası giderildi.
+
+3D eğitim ön kontrolüne deneysel derinlikli gezinme seçeneği eklendi.
+Mevcut hareket sınırı korunuyor; doğrulanan boş alan daha fazla hareket
+sağladığında kullanılabiliyor. Sentetik testlerde hatalı boş vokseller hâlâ
+bulunduğu için seçenek varsayılan olarak kapalı. Ölçümler, sınırlamalar ve
+tekrarlama komutları `docs/benchmarks/gezinme-entegrasyon.md` içindedir.
+
 ## 2026-09-27 — Durağan çekim sallantısı ve yol klibinin döngüsü
 
 `cekimTuru` artık kamera hareketini sahne ölçeğiyle karşılaştırır:

@@ -64,12 +64,29 @@ function ayarMetni(r) {
  *  usable distance, the 0.10 probe), centre probes, held-out frames with
  *  their mean, stage durations. */
 export function ozetMd(r) {
+  if (r.yalnizSfm) {
+    return [
+      `# Kamera çözümü — ${r.etiket} / ${r.klip}`, '',
+      `- GPU: ${r.gpu ?? BOS}`,
+      `- ayar: ${ayarMetni(r) || BOS}`,
+      `- mod: ${JSON.stringify(r.mod ?? {})}`,
+      `- kayıt: ${r.sfm?.kayitli ?? BOS}/${r.sfm?.toplamKare ?? BOS}`,
+      `- çift: ${r.sfm?.ciftSayisi ?? BOS}`,
+      `- medyan yeniden izdüşüm: ${bicim(r.sfm?.medErr, 3)} px`,
+      `- BA RMS: ${bicim(r.sfm?.rmsBA, 3)} px`,
+      ...(r.hizalama ? [`- GT konum RMS/yol: ${bicim(r.hizalama.rmsOrani, 4)}`] : []),
+      '', '## Aşama süreleri', '',
+      tablo(['aşama', 'süre (sn)'], Object.entries(r.sureler ?? {}).map(([k, v]) => [k, bicim(sn(v), 1)])),
+      '',
+    ].join('\n');
+  }
   const s = sondaHaritasi(r);
   const out = [];
   out.push(`# Gezinme ölçümü — ${r.etiket} / ${r.klip}`, '');
   out.push(`- tarayıcı: ${r.tarayici ?? BOS}`);
   out.push(`- GPU: ${r.gpu ?? BOS}`);
   out.push(`- ayar: ${ayarMetni(r) || BOS}`);
+  if (r.mod) out.push(`- mod: ${JSON.stringify(r.mod)}`);
   out.push(`- çekim türü: ${r.tur}, ölçüm birimi: ${bicim(r.birim, 4)}`);
   out.push(`- SfM: ${r.sfm?.kayitli ?? BOS}/${r.sfm?.toplamKare ?? BOS} kare kayıtlı` +
     `${sayiMi(r.sfm?.medErr) ? `, medErr ${bicim(r.sfm.medErr, 3)}` : ''}` +
@@ -98,6 +115,14 @@ export function ozetMd(r) {
     }
   }
   out.push(tablo(['bölge', 'yön', 'bugünkü sınır', 'kullanılabilir', 'psnr @0.10', 'ssim @0.10', 'kaplama @0.10', 'keskinlik @0.10'], satirlar), '');
+  if (r.bosAlan) {
+    out.push('## Derinlikle doğrulanmış boş alan', '');
+    out.push(`- hizalı kare: ${r.bosAlan.hizaliKare}, voksel: ${bicim(r.bosAlan.voksel, 4)}, ızgara: ${r.bosAlan.boyut.join('×')}`, '');
+    if (r.bosAlan.gtBosOrnek != null) out.push(`- GT engel ihlali (ham boş): ${r.bosAlan.gtEngelIhlali}/${r.bosAlan.gtBosOrnek} örnek`,
+      `- GT engel ihlali (kameranın erişebildiği boşluk): ${r.bosAlan.gtErisilirIhlal}/${r.bosAlan.gtErisilirOrnek} örnek`, '');
+    out.push(tablo(['bölge', 'yön', 'bugünkü sınır', 'boş alan sınırı'], BOLGELER.flatMap((bolge) =>
+      YONLER.map((yon) => [bolge, yon, bicim(hucre(r.bugunku, bolge, yon), 2), bicim(hucre(r.bosAlan.kullanilabilir, bolge, yon), 2)]))), '');
+  }
 
   out.push('## Merkez sondaları', '');
   out.push(tablo(['bölge', 'psnr', 'ssim', 'kaplama', 'keskinlik'], BOLGELER.map((bolge) => {
@@ -127,6 +152,25 @@ export function ozetMd(r) {
 /** Side-by-side comparison of two reports, B − A delta columns. Probes are
  *  matched by id; a probe present on one side only is marked `yok`. */
 export function karsilastirmaMd(a, b) {
+  if (a.yalnizSfm || b.yalnizSfm) {
+    if (!a.yalnizSfm || !b.yalnizSfm) throw new Error('Camera-only and full training reports cannot be compared');
+    return [
+      `# Kamera çözümü karşılaştırması — A: ${a.etiket}, B: ${b.etiket}`, '',
+      `- klip: A ${a.klip}, B ${b.klip}`,
+      `- GPU: A ${a.gpu}, B ${b.gpu}`, '',
+      tablo(['ölçü', 'A', 'B', 'Δ'], [
+        ['kayıtlı', bicim(a.sfm?.kayitli, 0), bicim(b.sfm?.kayitli, 0), fark(a.sfm?.kayitli, b.sfm?.kayitli, 0)],
+        ['çift', bicim(a.sfm?.ciftSayisi, 0), bicim(b.sfm?.ciftSayisi, 0), fark(a.sfm?.ciftSayisi, b.sfm?.ciftSayisi, 0)],
+        ['medErr px', bicim(a.sfm?.medErr, 3), bicim(b.sfm?.medErr, 3), fark(a.sfm?.medErr, b.sfm?.medErr, 3)],
+        ['GT RMS/yol', bicim(a.hizalama?.rmsOrani, 4), bicim(b.hizalama?.rmsOrani, 4), fark(a.hizalama?.rmsOrani, b.hizalama?.rmsOrani, 4)],
+      ]), '',
+      '## Aşama süreleri (sn)', '',
+      tablo(['aşama', 'A', 'B', 'Δ'], asamaAnahtarlari(a, b).map((k) => {
+        const x = sn(a.sureler?.[k]), y = sn(b.sureler?.[k]);
+        return [k, bicim(x, 1), bicim(y, 1), fark(x, y, 1)];
+      })), '',
+    ].join('\n');
+  }
   const sa = sondaHaritasi(a), sb = sondaHaritasi(b);
   const out = [];
   out.push(`# Gezinme ölçümü karşılaştırması — A: ${a.etiket}, B: ${b.etiket}`, '');
@@ -205,6 +249,9 @@ function sondaMetni(p) {
  *  one row per probe id; `pngA` / `pngB` are directory paths relative to the
  *  HTML file. A probe missing on one side gets an `eksik` cell. */
 export function karsilastirmaHtml(a, b, { pngA, pngB }) {
+  if (a.yalnizSfm || b.yalnizSfm) {
+    return `<!doctype html><html lang="tr"><meta charset="utf-8"><title>Kamera çözümü karşılaştırması</title><pre>${kacis(karsilastirmaMd(a, b))}</pre></html>`;
+  }
   const sa = sondaHaritasi(a), sb = sondaHaritasi(b);
   const idler = [...sa.keys(), ...[...sb.keys()].filter((id) => !sa.has(id))];
   const gtVar = Boolean(a.hizalama || b.hizalama);

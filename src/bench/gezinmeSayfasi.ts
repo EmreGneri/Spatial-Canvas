@@ -12,7 +12,7 @@
 // ile GT'si çizilir.
 
 import {
-  ayarSec, egitimBaslat, kameraMerkezi,
+  ayarSec, egitimBaslat, kameraCoz, kameraMerkezi,
   type Egitim, type EgitimAyari, type EgitimMetrik, type GsKamera,
 } from '../engine/reconstruction/egitim3dgs.ts';
 import {
@@ -20,9 +20,14 @@ import {
   sondaPozlari, ssim, tabanKamera,
   type Bolge, type Sonda, type Yon,
 } from '../engine/reconstruction/gezinmeOlcum.ts';
-import { kamerayiDonustur, umeyama, type Sim3 } from '../engine/reconstruction/hizalama.ts';
+import { kamerayiDonustur, simUygula, umeyama, type Sim3 } from '../engine/reconstruction/hizalama.ts';
 import { cekimTuru, flySiniri, type CekimTuru } from '../ui/egitimControls.ts';
 import { ciz } from './sentetikCizim.ts';
+import { engelUzakligi, gtDerinlik } from './sentetikSahne.ts';
+import { vokselDurumuAt } from '../engine/reconstruction/bosAlan.ts';
+import { tekGozBenzetimi } from './tekGozBenzetimi.ts';
+import { bosAlanSiniri, flyStep } from '../ui/egitimControls.ts';
+import type { GezinmeDerinlikKaynagi } from '../engine/reconstruction/gezinmeDerinligi.ts';
 
 // ── report schema ────────────────────────────────────────────────────────
 
@@ -61,6 +66,19 @@ export interface GezinmeRaporu {
    *  centre-only fit (degrees); `odakOrani` = reconstructed / GT focal. */
   hizalama?: { rms: number; rmsOrani: number; n: number; olcek: number; aciHatasi: number; odakOrani: number };
   zamanCizelgesi: { ms: number; asama: string }[];
+  mod?: { secim?: string; eslestirme?: string; odakAlt?: number; geometri?: string; depthWeight?: number; bolgesel?: boolean };
+  bosAlan?: { hizaliKare: number; voksel: number; boyut: [number, number, number]; kullanilabilir: Record<Bolge, Record<Yon, number>>;
+    gtBosOrnek?: number; gtEngelIhlali?: number;
+    gtErisilirOrnek?: number; gtErisilirIhlal?: number };
+}
+
+export interface SfmRaporu {
+  surum: 1; yalnizSfm: true; etiket: string; klip: string; tarayici: string; gpu: string;
+  ayar: EgitimAyari; mod: { secim?: string; eslestirme?: string; odakAlt?: number };
+  sfm: { kayitli: number; toplamKare: number; ciftSayisi: number; medErr: number; rmsBA: number | null };
+  sureler: Record<string, number>;
+  hizalama?: GezinmeRaporu['hizalama'];
+  zamanCizelgesi: { ms: number; asama: string }[];
 }
 
 interface GtKare { t: number; R: number[]; tv: number[]; f: number; cx: number; cy: number }
@@ -75,6 +93,13 @@ interface Parametreler {
   iter?: number;
   ayrilan: number;
   genislik: number;
+  yalnizSfm: boolean;
+  secim?: 'yenilik';
+  eslestirme?: 'sirali';
+  odakAlt?: number;
+  geometri?: 'model' | 'sentetik';
+  depthWeight?: number;
+  bolgesel: boolean;
 }
 
 type AyrilanKare = { source: Blob; name: string; t: number };
@@ -100,6 +125,16 @@ export function parametreleriOku(arama: string): Parametreler {
   if (!klip) throw new Error('missing ?klip= (Vite URL of the clip)');
   const katman = q.get('katman') ?? undefined;
   if (katman != null && katman !== 'quick' && katman !== 'standard') throw new Error(`katman must be quick|standard: ${katman}`);
+  const secim = q.get('secim') ?? undefined;
+  if (secim != null && secim !== 'yenilik') throw new Error(`secim must be yenilik: ${secim}`);
+  const eslestirme = q.get('eslestirme') ?? undefined;
+  if (eslestirme != null && eslestirme !== 'sirali') throw new Error(`eslestirme must be sirali: ${eslestirme}`);
+  const geometri = q.get('geometri') ?? undefined;
+  if (geometri != null && geometri !== 'model' && geometri !== 'sentetik') throw new Error(`geometri must be model|sentetik: ${geometri}`);
+  const depthWeight = q.get('derinlik-kisiti');
+  if (depthWeight != null && (!(Number(depthWeight) > 0) || !Number.isFinite(Number(depthWeight))))
+    throw new Error(`derinlik-kisiti must be positive: ${depthWeight}`);
+  if (geometri === 'sentetik' && !q.get('gt')) throw new Error('geometri=sentetik requires gt');
   return {
     klip,
     gt: q.get('gt') || undefined,
@@ -109,6 +144,10 @@ export function parametreleriOku(arama: string): Parametreler {
     iter: tamsayi(q.get('iter'), 'iter'),
     ayrilan: tamsayi(q.get('ayrilan'), 'ayrilan') ?? 6,
     genislik: tamsayi(q.get('genislik'), 'genislik') ?? 640,
+    yalnizSfm: q.has('yalniz-sfm'), secim, eslestirme,
+    odakAlt: tamsayi(q.get('odak-alt'), 'odak-alt'), geometri,
+    depthWeight: depthWeight != null ? Number(depthWeight) : undefined,
+    bolgesel: q.has('bolgesel'),
   };
 }
 
@@ -235,8 +274,8 @@ interface GtHizalama { T: Sim3; ozet: NonNullable<GezinmeRaporu['hizalama']> }
 
 /** Sim(3) from the reconstruction to the GT world over every registered camera,
  *  each paired with the GT frame nearest its video timestamp. */
-function gtHizala(e: Egitim, gt: Gt): GtHizalama {
-  const kayitli = e.kayitliKameralar().filter((k) => Number.isFinite(k.t));
+function gtHizala(kayitliKameralar: readonly { t: number; kamera: GsKamera }[], gt: Gt): GtHizalama {
+  const kayitli = kayitliKameralar.filter((k) => Number.isFinite(k.t));
   if (kayitli.length < 3) throw new Error(`GT alignment needs >= 3 timed registered cameras, got ${kayitli.length}`);
   const eslesen = kayitli.map((k) => ({ k, g: enYakinGtKare(gt, k.t) }));
   const T = umeyama(eslesen.map(({ k }) => kameraMerkezi(k.kamera)), eslesen.map(({ g }) => kameraMerkezi(gtKamerasi(gt, g))));
@@ -262,12 +301,24 @@ function gtSondaKamerasi(k: GsKamera, T: Sim3, gt: Gt): GsKamera {
   return { R: d.R, t: d.t, f: g.f * sx, fy: g.f * sy, cx: g.cx * sx, cy: g.cy * sy, w: k.w, h: k.h };
 }
 
+function sentetikDerinlikKaynagi(gt: Gt): GezinmeDerinlikKaynagi {
+  let alignment: GtHizalama | null = null;
+  return async (camera, name, _time, registered) => {
+    alignment ??= gtHizala(registered.map((entry) => ({ kamera: entry.camera, t: entry.time })), gt);
+    const w = 240, h = 135;
+    const gtCamera = gtSondaKamerasi(camera, alignment.T, gt);
+    const depth = gtDerinlik(gtCamera, w, h, gt.tohum);
+    const seed = [...name].reduce((acc, ch) => (Math.imul(acc, 31) + ch.charCodeAt(0)) | 0, gt.tohum);
+    return { data: tekGozBenzetimi(depth, w, h, seed), width: w, height: h };
+  };
+}
+
 // ── measurement ──────────────────────────────────────────────────────────
 
-function cizimAl(e: Egitim, k: GsKamera, bg?: [number, number, number]): ImageData {
+async function cizimAl(e: Egitim, k: GsKamera, bg?: [number, number, number]): Promise<ImageData> {
   const { ctx } = tuval(k.w, k.h);
   const kb: GsKamera & { bg?: [number, number, number] } = bg ? { ...k, bg } : k;
-  e.kareCiz(kb, ctx);
+  await e.kareCiz(kb, ctx);
   return ctx.getImageData(0, 0, k.w, k.h);
 }
 
@@ -287,7 +338,7 @@ function tabloYap(deger: (b: Bolge, y: Yon) => number): Record<Bolge, Record<Yon
     Record<Bolge, Record<Yon, number>>;
 }
 
-async function olc(p: Parametreler): Promise<{ rapor: GezinmeRaporu; pngler: Record<string, string> }> {
+async function olc(p: Parametreler): Promise<{ rapor: GezinmeRaporu | SfmRaporu; pngler: Record<string, string> }> {
   const t0 = performance.now();
   const cizelge: { ms: number; asama: string }[] = [];
   const isaretle = (asama: string) => {
@@ -310,9 +361,6 @@ async function olc(p: Parametreler): Promise<{ rapor: GezinmeRaporu; pngler: Rec
     gt = await r.json() as Gt;
     if (!gt.kareler?.length) throw new Error('GT has no frames');
   }
-  const ayrilanKareler = await ayrilanKareleriAl(dosya, p.ayrilan);
-  gunluk(`hazırlık: ${ayrilanKareler.length} ayrılan kare (${ayrilanKareler.map((k) => k.t.toFixed(2)).join(', ')} sn)`);
-
   const oto = await ayarSec();
   const ayar: EgitimAyari = {
     ...oto,
@@ -320,6 +368,34 @@ async function olc(p: Parametreler): Promise<{ rapor: GezinmeRaporu; pngler: Rec
     maxFrames: p.kare ?? oto.maxFrames,
     maxIters: p.iter ?? oto.maxIters,
   };
+
+  const kameraSecenekleri = { secim: p.secim, eslestirme: p.eslestirme, odakAlt: p.odakAlt };
+  if (p.yalnizSfm) {
+    const kameraBaslangici = Math.round(performance.now() - t0);
+    const result = await kameraCoz(dosya, ayar, kameraSecenekleri, undefined, gunluk);
+    const timeline = [{ ms: 0, asama: 'hazırlık' },
+      ...result.cizelge.map((v) => ({ ...v, ms: v.ms + kameraBaslangici }))];
+    const elapsed = Math.round(performance.now() - t0);
+    const sureler: Record<string, number> = {};
+    for (let i = 0; i < timeline.length; i++) {
+      const key = ilkKelime(timeline[i].asama);
+      const end = timeline[i + 1]?.ms ?? elapsed;
+      sureler[key] = (sureler[key] ?? 0) + Math.max(0, end - timeline[i].ms);
+    }
+    const alignment = gt ? gtHizala(result.kayitli, gt).ozet : undefined;
+    const report: SfmRaporu = {
+      surum: 1, yalnizSfm: true, etiket: p.etiket, klip: klipAdi,
+      tarayici: navigator.userAgent, gpu: ayar.gpu, ayar,
+      mod: kameraSecenekleri,
+      sfm: { kayitli: result.kayitli.length, toplamKare: result.secilen,
+        ciftSayisi: result.ciftSayisi, medErr: result.medErr, rmsBA: result.rmsBA },
+      sureler, ...(alignment ? { hizalama: alignment } : {}), zamanCizelgesi: timeline,
+    };
+    return { rapor: report, pngler: {} };
+  }
+
+  const ayrilanKareler = await ayrilanKareleriAl(dosya, p.ayrilan);
+  gunluk(`hazırlık: ${ayrilanKareler.length} ayrılan kare (${ayrilanKareler.map((k) => k.t.toFixed(2)).join(', ')} sn)`);
 
   const canvas = document.createElement('canvas');
   canvas.width = p.genislik;
@@ -331,6 +407,9 @@ async function olc(p: Parametreler): Promise<{ rapor: GezinmeRaporu; pngler: Rec
   const bittiSozu = new Promise<EgitimMetrik | null>((res, rej) => { bittiCoz = res; bittiRed = rej; });
   bittiSozu.catch(() => undefined); // surfaced by the await below
   let sonMetrikLog = 0;
+  const depthSource: GezinmeDerinlikKaynagi | undefined = p.geometri === 'sentetik'
+    ? sentetikDerinlikKaynagi(gt!)
+    : p.geometri === 'model' || p.depthWeight ? 'model' : undefined;
   const e = await egitimBaslat(dosya, canvas, {
     asama: (m) => { isaretle(m); gunluk(m); },
     metrik: (m) => {
@@ -342,7 +421,13 @@ async function olc(p: Parametreler): Promise<{ rapor: GezinmeRaporu; pngler: Rec
     },
     bitti: (m) => bittiCoz(m),
     hata: (err) => bittiRed(err),
-  }, ayar, undefined, { olcum: { ayrilanKareler } });
+  }, ayar, undefined, {
+    olcum: { ayrilanKareler }, kamera: kameraSecenekleri,
+    ...(depthSource ? { geometri: { kaynak: depthSource } } : {}),
+    ...(p.depthWeight && depthSource ? { derinlikKisiti: {
+      agirlik: p.depthWeight, kaynak: depthSource, bolgesel: p.bolgesel,
+    } } : {}),
+  });
   let sonMetrik: EgitimMetrik | null;
   try {
     sonMetrik = await bittiSozu;
@@ -365,9 +450,38 @@ async function olc(p: Parametreler): Promise<{ rapor: GezinmeRaporu; pngler: Rec
     const sondalar: Sonda[] = sondaPozlari(pozlar, yukari, pivot, tur);
     const sinir = flySiniri(e.kameralar, pivot, tur);
     const bugunku = tabloYap((b, y) => bugunkuSinir(tabanKamera(pozlar, yukari, tur, BOLGELER[b]), y, sinir, yukari, birim));
+    const hizalama = gt ? gtHizala(e.kayitliKameralar(), gt) : null;
+    const bos = e.bosAlan ? bosAlanSiniri(e.bosAlan, birim, 0.04) : null;
+    const bosMesafe = bos ? tabloYap((b, y) => {
+      const camera = tabanKamera(pozlar, yukari, tur, BOLGELER[b]);
+      const direction = y === 'sag' ? { forward: 0, right: 1, vertical: 0 }
+        : y === 'sol' ? { forward: 0, right: -1, vertical: 0 }
+          : y === 'ileri' ? { forward: 1, right: 0, vertical: 0 }
+            : { forward: 0, right: 0, vertical: 1 };
+      const target = flyStep(camera, direction, birim * 0.3, sinir, yukari, bos);
+      const a = kameraMerkezi(camera), c = kameraMerkezi(target);
+      return Math.hypot(c[0] - a[0], c[1] - a[1], c[2] - a[2]) / birim;
+    }) : null;
     gunluk(`olcum: tur ${tur}, birim ${birim.toFixed(4)}, ${sondalar.length} sonda`);
 
-    const hizalama = gt ? gtHizala(e, gt) : null;
+    let gtBosOrnek = 0, gtEngelIhlali = 0, gtErisilirOrnek = 0, gtErisilirIhlal = 0;
+    if (gt && hizalama && e.bosAlan) {
+      const alan = e.bosAlan;
+      const [nx, ny, nz] = alan.boyut;
+      for (let index = 0; index < nx * ny * nz; index += 17) {
+        if (vokselDurumuAt(alan, index) !== 'bos') continue;
+        const x = index % nx, y = Math.floor(index / nx) % ny, z = Math.floor(index / (nx * ny));
+        const point: [number, number, number] = [alan.min[0] + (x + 0.5) * alan.voksel,
+          alan.min[1] + (y + 0.5) * alan.voksel, alan.min[2] + (z + 0.5) * alan.voksel];
+        gtBosOrnek++;
+        const ihlal = engelUzakligi(simUygula(hizalama.T, point), gt.tohum) < -alan.voksel * hizalama.T.s;
+        if (ihlal) gtEngelIhlali++;
+        if (bos && bos.aciklik[index] >= bos.yaricap) {
+          gtErisilirOrnek++;
+          if (ihlal) gtErisilirIhlal++;
+        }
+      }
+    }
     if (hizalama) {
       const h = hizalama.ozet;
       gunluk(`olcum: GT hizalama rms ${h.rms.toFixed(4)} (yolun ${(h.rmsOrani * 100).toFixed(2)}%), ` +
@@ -377,8 +491,8 @@ async function olc(p: Parametreler): Promise<{ rapor: GezinmeRaporu; pngler: Rec
     const pngler: Record<string, string> = {};
     const sonuclar: SondaSonucu[] = [];
     for (const [i, s] of sondalar.entries()) {
-      const siyah = cizimAl(e, s.kamera);
-      const beyaz = cizimAl(e, s.kamera, [1, 1, 1]);
+      const siyah = await cizimAl(e, s.kamera);
+      const beyaz = await cizimAl(e, s.kamera, [1, 1, 1]);
       const r: SondaSonucu = {
         id: s.id, bolge: s.bolge, yon: s.yon, d: s.d,
         kaplama: kaplama(siyah.data, beyaz.data),
@@ -406,7 +520,7 @@ async function olc(p: Parametreler): Promise<{ rapor: GezinmeRaporu; pngler: Rec
     for (const { ad, kamera, psnr: p0 } of await e.degerlendir()) {
       const kaynak = ayrilanKareler.find((k) => k.name === ad);
       if (!kaynak) continue;
-      const tahmin = cizimAl(e, kamera);
+      const tahmin = await cizimAl(e, kamera);
       const bmp = await createImageBitmap(kaynak.source);
       const { ctx } = tuval(kamera.w, kamera.h);
       ctx.drawImage(bmp, 0, 0, kamera.w, kamera.h);
@@ -438,6 +552,12 @@ async function olc(p: Parametreler): Promise<{ rapor: GezinmeRaporu; pngler: Rec
       sondalar: sonuclar,
       kullanilabilir,
       bugunku,
+      mod: { ...kameraSecenekleri, geometri: p.geometri, depthWeight: p.depthWeight, bolgesel: p.bolgesel },
+      ...(e.bosAlan && bosMesafe ? { bosAlan: {
+        hizaliKare: e.derinlikOzeti?.hizaliKare ?? 0, voksel: e.bosAlan.voksel, boyut: e.bosAlan.boyut,
+        kullanilabilir: bosMesafe,
+        ...(gt ? { gtBosOrnek, gtEngelIhlali, gtErisilirOrnek, gtErisilirIhlal } : {}),
+      } } : {}),
       esikler: { olcut: hizalama ? 'gt' : 'gtsiz', ...ESIKLER },
       ...(hizalama ? { hizalama: hizalama.ozet } : {}),
       zamanCizelgesi: cizelge,
