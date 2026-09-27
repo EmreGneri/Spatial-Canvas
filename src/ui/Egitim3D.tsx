@@ -3,8 +3,10 @@ import {
   egitimBaslat, kameraMerkezi, yorunge, type Egitim, type EgitimMetrik,
 } from '../engine/reconstruction/egitim3dgs';
 import {
-  bindWheelZoom, boundedZoomFactor, cekimTuru, flyAxes, flySiniri, flyStep, lookAround, type CekimTuru,
+  bindWheelZoom, boundedZoomFactor, bosAlanSiniri, cekimTuru, flyAxes, flySiniri, flyStepBirlesik, lookAround,
+  type BosAlanSiniri, type CekimTuru,
 } from './egitimControls';
+import { durum } from '../engine/reconstruction/bosAlan';
 import { egitimGpuHint } from './egitimGpuHint';
 import { ayarOzeti, egitimOnKontrol, type OnKontrol } from './egitimOnKontrol';
 import { kunyeMetni, PAYLASIM_KLIP_SN } from './paylasim';
@@ -42,6 +44,8 @@ export function Egitim3D({ dosya, onKapat, say, onIlerleme }: {
   const heldKeys = useRef(new Set<string>());
   const [started, setStarted] = useState(false);
   const [subjectOnly, setSubjectOnly] = useState(false);
+  const [gezilebilir, setGezilebilir] = useState(false);
+  const bosSiniriRef = useRef<BosAlanSiniri | null>(null);
   const [asama, setAsama] = useState('başlıyor');
   const [metrik, setMetrik] = useState<EgitimMetrik | null>(null);
   const [bitti, setBitti] = useState(false);
@@ -129,13 +133,21 @@ export function Egitim3D({ dosya, onKapat, say, onIlerleme }: {
           `${m?.splats.toLocaleString('tr-TR') ?? '?'} Gaussian · test ${subjectOnly ? 'özne ' : ''}PSNR ${m?.psnrHold?.toFixed(1) ?? '?'}`);
       },
       hata: (e) => { if (!iptal) setHata(e.message); },
-    }, undefined, controller.signal, { subjectOnly }).then((e) => {
+    }, undefined, controller.signal, {
+      subjectOnly,
+      ...(gezilebilir ? { geometri: { kaynak: 'model' as const } } : {}),
+    }).then((e) => {
       // An abort may win just as setup resolves; do not attach a closed session.
       if (iptal) { e.kapat(); return; }
       egitimRef.current = e;
       // A forward walk opens mid-path on the camera that filmed it and walks
       // (WASD) instead of orbiting a far background pivot; orbits unchanged.
       cekimTuruRef.current = cekimTuru(e.pozlar, e.pivot);
+      if (e.bosAlan) {
+        const sinir = flySiniri(e.kameralar, e.pivot, cekimTuruRef.current);
+        bosSiniriRef.current = bosAlanSiniri(e.bosAlan,
+          sinir.pivot === null ? sinir.olcek * 4 : sinir.olcek, 0.04);
+      }
       if (cekimTuruRef.current === 'yol') {
         e.kameraAyarla(e.pozlar[(e.pozlar.length - 1) >> 1]);
         setUcus(true);
@@ -151,6 +163,7 @@ export function Egitim3D({ dosya, onKapat, say, onIlerleme }: {
       controller.abort();
       egitimRef.current?.kapat();
       egitimRef.current = null;
+      bosSiniriRef.current = null;
       // Oturum kapanınca temizleme jetonları geçersizleşir (Emre'nin kaydı:
       // eğitici ölü splat'ları taşıyabiliyor). Araç açık kalırsa geri alma
       // düğmesi çalışmayan bir jetonu vaat ederdi.
@@ -160,7 +173,7 @@ export function Egitim3D({ dosya, onKapat, say, onIlerleme }: {
       // Seri bu oturuma aittir: yeni deneme eskisinin eğrisi üstüne çizmesin.
       ilerlemeRef.current?.(null, 0);
     };
-  }, [dosya, started, subjectOnly]);
+  }, [dosya, started, subjectOnly, gezilebilir]);
 
   // Sürükle = yörünge. 1000 px ≈ 180°: videolar tipik olarak dar bir yay
   // çeker, eğitim görüntülerinin dışı bulanıktır — hassas döndürme orada kalır.
@@ -173,6 +186,10 @@ export function Egitim3D({ dosya, onKapat, say, onIlerleme }: {
       : yorunge(e.kamera, e.pivot, e.yukari, yaw, pitch, yakin));
   };
   const ucusSiniri = (e: Egitim) => flySiniri(e.kameralar, e.pivot, cekimTuruRef.current);
+  const aktifBosSiniri = (e: Egitim) => {
+    const bos = bosSiniriRef.current;
+    return bos && durum(bos.alan, kameraMerkezi(e.kamera)) === 'bos' ? bos : undefined;
+  };
 
   useEffect(() => {
     // The preflight view has no canvas; attach the wheel listener after Start.
@@ -185,8 +202,8 @@ export function Egitim3D({ dosya, onKapat, say, onIlerleme }: {
         // Orbit zoom toward a pivot the camera may no longer face would feel
         // random; in free-fly the wheel dollies along the view instead.
         const sinir = ucusSiniri(e);
-        e.kameraAyarla(flyStep(e.kamera, { forward: factor < 1 ? 1 : -1, right: 0, vertical: 0 },
-          Math.abs(Math.log(factor)) * sinir.olcek * 0.2, sinir, e.yukari));
+        e.kameraAyarla(flyStepBirlesik(e.kamera, { forward: factor < 1 ? 1 : -1, right: 0, vertical: 0 },
+          Math.abs(Math.log(factor)) * sinir.olcek * 0.2, sinir, e.yukari, aktifBosSiniri(e)));
         return;
       }
       const center = kameraMerkezi(e.kamera);
@@ -209,7 +226,8 @@ export function Egitim3D({ dosya, onKapat, say, onIlerleme }: {
       if (e && (axes.forward || axes.right || axes.vertical)) {
         const sinir = ucusSiniri(e);
         const boost = keys.has('ShiftLeft') || keys.has('ShiftRight') ? 3 : 1;
-        e.kameraAyarla(flyStep(e.kamera, axes, sinir.olcek * 0.5 * boost * dt, sinir, e.yukari));
+        e.kameraAyarla(flyStepBirlesik(e.kamera, axes, sinir.olcek * 0.5 * boost * dt,
+          sinir, e.yukari, aktifBosSiniri(e)));
       }
       frame = requestAnimationFrame(tick);
     });
@@ -391,6 +409,14 @@ export function Egitim3D({ dosya, onKapat, say, onIlerleme }: {
         <p style={{ color: '#aaa', lineHeight: 1.5 }}>
           Bu seçenek her seçilen kareye IS-Net maskesi uygular; hazırlık süresi artar.
           Nesne videolarında arka planı azaltabilir, kalite artışı henüz ölçülmedi.
+        </p>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <input type="checkbox" checked={gezilebilir} onChange={(event) => setGezilebilir(event.target.checked)} />
+          Derinlikle gezilebilir alanı çıkar (deneysel)
+        </label>
+        <p style={{ color: '#aaa', lineHeight: 1.5 }}>
+          Çoklu karelerden doğrulanan boşluğu kullanır; derinlik hazırlığı ek süre alır.
+          Görülmeyen yüzeyleri oluşturmaz.
         </p>
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
           <button style={dugme} onClick={onKapat}>kapat</button>

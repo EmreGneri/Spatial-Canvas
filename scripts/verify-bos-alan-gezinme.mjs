@@ -7,7 +7,7 @@ import { performance } from 'node:perf_hooks';
 import { bosAlanKur, durum } from '../src/engine/reconstruction/bosAlan.ts';
 import { kameraMerkezi } from '../src/engine/reconstruction/egitim3dgs.ts';
 import {
-  flyStep, flySiniri, bosAlanSiniri,
+  flyStep, flyStepBirlesik, flySiniri, bosAlanSiniri,
 } from '../src/ui/egitimControls.ts';
 import {
   YUKARI, VARSAYILAN_TOHUM, engelUzakligi, gtDerinlik, isinKes, sahneTanimi, yolPozu,
@@ -58,6 +58,14 @@ for (const [etiket, s] of [['start', 0.3], ['middle', 0.5], ['end', 0.8]]) {
     const axes = { forward: 0, right: yon, vertical: 0 };
     const bugun = flyStep(k, axes, 10, yolSiniriBugun, YUKARI);
     const serbest = flyStep(k, axes, 10, yolSiniriBugun, YUKARI, bos);
+    assert.deepEqual(flyStepBirlesik(k, axes, 10, yolSiniriBugun, YUKARI), bugun,
+      'without free-space data the combined step is the established step');
+    const birlesik = flyStepBirlesik(k, axes, 10, yolSiniriBugun, YUKARI, bos);
+    const ilerleme = (cam) => yon * k.R.slice(0, 3).reduce(
+      (sum, axis, index) => sum + axis * (merkez(cam)[index] - C[index]), 0);
+    assert.ok(ilerleme(birlesik) + 1e-9 >= Math.max(
+      ilerleme(bugun), ilerleme(serbest)),
+    'combined step keeps the farther movement along the requested side direction');
     enIyiBugun = Math.max(enIyiBugun, mesafe(merkez(bugun), C));
     enIyiSerbest = Math.max(enIyiSerbest, mesafe(merkez(serbest), C));
     // Hiçbir yönde GT engel payı ihlal edilmez.

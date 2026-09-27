@@ -263,6 +263,23 @@ export function flyStep(
   return { ...k, t };
 }
 
+/** Preserve the established camera-volume movement while allowing the
+ *  verified free-space grid to extend it. Compare progress along the requested
+ *  movement, so a sideways slide does not win merely by being longer. */
+export function flyStepBirlesik(
+  k: GsKamera, axes: FlyAxes, distance: number, sinir: FlySiniri, up: Vec3, bos?: BosAlanSiniri,
+): GsKamera {
+  const old = flyStep(k, axes, distance, sinir, up);
+  if (!bos) return old;
+  const free = flyStep(k, axes, distance, sinir, up, bos);
+  const origin = kameraMerkezi(k), a = kameraMerkezi(old), b = kameraMerkezi(free);
+  const heading: Vec3 = [0, 1, 2].map((i) =>
+    axes.forward * k.R[6 + i] + axes.right * k.R[i] + axes.vertical * up[i]) as Vec3;
+  const along = (p: Vec3) => (p[0] - origin[0]) * heading[0]
+    + (p[1] - origin[1]) * heading[1] + (p[2] - origin[2]) * heading[2];
+  return along(b) > along(a) + 1e-9 ? free : old;
+}
+
 /** FPS look: orbit around the camera's own centre; pitch that would pass `limit` or flip the view is dropped. */
 export function lookAround(k: GsKamera, up: Vec3, yaw: number, pitch: number, limit = (85 * Math.PI) / 180): GsKamera {
   const C = kameraMerkezi(k);

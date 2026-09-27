@@ -5,6 +5,11 @@ Commit: 88efe9aaf32279b0b9bcb781ea0deb4d60c49dff
 Lisans: MIT (LICENSE dosyasi)
 Indirme: 2026-09-23
 
+- 2026-09-27 `gs/trainer.js` `renderViewPixels`: `renderView` ile aynı
+  `encodeRaster`/`pipeBlit` yolunu kopyalanabilir dokuya çizer; GPU tamponundan
+  satır dolgusu ve BGRA sırası düzeltilmiş RGBA okur. Ölçüm PNG'si ve offline
+  klip WebGPU swap-chain `drawImage` davranışından bağımsızdır.
+
 Yerel degisiklikler (2026-09-24): `session.js` arka sekmede rAF/Worker
 zamanlayici yedegi, gorunur egitim hatasi, gec gelen GPU aygitini birakma ve
 temiz dispose; `sfm/sfm.js` iptalde Worker havuzlarini sonlandirir; `io/video.js`

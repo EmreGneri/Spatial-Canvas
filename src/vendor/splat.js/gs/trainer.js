@@ -1514,6 +1514,60 @@ export class GSTrainer {
     d.queue.submit([enc.finish()]);
   }
 
+  /** Render into a copyable texture and read RGBA bytes back. A canvas can
+   *  present successfully while drawImage(canvas) still returns black (notably
+   *  on SwiftShader), so offline renders must not depend on swap-chain copies. */
+  async renderViewPixels(camParams, trainMode = 0, offset = 0) {
+    const d = this.device;
+    const w = camParams.w, h = camParams.h;
+    const bytesPerRow = Math.ceil(w * 4 / 256) * 256;
+    const texture = d.createTexture({
+      size: [w, h, 1], format: this.canvasFormat,
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
+    });
+    const staging = d.createBuffer({
+      size: bytesPerRow * h, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+    });
+    try {
+      d.queue.writeBuffer(this.uniView, 0, this._camUniform(camParams, trainMode, offset));
+      d.queue.writeBuffer(this.bufTileCnt, 0, this.tileZero);
+      const enc = d.createCommandEncoder();
+      const compute = enc.beginComputePass();
+      this.encodeRaster(compute, camParams, false);
+      compute.end();
+      const render = enc.beginRenderPass({ colorAttachments: [{
+        view: texture.createView(), loadOp: 'clear', storeOp: 'store',
+        clearValue: { r: 0, g: 0, b: 0, a: 1 },
+      }] });
+      render.setPipeline(this.pipeBlit);
+      render.setBindGroup(0, this.bgBlitView);
+      render.draw(3);
+      render.end();
+      enc.copyTextureToBuffer({ texture }, { buffer: staging, bytesPerRow }, [w, h, 1]);
+      d.queue.submit([enc.finish()]);
+      await staging.mapAsync(GPUMapMode.READ);
+      const mapped = new Uint8Array(staging.getMappedRange());
+      const out = new Uint8ClampedArray(w * h * 4);
+      const bgra = this.canvasFormat.startsWith('bgra');
+      for (let y = 0; y < h; y++) {
+        const row = y * bytesPerRow;
+        const dst = y * w * 4;
+        for (let x = 0; x < w; x++) {
+          const src = row + x * 4, p = dst + x * 4;
+          out[p] = mapped[src + (bgra ? 2 : 0)];
+          out[p + 1] = mapped[src + 1];
+          out[p + 2] = mapped[src + (bgra ? 0 : 2)];
+          out[p + 3] = mapped[src + 3];
+        }
+      }
+      staging.unmap();
+      return { data: out, width: w, height: h };
+    } finally {
+      staging.destroy();
+      texture.destroy();
+    }
+  }
+
   renderTrainCam(ci, ctx) {
     const meta = this.camMeta[ci];
     this.renderView(meta, ctx, 0, meta.offset);
