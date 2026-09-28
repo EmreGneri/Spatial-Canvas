@@ -277,6 +277,68 @@ Jacobian'da cephe kesintisiz eğri yüzey kalır. Bilinen: -90° yönünde derin
 arka plan eksen arkasında ince bir kabuğa sıkışır ve bulanık görünür; +90°'de
 uzak arka plan kavis boyunca yatay uzar.
 
+## 2026-09-28 — Z (Zeynep): çekim ön notları — klibin kendisi eğitim başlamadan söylenir
+
+Araştırmanın 1. bölümünün karşılığı. Ön ayar ekranı bugüne kadar videoyu HİÇ
+AÇMIYORDU: `egitimOnKontrol` yalnız cihaza (WebGPU) bakıyor, klip hakkında tek
+kelime yok. Kullanıcı `assets/test-clips/[4K] … NYU …mp4` adlı klibi yükleyip
+dakikalarca bekliyor ve sonucun neden yumuşak olduğunu hiçbir yerde
+göremiyordu — o klip **gerçekte 854×480**.
+
+`src/ui/cekimNotlari.ts` (saf, DOM'suz) + ön ayar ekranına bağlantı.
+
+**ÖLÇÜMLE ÇÜRÜTÜLEN SİNYALLER BİLEREK KULLANILMADI.** Vendor'ın kare tarayıcısı
+keskinlik/parlaklık/kırpılma üretiyor; üçü de eşik olarak kullanılamaz. Dört
+gerçek klip, vendor'ın kendi fonksiyonlarıyla ölçüldü:
+
+| klip | çözünürlük | focus medyan | lum med | clip p95 |
+|---|---|---|---|---|
+| `7578546-uhd` | 3840×2160 | **322** | 0.435 | 0.035 |
+| `[4K] … NYU …` | **854×480** | **600** | 0.469 | 0.019 |
+| `yay-100derece-stgeorge` | 4096×1974 | 609 | 0.388 | 0.0001 |
+| `yay-210derece-mariatheresa` | 3840×2160 | 931 | 0.410 | **0.084** |
+
+- `focus` keskinliği değil SAHNE DOKUSUNU ölçüyor: gerçek 4K klip en DÜŞÜK
+  (322), 480p yürüyüş klibi %86 daha yüksek (600). Kar, sis, düz cephe hep
+  düşük çıkar ve hepsi nettir. Vendor da mutlak eşik kullanmıyor —
+  `markOutliers` komşu medyanına göreceli çalışıyor (`video.js:213`).
+- `clip`: mariatheresa p95 %8,4, meşru güneşli cephe — %5-8 bandındaki bir
+  eşik onu haksız uyarırdı.
+- `lum`: ölçülen dört klip de gündüz (0,39-0,47). Bu repoda düşük parlaklık
+  bandında HİÇ ölçüm yok; eşik koymak uydurma olurdu.
+
+Geriye YALNIZ fiziksel/nesnel alanlar kaldı: çözünürlük (uzun kenar < 1280),
+süre (< 3 sn), fps (< 20, bilinmiyorsa not yok). Üçü de tek kare bile decode
+etmeden okunuyor.
+
+**UYARI DEĞİL, NOT.** Hiçbir not eğitimi engellemiyor; "başlat" yalnız cihaz
+yetmiyorsa kapanıyor (`docs/tasarim-kurallari.md`, kapalı düğme kuralı —
+engelleme bir YETENEK kararıdır, çekim kalitesi ise belirsizliği yüksek bir
+tahmindir). Sorun yoksa **hiçbir şey çizilmiyor** (`yetenekGorunum` kuralı).
+
+**Maliyet ölçüldü, sıfıra yakın.** `preload = 'metadata'` ile tarayıcı görüntü
+verisini indirmiyor. Tarayıcıda gerçek kliplerle: 7578546-uhd **12 ms**,
+stgeorge **6 ms**, mariatheresa **22 ms**; üretilen kliplerde **2-3 ms**.
+
+**Uçtan uca doğrulandı (tarayıcı, gerçek `File` nesneleriyle):**
+640×360 · 1,3 sn → "Çözünürlük düşük" + "Klip çok kısa", metinlerde gerçek
+sayılar · 1920×1080 · 4,0 sn → **sessiz** · üç gerçek yüksek çözünürlüklü klip
+→ **sessiz**.
+
+**Doğrulama:** `npm run verify` 104 → **105** (yeni: `verify-cekim-notlari`).
+`npm run typecheck` temiz.
+
+**Bu ortamda düşen tek script `verify-gezinme-training-bench.mjs` — kod hatası
+DEĞİL:** `olc-gezinme.mjs` → `tarayici-oturumu.mjs` → `playwright-core`, ki
+`package.json:30`'da ve lock'ta tanımlı ama bu makinede `node_modules`'ta
+kurulu değil; modül yükleme hatasıyla 1 dönüyor, script 2 bekliyor. Bu
+değişikliklerden ÖNCE de düşüyordu. `npm install` çözer.
+
+**Bilerek yapılmadı:** `review`/`yenilikIncelemesi` bağlanması ve `seekCapture`
+tabanlı ön paralaks ölçümü. Birincisi tam taramadan SONRA çalışıyor, yani
+"eğitim başlamadan" hedefini karşılamıyor; ikincisi yeni bir akış istiyor.
+İkisi de ayrı iş.
+
 ## 2026-09-27 — Z (Zeynep): temizleme 3DGS'e bağlandı, neon yeniden ayarlandı, eğitim şeridi taşması
 
 Veri katmanının 5220205 raporundaki dört maddenin karşılığı.
