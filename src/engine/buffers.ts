@@ -58,8 +58,9 @@ export const SAMPLE_MIN_DENSITY = 0.15;
 export const SAMPLE_MAX_DENSITY = 2.5;
 
 /**
- * Home: RGBA32F, 384×384. xyz = dinlenme konumu (parçacık buraya yaylanır),
- * w = ön plan opaklığı (α, fillPositionsFromDepth yazar; 0 = arka plan).
+ * Home: RGBA32F, 384×384. xyz = rest position (the particle springs here),
+ * w = opacity: foreground points are opaque and background points use the
+ * sampler's low-opacity backdrop value.
  * Gün 3: positionTexture artık ping-pong RT texture'ı; simülasyon her karede
  * onu üzerine yazar, home CPU'dan bir kez doldurulur. Jitter tohumu artık
  * shader'larda aUv hash'iyle türetilir (w artık seed taşımaz).
@@ -121,9 +122,8 @@ export interface PositionFillOptions {
  * Depth çıktısından home texture'ı doldurur (dinlenme konumları). Kapalı
  * hacim rekonstrüksiyonu rekonstrüksiyon katmanında yapılır (sampler.ts);
  * bu fonksiyon yalnızca GPU sözleşmesini üstlenir: aUv grid yazımı, y-flip
- * (upload'da) ve w = α (ön plan opaklığı) yazımı. Arka plan texel'leri
- * ÖLÜDÜR (Tur 9): sampler maske = 0'da nokta üretmez, (x, y, 0, 0) yazar —
- * GPU sözleşmesi gereği texel yine de yazılır, shader α = 0 ile söner.
+ * (upload'da) and w = alpha. Background texels are intentional, low-opacity
+ * image-backed backdrop points; they are not dead samples.
  */
 export function fillPositionsFromDepth(
   tex: THREE.DataTexture,

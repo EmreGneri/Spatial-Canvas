@@ -113,6 +113,9 @@ Model ve runtime CDN'den gelmez; tamamen yereldir. `public/models` ve `public/or
 | `npm run typecheck` | `tsc --noEmit` |
 | `npm run fetch:assets` | Model + ORT dosyalarını vendor eder; listede olmayanları siler |
 | `npm run verify` | Fotoğraf, video, render, export ve 3DGS kamera matematiği dahil sözleşme kontrolleri |
+| `npm run verify:browser` | Kurulu Chrome'da uygulama açılışı, WebGL çizimi, mod düğmeleri ve duraklat/devam smoke testi |
+
+`verify:browser` gerçek uygulama kabuğunu açar; `npm run verify` gibi model indirmez. Kurulu Google Chrome ve WebGL gerekir. Vite dev sunucusu yerel olarak başlatılıp test sonunda kapatılır.
 
 ## Mimari
 
