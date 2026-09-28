@@ -513,6 +513,7 @@ export class Engine {
     const eskiBoyut = new THREE.Vector2();
     this.renderer.getSize(eskiBoyut);
     const eskiDpr = this.renderer.getPixelRatio();
+    const previousCurrentDpr = this.currentDpr;
     const eskiPos = this.camera.position.clone();
     const eskiHedef = this.controls.target.clone();
     const eskiFov = this.camera.fov;
@@ -533,7 +534,14 @@ export class Engine {
       // çıktının boyutunu iki katına çıkarmasın).
       this.renderer.setPixelRatio(1);
       this.renderer.setSize(w, h, false);
+      // EffectComposer owns its DPR independently of the renderer. Updating
+      // only the renderer leaves HiDPI targets and texel-sized effects larger.
+      this.composer.setPixelRatio(1);
       this.composer.setSize(w, h);
+      this.currentDpr = 1;
+      this.renderer.getDrawingBufferSize(this.grainPass.uniforms.uResolution.value);
+      this.renderer.getDrawingBufferSize(this.viewportPx);
+      this.pushSharedUniformsAll();
 
       // Döngünün İLK adımı: okunan konum texture'ı her karede değişir
       // (ping-pong) ve material'a push edilmesi gerekir. Atlanınca kare boş
@@ -571,7 +579,12 @@ export class Engine {
     } finally {
       this.renderer.setPixelRatio(eskiDpr);
       this.renderer.setSize(eskiBoyut.x, eskiBoyut.y, false);
+      this.composer.setPixelRatio(eskiDpr);
       this.composer.setSize(eskiBoyut.x, eskiBoyut.y);
+      this.currentDpr = previousCurrentDpr;
+      this.renderer.getDrawingBufferSize(this.grainPass.uniforms.uResolution.value);
+      this.renderer.getDrawingBufferSize(this.viewportPx);
+      this.pushSharedUniformsAll();
       this.camera.position.copy(eskiPos);
       this.controls.target.copy(eskiHedef);
       this.camera.fov = eskiFov;
