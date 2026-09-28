@@ -9,6 +9,7 @@ import {
 import { aciklikAt, durum } from '../engine/reconstruction/bosAlan';
 import { egitimGpuHint } from './egitimGpuHint';
 import { ayarOzeti, egitimOnKontrol, type OnKontrol } from './egitimOnKontrol';
+import { cekimNotlari, type CekimNotu } from './cekimNotlari';
 import { kunyeMetni, PAYLASIM_KLIP_SN } from './paylasim';
 import { deformAyari, deformGostergesi, klipRenderEt, type DeformChoice, type KlipOrani } from './klipRender';
 import { SplatTemizleme } from './SplatTemizleme';
@@ -79,6 +80,8 @@ export function Egitim3D({ dosya, onKapat, say, onIlerleme }: {
   /** Z2 — ön kontrol: eğitim BAŞLAMADAN cihazın yapabildiği söylenir. */
   const [onKontrol, setOnKontrol] = useState<OnKontrol | null>(null);
   const [onAyar, setOnAyar] = useState<EgitimAyari | null>(null);
+  /** Klibin kendisi hakkında notlar (boş = sorun yok, hiçbir şey çizilmez). */
+  const [cekimNot, setCekimNot] = useState<CekimNotu[]>([]);
   // App'in `say`'ı her render'da yeni fonksiyon: effect bağımlılığı olursa
   // her render eğitimi baştan başlatır. Ref üzerinden çağrılır.
   const sayRef = useRef(say);
@@ -93,6 +96,43 @@ export function Egitim3D({ dosya, onKapat, say, onIlerleme }: {
   // Ön ayar ekranı açılır açılmaz cihaz sorulur: WebGPU var mı, hangi GPU
   // seçilir, hangi ayar katmanı uygulanır. Eskiden bu ancak "başlat"tan
   // SONRA, kare çıkarma sırasında öğreniliyordu.
+  /**
+   * KLİP ÖLÇÜSÜ — "başlat"a basılmadan önce, TEK KARE DECODE ETMEDEN.
+   * `loadedmetadata` yalnız konteyner başlığını okur (~ms); `preload
+   * 'metadata'` ile tarayıcı görüntü verisini hiç indirmez.
+   *
+   * fps konteyner başlığında YOK: `webkitDecodedFrameCount` yalnız Safari'de
+   * ve oynatma gerektirir. Bilinmiyorsa `null` geçilir ve not üretilmez —
+   * "bilmiyorum" ile "kötü" karıştırılmaz.
+   */
+  useEffect(() => {
+    if (started) return;
+    const url = URL.createObjectURL(dosya);
+    const v = document.createElement('video');
+    v.preload = 'metadata';
+    v.muted = true;
+    let iptal = false;
+    const oku = () => {
+      if (iptal) return;
+      setCekimNot(cekimNotlari({
+        genislik: v.videoWidth,
+        yukseklik: v.videoHeight,
+        sureSn: v.duration,
+        fps: null,
+      }));
+    };
+    v.addEventListener('loadedmetadata', oku, { once: true });
+    // Metadata okunamazsa SESSİZ kal: not üretememek bir uyarı sebebi değil.
+    v.addEventListener('error', () => { if (!iptal) setCekimNot([]); }, { once: true });
+    v.src = url;
+    return () => {
+      iptal = true;
+      v.removeAttribute('src');
+      v.load();
+      URL.revokeObjectURL(url);
+    };
+  }, [dosya, started]);
+
   useEffect(() => {
     if (started) return;
     let iptal = false;
@@ -428,6 +468,16 @@ export function Egitim3D({ dosya, onKapat, say, onIlerleme }: {
             </ol>
           )}
         </div>
+        {/* ÇEKİM NOTLARI — klibin kendisi hakkında. Not yoksa HİÇBİR ŞEY
+            çizilmez (yetenekGorunum ile aynı kural). Engellemez: "başlat"
+            düğmesi yalnız cihaz yetmiyorsa kapanır. */}
+        {cekimNot.map((n) => (
+          <div key={n.baslik} style={cekimNotKutusu}>
+            <div style={{ fontWeight: 600 }}>{n.baslik}</div>
+            <div style={{ marginTop: 4, lineHeight: 1.5 }}>{n.sebep}</div>
+            <div style={{ marginTop: 4, lineHeight: 1.5, color: '#c8c8d4' }}>{n.eylem}</div>
+          </div>
+        ))}
         <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <input type="checkbox" checked={subjectOnly} onChange={(event) => setSubjectOnly(event.target.checked)} />
           Yalnız özneyi eğit (deneysel)
@@ -666,6 +716,18 @@ function onKontrolKutusu(calisir: boolean): CSSProperties {
     fontSize: 12,
   };
 }
+
+/** Not kutusu: uyarı rengi değil BİLGİ rengi — bu bir hata değil, bir gözlem. */
+const cekimNotKutusu: CSSProperties = {
+  padding: '6px 8px',
+  borderRadius: 3,
+  borderWidth: 1,
+  borderStyle: 'solid',
+  borderColor: '#2a3a4a',
+  background: '#12161c',
+  color: '#8ab',
+  fontSize: 12,
+};
 
 const onAyarlama: CSSProperties = {
   width: 'min(430px, calc(100% - 32px))', padding: 20, border: '1px solid #333',
