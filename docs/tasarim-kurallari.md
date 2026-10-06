@@ -147,6 +147,52 @@ bağlanırken onun KISITLARI da arayüze işlenir: tek işlem → düğme kilidi
 sıralı geri alma → yığın, süresi dolan jeton → görünür hata. Kısıt yalnız
 belgede kalırsa arayüz onu er geç çiğner.
 
+## Son denetim — 4. tur (2026-10-06, "vibecoded" listesi)
+
+Dolaşan 20 maddelik "uygulaman AI üretimi gibi duruyor" listesi tek tek
+denetlendi. **14'ü bizde hiç yok** — çoğu eylül turunda kapanmıştı (tek eksen
+palet, cam yalnız yüzen yüzeyde). Ölçülenler:
+
+| madde | durum | kanıt |
+|---|---|---|
+| mor→mavi gradyan | yok | UI'daki 4 gradyanın hiçbiri mor değil; tek mor graf düğüm kategorisi |
+| gradyan başlık metni | yok | `backgroundClip: text` hiç geçmiyor |
+| düşük kontrastlı koyu mod | geçti | en düşük 4.70:1 (`metinSilik`/yüzey2), AA sınırı 4.5 |
+| Lucide / shadcn / Tailwind / Radix | yok | bağımlılık yok, tüm stiller inline + `tema.ts` |
+| scroll fade-in · imleç ışını | yok | `IntersectionObserver` yok |
+| hover'da solma | geçti | opaklık değil, kenar aydınlatılıyor (`index.html`) |
+| buzzword kopya | geçti | kopya ölçü taşıyor ("kadrajın %5'ini özne saydı") |
+| serif italik · Space Grotesk | yok | — |
+| gradyan üstü grain | UI'da yok | grain yalnız WebGL zincirinde; o eser, arayüz kromu değil |
+
+**Gerçekten bizde olan dördü düzeltildi (ölçüldü, önce → sonra):**
+
+| madde | önce | sonra |
+|---|---|---|
+| tutarsız boşluk (canlı DOM) | **29** ölçek dışı değer | **0** |
+| 32 px altı düğme (Fitts) | **10** düğme, 22-28 px | **0** |
+| elle yazılmış kenar rengi | **7** ad-hoc hex | **0** (`kenarDurum` jetonları) |
+| em dash (görünür dize) | **37** | **1** (bilerek) |
+| `"Inter"` font yığınında | `tema.ts` + `index.html` | kaldırıldı |
+
+**Boşluk kuralı artık `index.html`'de de geçerli.** Asıl sebep oradaydı:
+`select`/`input` için 32 px taban vardı ama **`button` için hiç taban yoktu**,
+yani kendi stilini vermeyen her düğme tarayıcı varsayılanına (≈22 px)
+düşüyordu. Taban eklendi; inline stil veren bileşenler onu zaten eziyor.
+
+**Em dash kuralı (yeni).** Tek bağlacın 37 kez tekrarı sorun; uzun çizginin
+kendisi değil. Türkçede "—" meşru noktalama. Dönüştürme niyete göre yapıldı:
+sonuç/devam → `;`, tanım → `:`, ayrı cümle → `.`, yan bilgi → `(...)` ya da
+`,`. Bir tane bilerek kaldı: `EgitimGrafik`'teki `— Gaussian`, orada tire
+bağlaç değil **"değer yok"** göstergesi.
+
+**Glif kuralı (yeni).** Araç gliflerinin SÜS olmaması gerekir: üç seçim aracı
+kendi seçim şeklini çiziyor (`●` fırça lekesi, `◌` lasso'nun açık yolu, `◎`
+kürenin derinlik kabuğu). `gez` bir seçim aracı değil, o yüzden şekli de yok;
+taşıma/gezinme için açık merkez haçı (`✜`) kullanır. Eskiden `✥` (U+2725,
+"four club-spoked asterisk") vardı: dekoratif bir yıldız, hiçbir arayüzde
+"gezinme" anlamına gelmiyor ve etiketsiz tahmin edilemiyordu.
+
 ## Denetim listesi (yeni arayüz işinden önce)
 
 1. Yeni kontrol ≥ 32 px mi, etiketi var mı? (Fitts)
@@ -162,3 +208,6 @@ belgede kalırsa arayüz onu er geç çiğner.
 10. Yeni kontrol şeridi dar pencerede sarıyor mu? (Taşma kuralı)
 11. Başka katmanın API'sini bağlıyorsam kısıtları arayüzde görünür mü?
     (Ödünç alınan sözleşme kuralı)
+12. Boşluk 4'ün katı mı — hem inline stilde hem `index.html`'de? (Boşluk kuralı)
+13. Aynı bağlacı (özellikle "—") üst üste kullanıyor muyum? (Em dash kuralı)
+14. Koyduğum glif aracın NE YAPTIĞINI söylüyor mu, süs mü? (Glif kuralı)

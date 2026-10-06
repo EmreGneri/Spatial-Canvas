@@ -63,7 +63,7 @@ export function TransportSerit({
         >
           {durdu ? '▶' : '❚❚'}
         </button>
-        <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+        <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
           <span style={led(!durdu, durdu ? renk.uyari : renk.iyi)} />
           <span style={{ fontSize: yazi.kucuk, color: renk.metinSolgun }}>
             {durdu ? 'duraklatıldı' : mod}

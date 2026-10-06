@@ -29,7 +29,7 @@ const panelStyle: CSSProperties = {
   display: 'flex',
   flexDirection: 'column',
   gap: 8,
-  padding: 10,
+  padding: 8,
   border: '1px solid #26262e',
   borderRadius: 4,
   background: '#101014',
@@ -40,7 +40,7 @@ const panelStyle: CSSProperties = {
 
 const buttonStyle: CSSProperties = {
   font: 'inherit',
-  padding: '3px 8px',
+  padding: '4px 8px',
   background: '#1a1a22',
   color: '#c8c8d4',
   border: '1px solid #26262e',
@@ -69,7 +69,7 @@ export function MetricsPanel() {
       setReport(null);
       setSource('');
       setNote(
-        `yerel rapor okunamadı (${e instanceof Error ? e.message : String(e)}) — geliştirme ortamında "npm run eval" çalıştırın ya da report.json yükleyin`,
+        `yerel rapor okunamadı (${e instanceof Error ? e.message : String(e)}). Geliştirme ortamında "npm run eval" çalıştırın ya da report.json yükleyin`,
       );
     }
   }, []);
@@ -94,7 +94,7 @@ export function MetricsPanel() {
         Bu sayılar seçtiğiniz videonun canlı derinlik kalitesini ölçmez; rapordaki veri kümesine aittir.
       </div>
 
-      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+      <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
         <button type="button" style={buttonStyle} onClick={() => void load()}>
           yerel raporu yenile
         </button>
@@ -132,8 +132,8 @@ export function MetricsPanel() {
 
           {COLUMN_ORDER.filter((c) => grouped.has(c)).map((col) => (
             <div key={col}>
-              <div style={{ color: '#8ab', marginBottom: 2 }}>{col}</div>
-              <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '1px 8px' }}>
+              <div style={{ color: '#8ab', marginBottom: 4 }}>{col}</div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '4px 8px' }}>
                 {grouped.get(col)!.map((row, i) => (
                   <ReportRow key={`${row.metric}-${i}`} metric={`${row.metric} (${row.dataset}/${row.split})`} value={row.value} />
                 ))}
@@ -142,8 +142,8 @@ export function MetricsPanel() {
           ))}
 
           <div>
-            <div style={{ color: '#8ab', marginBottom: 2 }}>ablasyon kolları (D.5 — sabit 7)</div>
-            <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '1px 8px' }}>
+            <div style={{ color: '#8ab', marginBottom: 4 }}>ablasyon kolları (D.5 — sabit 7)</div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '4px 8px' }}>
               {Object.entries(report.params).map(([k, v]) => (
                 <ReportRow key={k} metric={k} value={v as number | null} />
               ))}

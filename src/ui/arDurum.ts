@@ -50,14 +50,14 @@ function tarayiciYolu(ua: string): string[] {
   // "başka tarayıcı dene" demek YANLIŞ bilgi olur.
   if (/iphone|ipad|ipod/.test(u) || (/macintosh/.test(u) && /mobile/.test(u))) {
     return [
-      'iOS/iPadOS tarayıcılarında WebXR yok — Safari de, Chrome da aynı motoru kullanıyor.',
+      'iOS/iPadOS tarayıcılarında WebXR yok: Safari de, Chrome da aynı motoru kullanıyor.',
       'Bu cihazda sahneyi görmek için .ply çıktısını indirip bir 3DGS görüntüleyicide aç.',
     ];
   }
   if (/android/.test(u)) {
     return [
       'Android Chrome/Edge güncel olmalı (WebXR oradan gelir).',
-      '"Google Play AR Hizmetleri" (ARCore) kurulu ve güncel olmalı — Play Store’dan güncelle.',
+      '"Google Play AR Hizmetleri" (ARCore) kurulu ve güncel olmalı; Play Store’dan güncelle.',
       'Sayfa https üzerinden açılmalı; http’de WebXR izin vermez.',
     ];
   }
@@ -102,7 +102,7 @@ export function arDurum(g: ArGirdi): ArDurum {
       etiket: 'AR’da gör',
       baslik: 'Sahne kameranın gördüğü ortama yerleştirilecek.',
       adimlar: [
-        'Telefonu yavaşça gezdir — sahne odanın içinde duruyormuş gibi görünür.',
+        'Telefonu yavaşça gezdir; sahne odanın içinde duruyormuş gibi görünür.',
         'Post-efektler (bloom, grain, chromatic) AR’da KAPALI: sahne doğrudan çizilir.',
         'Çıkmak için tarayıcının kendi "çık" düğmesini kullan.',
       ],
@@ -113,7 +113,7 @@ export function arDurum(g: ArGirdi): ArDurum {
       acilabilir: true,
       kip: 'immersive-vr',
       etiket: 'başlıkta gör',
-      baslik: 'Cihazda AR yok, VR başlığı var — sahne başlıkta açılacak.',
+      baslik: 'Cihazda AR yok, VR başlığı var; sahne başlıkta açılacak.',
       adimlar: [
         'Başlığı tak, sonra düğmeye bas.',
         'Post-efektler (bloom, grain, chromatic) başlıkta KAPALI: sahne doğrudan çizilir.',

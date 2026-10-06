@@ -121,7 +121,7 @@ export function cekimNotlari(o: CekimOlcusu): CekimNotu[] {
       baslik: 'Klip çok kısa',
       sebep: `Klip ${o.sureSn.toFixed(1)} sn. Kamera pozları kareler arası yer değiştirmeden (paralaks) çözülüyor; `
         + 'bu sürede yeterli taban oluşmayabilir.',
-      eylem: 'Nesnenin ETRAFINDA 8-10 sn yürüyerek çek — yerinde dönmek paralaks üretmez.',
+      eylem: 'Nesnenin ETRAFINDA 8-10 sn yürüyerek çek; yerinde dönmek paralaks üretmez.',
     });
   }
 

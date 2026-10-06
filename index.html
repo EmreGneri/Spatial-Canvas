@@ -7,7 +7,7 @@
     <style>
       html, body, #root { margin: 0; min-height: 100%; background: #0a0c10; color: #e9ecf2; }
       body {
-        font: 13px/1.5 -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', Roboto, system-ui, sans-serif;
+        font: 13px/1.5 -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, system-ui, sans-serif;
         -webkit-font-smoothing: antialiased;
       }
 
@@ -35,7 +35,7 @@
         appearance: none;
         width: 13px;
         height: 13px;
-        margin-top: -5px;
+        margin-top: -4px;
         border-radius: 50%;
         background: #c8d2e4;
         border: none;
@@ -83,7 +83,7 @@
         padding: 0;
         height: 32px;
       }
-      input[type='color']::-webkit-color-swatch-wrapper { padding: 3px; }
+      input[type='color']::-webkit-color-swatch-wrapper { padding: 4px; }
       input[type='color']::-webkit-color-swatch { border: none; border-radius: 5px; }
 
       select, input[type='text'] {
@@ -92,11 +92,25 @@
         background: #171b24;
         border: 1px solid rgba(255, 255, 255, 0.10);
         border-radius: 6px;
-        padding: 6px 8px;
+        padding: 8px 8px;
         min-height: 32px;
       }
 
-      button { transition: background 120ms ease, border-color 120ms ease; }
+      /* TABAN DÜĞME. `select`/`input` ile aynı ölçü: kendi stilini
+         vermeyen her düğme tarayıcı varsayılanına (≈22 px) düşüyordu ve
+         Fitts eşiğinin (32 px) altında kalıyordu — ölçüldü: 10 düğme
+         22-28 px. Inline stil veren bileşenler bunu zaten eziyor. */
+      button {
+        font: inherit;
+        color: #e9ecf2;
+        background: #171b24;
+        border: 1px solid rgba(255, 255, 255, 0.10);
+        border-radius: 6px;
+        padding: 8px 8px;
+        min-height: 32px;
+        cursor: pointer;
+        transition: background 120ms ease, border-color 120ms ease;
+      }
       button:hover:not(:disabled) { border-color: rgba(255, 255, 255, 0.20); }
       button:active:not(:disabled) { transform: translateY(1px); }
       button:disabled { opacity: 0.4; cursor: not-allowed; }

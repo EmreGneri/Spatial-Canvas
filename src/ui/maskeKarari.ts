@@ -40,14 +40,14 @@ export type MaskeKarari =
 
 export function maskeKarari(fgOran: number): MaskeKarari {
   if (!(fgOran > 0)) {
-    return { tip: 'atla', ayirmaAcik: false, sebep: 'nesne ayırma: boş maske üretildi — maske atlandı (tüm sahne)' };
+    return { tip: 'atla', ayirmaAcik: false, sebep: 'nesne ayırma: boş maske üretildi; maske atlandı (tüm sahne)' };
   }
   const yuzde = (100 * fgOran).toFixed(0);
   if (fgOran > MASKE_UST_ESIK) {
     return {
       tip: 'atla',
       ayirmaAcik: false,
-      sebep: `nesne ayırma: model kareyi tümüyle ön plan saydı (%${yuzde}) — maske atlandı`,
+      sebep: `nesne ayırma: model kareyi tümüyle ön plan saydı (%${yuzde}); maske atlandı`,
     };
   }
   if (fgOran < MASKE_ALT_ESIK) {
@@ -55,7 +55,7 @@ export function maskeKarari(fgOran: number): MaskeKarari {
       tip: 'kullan',
       ayirmaAcik: false,
       sebep:
-        `nesne ayırma: maske kadrajın yalnız %${yuzde}'ini özne saydı — ` +
+        `nesne ayırma: maske kadrajın yalnız %${yuzde}'ini özne saydı; ` +
         'ayırma KAPALI başlatıldı (açık olsaydı sahnenin geri kalanı silinirdi). ' +
         '"nesne ayırma" düğmesiyle açabilirsin.',
     };

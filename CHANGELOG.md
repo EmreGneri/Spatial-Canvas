@@ -277,6 +277,61 @@ Jacobian'da cephe kesintisiz eğri yüzey kalır. Bilinen: -90° yönünde derin
 arka plan eksen arkasında ince bir kabuğa sıkışır ve bulanık görünür; +90°'de
 uzak arka plan kavis boyunca yatay uzar.
 
+## 2026-10-06 — Z (Zeynep): "vibecoded" denetimi — dört gerçek isabet kapatıldı
+
+Dolaşan 20 maddelik "uygulaman AI üretimi gibi duruyor" listesi tek tek
+denetlendi. **14'ü bizde hiç yok:** mor→mavi gradyan, gradyan başlık metni,
+Lucide, shadcn/Tailwind/Radix, scroll fade-in, imleci takip eden ışın, serif
+italik, Space Grotesk, buzzword kopya, gradyan üstü grain. Çoğu eylül
+turundaki "AI üretimi görünüyor" eleştirisinden sonra zaten kapanmıştı.
+
+Kontrast da geçti: hesaplandı, en düşük oran **4.70:1** (`metinSilik`/yüzey2),
+WCAG AA sınırı 4.5. Hover'da solma yok; `index.html` hover'da opaklık değil
+**kenarı** aydınlatıyor.
+
+**Dört gerçek isabet düzeltildi — hepsi canlı DOM'da ölçüldü:**
+
+| madde | önce | sonra |
+|---|---|---|
+| tutarsız boşluk | **29** ölçek dışı değer | **0** |
+| 32 px altı düğme (Fitts) | **10** düğme, 22-28 px | **0** |
+| elle yazılmış kenar rengi | **7** ad-hoc hex | **0** |
+| em dash (görünür dize) | **37** / 430 | **1** (bilerek) |
+| `"Inter"` font yığınında | 2 yerde | kaldırıldı |
+
+**KÖK SEBEP `index.html`'deydi.** Statik tarama 31 ihlal buluyordu ama canlı
+DOM 29 ayrı değer gösterdi — aradaki fark dize biçimli padding'ler
+(`'9px 12px'`, `'3px 10px'`) ve asıl olan şu: `select`/`input` için 32 px
+taban vardı ama **`button` için hiçbir taban yoktu**, yani kendi stilini
+vermeyen her düğme tarayıcı varsayılanına (≈22 px) düşüyordu. Taban eklendi;
+inline stil veren bileşenler onu zaten eziyor. Toplam 69 boşluk düzeltmesi
+(31 sayısal + 38 dize biçimli) + taban düğme + üst şerit + metrik satırları.
+
+**Kenar renkleri jetonlandı.** `tema.ts`'e `kenarDurum` eklendi
+(bilgi/iyi/uyarı/kötü, durum renginin düşük alfalısı). Yedi ayrı yerdeki
+`#2a3a4a`, `#6b4a12`, `#3a3a46`, `#4a3a12` — hepsi birbirine yakın, hiçbiri
+aynı, hiçbiri paletten türemiyordu — yerini bunlara bıraktı.
+
+**Em dash'ler NİYETE göre dönüştürüldü, silinmedi.** Sorun uzun çizginin
+kendisi değil, tek bağlacın 37 kez tekrarı; Türkçede "—" meşru noktalama.
+Sonuç/devam → `;`, tanım → `:`, ayrı cümle → `.`, yan bilgi → `(...)` ya da
+`,`. Bir tane bilerek kaldı: `EgitimGrafik`'teki `— Gaussian`, orada tire
+bağlaç değil **"değer yok"** göstergesi.
+
+**`✥` → `✜`.** Eski glif U+2725 "four club-spoked asterisk": dekoratif bir
+yıldız, hiçbir arayüzde "gezinme" anlamına gelmiyordu ve etiketsiz tahmin
+edilemiyordu. Diğer üçü KALDI çünkü onlar süs değil: `●` fırça lekesi, `◌`
+lasso'nun açık yolu, `◎` kürenin derinlik kabuğu — glif aracın ne yaptığını
+söylüyor. `gez` bir seçim aracı olmadığı için şekli de yok.
+
+**Doğrulama:** `npm run verify` **105/105** (önceki turda düşen
+`verify-gezinme-training-bench` kod hatası değildi; `playwright-core` kurulunca
+geçti). `npm run typecheck` temiz. Tarayıcıda: 52 düğmenin tamamı ≥32 px,
+ölçek dışı boşluk 0, hata sınırı tetiklenmedi, altı render modu çiziliyor.
+
+`docs/tasarim-kurallari.md`'ye üç yeni kural: boşluk kuralı `index.html`'i de
+kapsar, em dash kuralı, glif kuralı.
+
 ## 2026-09-28 — Z (Zeynep): çekim ön notları — klibin kendisi eğitim başlamadan söylenir
 
 Araştırmanın 1. bölümünün karşılığı. Ön ayar ekranı bugüne kadar videoyu HİÇ

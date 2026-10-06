@@ -19,8 +19,14 @@ import type { CSSProperties } from 'react';
  * (WCAG AA sınırı 4.5), kontrol yüksekliği 24-28 → 32 px, kutucuk 15 → 18 px.
  */
 
+/**
+ * SİSTEM YIĞINI. "Inter" BİLEREK YOK: yığında `-apple-system`'den sonra
+ * duruyordu, yani macOS'ta hiç render edilmiyordu — işe yaramayan ama
+ * "her AI arayüzünde Inter var" izlenimi veren bir kalıntıydı. Sistem fontu
+ * kullanıcının kendi arayüzüyle aynı ritmi tutar; yüklenecek dosya da yok.
+ */
 export const SANS =
-  '-apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", Roboto, system-ui, sans-serif';
+  '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, system-ui, sans-serif';
 export const MONO = 'ui-monospace, "SF Mono", "Cascadia Mono", Consolas, monospace';
 
 /**
@@ -51,6 +57,22 @@ export const renk = {
   iyi: '#4ade80',
   uyari: '#eab308',
   kotu: '#f87171',
+} as const;
+
+/**
+ * ANLAM TAŞIYAN KENARLAR. Nötr kenar renk DEĞİL ışıktır (`kenar`); ama bir
+ * kutu UYARI ya da HATA taşıyorsa kenarın da bunu söylemesi gerekir.
+ *
+ * Bu jetonlar olmadığı için yedi ayrı yerde elle hex yazılmıştı (`#6b4a12`,
+ * `#4a3a12`, `#2a3a4a`, `#3a3a46`) — hepsi birbirine yakın ama hiçbiri aynı,
+ * ve hiçbiri paletten türemiyordu. Durum rengi + düşük alfa: kenar her zaman
+ * kendi durumunun rengidir, ayrı bir koyu ton icat edilmez.
+ */
+export const kenarDurum = {
+  bilgi: 'rgba(77,141,255,0.32)',
+  iyi: 'rgba(74,222,128,0.32)',
+  uyari: 'rgba(234,179,8,0.38)',
+  kotu: 'rgba(248,113,113,0.38)',
 } as const;
 
 /** ÜÇ KADEME yarıçap — ölçümde 6 farklı değer çıkmıştı, tutarsızdı. */
@@ -110,7 +132,7 @@ export function dugme(etkin = false): CSSProperties {
     fontWeight: 500,
     lineHeight: 1,
     minHeight: 32,
-    padding: '9px 12px',
+    padding: '8px 12px',
     borderRadius: yaricap.kontrol,
     borderWidth: 1,
     borderStyle: 'solid',

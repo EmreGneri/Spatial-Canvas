@@ -15,6 +15,7 @@ import { deformAyari, deformGostergesi, klipRenderEt, type DeformChoice, type Kl
 import { SplatTemizleme } from './SplatTemizleme';
 import { egitimKaynagi, type TemizlemeKaynagi } from './temizlemeKaynagi';
 import { ayarSec, type EgitimAyari } from '../engine/reconstruction/egitim3dgs';
+import { kenarDurum } from './tema';
 
 /**
  * The splat.js training view overlays the engine canvas. Training starts
@@ -461,7 +462,7 @@ export function Egitim3D({ dosya, onKapat, say, onIlerleme }: {
             <div style={{ color: '#8ab', marginTop: 4 }}>{ayarOzeti(onAyar)}</div>
           )}
           {onKontrol && onKontrol.adimlar.length > 0 && (
-            <ol style={{ margin: '6px 0 0', paddingLeft: 18, color: '#c8c8d4', lineHeight: 1.5 }}>
+            <ol style={{ margin: '8px 0 0', paddingLeft: 16, color: '#c8c8d4', lineHeight: 1.5 }}>
               {onKontrol.adimlar.map((adim) => (
                 <li key={adim}>{adim}</li>
               ))}
@@ -645,7 +646,7 @@ export function Egitim3D({ dosya, onKapat, say, onIlerleme }: {
             style={dugmeBuyuk}
             aria-pressed={temizleAcik}
             disabled={bendBusy || plyBusy || klipIlerleme !== null}
-            title="floater ve arka plan artığını elle seç, sil (geri alınabilir) — sonra .ply al"
+            title="floater ve arka plan artığını elle seç, sil (geri alınabilir); sonra .ply al"
             onClick={() => {
               const e = egitimRef.current;
               if (!e) return;
@@ -706,11 +707,11 @@ export function Egitim3D({ dosya, onKapat, say, onIlerleme }: {
 const kaplama: CSSProperties = { position: 'absolute', inset: 0, background: '#000', zIndex: 5 };
 function onKontrolKutusu(calisir: boolean): CSSProperties {
   return {
-    padding: '6px 8px',
+    padding: '8px 8px',
     borderRadius: 3,
     borderWidth: 1,
     borderStyle: 'solid',
-    borderColor: calisir ? '#2a3a4a' : '#6b4a12',
+    borderColor: calisir ? kenarDurum.bilgi : kenarDurum.uyari,
     background: calisir ? '#12161c' : '#17130a',
     color: calisir ? '#c8c8d4' : '#f0b429',
     fontSize: 12,
@@ -719,18 +720,18 @@ function onKontrolKutusu(calisir: boolean): CSSProperties {
 
 /** Not kutusu: uyarı rengi değil BİLGİ rengi — bu bir hata değil, bir gözlem. */
 const cekimNotKutusu: CSSProperties = {
-  padding: '6px 8px',
+  padding: '8px 8px',
   borderRadius: 3,
   borderWidth: 1,
   borderStyle: 'solid',
-  borderColor: '#2a3a4a',
+  borderColor: kenarDurum.bilgi,
   background: '#12161c',
   color: '#8ab',
   fontSize: 12,
 };
 
 const onAyarlama: CSSProperties = {
-  width: 'min(430px, calc(100% - 32px))', padding: 20, border: '1px solid #333',
+  width: 'min(430px, calc(100% - 32px))', padding: 24, border: '1px solid #333',
   borderRadius: 8, background: '#15151d', color: '#c8c8d4', fontSize: 13,
 };
 const serit: CSSProperties = {
@@ -739,8 +740,8 @@ const serit: CSSProperties = {
   // .ply düğmeleri hiç tıklanamıyordu. Sarma açıldı; sığmayan düğme alt
   // satıra iner, hiçbiri kaybolmaz.
   position: 'absolute', left: 0, right: 0, bottom: 0, display: 'flex',
-  flexWrap: 'wrap', gap: 8, rowGap: 6, alignItems: 'center',
-  padding: '6px 8px', background: 'rgba(0,0,0,0.7)', color: '#c8c8d4', fontSize: 12,
+  flexWrap: 'wrap', gap: 8, rowGap: 4, alignItems: 'center',
+  padding: '8px 8px', background: 'rgba(0,0,0,0.7)', color: '#c8c8d4', fontSize: 12,
   // Çok dar pencerede şerit tuvalin yarısını kaplamasın; taşarsa kendi içinde
   // kaydırılır (düğme gizlemekten iyidir).
   maxHeight: '55%', overflowY: 'auto', boxSizing: 'border-box',
@@ -749,12 +750,12 @@ const serit: CSSProperties = {
 const seritDurum: CSSProperties = { flex: '1 1 240px', minWidth: 0 };
 const cubuk: CSSProperties = { position: 'absolute', left: 0, bottom: 0, height: 2, background: '#6af', transition: 'width 0.5s' };
 const dugme: CSSProperties = {
-  fontFamily: 'inherit', fontSize: 12, padding: '2px 8px', background: '#1a1a22', color: '#c8c8d4',
+  fontFamily: 'inherit', fontSize: 12, padding: '4px 8px', background: '#1a1a22', color: '#c8c8d4',
   border: '1px solid #333', borderRadius: 3, cursor: 'pointer',
 };
 // docs/tasarim-kurallari.md: dokunma hedefleri >= 32 px (Fitts yasası).
 const dugmeBuyuk: CSSProperties = { ...dugme, minHeight: 32 };
 const secim: CSSProperties = {
-  fontFamily: 'inherit', fontSize: 12, height: 32, minHeight: 32, padding: '0 6px',
+  fontFamily: 'inherit', fontSize: 12, height: 32, minHeight: 32, padding: '0 8px',
   background: '#1a1a22', color: '#c8c8d4', border: '1px solid #333', borderRadius: 3, cursor: 'pointer',
 };

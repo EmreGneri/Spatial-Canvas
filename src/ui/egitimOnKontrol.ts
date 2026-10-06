@@ -35,12 +35,12 @@ export interface OnKontrol {
  */
 export function egitimOnKontrol({ webgpu, ua }: OnKontrolGirdi): OnKontrol {
   if (webgpu) {
-    return { calisir: true, baslik: 'WebGPU hazır — 3D eğitim bu cihazda çalışabilir.', adimlar: [] };
+    return { calisir: true, baslik: 'WebGPU hazır: 3D eğitim bu cihazda çalışabilir.', adimlar: [] };
   }
 
   const safari = /Safari/i.test(ua) && !/Chrome|Chromium|Edg/i.test(ua);
   const firefox = /Firefox/i.test(ua);
-  const baslik = 'WebGPU açılamadı — 3D eğitim bu tarayıcıda çalışmaz.';
+  const baslik = 'WebGPU açılamadı: 3D eğitim bu tarayıcıda çalışmaz.';
 
   if (safari) {
     return {

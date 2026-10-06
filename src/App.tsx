@@ -121,7 +121,7 @@ const calismaKatmani: CSSProperties = {
   display: 'flex',
   alignItems: 'center',
   gap: 8,
-  padding: '7px 11px',
+  padding: '8px 12px',
   borderRadius: yaricap.kontrol,
   background: 'rgba(10,12,16,0.78)',
   backdropFilter: 'blur(10px)',
@@ -159,11 +159,11 @@ function ustSerit(dar: boolean): CSSProperties {
     display: 'flex',
     alignItems: 'center',
     flexWrap: 'wrap',
-    gap: dar ? 6 : 10,
+    gap: dar ? 4 : 8,
     width: '100%',
     maxWidth: 'min(960px, 100%)',
     boxSizing: 'border-box',
-    padding: dar ? '8px 10px' : '10px 14px',
+    padding: dar ? '8px 8px' : '8px 16px',
     ...cam({ blur: 24, radius: yaricap.panel }),
   };
 }
@@ -489,7 +489,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
         engineRef.current!.setObjectSeparation(karar.ayirmaAcik);
       } catch (err) {
         if (!isCurrent()) return;
-        say(`nesne ayırma atlandı (${err instanceof Error ? err.message : String(err)}) — maske olmadan devam`);
+        say(`nesne ayırma atlandı (${err instanceof Error ? err.message : String(err)}); maske olmadan devam`);
         updateSegment(false);
         engineRef.current!.setObjectSeparation(false);
       }
@@ -774,7 +774,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
       // replace the newer source's without ever being called.
       if (iptal || !isCurrent()) return;
       if (!varMi) {
-        say('canlı derinlik: WebGPU yok — parlaklık vekiliyle devam');
+        say('canlı derinlik: WebGPU yok; parlaklık vekiliyle devam');
         return;
       }
       say(`canlı derinlik başlıyor · video ${video.videoWidth}x${video.videoHeight} · ${video.duration.toFixed(1)} sn`);
@@ -846,7 +846,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
           onError: (err, ardisik) =>
             say(`canlı derinlik hatası (${ardisik}/3): ${err instanceof Error ? err.message : String(err)}`),
           onVazgec: () => {
-            say('canlı derinlik: ardışık 3 hata — parlaklık vekiline dönüldü');
+            say('canlı derinlik: ardışık 3 hata; parlaklık vekiline dönüldü');
             engineRef.current?.clearVideoFrameColor();
             liveDepthStopRef.current = null;
             if (videoRef.current === video) startLuminanceLoop(video, label);
@@ -871,7 +871,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
     const next = !segment;
     updateSegment(next);
     engineRef.current!.setObjectSeparation(next);
-    say(`nesne ayırma: ${next ? 'AÇIK (arka plan parçacıkları atılır — sadece büst)' : 'kapalı (tüm sahne, arka plan karartılır)'}`);
+    say(`nesne ayırma: ${next ? 'AÇIK (arka plan parçacıkları atılır, sadece büst)' : 'kapalı (tüm sahne, arka plan karartılır)'}`);
     if (!next) return;
     // Video: request a mask now instead of waiting for a new depth frame,
     // which never comes while paused. A stale callback ignores the call.
@@ -1197,7 +1197,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
     setGraphTick((t) => t + 1);
     // Solid kabuk fotoğraf-only: sessiz fallback yerine sebebi söylenir.
     if (next === 'solid' && !engine.solidAvailable) {
-      say('solid: kabuk yok (fotoğraf gerekir) — nokta bulutunda kalındı');
+      say('solid: kabuk yok (fotoğraf gerekir); nokta bulutunda kalındı');
     }
   }
   changeModeRef.current = changeMode;
@@ -1223,7 +1223,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
       say(`video → 3B: keyframe yakalanıyor (${(video.currentTime || 0).toFixed(1)}s)...`);
       const frames = await captureKeyframes(video);
       if (frames.length < 2) {
-        say(`video → 3B: keyframe yetersiz (${frames.length}) — video oynuyor mu?`);
+        say(`video → 3B: keyframe yetersiz (${frames.length}). Video oynuyor mu?`);
         return;
       }
       say(`video → 3B: ${frames.length} keyframe · eşleştirme + poz + füzyon...`);
@@ -1237,7 +1237,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
       if (mode !== 'splat') changeMode('splat');
       say(
         `video → 3B: ${scene.data.count.toLocaleString('tr-TR')} splat · ` +
-          (scene.scale ? `ölçek a=${scene.scale.scaleA.toFixed(3)} b=${scene.scale.scaleB.toFixed(3)}` : 'ölçek yok (üçgenleme yetersiz — d_pred ölçeği)') +
+          (scene.scale ? `ölçek a=${scene.scale.scaleA.toFixed(3)} b=${scene.scale.scaleB.toFixed(3)}` : 'ölçek yok (üçgenleme yetersiz, d_pred ölçeği)') +
           ` · ${scene.stats.flowMatches} eşleşme · ${Math.round(performance.now() - t0)} ms`,
       );
     } catch (err) {
@@ -1285,11 +1285,11 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
           gelir (elle güncellenmez). */}
       <header style={{ ...ustSerit(dar) }}>
         <span style={{ fontSize: 15, fontWeight: 600, letterSpacing: 0.2 }}>spatial-canvas</span>
-        <span style={{ fontFamily: MONO, fontSize: 10, color: renk.metinSilik, padding: '2px 6px', borderRadius: 6, background: 'rgba(255,255,255,0.06)' }}>
+        <span style={{ fontFamily: MONO, fontSize: 10, color: renk.metinSilik, padding: '4px 8px', borderRadius: 6, background: 'rgba(255,255,255,0.06)' }}>
           v{__APP_VERSION__}
         </span>
         <span style={toolDivider} />
-        <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: renk.metinSolgun }}>
+        <span style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, color: renk.metinSolgun }}>
           <span style={led(true, renk.vurgu)} />
           {mode}
         </span>
@@ -1320,7 +1320,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
         >
           sentetik görsel
         </button>
-        <label style={{ ...toolButton, display: 'inline-flex', gap: 6, alignItems: 'center' }} title="görsel ya da video seç (sürükle-bırak da çalışır)">
+        <label style={{ ...toolButton, display: 'inline-flex', gap: 4, alignItems: 'center' }} title="görsel ya da video seç (sürükle-bırak da çalışır)">
           dosya…
           <input
             type="file"
@@ -1363,7 +1363,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
           }}
           title={
             captureRunning
-              ? 'hızlı 3B harita sürüyor — bitince eğitilebilir'
+              ? 'hızlı 3B harita sürüyor; bitince eğitilebilir'
               : videoDosya
                 ? 'videodan gerçek 3D Gaussian Splat eğit (WebGPU, birkaç dakika)'
                 : 'önce video yükle'
@@ -1473,7 +1473,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
               setTrackerMod(m);
               trackerRef.current!.setMod(m);
               trackerTargetsRef.current = [];
-              if (m === 'nesne') say('tracker: nesne modu — ilk tespit modeli yüklerken birkaç saniye sürebilir');
+              if (m === 'nesne') say('tracker: nesne modu. İlk tespit modeli yüklerken birkaç saniye sürebilir');
             }}
           />
         )}
@@ -1538,7 +1538,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
               aria-pressed={temizlemeAcik}
               title={engine.splatAvailable
                 ? 'floater/arka plan artığını elle seç ve sil (geri alınabilir)'
-                : 'splat sahnesi yok — önce splat modu ya da füzyon gerekiyor'}
+                : 'splat sahnesi yok; önce splat modu ya da füzyon gerekiyor'}
               onClick={() => setTemizlemeAcik((v) => !v)}
             >
               ⌫ temizle
@@ -1595,7 +1595,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
           kendi durumunu tutar; Engine'e yalnızca imzalı API'den yazarlar
           (setGaussians / setPoseTrack / setSelectedKeyframe). */}
       {engine && (
-        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-start' }}>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'flex-start' }}>
           <div style={{ minWidth: 260, flex: '1 1 260px' }}>
             <CapturePanel
               engine={engine}
@@ -1707,23 +1707,23 @@ function PresetControls({
         onChange={(e) => setName(e.target.value)}
         placeholder="slot adı"
         onKeyDown={(e) => e.key === 'Enter' && save()}
-        style={{ width: 140, fontSize: 12, padding: '3px 6px', background: '#101018', color: '#c8c8d4', border: '1px solid #26262e', borderRadius: 3 }}
+        style={{ width: 140, fontSize: 12, padding: '4px 8px', background: '#101018', color: '#c8c8d4', border: '1px solid #26262e', borderRadius: 3 }}
       />
       <button
         type="button"
         onClick={save}
-        style={{ fontSize: 12, padding: '3px 10px', background: '#1a1a22', color: '#c8c8d4', border: '1px solid #26262e', borderRadius: 3, cursor: 'pointer' }}
+        style={{ fontSize: 12, padding: '4px 8px', background: '#1a1a22', color: '#c8c8d4', border: '1px solid #26262e', borderRadius: 3, cursor: 'pointer' }}
       >
         kaydet
       </button>
       <button
         type="button"
         onClick={exportFile}
-        style={{ fontSize: 12, padding: '3px 10px', background: '#1a1a22', color: '#c8c8d4', border: '1px solid #26262e', borderRadius: 3, cursor: 'pointer' }}
+        style={{ fontSize: 12, padding: '4px 8px', background: '#1a1a22', color: '#c8c8d4', border: '1px solid #26262e', borderRadius: 3, cursor: 'pointer' }}
       >
         dosya ↓
       </button>
-      <label style={{ fontSize: 12, padding: '3px 10px', background: '#1a1a22', color: '#c8c8d4', border: '1px solid #26262e', borderRadius: 3, cursor: 'pointer' }}>
+      <label style={{ fontSize: 12, padding: '4px 8px', background: '#1a1a22', color: '#c8c8d4', border: '1px solid #26262e', borderRadius: 3, cursor: 'pointer' }}>
         dosya ↑
         <input
           type="file"
@@ -1738,14 +1738,14 @@ function PresetControls({
       </label>
       {slots.map((n) => (
         <span key={n} style={{ ...row, gap: 4 }}>
-          <button type="button" onClick={() => load(n)} style={{ fontSize: 12, padding: '3px 10px', background: '#1a1a22', color: '#8ab', border: '1px solid #26262e', borderRadius: 3, cursor: 'pointer' }}>
+          <button type="button" onClick={() => load(n)} style={{ fontSize: 12, padding: '4px 8px', background: '#1a1a22', color: '#8ab', border: '1px solid #26262e', borderRadius: 3, cursor: 'pointer' }}>
             {n}
           </button>
           <button
             type="button"
             title={`"${n}" slotunu sil`}
             onClick={() => remove(n)}
-            style={{ fontSize: 10, padding: '2px 6px', background: 'none', color: '#667', border: 'none', cursor: 'pointer' }}
+            style={{ fontSize: 10, padding: '4px 8px', background: 'none', color: '#667', border: 'none', cursor: 'pointer' }}
           >
             ✕
           </button>

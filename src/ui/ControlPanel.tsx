@@ -47,13 +47,13 @@ const panelStyle: CSSProperties = {
   top: 12,
   maxHeight: 'calc(100vh - 120px)',
   width: '100%',
-  padding: 10,
+  padding: 8,
   boxSizing: 'border-box',
   ...cam({ blur: 26, radius: yaricap.panel }),
   fontFamily: SANS,
   fontSize: 12,
   display: 'grid',
-  gap: 6,
+  gap: 4,
   alignContent: 'start',
   overflowY: 'auto',
   // Kaydırma sırasında kartlar panelin kenarına yapışmasın.
@@ -97,7 +97,7 @@ const darPanelStyle: CSSProperties = {
   height: 'auto',
   maxHeight: '60vh',
   boxSizing: 'border-box',
-  padding: 10,
+  padding: 8,
   ...cam({ blur: 22, radius: yaricap.panel }),
   fontFamily: SANS,
   fontSize: 12,
@@ -276,7 +276,7 @@ function CharSetSelect({ material }: { material: AsciiMaterial }) {
       </span>
       <select
         value={chars}
-        style={{ font: 'inherit', background: '#1a1a22', color: '#c8c8d4', border: '1px solid #26262e', padding: '3px 4px' }}
+        style={{ font: 'inherit', background: '#1a1a22', color: '#c8c8d4', border: '1px solid #26262e', padding: '4px 4px' }}
         onChange={(e) => {
           material.setCharSet(e.target.value); // atlası yeniden üretir
           setChars(e.target.value);
