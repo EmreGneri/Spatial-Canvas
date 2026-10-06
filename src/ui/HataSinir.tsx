@@ -1,6 +1,6 @@
 import { Component, Fragment, type ErrorInfo, type ReactNode } from 'react';
 import { hataGorunum, onbellekAnahtarlari, type HataGorunum } from './hataMesaji';
-import { bosluk, MONO, renk, SANS, yaricap, yazi, yuzey } from './tema';
+import { bosluk, kenarDurum, MONO, renk, SANS, yaricap, yazi, yuzey } from './tema';
 
 /**
  * HATA SINIRI — render ağacı çökerse beyaz ekran yerine bu.
@@ -154,7 +154,7 @@ const nokta = {
 
 const liste = {
   margin: 0,
-  paddingLeft: 20,
+  paddingLeft: 24,
   display: 'grid',
   gap: bosluk.xs,
   color: renk.metinSolgun,
@@ -167,11 +167,11 @@ const birincil = {
   fontSize: yazi.orta,
   fontWeight: 600,
   minHeight: 36,
-  padding: '10px 16px',
+  padding: '8px 16px',
   borderRadius: yaricap.kontrol,
   borderWidth: 1,
   borderStyle: 'solid' as const,
-  borderColor: 'rgba(77,141,255,0.5)',
+  borderColor: kenarDurum.bilgi,
   background: renk.vurguSakin,
   color: '#dce9ff',
   cursor: 'pointer',
@@ -181,7 +181,7 @@ const ikincil = {
   fontFamily: SANS,
   fontSize: yazi.govde,
   minHeight: 36,
-  padding: '10px 14px',
+  padding: '8px 16px',
   borderRadius: yaricap.kontrol,
   borderWidth: 1,
   borderStyle: 'solid' as const,

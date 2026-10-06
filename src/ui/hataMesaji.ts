@@ -71,7 +71,7 @@ export function hataGorunum(hata: unknown): HataGorunum {
       adimlar: [
         'Aşağıdaki "önbelleği temizle ve yenile" düğmesine bas.',
         'Sayfa açıldıktan sonra modeli gerektiren işi (derinlik, nesne ayırma) tekrar dene.',
-        'Sorun sürerse ağ bağlantını kontrol et — model indirmesi yarıda kesilmiş olabilir.',
+        'Sorun sürerse ağ bağlantını kontrol et; model indirmesi yarıda kesilmiş olabilir.',
       ],
       onbellekTemizle: true,
       ham,
@@ -84,7 +84,7 @@ export function hataGorunum(hata: unknown): HataGorunum {
       aciklama:
         'Tarayıcının WebGL bağlamı kayboldu ya da bir shader derlenemedi; sahne çizilemiyor.',
       adimlar: [
-        'Sayfayı yenile — bağlam yeniden kurulur.',
+        'Sayfayı yenile; bağlam yeniden kurulur.',
         'GPU kullanan başka sekmeleri (video, oyun, 3D eğitim) kapat.',
         'Tekrarlıyorsa ekran kaydı/donanım ivmesi ayarlarını kontrol et.',
       ],
@@ -111,7 +111,7 @@ export function hataGorunum(hata: unknown): HataGorunum {
     baslik: 'Arayüz beklenmeyen bir hatayla durdu',
     aciklama: 'Hatanın kendi metni aşağıda; sahne ve ayarlar bellekte kaybolmuş olabilir.',
     adimlar: [
-      '"yeniden dene" ile arayüzü sıfırla — sayfa yenilenmez, açık kaynak korunmaya çalışılır.',
+      '"yeniden dene" ile arayüzü sıfırla; sayfa yenilenmez, açık kaynak korunmaya çalışılır.',
       'Aynı adımda tekrar oluyorsa sayfayı yenile.',
       'Hatanın metnini kopyalayıp bildir (aşağıda).',
     ],

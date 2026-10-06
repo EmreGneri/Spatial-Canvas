@@ -1,6 +1,6 @@
 import { useEffect, useState, type CSSProperties } from 'react';
 import { arDurum, guvensizBaglam, type ArDurum } from './arDurum';
-import { bosluk, cam, dugme, renk, SANS, yaricap, yazi, yuzey } from './tema';
+import { bosluk, cam, dugme, kenarDurum, renk, SANS, yaricap, yazi, yuzey } from './tema';
 
 /**
  * AR/VR HIZLI ÖNİZLEME DÜĞMESİ.
@@ -89,7 +89,7 @@ export function ArDugmesi({
         aria-pressed={tanitim}
         title={guvensiz
           ? 'WebXR yalnız https (ve localhost) üzerinde açılır'
-          : `${durum.baslik}${durum.acilabilir ? '' : ' — ayrıntı için tıkla'}`}
+          : `${durum.baslik}${durum.acilabilir ? '' : ' · ayrıntı için tıkla'}`}
         onClick={() => setTanitim((v) => !v)}
       >
         ◈ {durum.etiket}
@@ -149,7 +149,7 @@ const sayfa: CSSProperties = {
 
 const liste: CSSProperties = {
   margin: 0,
-  paddingLeft: 18,
+  paddingLeft: 16,
   display: 'grid',
   gap: bosluk.xs,
   color: renk.metinSolgun,
@@ -160,7 +160,7 @@ const liste: CSSProperties = {
 const hataSatiri: CSSProperties = {
   ...yuzey(2, yaricap.kontrol),
   padding: bosluk.s,
-  borderColor: 'rgba(248,113,113,0.35)',
+  borderColor: kenarDurum.kotu,
   color: renk.kotu,
   fontSize: yazi.kucuk,
 };

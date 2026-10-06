@@ -41,7 +41,7 @@ const panelStyle: CSSProperties = {
   display: 'flex',
   flexDirection: 'column',
   gap: 8,
-  padding: 10,
+  padding: 8,
   border: '1px solid #26262e',
   borderRadius: 4,
   background: '#101014',
@@ -52,7 +52,7 @@ const panelStyle: CSSProperties = {
 
 const buttonStyle: CSSProperties = {
   font: 'inherit',
-  padding: '4px 10px',
+  padding: '4px 8px',
   background: '#1a1a22',
   color: '#c8c8d4',
   border: '1px solid #26262e',
@@ -89,12 +89,12 @@ function judgeScale(stats: CaptureStats | null): { ok: boolean; text: string } {
   if (!stats) return { ok: true, text: '' };
   const { scaleA: a, scaleB: b, scaleRmse: rmse } = stats;
   if (a === null || b === null || rmse === null) {
-    return { ok: false, text: 'çözülemedi — d_pred ölçeğinde (metrik DEĞİL)' };
+    return { ok: false, text: 'çözülemedi: d_pred ölçeğinde (metrik DEĞİL)' };
   }
   if (a <= 0) {
     return {
       ok: false,
-      text: `GEÇERSİZ: a=${a.toFixed(2)} ≤ 0 (negatif eğim) · rmse=${rmse.toFixed(2)} — metrik DEĞİL`,
+      text: `GEÇERSİZ: a=${a.toFixed(2)} ≤ 0 (negatif eğim) · rmse=${rmse.toFixed(2)} · metrik DEĞİL`,
     };
   }
   if (rmse > SCALE_RMSE_LIMIT * Math.abs(a)) {
@@ -102,7 +102,7 @@ function judgeScale(stats: CaptureStats | null): { ok: boolean; text: string } {
       ok: false,
       text:
         `GEÇERSİZ: rmse=${rmse.toFixed(2)}, uydurmanın kapsadığı aralığın (|a|=${Math.abs(a).toFixed(2)}) ` +
-        `${(rmse / Math.abs(a)).toFixed(1)}× katı — uydurma veriyi açıklamıyor, metrik DEĞİL`,
+        `${(rmse / Math.abs(a)).toFixed(1)}× katı; uydurma veriyi açıklamıyor, metrik DEĞİL`,
     };
   }
   return { ok: true, text: `bağıl ölçek a=${a.toFixed(4)} b=${b.toFixed(4)} · rmse=${rmse.toFixed(4)} (gerçek metre değil)` };
@@ -184,7 +184,7 @@ export function CapturePanel({
         setProgress(`${frames.length} / ${maxFrames} keyframe`);
         if (frames.length < 2) {
           throw new Error(
-            `yalnızca ${frames.length} keyframe yakalandı — poz zinciri en az 2 kare ister (video çok kısa ya da donuk)`,
+            `yalnızca ${frames.length} keyframe yakalandı; poz zinciri en az 2 kare ister (video çok kısa ya da donuk)`,
           );
         }
 
@@ -196,7 +196,7 @@ export function CapturePanel({
         // + tek-çalışma kilidi) — tek gerekli await dokunuşu, kalanı aynen.
         const scene = await buildFusionScene(frames, VIDEO_FOV_Y);
         if (scene.data.count === 0) {
-          throw new Error('sahne oluşturulamadı — hareketli ve dokulu bir video deneyin');
+          throw new Error('sahne oluşturulamadı. Hareketli ve dokulu bir video deneyin');
         }
 
         engine.setGaussians(scene.data);
@@ -274,7 +274,7 @@ export function CapturePanel({
         <div style={{ color: '#dc6' }}>3D eğitim sürüyor — bitince kullanılabilir</div>
       )}
 
-      <label style={{ display: 'flex', gap: 6, alignItems: 'center', color: '#889' }}>
+      <label style={{ display: 'flex', gap: 4, alignItems: 'center', color: '#889' }}>
         keyframe
         <input
           type="range"
@@ -290,7 +290,7 @@ export function CapturePanel({
       </label>
 
       {/* AŞAMA — hangi adımdayız, sayıyla */}
-      <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+      <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
         <span
           style={{
             width: 8,
@@ -351,7 +351,7 @@ export function CapturePanel({
               type="button"
               style={{
                 ...buttonStyle,
-                padding: '2px 8px',
+                padding: '4px 8px',
                 background: selected === null ? '#8ab' : '#1a1a22',
                 color: selected === null ? '#101014' : '#c8c8d4',
               }}
@@ -368,7 +368,7 @@ export function CapturePanel({
                 type="button"
                 style={{
                   ...buttonStyle,
-                  padding: '2px 8px',
+                  padding: '4px 8px',
                   background: selected === i ? '#ffd166' : '#1a1a22',
                   color: selected === i ? '#101014' : '#c8c8d4',
                 }}
@@ -381,7 +381,7 @@ export function CapturePanel({
               </button>
             ))}
           </div>
-          <label style={{ display: 'flex', gap: 6, alignItems: 'center', color: '#889' }}>
+          <label style={{ display: 'flex', gap: 4, alignItems: 'center', color: '#889' }}>
             <input
               type="checkbox"
               checked={showTraj}

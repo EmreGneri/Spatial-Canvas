@@ -88,7 +88,7 @@ function SpatialNode({ data, selected }: NodeProps<SpatialNodeType>) {
         background: '#14141c',
         border: `1px solid ${selected ? meta.color : '#2a2a34'}`,
         borderRadius: 6,
-        padding: '6px 10px',
+        padding: '8px 8px',
         color: '#c8c8d4',
         fontFamily: 'ui-monospace, "Cascadia Mono", Consolas, monospace',
         fontSize: 12,
@@ -99,7 +99,7 @@ function SpatialNode({ data, selected }: NodeProps<SpatialNodeType>) {
     >
       <Handle type="target" position={Position.Left} style={{ background: meta.color }} />
       <div style={{ color: meta.color, fontWeight: 700 }}>{meta.label}</div>
-      <div style={{ color: '#667', fontSize: 10, marginTop: 2 }}>
+      <div style={{ color: '#667', fontSize: 10, marginTop: 4 }}>
         {data.paramCount} parametre
       </div>
       <Handle type="source" position={Position.Right} style={{ background: meta.color }} />
@@ -246,7 +246,7 @@ export function NodeGraphEditor({
         <button
           type="button"
           onClick={resetGraph}
-          style={{ fontSize: 12, padding: '3px 10px', background: '#1a1a22', color: '#c8c8d4', border: '1px solid #26262e', borderRadius: 3, cursor: 'pointer' }}
+          style={{ fontSize: 12, padding: '4px 8px', background: '#1a1a22', color: '#c8c8d4', border: '1px solid #26262e', borderRadius: 3, cursor: 'pointer' }}
         >
           varsayılana sıfırla
         </button>
@@ -313,7 +313,7 @@ function ParamPanel({
   const meta = NODE_META[node.type];
 
   return (
-    <div style={{ display: 'grid', gap: 6, color: '#889', border: `1px solid ${meta.color}33`, background: '#101018', borderRadius: 6, padding: 8 }}>
+    <div style={{ display: 'grid', gap: 4, color: '#889', border: `1px solid ${meta.color}33`, background: '#101018', borderRadius: 6, padding: 8 }}>
       <div style={{ ...row, color: meta.color, fontWeight: 700 }}>
         {meta.label} <span style={{ color: '#556', fontWeight: 400 }}>· {node.id}</span>
         <span style={{ marginLeft: 'auto', color: '#556', fontWeight: 400 }}>
@@ -335,7 +335,7 @@ function ParamPanel({
               style={{
                 fontWeight: String(node.params.mode) === m ? 700 : 400,
                 fontSize: 12,
-                padding: '2px 10px',
+                padding: '4px 8px',
                 background: String(node.params.mode) === m ? '#1f2b26' : '#14141c',
                 color: String(node.params.mode) === m ? '#10b981' : '#889',
                 border: '1px solid #26262e',

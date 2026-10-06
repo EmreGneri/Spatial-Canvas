@@ -556,7 +556,7 @@ function panelStyle(accent: string): CSSProperties {
     right: 8,
     width: 190,
     boxSizing: 'border-box',
-    padding: 6,
+    padding: 8,
     background: 'rgba(10, 10, 14, 0.82)',
     border: `1px solid ${accent}55`,
     borderRadius: 3,
@@ -571,7 +571,7 @@ const rowStyle: CSSProperties = {
   gridTemplateColumns: '1fr 80px',
   alignItems: 'center',
   justifyItems: 'end',
-  gap: 6,
+  gap: 4,
 };
 
 const headerStyle: CSSProperties = {

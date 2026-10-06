@@ -1,6 +1,7 @@
 import { useEffect, useState, type CSSProperties } from 'react';
 import { yetenekRaporu, type YetenekRaporu } from '../engine/vision/yetenek';
 import { yetenekGorunumu } from './yetenekGorunum';
+import { kenarDurum } from './tema';
 
 /**
  * YETENEK UYARISI — Z2 (render katmanı, Zeynep). Emre'nin `yetenekRaporu()`
@@ -52,8 +53,8 @@ export function YetenekUyarisi({ say }: { say?: (mesaj: string) => void }) {
   return (
     <div style={seritStyle} role="status">
       <span style={{ color: '#f0b429' }}>▲</span>
-      <div style={{ display: 'grid', gap: 3 }}>
-        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+      <div style={{ display: 'grid', gap: 4 }}>
+        <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', alignItems: 'center' }}>
           {gorunum.rozetler.map((r) => (
             <Rozet key={r.ad} ad={r.ad} acik={r.acik} />
           ))}
@@ -78,7 +79,7 @@ function Rozet({ ad, acik }: { ad: string; acik: boolean }) {
     <span
       style={{
         fontSize: 11,
-        padding: '1px 6px',
+        padding: '4px 8px',
         borderRadius: 2,
         border: `1px solid ${acik ? '#2a3a2a' : '#6b4a12'}`,
         background: acik ? 'transparent' : '#2a1f08',
@@ -96,11 +97,11 @@ const seritStyle: CSSProperties = {
   alignItems: 'flex-start',
   maxWidth: 'min(960px, 100%)',
   boxSizing: 'border-box',
-  padding: '6px 8px',
+  padding: '8px 8px',
   background: '#17130a',
   borderWidth: 1,
   borderStyle: 'solid',
-  borderColor: '#4a3a12',
+  borderColor: kenarDurum.uyari,
   borderRadius: 3,
   fontFamily: 'ui-monospace, "Cascadia Mono", Consolas, monospace',
   fontSize: 12,

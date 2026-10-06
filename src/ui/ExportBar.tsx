@@ -174,7 +174,7 @@ export function ExportBar({ engine, say }: { engine: Engine | null; say: (mesaj:
         style={dugme}
         disabled={!engine || mesgul}
         onClick={plyIndir}
-        title="sahneyi 3D Gaussian Splat (.ply) olarak indir — SuperSplat vb. açar"
+        title="sahneyi 3D Gaussian Splat (.ply) olarak indir (SuperSplat vb. açar)"
       >
         PLY
       </button>
@@ -223,9 +223,9 @@ const dugme: CSSProperties = temaDugme(false);
 
 const grupStyle: CSSProperties = {
   display: 'flex',
-  gap: 2,
+  gap: 4,
   alignItems: 'center',
-  padding: 2,
+  padding: 4,
   borderWidth: 1,
   borderStyle: 'solid',
   borderColor: renk.kenar,
@@ -238,7 +238,7 @@ function sureDugmesi(secili: boolean): CSSProperties {
     fontFamily: SANS,
     fontSize: yazi.kucuk,
     minHeight: 32,
-    padding: '6px 9px',
+    padding: '8px 8px',
     background: secili ? renk.vurguSakin : 'transparent',
     color: secili ? '#dce9ff' : renk.metinSilik,
     borderWidth: 0,

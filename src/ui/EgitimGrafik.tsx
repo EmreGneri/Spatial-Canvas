@@ -30,7 +30,7 @@ export function EgitimGrafik({
 
   return (
     <div style={kutu}>
-      <div style={{ display: 'grid', gap: 2, minWidth: 0 }}>
+      <div style={{ display: 'grid', gap: 4, minWidth: 0 }}>
         <span style={{ fontSize: yazi.kucuk, color: renk.metinSolgun, fontWeight: 600 }}>
           {bitti ? '3D eğitim · bitti' : '3D eğitim · kalite'}
         </span>
@@ -60,7 +60,7 @@ export function EgitimGrafik({
           )}
       </svg>
 
-      <div style={{ display: 'grid', gap: 2, minWidth: 0 }}>
+      <div style={{ display: 'grid', gap: 4, minWidth: 0 }}>
         {/* Y aralığı yazılı: eksen etiketi olmadan "1 dB" ile "10 dB"lik bir
             tırmanış aynı görünür. */}
         <span style={olcu}>{d.yol ? `${d.yMin.toFixed(1)} – ${d.yMax.toFixed(1)} dB` : 'PSNR'}</span>
@@ -77,7 +77,7 @@ export function EgitimGrafik({
       )}
       {e !== null && bitti && (
         <span style={{ ...olcu, color: e >= 0.2 ? renk.iyi : renk.metinSilik }}>
-          {e >= 0.2 ? 'hâlâ tırmanıyordu — sürdürmek işe yarayabilir' : 'eğri düzleşmişti'}
+          {e >= 0.2 ? 'hâlâ tırmanıyordu; sürdürmek işe yarayabilir' : 'eğri düzleşmişti'}
         </span>
       )}
     </div>

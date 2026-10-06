@@ -381,7 +381,7 @@ export function SplatTemizleme({
           <button
             key={a}
             type="button"
-            style={{ ...dugme(arac === a), minHeight: 32, padding: '7px 10px' }}
+            style={{ ...dugme(arac === a), minHeight: 32, padding: '8px 8px' }}
             aria-pressed={arac === a}
             title={ARAC_IPUCU[a]}
             onClick={() => { setArac(a); lassoRef.current = []; }}
@@ -391,7 +391,7 @@ export function SplatTemizleme({
         ))}
 
         {arac !== 'gez' && arac !== 'lasso' && (
-          <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: yazi.kucuk, color: renk.metinSolgun }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: yazi.kucuk, color: renk.metinSolgun }}>
             boyut
             <input
               type="range"
@@ -409,16 +409,16 @@ export function SplatTemizleme({
         <span style={ayrac} />
         <button
           type="button"
-          style={{ ...dugme(secimVar), minHeight: 32, padding: '7px 12px', opacity: secimVar && !mesgul ? 1 : 0.5 }}
+          style={{ ...dugme(secimVar), minHeight: 32, padding: '8px 12px', opacity: secimVar && !mesgul ? 1 : 0.5 }}
           disabled={!secimVar || mesgul}
-          title="seçili splat'lar öldürülür — geri alınabilir"
+          title="seçili splat'lar öldürülür (geri alınabilir)"
           onClick={sil}
         >
           {mesgul ? '…' : `sil${secimVar ? ` (${secimSayisi.toLocaleString('tr-TR')})` : ''}`}
         </button>
         <button
           type="button"
-          style={{ ...dugme(), minHeight: 32, padding: '7px 10px', opacity: gecmisBoy && !mesgul ? 1 : 0.5 }}
+          style={{ ...dugme(), minHeight: 32, padding: '8px 8px', opacity: gecmisBoy && !mesgul ? 1 : 0.5 }}
           disabled={!gecmisBoy || mesgul}
           onClick={sonuGeriAl}
           title="son silmeyi geri al (yalnız ters sırada çalışır)"
@@ -427,7 +427,7 @@ export function SplatTemizleme({
         </button>
         <button
           type="button"
-          style={{ ...dugme(), minHeight: 32, padding: '7px 10px', opacity: gecmisBoy && !mesgul ? 1 : 0.5 }}
+          style={{ ...dugme(), minHeight: 32, padding: '8px 8px', opacity: gecmisBoy && !mesgul ? 1 : 0.5 }}
           disabled={!gecmisBoy || mesgul}
           onClick={tumunuGeriAl}
           title="tüm silmeleri ters sırada geri al"
@@ -440,7 +440,7 @@ export function SplatTemizleme({
         <span style={{ fontFamily: MONO, fontSize: yazi.kucuk, color: renk.metinSilik, fontVariantNumeric: 'tabular-nums' }}>
           {kalan ? `${kalan.gorunur.toLocaleString('tr-TR')} / ${kalan.toplam.toLocaleString('tr-TR')}` : '—'}
         </span>
-        <button type="button" style={{ ...dugme(), minHeight: 32, padding: '7px 10px' }} onClick={onKapat}>kapat</button>
+        <button type="button" style={{ ...dugme(), minHeight: 32, padding: '8px 8px' }} onClick={onKapat}>kapat</button>
         {/* Hata sessizce yutulmaz: jetonun süresi dolduysa kullanıcı bilmeli. */}
         {hata && <span style={hataSatiri}>{hata}</span>}
       </div>
@@ -448,18 +448,30 @@ export function SplatTemizleme({
   );
 }
 
+/**
+ * GLİFLER SÜS DEĞİL, SEÇİM ŞEKLİ. Üç seçim aracı kendi şeklini çiziyor:
+ * dolu daire = fırça lekesi, noktalı daire = lasso'nun açık yolu, iç içe
+ * daire = kürenin derinlik kabuğu. Yani glif bakılınca aracın NE yaptığını
+ * söylüyor.
+ *
+ * `gez` bir seçim aracı DEĞİL (seçimin kapalı olduğu kip), o yüzden şekli de
+ * yok; taşıma/gezinme için araçlarda yerleşik olan açık merkez haçı kullanır.
+ * Eskiden `✥` (U+2725, "four club-spoked asterisk") vardı: dekoratif bir
+ * yıldız, hiçbir arayüzde "gezinme" anlamına gelmiyor ve etiket olmadan
+ * tahmin edilemiyordu.
+ */
 const ARAC_ADI: Record<SecimAraci | 'gez', string> = {
-  gez: '✥ gez',
+  gez: '✜ gez',
   firca: '● fırça',
   lasso: '◌ lasso',
   kure: '◎ küre',
 };
 
 const ARAC_IPUCU: Record<SecimAraci | 'gez', string> = {
-  gez: 'seçim kapalı — sahneyi döndür, yakınlaş (seçim korunur)',
+  gez: 'seçim kapalı: sahneyi döndür, yakınlaş (seçim korunur)',
   firca: 'sürükleyerek boya: daire içindeki splat’lar seçilir (derinlik bakılmaz)',
   lasso: 'serbest çiz: kapalı alanın içindeki splat’lar seçilir',
-  kure: 'tıkla: imleç altındaki EN YAKIN splat çevresinde küre — arkadaki yüzeyi almaz',
+  kure: 'tıkla: imleç altındaki EN YAKIN splat çevresinde küre; arkadaki yüzeyi almaz',
 };
 
 const serit: CSSProperties = {

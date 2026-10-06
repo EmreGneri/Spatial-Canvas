@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import type { CSSProperties } from 'react';
-import { dugme as temaDugme } from './tema';
+import { dugme as temaDugme, renk } from './tema';
 import type { Engine } from '../engine';
 import type { PointCloudMaterial } from '../shaders/pointCloudMaterial';
 import type { AsciiMaterial } from '../shaders/asciiMaterial';
@@ -42,7 +42,7 @@ const MODES: { id: RenderMode; label: string }[] = [
 
 const rowStyle: CSSProperties = {
   display: 'flex',
-  gap: 6,
+  gap: 4,
   alignItems: 'center',
   // Z3: satır sarmıyordu; telefonda 786 px'e uzayıp kadrajı taşırıyordu.
   flexWrap: 'wrap',
@@ -108,7 +108,7 @@ export function ModeSelector({
         style={{
           ...buttonStyle(false),
           marginLeft: 8,
-          borderColor: '#3a3a46',
+          borderColor: renk.kenarGuclu,
         }}
         onClick={() => {
           engine.resetRenderParams();

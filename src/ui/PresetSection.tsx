@@ -62,7 +62,7 @@ const nameButtonStyle: CSSProperties = {
   font: 'inherit',
   flex: 1,
   textAlign: 'left',
-  padding: '3px 6px',
+  padding: '4px 8px',
   cursor: 'pointer',
   color: '#c8c8d4',
   background: '#1a1a22',
@@ -71,7 +71,7 @@ const nameButtonStyle: CSSProperties = {
 };
 const smallButtonStyle: CSSProperties = {
   font: 'inherit',
-  padding: '3px 6px',
+  padding: '4px 8px',
   cursor: 'pointer',
   color: '#c8c8d4',
   background: '#1a1a22',
@@ -167,7 +167,7 @@ export function PresetSection({
     if (!name) return;
 
     if (BUILT_IN_PRESETS.some((p) => p.name === name)) {
-      setNote(`'${name}' hazır preset adı — başka bir ad seçin`);
+      setNote(`'${name}' hazır preset adı. Başka bir ad seçin`);
       return;
     }
     const exists = userPresets.some((p) => p.name === name);
@@ -197,7 +197,7 @@ export function PresetSection({
     } catch {
       // Pano izni yoksa (ya da güvenli bağlam değilse) konsola bas — kaybolmasın.
       console.log(json);
-      setNote('pano reddedildi — JSON konsola yazıldı');
+      setNote('pano reddedildi; JSON konsola yazıldı');
     }
   }
 
@@ -312,7 +312,7 @@ const silDugmesi: CSSProperties = {
   borderRadius: yaricap.kontrol,
   borderWidth: 1,
   borderStyle: 'solid',
-  borderColor: 'rgba(255,255,255,0.18)',
+  borderColor: renk.kenarGuclu,
   background: 'rgba(10,12,16,0.72)',
   color: renk.metinSolgun,
   fontSize: 13,
