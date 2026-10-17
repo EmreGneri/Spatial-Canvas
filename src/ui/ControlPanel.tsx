@@ -309,6 +309,7 @@ export function ControlPanel({
   syncKey = 0,
   engine,
   setModeGuncel,
+  baslangicKapali = false,
 }: {
   grain: GrainPassUniforms;
 points: PointCloudMaterial;
@@ -339,6 +340,8 @@ points: PointCloudMaterial;
   engine?: { renderer: { domElement: HTMLCanvasElement }; renderFrame: () => void };
   /** Mod değiştirmenin GÜNCEL referansı (uzun işlerde bayatlamayan). */
   setModeGuncel?: (m: RenderMode) => void;
+  /** Sunum modu: efekt rafı kapalı başlar. */
+  baslangicKapali?: boolean;
 }) {
   const firstHeading: CSSProperties = { ...headingStyle, borderTop: 'none', paddingTop: 0 };
 
@@ -354,7 +357,12 @@ points: PointCloudMaterial;
    * açıktı: sağ panel sonu gelmeyen bir slider listesiydi ve aranan kol
    * kaydırmadan bulunamıyordu. Kartlar kapalıyken raf tek ekrana sığar.
    */
-  const [acikKart, setAcikKart] = useState<string | null>('render');
+  /**
+   * Sunum modunda RAF KAPALI BAŞLAR: açık kart 9 kaydırıcı + 2 renk seçici
+   * gösteriyor ve ilk ekranı dolduruyor. Kapalıyken altı kart başlığı kalır —
+   * hepsi tek tıkla açılır, yani keşfedilebilirlik kaybolmaz.
+   */
+  const [acikKart, setAcikKart] = useState<string | null>(baslangicKapali ? null : 'render');
 
   const targets: RenderTargets = { mode, points, ascii, neon, solid, splat, crystal, grain, feedback, chromatic, setMode };
   // Preset kütüphanesi artık ORTA sütunda (KutuphanePaneli); raf yalnız

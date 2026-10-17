@@ -277,6 +277,69 @@ Jacobian'da cephe kesintisiz eğri yüzey kalır. Bilinen: -90° yönünde derin
 arka plan eksen arkasında ince bir kabuğa sıkışır ve bulanık görünür; +90°'de
 uzak arka plan kavis boyunca yatay uzar.
 
+## 2026-10-17 — Z (Zeynep): sunum modu + soğuk açılış
+
+Proje Bilkent COMD'de gösterilecek. Sorun cila değildi: arayüz bir ARAŞTIRMA
+ENSTRÜMANI olarak büyümüş, sunum katmanı hiç yok. Her panel bir
+GELİŞTİRİCİNİN sorusunu cevaplıyor; ekranda İZLEYİCİNİN sorusunu ("bu ne, ne
+yapmalıyım") cevaplayan hiçbir şey yok.
+
+Ölçüldü (1440×900, önce → sonra `?sunum=1`):
+
+| | normal | sunum |
+|---|---|---|
+| ilk ekranda kontrol | 44 | **33** |
+| sayfadaki toplam kontrol | 77 | **41** |
+| sayfa yüksekliği | 2,3 ekran | **1,1 ekran** |
+| açılıştaki tuval | **boş siyah** | sahne dönüyor |
+
+`docs/tasarim-kurallari.md`'nin Hick maddesi ilk ekranda ≤ 12 birincil kontrol
+diyor; 44 ile kendi kuralımızın 3,7 katındaydık.
+
+**`?sunum=1` HİÇBİR ŞEY SİLMEZ**, yalnız bir alt kümeyi mount etmez
+(`ui/sunumModu.ts`). Parametre kalkınca arayüz bit bit eski hâlinde —
+ölçüldü: normal modda 44/77/2,3 değişmedi. Mount edilmediği için gizlenen
+panellerin kurulum maliyeti de oluşmaz (TrackerOverlay deseni).
+
+Dışarıda kalanlar ve gerekçeleri `SUNUM_DISI`'nda yazılı: düğüm grafiği,
+capture paneli, eval raporu (AbsRel/RMSE/IoU duvarı), preset yönetimi, kuvvet
+kolları, ham log, kamera, `video → 3B`, durum okumaları (`nesne ayırma:
+kapalı` bir FİİL değil), `orijinal renkler`. "Sade dursun" gerekçe sayılmıyor:
+verify her maddenin gerekçesinin yazılı olmasını şart koşuyor, yoksa sonraki
+tur onları sessizce geri açar.
+
+İçeride kalanlar dört vuruşluk demo senaryosunun asgari kümesi (`SUNUM_ICI`):
+sentetik görsel · dosya… · 3D eğit · mod seçici · temizle · çıktı. Verify
+bunların `{!sunum}` bloklarının DIŞINDA olduğunu süslü parantez sayarak
+denetliyor — fazla kesmek de hata.
+
+**Efekt rafı sunumda KAPALI başlıyor** (`ControlPanel.baslangicKapali`): açık
+kart 9 kaydırıcı + 2 renk seçici gösteriyordu, ilk ekran katkısı 11 → 6.
+Kapalıyken altı kart başlığı kalıyor, hepsi tek tıkla açılıyor.
+
+**SOĞUK AÇILIŞ.** Normal modda açılış boş siyah tuval; geliştirici ne
+yapacağını bilir. Sunumda ilk iki saniye en pahalı saniyeler: izleyici bir şey
+dönerken dinlemeye başlar, boş ekrana bakarken "bozuk mu?" diye düşünür.
+Sunum modunda sentetik sahne kendiliğinden yükleniyor — yalnız BİR KEZ, yalnız
+motor hazırken ve **kullanıcı kendi dosyasını açtıysa EZMEDEN**.
+
+Mod kalıcı ayara yazmıyor: URL parametresi, yani sunumdan sonra "kapatmayı
+unutma" durumu kalmıyor. `?sunum=0` açık bir kapatma yolu. Ekranda "sunum
+modu" rozeti de yok — rozet, saklamaya çalıştığımız kalabalığın kendisi olurdu.
+
+**Doğrulama:** `npm run verify` 105 → **106**, typecheck temiz. Tarayıcıda:
+soğuk açılış `mediaType: synthetic` ve sahne doluyor, graf/log mount
+edilmiyor, taşan kontrol 0, 32 px altı düğme 0, hata sınırı tetiklenmedi.
+
+`verify-sunum-modu` yazılırken gerçek bir kaçak yakalandı: `CapturePanel`
+bloğu koşula girmemişti, çünkü eşleştirdiğim dize önceki turda `gap: 10 → 8`
+olmuştu ve sessizce atlanmıştı.
+
+**AÇIK KALAN:** ilk ekranda hâlâ 33 kontrol var; 22'si araç çubuğu +
+transport şeridi (6 mod düğmesi, çıktı süreleri, imza, salınım kolları).
+Bunları da kesmek ≤12'ye yaklaştırır ama demonun kendi aletini budamak
+demek — karar sunum formatı netleşince verilecek.
+
 ## 2026-10-06 — Z (Zeynep): "vibecoded" denetimi — dört gerçek isabet kapatıldı
 
 Dolaşan 20 maddelik "uygulaman AI üretimi gibi duruyor" listesi tek tek

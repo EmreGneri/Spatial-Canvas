@@ -18,6 +18,7 @@ import { ExportBar } from './ui/ExportBar';
 import { TransportSerit } from './ui/TransportSerit';
 import { KutuphanePaneli } from './ui/KutuphanePaneli';
 import { kaynakBelirle } from './ui/presetOnizleme';
+import { soganAcilisGerekliMi, sunumAcikMi } from './ui/sunumModu';
 import { serializeRenderState } from './shaders/renderPreset';
 import { maskeKarari } from './ui/maskeKarari';
 import { useDarEkran } from './ui/useDarEkran';
@@ -242,6 +243,14 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
   const [egitimBitti, setEgitimBitti] = useState(false);
   /** Splat temizleme aracı açık mı (sahnenin üstünde seçim katmanı). */
   const [temizlemeAcik, setTemizlemeAcik] = useState(false);
+  /**
+   * SUNUM MODU (`?sunum=1`) — bkz. `ui/sunumModu.ts`. Render boyunca sabit:
+   * `useState`'in başlangıç değeri olarak okunur, böylece bir kez hesaplanır
+   * ve hiçbir effect'e bağımlılık eklemez.
+   */
+  const [sunum] = useState(() => sunumAcikMi(window.location.search));
+  /** Soğuk açılış yalnız BİR KEZ tetiklenir. */
+  const soganTetiklendi = useRef(false);
   // CapturePanel (hızlı 3B harita) kendi Depth Anything çıkarımını koşar —
   // splat.js eğitimiyle aynı WebGPU cihazını paylaşır. İkisi eşzamanlı
   // koşarsa DXGI_ERROR_DEVICE_HUNG riski var (VENDORED.md koruma 4); bu
@@ -1173,6 +1182,31 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
   }
 
   /**
+   * SOĞUK AÇILIŞ — sunum modunda sahne kendiliğinden yüklenir.
+   *
+   * Normal modda açılış boş siyah tuvaldir: geliştirici ne yapacağını bilir.
+   * Sunumda ilk iki saniye en pahalı saniyelerdir — izleyici bir şey dönerken
+   * dinlemeye başlar, boş ekrana bakarken "bozuk mu?" diye düşünür.
+   *
+   * YALNIZ BİR KEZ (`soganTetiklendi`) ve yalnız motor hazırken. Kullanıcı o
+   * sırada kendi dosyasını seçtiyse sahne EZİLMEZ: `mediaType` artık
+   * 'synthetic' değilse ya da bir video/kamera açıldıysa atlanır.
+   */
+  useEffect(() => {
+    const e = engineRef.current;
+    const kaynakVar = !!videoDosya || cameraOn || !!egitimDosya;
+    if (!soganAcilisGerekliMi(sunum, !!engine && !!e, soganTetiklendi.current, kaynakVar)) return;
+    soganTetiklendi.current = true;
+    e!.mediaType = 'synthetic';
+    kaynakBelirle('sentetik');
+    void run(syntheticImage());
+    // `run` ve `syntheticImage` modül/bileşen düzeyinde bildirilmiş
+    // fonksiyonlar; bağımlılık listesine girerlerse effect her render'da
+    // yeniden kurulur ve soğuk açılış döngüye girer.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sunum, engine, videoDosya, cameraOn, egitimDosya]);
+
+  /**
    * Mod değiştirmenin GÜNCEL referansı. `changeMode` her render'da yeniden
    * oluşur ve içindeki `mode` o render'ın değeridir; uzun süren bir iş
    * (preset kapağı üretimi) sırasında yakalanan kopya bayatlar ve
@@ -1336,19 +1370,21 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
             }}
           />
         </label>
-        <button style={toggleButton(cameraOn, '#357')} disabled={busy || !!egitimDosya} onClick={toggleCamera}>
-          {cameraOn ? 'kamerayı kapat' : 'kamera'}
-        </button>
+        {!sunum && (
+          <button style={toggleButton(cameraOn, '#357')} disabled={busy || !!egitimDosya} onClick={toggleCamera}>
+            {cameraOn ? 'kamerayı kapat' : 'kamera'}
+          </button>
+        )}
         <span style={toolDivider} />
         {/* ANALİZ */}
-        <button
+        {!sunum && <button
           style={toolButton}
           disabled={busy || !!egitimDosya}
           onClick={fuseVideoToSplat}
           title="videodan keyframe yakala → flow + poz + füzyon → 3B splat sahnesi (Gün 7 kablosu)"
         >
           video → 3B
-        </button>
+        </button>}
         <button
           style={toolButton}
           disabled={busy || !videoDosya || !!egitimDosya || captureRunning}
@@ -1371,33 +1407,39 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
         >
           3D eğit
         </button>
-        <button style={toggleButton(segment, '#2a3')} disabled={busy} onClick={toggleSegment}>
-          nesne ayırma: {segment ? 'AÇIK' : 'kapalı'}
-        </button>
-        <button style={toggleButton(showMask, '#a53')} disabled={busy} onClick={toggleMaskOverlay}>
-          maskeyi göster: {showMask ? 'AÇIK' : 'kapalı'}
-        </button>
-        <button
-          style={toggleButton(trackerOn, '#357')}
-          disabled={busy}
-          onClick={() => setTrackerOn((on) => !on)}
-          title="izleme HUD'u: hedef kutuları motor görüntüsünün üstüne çizilir"
-        >
-          tracker: {trackerOn ? 'AÇIK' : 'kapalı'}
-        </button>
-        <label style={{ display: 'flex', gap: 4, alignItems: 'center', color: '#889', fontSize: 12, cursor: 'pointer' }}>
-          <input
-            type="checkbox"
-            checked={useTextureColor}
-            onChange={(e) => {
-              const v = e.target.checked;
-              setUseTextureColor(v);
-              engineRef.current!.setUseTextureColor(v);
-            }}
-          />
-          orijinal renkler
-        </label>
-        <span style={toolDivider} />
+        {/* DURUM OKUMALARI — "nesne ayırma: kapalı" bir FİİL değil, bir
+            geliştirici göstergesi. Sunumda mount edilmez. */}
+        {!sunum && (
+          <>
+            <button style={toggleButton(segment, '#2a3')} disabled={busy} onClick={toggleSegment}>
+              nesne ayırma: {segment ? 'AÇIK' : 'kapalı'}
+            </button>
+            <button style={toggleButton(showMask, '#a53')} disabled={busy} onClick={toggleMaskOverlay}>
+              maskeyi göster: {showMask ? 'AÇIK' : 'kapalı'}
+            </button>
+            <button
+              style={toggleButton(trackerOn, '#357')}
+              disabled={busy}
+              onClick={() => setTrackerOn((on) => !on)}
+              title="izleme HUD'u: hedef kutuları motor görüntüsünün üstüne çizilir"
+            >
+              tracker: {trackerOn ? 'AÇIK' : 'kapalı'}
+            </button>
+            <label style={{ display: 'flex', gap: 4, alignItems: 'center', color: '#889', fontSize: 12, cursor: 'pointer' }}>
+              <input
+                type="checkbox"
+                checked={useTextureColor}
+                onChange={(e) => {
+                  const v = e.target.checked;
+                  setUseTextureColor(v);
+                  engineRef.current!.setUseTextureColor(v);
+                }}
+              />
+              orijinal renkler
+            </label>
+            <span style={toolDivider} />
+          </>
+        )}
         {/* ÇIKTI + DURUM */}
         </div>
 
@@ -1571,6 +1613,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
       {engine && (
         <ControlPanel
           engine={engine}
+          baslangicKapali={sunum}
           setModeGuncel={(m) => changeModeRef.current(m)}
           grain={engine.grainUniforms}
           feedback={engine.feedbackUniforms}
@@ -1590,11 +1633,16 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
       )}
       </div>
 
-      {engine && <NodeGraphEditor engine={engine} graphTick={graphTick} onRenderModeChange={changeMode} onParamsApplied={refreshPanel} />}
+      {/* ── ENSTRÜMAN KATMANI ────────────────────────────────────────────
+          Buradan aşağısı geliştiricinin sorusunu cevaplar: graf, capture,
+          eval raporu, preset yönetimi, kuvvet kolları, ham log. Sunum
+          modunda MOUNT EDİLMEZ (ui/sunumModu.ts · SUNUM_DISI); mount
+          edilmediği için kurulum maliyeti de oluşmaz. */}
+      {!sunum && engine && <NodeGraphEditor engine={engine} graphTick={graphTick} onRenderModeChange={changeMode} onParamsApplied={refreshPanel} />}
       {/* GÜN 6-7 (render şeridi): capture akışı + metrik paneli. İkisi de
           kendi durumunu tutar; Engine'e yalnızca imzalı API'den yazarlar
           (setGaussians / setPoseTrack / setSelectedKeyframe). */}
-      {engine && (
+      {!sunum && engine && (
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'flex-start' }}>
           <div style={{ minWidth: 260, flex: '1 1 260px' }}>
             <CapturePanel
@@ -1610,14 +1658,16 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
           </div>
         </div>
       )}
-      {engine && <PresetControls engine={engine} say={say} onGraphChanged={() => { setGraphTick((t) => t + 1); refreshPanel(); }} />}
-      {engine && <ForceControls engine={engine} />}
-      <pre style={{
-        margin: 0, color: renk.metinSolgun, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere',
-        maxWidth: 'min(960px, 100%)', boxSizing: 'border-box', width: '100%',
-        fontFamily: MONO, fontSize: 11, lineHeight: 1.6, maxHeight: 180, overflowY: 'auto',
-        ...yuzey(1), padding: bosluk.m,
-      }}>{log.join('\n')}</pre>
+      {!sunum && engine && <PresetControls engine={engine} say={say} onGraphChanged={() => { setGraphTick((t) => t + 1); refreshPanel(); }} />}
+      {!sunum && engine && <ForceControls engine={engine} />}
+      {!sunum && (
+        <pre style={{
+          margin: 0, color: renk.metinSolgun, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere',
+          maxWidth: 'min(960px, 100%)', boxSizing: 'border-box', width: '100%',
+          fontFamily: MONO, fontSize: 11, lineHeight: 1.6, maxHeight: 180, overflowY: 'auto',
+          ...yuzey(1), padding: bosluk.m,
+        }}>{log.join('\n')}</pre>
+      )}
     </div>
   );
 }
