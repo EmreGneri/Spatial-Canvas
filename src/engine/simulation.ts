@@ -206,8 +206,6 @@ export function createSimulation(
 
   const scene = new THREE.Scene();
   const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
-  const quad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2));
-  scene.add(quad); // sahnede olmazsa her pass RT'yi sıfıra siler, simülasyon ölür
 
   const uniforms: SimulationUniforms = {
     uHome: { value: null },
@@ -244,7 +242,13 @@ export function createSimulation(
     fragmentShader: COPY_FRAGMENT,
   });
 
-  function renderTo(target: THREE.WebGLRenderTarget, material: THREE.Material) {
+  // Material'ı `renderTo` her pass'te takas eder; quad KENDİ pass material'ıyla
+  // doğar. `new Mesh(geometry)` three'nin varsayılan MeshBasicMaterial'ını ilk
+  // takasta sahipsiz bırakıyordu (Engine başına sızıntı, dispose() görmüyordu).
+  const quad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), posMaterial);
+  scene.add(quad); // sahnede olmazsa her pass RT'yi sıfıra siler, simülasyon ölür
+
+  function renderTo(target: THREE.WebGLRenderTarget, material: THREE.ShaderMaterial) {
     quad.material = material;
     renderer.setRenderTarget(target);
     renderer.render(scene, camera);

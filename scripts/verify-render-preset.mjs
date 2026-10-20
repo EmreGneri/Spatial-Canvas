@@ -129,4 +129,41 @@ group++;
   console.log(`[${group}] üstel sis formülü ✓`);
 }
 
-console.log('verify-render-preset: 4 grup, 0 hata');
+group++;
+
+// [5] crystal sisi de üstel kare formül (iki varyant: kabuk + splat).
+{
+  const crystal = await import('../src/shaders/crystalMaterial.ts');
+  const shared = crystal.createCrystalMaterial();
+  const srcs = [shared.fragmentShader];
+  srcs.push(crystal.createCrystalSplatMaterial(shared).fragmentShader);
+  for (const frag of srcs) {
+    assert.ok(frag.includes('1.0 - exp(-uFogDensity * uFogDensity'), `[${group}] crystal üstel sis yok`);
+    assert.ok(!frag.includes('clamp(uFogDensity'), `[${group}] crystal düz tint geri gelmiş`);
+  }
+  console.log(`[${group}] crystal üstel sis (${srcs.length} varyant) ✓`);
+}
+group++;
+
+// [6] elle yazılmış preset: sonsuz ışık yönü ve bilinmeyen mod reddedilir.
+{
+  const t = makeTargets();
+  const before = t.points.uniforms.uLightDir.value.clone();
+  const state = serializeRenderState(t);
+  state.points.uLightDir = [Infinity, 0, 0];
+  state.mode = 'constructor';
+  let setCalls = 0;
+  t.setMode = () => { setCalls++; };
+  t.mode = 'points';
+  const { warnings } = applyRenderState(t, state);
+  assert.ok(t.points.uniforms.uLightDir.value.equals(before), `[${group}] sonsuz yön uygulanmamalı`);
+  assert.equal(setCalls, 0, `[${group}] bilinmeyen mod setMode'a gitmemeli`);
+  assert.equal(warnings.length, 2, `[${group}] iki uyarı: ${warnings.join('; ')}`);
+  const { applyParams } = await import('../src/engine/params.ts');
+  const u = { uX: { value: 1 } };
+  assert.equal(applyParams([{ key: 'uX', kind: 'number' }], u, { uX: NaN }), 0, `[${group}] NaN uygulanmamalı`);
+  assert.equal(u.uX.value, 1, `[${group}] NaN uniform'u bozmamalı`);
+  console.log(`[${group}] preset girdi koruması (ışık yönü, mod, NaN) ✓`);
+}
+
+console.log('verify-render-preset: 6 grup, 0 hata');

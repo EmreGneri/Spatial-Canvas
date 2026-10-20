@@ -61,7 +61,10 @@ class SpatialCanvasElement extends HTMLElement {
   connectedCallback() {
     if (this.loaded) return;
     this.loaded = true;
-    this.attachShadow({ mode: 'open' });
+    // Element DOM'da taşınırsa disconnect + connect gelir; `attachShadow`
+    // ikinci çağrıda fırlatır. Kök bir kez açılır, yeniden bağlanmada temizlenir.
+    if (!this.shadowRoot) this.attachShadow({ mode: 'open' });
+    this.shadowRoot!.replaceChildren();
     const style = document.createElement('style');
     style.textContent = EMBED_STYLES;
     this.shadowRoot!.appendChild(style);
@@ -108,6 +111,7 @@ class SpatialCanvasElement extends HTMLElement {
 
   disconnectedCallback() {
     this.observer?.disconnect();
+    this.observer = null;
     clearInterval(this.skeletonTimer);
     this.engine?.dispose();
     this.engine = null;
@@ -117,6 +121,11 @@ class SpatialCanvasElement extends HTMLElement {
       for (const material of Object.values(this.materials)) material.dispose();
       this.materials = null;
     }
+    this.container = null;
+    this.fallbackImg = null;
+    this.skeleton = null;
+    // Yeniden bağlanırsa connectedCallback baştan kursun.
+    this.loaded = false;
   }
 
   /** İlk kare çizildiyse iskeleti kaldırır ve yoklamayı durdurur. */
@@ -143,11 +152,13 @@ class SpatialCanvasElement extends HTMLElement {
   /** Render modunu ada göre uygular (points | ascii | neon | solid). */
   private applyMode(mode: string | null) {
     if (!mode || !this.engine || !this.materials) return;
-    const material = (this.materials as Record<string, THREE.Material>)[mode];
-    if (!material) {
+    // Attribute kullanıcı girdisi: düz indeksleme mode="constructor" için
+    // prototip üyesi döndürür ve kontrolü geçerdi.
+    if (!Object.hasOwn(this.materials, mode)) {
       console.warn(`[spatial-canvas] bilinmeyen mode: '${mode}'`);
       return;
     }
+    const material = (this.materials as Record<string, THREE.Material>)[mode];
     this.engine.setPointsMaterial(material);
     this.engine.selectRenderMode(mode);
   }

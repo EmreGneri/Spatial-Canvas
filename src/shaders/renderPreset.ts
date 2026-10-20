@@ -350,10 +350,12 @@ export function applyRenderState(
     // normalize edilir: shader n·light bekliyor, elle yazılmış bir preset
     // birim boyda olmayabilir. Sıfır vektör normalize'da NaN üretirdi.
     const dir = state.points.uLightDir;
-    if (Array.isArray(dir) && dir.length === 3 && dir.every((n) => typeof n === 'number')) {
+    if (Array.isArray(dir) && dir.length === 3 && dir.every((n) => typeof n === 'number' && Number.isFinite(n))) {
       const [x, y, z] = dir;
       if (x * x + y * y + z * z > 1e-8) p.uLightDir.value.set(x, y, z).normalize();
       else warnings.push('uLightDir sıfır vektör — yok sayıldı');
+    } else if (dir !== undefined) {
+      warnings.push('uLightDir geçersiz (üç sonlu sayı bekleniyor) — yok sayıldı');
     }
     // Gün C: bakılı oklüzyon kolu (num, sayı olmayanı atlar → alanı olmayan
     // eski kayıtlarda uniform'un mevcut değeri korunur).
@@ -467,7 +469,9 @@ export function applyRenderState(
 
   // Mod en son: material takası Engine'den geçer, uniform yazımından bağımsız.
   if (state.mode && state.mode !== targets.mode) {
-    if (targets.setMode) targets.setMode(state.mode);
+    if (!['points', 'ascii', 'neon', 'solid', 'splat', 'crystal'].includes(state.mode)) {
+      warnings.push(`bilinmeyen mod '${state.mode}' — yok sayıldı`);
+    } else if (targets.setMode) targets.setMode(state.mode);
     else warnings.push(`mod '${state.mode}' uygulanamadı — setMode bağlanmamış`);
   }
 

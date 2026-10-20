@@ -77,7 +77,7 @@ export function applyParams(
         else uniform.value = parseColor(value);
         applied++;
       }
-    } else if (typeof value === 'number') {
+    } else if (typeof value === 'number' && Number.isFinite(value)) {
       uniform.value = value;
       applied++;
     }
