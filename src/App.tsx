@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
-import { estimateDepth, loadDepthModel, luminanceHeightMap, resetLuminanceState } from './depth';
+import { yuzNoktalari } from './engine/vision/yuzTespit';
+import { yuzRolyefHaritasi, type YuzRolyefi } from './engine/reconstruction/yuzRolyef';
+import { estimateDepth, FOTO_KALITE, loadDepthModel, luminanceHeightMap, resetLuminanceState } from './depth';
 import { segmentForeground } from './engine/reconstruction/segmentation';
 import { Engine } from './engine';
 import { ControlPanel } from './ui/ControlPanel';
@@ -176,6 +178,20 @@ const toolDivider: CSSProperties = {
   margin: '0 4px',
 };
 
+
+/**
+ * Yüz rölyefi gücü (MediaPipe yüz ağı, yuzRolyef.ts). Varsayılan 1.5: kullanıcı görsel
+ * karşılaştırmayla seçti (2026-10-12; 1 = ağın fiziksel oranı "biraz yassı" bulundu).
+ * `?yuz=<güç>` ezer, `?yuz=0` kapatır.
+ */
+const VARSAYILAN_YUZ_GUCU = 1.5;
+const YUZ_GUCU = (() => {
+  if (typeof location === 'undefined') return VARSAYILAN_YUZ_GUCU;
+  const ham = new URLSearchParams(location.search).get('yuz');
+  if (ham === null) return VARSAYILAN_YUZ_GUCU;
+  const v = Number(ham);
+  return Number.isFinite(v) && v > 0 ? Math.min(v, 4) : 0;
+})();
 export default function App() {  const containerRef = useRef<HTMLDivElement>(null);
   const engineRef = useRef<Engine | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -457,7 +473,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
       maskLoadedRef.current = false;
       const t2 = performance.now();
       try {
-        const seg = await segmentForeground(source);
+        const seg = await segmentForeground(source, 'webgpu', 'foto');
         if (!isCurrent()) return;
         // Güvenlik: boş maske (sentetik/soyut görsel) kullanılmaz — AND tüm
         // silueti sıfırlar, mesh null'a düşer, parçacıklar ölür.
@@ -483,7 +499,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
           maskW = seg.width;
           maskH = seg.height;
           maskLoadedRef.current = true;
-          say(`nesne ayırma (IS-Net)    ${Math.round(performance.now() - t2)} ms  (${maskW}x${maskH})`);
+          say(`nesne ayırma (${seg.model === 'birefnet' ? 'BiRefNet · yardımcı' : 'IS-Net'})  ${Math.round(performance.now() - t2)} ms  (${maskW}x${maskH})`);
         }
         updateSegment(karar.ayirmaAcik);
         engineRef.current!.setObjectSeparation(karar.ayirmaAcik);
@@ -498,7 +514,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
       const t1 = performance.now();
       const depth = await estimateDepth(
         source,
-        mask ? { subjectMask: { data: mask, width: maskW, height: maskH } } : {},
+        mask ? { ...FOTO_KALITE, subjectMask: { data: mask, width: maskW, height: maskH } } : FOTO_KALITE,
       );
       if (!isCurrent()) return;
       say(
@@ -511,7 +527,23 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
       // varsayılan mavi rampa yerine orijinal RGB). Kamera/video yolu bu
       // çağrıyı yapmaz → shader'lar derinlik rampasına düşer.
       engineRef.current!.setPhoto(source);
-      engineRef.current!.setDepth(depth.data, depth.width, depth.height, mask, maskW, maskH);
+      // YÜZ RÖLYEFİ (varsayılan, ?yuz=0 kapatır): MediaPipe yüz ağının 3B şekli yüz bölgesine işlenir
+      // (yuzRolyef.ts). Yüz bulunamazsa ya da kapalıysa null → eski davranış birebir.
+      let rolyef: YuzRolyefi | null = null;
+      if (YUZ_GUCU > 0) {
+        const t3 = performance.now();
+        const yuz = await yuzNoktalari(source);
+        if (!isCurrent()) return;
+        rolyef = yuz ? yuzRolyefHaritasi(yuz.noktalar, depth.width, depth.height, YUZ_GUCU) : null;
+        say(rolyef
+          ? `yüz rölyefi              ${Math.round(performance.now() - t3)} ms  (${yuz!.noktalar.length} nokta, güç ×${YUZ_GUCU})`
+          : 'yüz rölyefi: yüz bulunamadı, uygulanmadı');
+      }
+      engineRef.current!.setYuzRolyefi(rolyef);
+      // Deliği kapatılmış maske (derinlik ızgarasında) varsa motor da onu kullanır:
+      // siluet aynı maskeden çıkar, yoksa yüz/karındaki delikler 3B'de boş kalır.
+      if (depth.subjectMask) engineRef.current!.setDepth(depth.data, depth.width, depth.height, depth.subjectMask, depth.width, depth.height);
+      else engineRef.current!.setDepth(depth.data, depth.width, depth.height, mask, maskW, maskH);
       if (maskOverlayOnRef.current) drawMaskOverlay();
       say('depth → engine · point cloud konumları positionTexture\'dan okunur');
     } catch (err) {
@@ -881,16 +913,18 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
     setBusy(true);
     try {
       const t2 = performance.now();
-      const seg = await segmentForeground(lastPhotoRef.current);
-      say(`nesne ayırma (RMBG)      ${Math.round(performance.now() - t2)} ms  (${seg.width}x${seg.height})`);
+      const seg = await segmentForeground(lastPhotoRef.current, 'webgpu', 'foto');
+      say(`nesne ayırma (${seg.model === 'birefnet' ? 'BiRefNet · yardımcı' : 'IS-Net'})  ${Math.round(performance.now() - t2)} ms  (${seg.width}x${seg.height})`);
       // GÜN E (bulgu 1): önbellekteki depth MASKE-KÖR hesaplandı (buton o an
       // kapalıydı). Maske geldiğine göre depth yeniden çıkarılır — yoksa bu
       // yolda stretch/eğim aşamaları düzeltmeden yararlanamazdı.
       const d = await estimateDepth(lastPhotoRef.current, {
+        ...FOTO_KALITE,
         subjectMask: { data: seg.mask, width: seg.width, height: seg.height },
       });
       lastDepthRef.current = { data: d.data, width: d.width, height: d.height };
-      engineRef.current!.setDepth(d.data, d.width, d.height, seg.mask, seg.width, seg.height);
+      if (d.subjectMask) engineRef.current!.setDepth(d.data, d.width, d.height, d.subjectMask, d.width, d.height);
+      else engineRef.current!.setDepth(d.data, d.width, d.height, seg.mask, seg.width, seg.height);
       if (maskOverlayOnRef.current) drawMaskOverlay();
       maskLoadedRef.current = true;
     } catch (err) {

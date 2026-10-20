@@ -11,6 +11,7 @@ import {
   fillImageColorTexture,
   fillPositionsFromDepth,
   POINTS_WORLD_HEIGHT,
+  POINTS_DEPTH_RANGE,
   POSITION_TEXTURE_SIZE,
 } from './buffers';
 import { createPointsCloud } from './points';
@@ -50,7 +51,9 @@ import { applyParams, collectParams, type ParamDef, type ParamValues } from './p
 import { activeNodes, createDefaultGraph, topologicalOrder, validateGraph, type Graph } from './graph';
 import { buildSilhouette, resampleBilinear } from './reconstruction/silhouette.ts';
 import { buildShellMesh, type ShellMeshData } from './reconstruction/mesh.ts';
-import { applySeparationCrop } from './reconstruction/crop.ts';
+import { applySeparationCrop, computeMaskCropRect, cropChannels } from './reconstruction/crop.ts';
+import { subjectZSpan } from './reconstruction/sampler.ts';
+import { yuzRolyefiUygula, type YuzRolyefi } from './reconstruction/yuzRolyef.ts';
 import { inpaintMaskedPhoto } from './reconstruction/photo-inpaint.ts';
 import type { CameraPose, MediaType } from './preset';
 
@@ -114,6 +117,7 @@ export class Engine {
    * yalnÄ±zca bÃ¼st gÃ¶rÃ¼nÃ¼r. KAPALI iken tÃ¼m sahne Ã§izilir; arka plan
    * pikselleri parlayÄ±p Ã¶zneyi yutmasÄ±n diye karartÄ±lÄ±r (Ã—0.4).
    */
+  private yuzRolyefi: YuzRolyefi | null = null;
   private objectSeparation = false;
   /**
    * XR (AR/VR) oturumu SUNUYOR mu. Açıkken post-FX zinciri BYPASS edilir —
@@ -887,6 +891,16 @@ setPointsMaterial(material: THREE.Material) {
     this.pushSharedUniforms(this.pointsMaterial);
   }
 
+  /**
+   * Fotoğraf yüz rölyefi (yuzRolyef.ts): tam derinlik ızgarasında, bir sonraki ve sonraki
+   * tüm setDepth çağrılarında (iç yeniden örneklemeler dahil) uygulanır. null = kapalı.
+   * Video/kamerada hiç uygulanmaz.
+   */
+  setYuzRolyefi(rolyef: YuzRolyefi | null) {
+    this.yuzRolyefi = rolyef;
+  }
+
+
   /** Nesne ayÄ±rma (Tur 12 â€” ÅŸikayet 4): shader'lara canlÄ± iÅŸlenir. */
   setObjectSeparation(on: boolean) {
     this.objectSeparation = on;
@@ -1646,6 +1660,27 @@ if (entry && entry.material !== this.pointsMaterial) {
       },
       !this.videoTexture && this.objectSeparation,
     );
+    // YÜZ RÖLYEFİ (yalnız fotoğraf): kırpmadan SONRA, örneklemeden ÖNCE derinliğe işlenir —
+    // konum, renk ve kabuk aynı derinliği görür. Ölçek motorun kendi dünya eşlemesinden:
+    // 1 derinlik birimi = zSpan dünya = zSpan·kırpımYüksekliği/(2·halfH) piksel.
+    const rolyefler = [this.yuzRolyefi].filter(
+      (r): r is YuzRolyefi => !!r && r.rel.length === width * height,
+    );
+    if (rolyefler.length && !this.videoTexture) {
+      const rect = crop.depthWidth !== width || crop.depthHeight !== height
+        ? (mask ? computeMaskCropRect(mask, width, height) : null) : null;
+      const kes = (a: Float32Array) => (rect ? cropChannels(a, width, height, 1, rect).data : a);
+      const halfH = POINTS_WORLD_HEIGHT / 2;
+      for (const r0 of rolyefler) {
+        const rol: YuzRolyefi = {
+          rel: kes(r0.rel), agirlik: kes(r0.agirlik),
+          ...(r0.ust && r0.ustAgirlik ? { ust: kes(r0.ust), ustAgirlik: kes(r0.ustAgirlik) } : {}),
+        };
+        if (rol.rel.length !== crop.depthWidth * crop.depthHeight) continue;
+        const zSpan = subjectZSpan(crop.depth, crop.depthWidth, crop.depthHeight, crop.mask ?? null, halfH, POINTS_DEPTH_RANGE);
+        crop.depth = yuzRolyefiUygula(crop.depth, crop.depthWidth, crop.depthHeight, rol, (zSpan * crop.depthHeight) / (2 * halfH));
+      }
+    }
     const cropDensity = (width * height) / (crop.depthWidth * crop.depthHeight);
     if (cropDensity !== this.neonCropDensity) {
       this.neonCropDensity = cropDensity;

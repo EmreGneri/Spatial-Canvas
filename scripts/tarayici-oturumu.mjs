@@ -56,6 +56,9 @@ function chromiumYuruturebiliriBul() {
  * Döner: `url(yol)` (sunucu tabanına göre tam URL), `page`, `kapat()`.
  */
 export async function tarayiciOturumu({ chrome = false, yazilimGpu = false, basli = false, fsAllow = [] } = {}) {
+  // Ölçüm sunucusu yerel yardımcıyı KENDİLİĞİNDEN başlatmaz (vite.config.ts eklentisi);
+  // gerekiyorsa kullanıcı başlatır ve --yardimci verir. Ölçümler tekrarlanabilir kalsın.
+  process.env.SIDECAR_OTOMATIK ??= '0';
   const server = await createServer({
     root: REPO_KOKU,
     // No HMR / file watching: a measurement page runs for minutes to hours and

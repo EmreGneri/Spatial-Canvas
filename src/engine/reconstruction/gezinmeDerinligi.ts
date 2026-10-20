@@ -5,7 +5,9 @@ import type { GsKamera } from './egitim3dgs.ts';
 
 type Vec3 = [number, number, number];
 
-export type GezinmeDerinlikKaynagi = 'model' | (
+// 'model': tarayıcı V2-small (varsayılan, ölçülmüş yol). 'model-da3': DA3Mono-Large
+// (yerel yardımcı açıksa orada; değilse/başarısızsa estimateDepth V2'ye düşer). İsteğe bağlı.
+export type GezinmeDerinlikKaynagi = 'model' | 'model-da3' | (
   (camera: GsKamera, frameName: string, time: number,
     registered: readonly { camera: GsKamera; time: number }[]) => Promise<DepthResult>
 );
@@ -127,9 +129,11 @@ export async function gezinmeDerinligiHazirla(
     const frame = frames[solved.imgIdx];
     if (!frame) throw new Error(`Missing frame ${solved.imgIdx} for aligned depth`);
     const camera = egitimKamerasi(solved, frame);
-    const prediction = source === 'model'
+    const prediction = source === 'model' || source === 'model-da3'
       ? await estimateDepth(rgbCanvas(frame), {
         detailStrength: 0, foregroundStretch: false, sobelRelief: 0, depthSmoothing: false,
+        // kayma 0: kareyiHizala `1/z = a·d + b` uydurur; saf 1/d bu ilişkiyi korur.
+        ...(source === 'model-da3' ? { model: 'da3-mono' as const, da3Kayma: 0 } : {}),
       })
       : await source(camera, frame.name, times.get(frame.name) ?? NaN, registered);
     if (prediction.data.length !== prediction.width * prediction.height) {
