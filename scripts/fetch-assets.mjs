@@ -63,6 +63,25 @@ const ORT_FILES = [
   'ort-wasm-simd-threaded.jsep.mjs',
 ];
 
+// MediaPipe tasks-vision çalışma zamanı: tarayıcı SIMD'li ya da SIMD'siz
+// (nosimd) derlemeden birini yükler; module_internal kullanılmaz.
+const MP_WASM_FILES = [
+  'vision_wasm_internal.js',
+  'vision_wasm_internal.wasm',
+  'vision_wasm_nosimd_internal.js',
+  'vision_wasm_nosimd_internal.wasm',
+];
+
+// src/engine/vision/yuzTespit.ts — yüz landmark modeli. HF deposu değil, Google
+// deposu; `latest` değil sürümlü URL (1) sabitlenir.
+// LİSANS: Apache-2.0 — model kartları "Model Card MediaPipe Face Mesh V2" ve
+// "BlazeFace short range", ikisi de "LICENSED UNDER Apache License, Version 2.0".
+const FACE_LANDMARKER = {
+  url: 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task',
+  dest: 'public/models/mediapipe/face_landmarker.task',
+  size: 3758596,
+};
+
 const mb = (n) => (n / 1024 / 1024).toFixed(2).padStart(7) + ' MB';
 
 const exists = (p) => stat(p).then(() => true, () => false);
@@ -125,5 +144,30 @@ for (const file of ORT_FILES) {
   console.log(`${mb((await stat(src)).size)}  ort/${file}`);
 }
 
-await mirror('public/models', new Set(MODEL_REPOS.flatMap(({ repo, files }) => files.map((f) => `${repo}/${f}`))));
+// Boyut eşleşmezse (yarım kalmış indirme) yeniden indirilir.
+console.log('\nmediapipe/face_landmarker');
+if ((await stat(FACE_LANDMARKER.dest).catch(() => null))?.size === FACE_LANDMARKER.size) {
+  console.log('     skip  face_landmarker.task');
+} else {
+  await mkdir(dirname(FACE_LANDMARKER.dest), { recursive: true });
+  const res = await fetch(FACE_LANDMARKER.url);
+  if (!res.ok) throw new Error(`face_landmarker.task: ${res.status} ${res.statusText}`);
+  const buf = Buffer.from(await res.arrayBuffer());
+  if (buf.length !== FACE_LANDMARKER.size) throw new Error(`face_landmarker.task: beklenen ${FACE_LANDMARKER.size} bayt, gelen ${buf.length}`);
+  await writeFile(FACE_LANDMARKER.dest, buf);
+  console.log(`${mb(buf.length)}  face_landmarker.task`);
+}
+
+await mkdir('public/mediapipe-wasm', { recursive: true });
+for (const file of MP_WASM_FILES) {
+  const src = join('node_modules/@mediapipe/tasks-vision/wasm', file);
+  await copyFile(src, join('public/mediapipe-wasm', file));
+  console.log(`${mb((await stat(src)).size)}  mediapipe-wasm/${file}`);
+}
+
+await mirror('public/models', new Set([
+  ...MODEL_REPOS.flatMap(({ repo, files }) => files.map((f) => `${repo}/${f}`)),
+  'mediapipe/face_landmarker.task',
+]));
 await mirror('public/ort', new Set(ORT_FILES));
+await mirror('public/mediapipe-wasm', new Set(MP_WASM_FILES));

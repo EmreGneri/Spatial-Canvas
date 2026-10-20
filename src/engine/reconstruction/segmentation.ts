@@ -51,7 +51,8 @@
 // (scripts/verify-seg.mjs) düz içe aktarımı kullanır; orada zaten wasm yolu
 // doğrudur ve webgpu yoktur.
 import * as ort from 'onnxruntime-web/webgpu';
-import { dilateAndFeatherMask, keepLargestComponent } from './silhouette.ts';
+import { dilateAndFeatherMask, keepLargestComponent, resampleBilinear } from './silhouette.ts';
+import { localInference, localInferenceAvailable } from '../sidecarClient.ts';
 import { gpuSirasinaGir, onceRetry } from '../../depth.ts';
 
 // ORT runtime yerel — CDN yok (depth.ts ile aynı sözleşme). Aynı ORT örneği
@@ -79,6 +80,8 @@ export type SegmentationResult = {
   mask: Float32Array;
   width: number;
   height: number;
+  /** Maskeyi gerçekte üreten model (yardımcı düşerse 'isnet'). */
+  model: 'birefnet' | 'isnet';
 };
 
 let segSession: ort.InferenceSession | null = null;
@@ -112,13 +115,58 @@ export async function loadSegmentationModel(device: 'wasm' | 'webgpu' = 'webgpu'
  * Kaynak görüntüden nesne/arka plan maskesi üretir. Letterbox + kırpım depth
  * yoluyla aynı geometridedir (modelin gördüğü kare alanın iç kısmı), böylece
  * maske depth haritasıyla hizalanır. Çıktı maskesi kırpılmış rect boyutundadır.
+ *
+ * `kaynak: 'foto'` ve yerel yardımcı (sidecar/server.py) açıksa maske orada
+ * BiRefNet_lite ile üretilir (zor kadrajlarda belirgin daha iyi; tarayıcı
+ * WebGPU'sunda çalışmıyor, bkz. sidecar/server.py). Yardımcı yoksa ya da hata
+ * verirse AYNI kare tarayıcıda IS-Net ile işlenir. Video kareleri her zaman IS-Net.
  */
 export async function segmentForeground(
   source: HTMLCanvasElement | HTMLImageElement,
   device: 'wasm' | 'webgpu' = 'webgpu',
+  kaynak: 'foto' | 'video' = 'video',
 ): Promise<SegmentationResult> {
-  const session = await loadSegmentationModel(device);
   const lb = letterboxCanvas(source, MODEL_INPUT_SIZE);
+  let raw: Float32Array | null = null;
+  let model: SegmentationResult['model'] = 'isnet';
+  if (kaynak === 'foto' && (await localInferenceAvailable())) {
+    let yardimci = true;
+    const out = await localInference!.infer('mask', birefnetGirdisi(source), async () => {
+      yardimci = false;
+      return isnetCikti(lb, device);
+    });
+    if (yardimci) model = 'birefnet';
+    raw = yardimci
+      // BiRefNet girdisi kareye ESNETİLMİŞ görüntü (ölçüm bu yolla yapıldı);
+      // çıktı letterbox iç dikdörtgeniyle aynı boyuta geri esnetilir → sözleşme aynı.
+      ? resampleBilinear(out.data, MODEL_INPUT_SIZE, MODEL_INPUT_SIZE, lb.w, lb.h)
+      : kirp(out.data, lb);
+  }
+  raw ??= kirp((await isnetCikti(lb, device)).data, lb);
+  // TUR 10: sert kesim yerine dilate + feather — yüz/el kenarı delikleri
+  // güven marjıyla kapanır; perde koruması (AND eşiği) değişmez.
+  // GÜN E (bulgu 12): önce kopuk parçaları düşür (özneye bitişik OLMAYAN model
+  // hataları — kapı kasası, zemin), sonra dilate + tüy.
+  const mask = dilateAndFeatherMask(keepLargestComponent(raw, lb.w, lb.h), lb.w, lb.h);
+  return { mask, width: lb.w, height: lb.h, model };
+}
+
+/** Kadraj bandını at: 1024² çıktının letterbox iç dikdörtgeni (0..1 olasılık). */
+function kirp(out: Float32Array, lb: { x: number; y: number; w: number; h: number }): Float32Array {
+  const raw = new Float32Array(lb.w * lb.h);
+  for (let j = 0; j < lb.h; j++) {
+    const rowStart = (j + lb.y) * MODEL_INPUT_SIZE + lb.x;
+    raw.set(out.subarray(rowStart, rowStart + lb.w), j * lb.w);
+  }
+  return raw;
+}
+
+/** Tarayıcı IS-Net: letterbox karesi → [1,1,1024,1024] olasılık. */
+async function isnetCikti(
+  lb: { canvas: HTMLCanvasElement },
+  device: 'wasm' | 'webgpu',
+): Promise<{ data: Float32Array; dims: number[] }> {
+  const session = await loadSegmentationModel(device);
   const ctx = lb.canvas.getContext('2d', { willReadFrequently: true });
   if (!ctx) throw new Error('segmentForeground: 2d context yok');
   const px = ctx.getImageData(0, 0, MODEL_INPUT_SIZE, MODEL_INPUT_SIZE).data;
@@ -141,23 +189,29 @@ export async function segmentForeground(
     }),
   );
   const tOut = result.output;
-  const [batch, ch, , outW] = tOut.dims as [number, number, number, number];
-  if (batch !== 1 || ch !== 1) {
+  const [batch, ch, outH, outW] = tOut.dims as [number, number, number, number];
+  if (batch !== 1 || ch !== 1 || outW !== MODEL_INPUT_SIZE || outH !== MODEL_INPUT_SIZE) {
     throw new Error(`segmentasyon çıktısı beklenmeyen şekil: ${tOut.dims.join('x')}`);
   }
-  const out = tOut.data as Float32Array;
-  // Kadraj bandını at: kırpılmış rect maskesi (çıktı zaten 0..1 olasılık).
-  const raw = new Float32Array(lb.w * lb.h);
-  for (let j = 0; j < lb.h; j++) {
-    const rowStart = (j + lb.y) * outW + lb.x;
-    raw.set(out.subarray(rowStart, rowStart + lb.w), j * lb.w);
+  return { data: tOut.data as Float32Array, dims: [1, 1, outH, outW] };
+}
+
+/** BiRefNet girdisi: kareye esnetilmiş görüntü, 1/255 + ImageNet mean/std (kendi preprocessor_config'i). */
+function birefnetGirdisi(source: HTMLCanvasElement | HTMLImageElement): { data: Float32Array; dims: number[] } {
+  const c = document.createElement('canvas');
+  c.width = MODEL_INPUT_SIZE;
+  c.height = MODEL_INPUT_SIZE;
+  const ctx = c.getContext('2d', { willReadFrequently: true })!;
+  ctx.drawImage(toCanvas(source), 0, 0, MODEL_INPUT_SIZE, MODEL_INPUT_SIZE);
+  const px = ctx.getImageData(0, 0, MODEL_INPUT_SIZE, MODEL_INPUT_SIZE).data;
+  const n = MODEL_INPUT_SIZE * MODEL_INPUT_SIZE;
+  const mean = [0.485, 0.456, 0.406];
+  const std = [0.229, 0.224, 0.225];
+  const data = new Float32Array(3 * n);
+  for (let i = 0; i < n; i++) {
+    for (let k = 0; k < 3; k++) data[k * n + i] = (px[i * 4 + k] / 255 - mean[k]) / std[k];
   }
-  // TUR 10: sert kesim yerine dilate + feather — yüz/el kenarı delikleri
-  // güven marjıyla kapanır; perde koruması (AND eşiği) değişmez.
-  // GÜN E (bulgu 12): önce kopuk parçaları düşür (özneye bitişik OLMAYAN model
-  // hataları — kapı kasası, zemin), sonra dilate + tüy.
-  const mask = dilateAndFeatherMask(keepLargestComponent(raw, lb.w, lb.h), lb.w, lb.h);
-  return { mask, width: lb.w, height: lb.h };
+  return { data, dims: [1, 3, MODEL_INPUT_SIZE, MODEL_INPUT_SIZE] };
 }
 
 /** Kaynağı `size`×`size` kareye, en-boy korunarak ortalar (depth.ts ile aynı

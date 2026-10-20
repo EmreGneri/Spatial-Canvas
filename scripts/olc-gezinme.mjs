@@ -7,7 +7,7 @@
 //     [--katman quick|standard] [--kare N] [--iter N] [--ayrilan N] [--genislik N]
 //     [--chrome] [--yazilim-gpu] [--basli] [--yalniz-sfm]
 //     [--secim yenilik] [--eslestirme sirali] [--odak-alt N]
-//     [--geometri model|sentetik] [--derinlik-kisiti WEIGHT] [--bolgesel]
+//     [--geometri model|model-da3|sentetik] [--derinlik-kisiti WEIGHT] [--bolgesel] [--yardimci]
 //     [--refine-every N] [--cap-mult N] [--max-splats N] [--trainer-seed N]
 // Karşılaştırma:
 //   node scripts/olc-gezinme.mjs --karsilastir <raporA.json> <raporB.json> [--cikti dizin]
@@ -22,7 +22,7 @@ const REPO_KOKU = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const ZAMAN_ASIMI_MS = 3 * 60 * 60 * 1000;
 const ILERLEME_ARALIGI_MS = 20_000;
 
-const BAYRAKLAR = new Set(['--chrome', '--yazilim-gpu', '--basli', '--yalniz-sfm', '--bolgesel']);
+const BAYRAKLAR = new Set(['--chrome', '--yazilim-gpu', '--basli', '--yalniz-sfm', '--bolgesel', '--yardimci']);
 const DEGERLI = new Set(['--gt', '--etiket', '--katman', '--kare', '--iter', '--ayrilan', '--genislik', '--cikti',
   '--secim', '--eslestirme', '--odak-alt', '--geometri', '--derinlik-kisiti',
   '--refine-every', '--cap-mult', '--max-splats', '--trainer-seed']);
@@ -33,7 +33,7 @@ function kullanim(mesaj) {
     'kullanım: node scripts/olc-gezinme.mjs <klip-yolu> [--gt yol] [--etiket ad] [--katman quick|standard]\n'
     + '          [--kare N] [--iter N] [--ayrilan N] [--genislik N] [--chrome] [--yazilim-gpu] [--basli]\n'
     + '          [--yalniz-sfm] [--secim yenilik] [--eslestirme sirali] [--odak-alt N]\n'
-    + '          [--geometri model|sentetik] [--derinlik-kisiti WEIGHT] [--bolgesel]\n'
+    + '          [--geometri model|model-da3|sentetik] [--derinlik-kisiti WEIGHT] [--bolgesel] [--yardimci]\n'
     + '          [--refine-every N] [--cap-mult N] [--max-splats N] [--trainer-seed N]\n'
     + '          node scripts/olc-gezinme.mjs --karsilastir <raporA.json> <raporB.json> [--cikti dizin]',
   );
@@ -92,7 +92,7 @@ async function olc(secenek) {
     kullanim('--trainer-seed must be a non-negative integer');
   if (secenek.deger.secim && secenek.deger.secim !== 'yenilik') kullanim('--secim yenilik olmalı');
   if (secenek.deger.eslestirme && secenek.deger.eslestirme !== 'sirali') kullanim('--eslestirme sirali olmalı');
-  if (secenek.deger.geometri && !['model', 'sentetik'].includes(secenek.deger.geometri)) kullanim('--geometri model|sentetik olmalı');
+  if (secenek.deger.geometri && !['model', 'model-da3', 'sentetik'].includes(secenek.deger.geometri)) kullanim('--geometri model|model-da3|sentetik olmalı');
   if (secenek.deger.geometri === 'sentetik' && !gt) kullanim('--geometri sentetik için --gt gerekli');
   if (secenek.deger['derinlik-kisiti'] && !(Number(secenek.deger['derinlik-kisiti']) > 0))
     kullanim('--derinlik-kisiti pozitif sayı olmalı');
@@ -113,6 +113,8 @@ async function olc(secenek) {
     'refine-every', 'cap-mult', 'max-splats', 'trainer-seed'])
     if (secenek.deger[k] != null) q.set(k, secenek.deger[k]);
   for (const k of ['yalniz-sfm', 'bolgesel']) if (secenek.bayrak.has(`--${k}`)) q.set(k, '1');
+  // --yardimci: sayfa yerel çıkarım yardımcısını (sidecar/server.py) kullanır; sunucu çalışıyor olmalı.
+  if (secenek.bayrak.has('--yardimci')) q.set('inference', 'sidecar');
 
   const oturumSecenekleri = {
     chrome: secenek.bayrak.has('--chrome'),

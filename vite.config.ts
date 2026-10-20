@@ -2,6 +2,7 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { readFileSync } from 'fs';
 import { resolve } from 'path';
+import { yardimciEklentisi } from './sidecar/vite-eklentisi.ts';
 
 /**
  * SÜRÜM TEK KAYNAKTAN. Arayüz kendi sürümünü göstermiyordu; başlıkta aylar
@@ -17,7 +18,7 @@ export default defineConfig({
   define: {
     __APP_VERSION__: JSON.stringify(pkg.version),
   },
-  plugins: [react()],
+  plugins: [react(), yardimciEklentisi()],
   build: {
     rollupOptions: {
       input: {
@@ -36,6 +37,8 @@ export default defineConfig({
       // Excluding these leaves the dynamic import as a plain fetch.
       '@huggingface/transformers',
       'onnxruntime-web',
+      // Wasm yükleyicisi kendi dizininden göreli çeker; prebundle yolu bozar.
+      '@mediapipe/tasks-vision',
     ],
   },
 });

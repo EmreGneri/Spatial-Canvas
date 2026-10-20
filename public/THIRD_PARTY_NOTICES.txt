@@ -71,6 +71,8 @@ declarations (.d.ts), erased at compile time; no runtime code ships.
 
 @img/sharp-win32-x64 0.34.5 -- Apache-2.0 AND LGPL-3.0-or-later
 
+@mediapipe/tasks-vision 1.0.1 -- Apache-2.0
+
 @protobufjs/aspromise 1.1.2 -- BSD-3-Clause
   Copyright (c) 2016, Daniel Wirtz  All rights reserved.
 
@@ -314,3 +316,8 @@ Xenova/yolos-tiny
 imgly/isnet-general-onnx
   License: MIT (verified via Hugging Face model card metadata, 2026-09-24)
   Source: https://huggingface.co/imgly/isnet-general-onnx
+
+MediaPipe Face Landmarker (face_landmarker.task)
+  License: Apache-2.0 (model cards "Model Card MediaPipe Face Mesh V2" and
+  "BlazeFace short range", both "LICENSED UNDER Apache License, Version 2.0").
+  Source: https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task
