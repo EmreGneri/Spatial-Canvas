@@ -16,6 +16,22 @@
  */
 
 /**
+ * Blob'u dosya olarak indirir (PNG / WebM / PLY / preset JSON — tek yol).
+ *
+ * `URL.revokeObjectURL` HEMEN ÇAĞRILMAZ: `a.click()` indirmeyi kuyruğa alır,
+ * aynı görevde revoke Firefox/Safari'de indirmeyi düşürür (Chrome tolere
+ * ediyor). Gecikme `Egitim3D.plyIndir` ile aynı.
+ */
+export function downloadBlob(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 60_000);
+}
+
+/**
  * Canvas'ın o anki içeriğini PNG olarak indirir.
  * GÜN 6 (opt): scale > 1 → canvas yeniden çizilir (yüksek çözünürlük çıktı).
  */
@@ -55,12 +71,7 @@ export async function exportPNG(
         reject(new Error('toBlob başarısız'));
         return;
       }
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `${filename}.png`;
-      a.click();
-      URL.revokeObjectURL(url);
+      downloadBlob(blob, `${filename}.png`);
       resolve();
     }, 'image/png');
   });
@@ -108,16 +119,18 @@ export function exportWebM(
     if (e.data.size > 0) chunks.push(e.data);
   };
 
+  // captureStream track'i canvas'ı kare kare çekmeye DEVAM eder; kayıt bitince
+  // bırakılmazsa her export bir track daha ekler (görünmez CPU maliyeti).
+  const stopStream = () => stream.getTracks().forEach((t) => t.stop());
+
   return new Promise((resolve, reject) => {
-    recorder.onerror = (e) => reject(new Error(`MediaRecorder: ${e.error?.message ?? 'bilinmeyen'}`));
+    recorder.onerror = (e) => {
+      stopStream();
+      reject(new Error(`MediaRecorder: ${e.error?.message ?? 'bilinmeyen'}`));
+    };
     recorder.onstop = () => {
-      const blob = new Blob(chunks, { type: 'video/webm' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `spatial-canvas-${Date.now()}.webm`;
-      a.click();
-      URL.revokeObjectURL(url);
+      stopStream();
+      downloadBlob(new Blob(chunks, { type: 'video/webm' }), `spatial-canvas-${Date.now()}.webm`);
       resolve();
     };
     recorder.start();
@@ -268,10 +281,5 @@ export function gaussiansToPly(src: SplatPlySource): Blob {
  *  indirmek kullanıcıya "oldu" der, olmamıştır. */
 export function exportPly(src: SplatPlySource, filename = 'spatial-canvas'): void {
   if (src.count <= 0) throw new Error('exportPly: sahnede splat yok');
-  const url = URL.createObjectURL(gaussiansToPly(src));
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `${filename}.ply`;
-  a.click();
-  URL.revokeObjectURL(url);
+  downloadBlob(gaussiansToPly(src), `${filename}.ply`);
 }

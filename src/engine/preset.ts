@@ -3,6 +3,7 @@ import { POSITION_TEXTURE_SIZE } from './buffers';
 import type { Graph } from './graph';
 import { collectParams, applyParams, type ParamDef, type ParamValues } from './params';
 import { SIM_PARAMS } from './simulation';
+import { downloadBlob } from './export';
 import { GRAIN_PARAMS } from '../shaders/grainPass';
 import { FEEDBACK_PARAMS } from '../shaders/feedbackPass';
 import { CHROMATIC_PARAMS } from '../shaders/chromaticPass';
@@ -206,12 +207,7 @@ export function listSlots(): string[] {
 export function downloadPresetFile(preset: Preset): void {
   const json = JSON.stringify(preset, null, 2);
   const blob = new Blob([json], { type: 'application/json' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `spatial-canvas-${(preset.name || 'preset').replace(/[^\w\-]+/g, '_')}.json`;
-  a.click();
-  URL.revokeObjectURL(url);
+  downloadBlob(blob, `spatial-canvas-${(preset.name || 'preset').replace(/[^\w\-]+/g, '_')}.json`);
 }
 
 /**

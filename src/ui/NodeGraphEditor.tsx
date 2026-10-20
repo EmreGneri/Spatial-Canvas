@@ -33,6 +33,9 @@ import { LOOK_PARAMS } from '../shaders/look';
 import { POINTS_PARAMS } from '../shaders/pointCloudMaterial';
 import { ASCII_PARAMS } from '../shaders/asciiMaterial';
 import { SOLID_PARAMS } from '../shaders/solidMaterial';
+import { NEON_PARAMS } from '../shaders/neonWireMaterial';
+import { SPLAT_PARAMS } from '../shaders/splatMaterial';
+import { CRYSTAL_PARAMS } from '../shaders/crystalMaterial';
 import { liveGraph, setParam, toRfNodes, type SpatialNodeType } from './nodeGraphSync';
 
 /**
@@ -63,6 +66,16 @@ const NODE_META: Record<NodeType, { label: string; color: string }> = {
   output: { label: 'Output', color: '#64748b' },
 };
 
+/** Render modu → parametre tanımı (Engine.registerRenderMode ile aynı adlar). */
+const RENDERER_PARAMS: Record<string, ParamDef[]> = {
+  points: POINTS_PARAMS,
+  ascii: ASCII_PARAMS,
+  neon: NEON_PARAMS,
+  solid: SOLID_PARAMS,
+  splat: SPLAT_PARAMS,
+  crystal: CRYSTAL_PARAMS,
+};
+
 /** Düğüm tipleri hangi parametre tanımını taşır — editörün tek eşlemesi. */
 function nodeDefs(type: NodeType, mode?: unknown): ParamDef[] {
   if (type === 'particles') return SIM_PARAMS;
@@ -72,9 +85,9 @@ function nodeDefs(type: NodeType, mode?: unknown): ParamDef[] {
     return [...FEEDBACK_PARAMS, ...CHROMATIC_PARAMS, ...BLOOM_PARAMS, ...GRAIN_PARAMS];
   }
   if (type === 'renderer') {
-    if (String(mode) === 'ascii') return ASCII_PARAMS;
-    if (String(mode) === 'solid') return SOLID_PARAMS;
-    return POINTS_PARAMS;
+    // Neon/splat/crystal eskiden POINTS_PARAMS alıyordu; o anahtarlar aktif
+    // material'da yok, `applyParams` sessizce atlıyordu — slider'lar ölüydü.
+    return Object.hasOwn(RENDERER_PARAMS, String(mode)) ? RENDERER_PARAMS[String(mode)] : POINTS_PARAMS;
   }
   if (type === 'output') return LOOK_PARAMS;
   return [];
