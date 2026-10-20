@@ -69,3 +69,29 @@ node scripts/olc-gezinme.mjs --karsilastir olcum-out/taban/sentetik-orman-yolu/r
 "iyi" mesafe en az %20 artsın, ayrılan kare PSNR kaybı en fazla 0,2 dB olsun,
 GT engel ihlali erişilebilir bölgede sıfır olsun. Gerçek kliplerde görüntüler
 elle de incelenmeli. Şu an bu kapı karşılanmış sayılmıyor.
+
+## DA3Mono-Large ile V2-small karşılaştırması (2026-10-10)
+
+Soru: gezinme derinliğinde (anahtar kare başına) V2-small yerine DA3Mono-Large
+(yerel yardımcı, `sidecar/server.py`, DirectML) daha iyi mi? Ayar: `--katman quick
+--kare 24 --iter 3000 --trainer-seed 7 --chrome`, RTX 5070 Laptop. SfM iki modelde
+de aynı (GT hizalama rms 0,0014), yani fark yalnız derinlikten. `derinlikCihazi`
+raporda `sidecar` görünüyor: DA3 gerçekten kullanıldı, sessiz V2 düşüşü yok.
+
+| Klip | Model | Geçerli piksel | Medyan uyum | En kötü uyum | Bilinmeyen voksel | GT engel ihlali | Erişilebilir ihlal |
+|---|---|---|---|---|---|---|---|
+| sentetik | V2 | 0,655 | 0,241 | 1,198 | 0,785 | %4,80 | %0,47 (n=3008) |
+| sentetik | DA3 (kayma 0,5) | 0,662 | 0,221 | 1,247 | 0,787 | %5,17 | %0,67 (n=2534) |
+| sentetik | DA3 (saf 1/d) | 0,682 | 0,224 | 1,703 | 0,777 | %5,00 | %0,62 (n=2905) |
+| forest-3679072 | V2 | 0,513 | 0,392 | 3,620 | 0,808 | – | – |
+| forest-3679072 | DA3 (kayma 0,5) | 0,382 | 0,569 | 3,355 | 0,854 | – | – |
+| forest-3679072 | DA3 (saf 1/d) | 0,385 | 0,569 | 3,113 | 0,854 | – | – |
+
+Ayrılan kare PSNR'ı derinlik kısıtı olmadığı için modelden bağımsız (34,0–35,3 dB, gürültü içinde).
+
+Sonuç: **DA3 bu yolda V2'yi geçmiyor.** Gerçek klipte medyan uyum %45 kötü ve geçerli
+piksel 0,51'den 0,38'e düşüyor; sentetikte güvenlik metrikleri (GT engel ihlali)
+kötüleşiyor. Varsayılan V2'de kaldı. DA3 yalnız ölçüm bayrağıyla açılır:
+`--geometri model-da3 --yardimci` (yardımcı sunucu çalışıyor olmalı). Fotoğraf
+yolundaki 1/(d+0,5·medyan) kayması SfM'in `1/z = a·d + b` uydurmasını bozacağı için
+bu yol saf 1/d kullanır (`da3Kayma: 0`); bu da sonucu değiştirmedi.

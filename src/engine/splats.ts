@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { POSITION_TEXTURE_SIZE } from './buffers';
+import { splatGeometrisiTuret } from './splatGeometri.ts';
 import type { GaussianBufferData } from '../shaders/splatFixture';
 import {
   createResortState,
@@ -36,34 +37,6 @@ import {
  * içindir (buffers.ts). Burada flip açık olsaydı index → uv çevrimi sessizce
  * dikey aynalanır ve sıralama başka splat'ı çizerdi.
  */
-
-/**
- * Türetilen normalin en küçük |n_z|'si. Eksen başına eğim kırpmak YETMEZ
- * (iki eksen birden büyükse n_z yine çöker); sınır doğrudan normalin
- * kendisine uygulanır: yanal bileşen, n_z bu tabanı tutacak şekilde
- * ölçeklenir. 0.38 → splat kameraya göre en fazla ~68° eğilebilir.
- *
- * Bu bir GÖRÜNTÜ kararı değil, TÜRETME hatasının tavanıdır: gerçek füzyon
- * normalleri geldiğinde (Gün 7) bu tabana ihtiyaç kalmaz.
- */
-const NORMAL_MIN_NZ = 0.38;
-
-/**
- * (nx, ny, 1) ham normalini normalize eder ve |n_z| ≥ NORMAL_MIN_NZ olacak
- * şekilde yanal bileşeni kısar. Çıktı BİRİM uzunluktadır.
- */
-function stabilizedNormal(nx: number, ny: number, out: Float32Array, o: number) {
-  const lat = Math.hypot(nx, ny);
-  // n_z = 1/√(1+lat²) ≥ min  ⇔  lat ≤ √(1/min² − 1)
-  const maxLat = Math.sqrt(1 / (NORMAL_MIN_NZ * NORMAL_MIN_NZ) - 1);
-  const k = lat > maxLat ? maxLat / lat : 1;
-  const cx = nx * k;
-  const cy = ny * k;
-  const len = Math.hypot(cx, cy, 1);
-  out[o] = cx / len;
-  out[o + 1] = cy / len;
-  out[o + 2] = 1 / len;
-}
 
 /** Splat quad'ının köşe düzeni: iki üçgen, dört köşe (TRIANGLE indeksli). */
 const QUAD_CORNERS = new Float32Array([-1, -1, 1, -1, 1, 1, -1, 1]);
@@ -167,54 +140,14 @@ export function fillGaussiansFromPointCloud(
   const B = tex.b.image.data as Float32Array;
   const C = tex.c.image.data as Uint8Array;
   const n = grid * grid;
-  // Dünya adımı: home grid'i [-halfW, +halfW] × [-1, +1] aralığını kaplar.
-  // NORMAL türevleri için sabit adım yeterlidir (grid düzenli).
-  const stepX = Math.abs(home[4] - home[0]) || 2 / grid;
-  const stepY = Math.abs(home[grid * 4 + 1] - home[1]) || 2 / grid;
-  // Yarıçap: komşu aralığının yarısı → komşu splat'lar 2σ'da buluşur,
-  // Gauss kuyrukları örtüşür. Aralık grid boyunca SABİTTİR (yukarıdaki
-  // "yarıçap küreseldir" kaydına bak).
-  const baseScale = 0.5 * Math.max(stepX, stepY);
+  // Konum + normal + ölçek: saf modülde (Node'dan ölçülebilsin — verify-splat-yan).
+  splatGeometrisiTuret(home, grid, A, B);
 
   for (let j = 0; j < grid; j++) {
     for (let i = 0; i < grid; i++) {
       const k = j * grid + i;
       const o = k * 4;
-      const x = home[o];
-      const y = home[o + 1];
       const z = home[o + 2];
-      A[o] = x;
-      A[o + 1] = y;
-      A[o + 2] = z;
-      A[o + 3] = home[o + 3];
-
-      // Merkezi fark (kenarda tek yanlı) → yüzey normali.
-      const zl = home[(k - (i > 0 ? 1 : 0)) * 4 + 2];
-      const zr = home[(k + (i < grid - 1 ? 1 : 0)) * 4 + 2];
-      const zd = home[(k - (j > 0 ? grid : 0)) * 4 + 2];
-      const zu = home[(k + (j < grid - 1 ? grid : 0)) * 4 + 2];
-      // grid satırı j ARTARKEN dünya y AZALIR → dz/dy işareti ters.
-      // EĞİM TAVANI (ölçüldü — aşağı bak): derinlik SÜREKSİZLİĞİNDE (siluet
-      // kenarı, kol/gövde sınırı) merkezi fark patlar; normal kameraya
-      // neredeyse DİK döner, splat kılcal bir şerite çöker ve yüzeyde delik
-      // bırakır. Ölçüm (2026-08-14, sentetik görsel, 640×420): tavansız
-      // %15.87 splat |n_z| < 0.35 taşıyordu ve yüzeyin %9.68'i delikti;
-      // yarıçapı 3× büyütmek deliği yalnızca %4.48'e indiriyordu — yani
-      // sorun YARIÇAP değil YÖNELİMDİ.
-      const dzdx = (zr - zl) / (2 * stepX);
-      const dzdy = -(zu - zd) / (2 * stepY);
-      stabilizedNormal(-dzdx, -dzdy, B, o);
-      // YARIÇAP KÜRESELDİR — ve öyle KALMALI. Denendi ve ÖLÇÜLDÜ (2026-08-14):
-      // splat başına "komşu dünya mesafesi"nden yarıçap türetmek hiçbir şeyi
-      // değiştirmiyor, çünkü önem remap'i (buildImportanceRemap) yalnızca
-      // hangi DEPTH pikselinin okunduğunu büker; parçacığın DÜNYA konumu
-      // kendi grid yerindedir (ARCHITECTURE.md · Point Cloud Sözleşmesi:
-      // "grid ve aUv sözleşmesi aynı kalır"). Ölçüm: türetilen yarıçapın
-      // min/maks/ortalaması 0.0026 / 0.0026 / 0.0026 — yani tam olarak
-      // küresel değerin kendisi. Fazladan komşu okuması ve dallanma bedava
-      // değildi; geri alındı.
-      B[o + 3] = baseScale;
-
       if (colorData) {
         C[o] = colorData[o];
         C[o + 1] = colorData[o + 1];

@@ -1,7 +1,38 @@
-export type SidecarModel = 'small' | 'base' | 'mask';
+// Sunucu: sidecar/server.py (protokol ve ölçümler orada).
+//   small: V2-small, canlı video        -> [1,H,W] disparite
+//   da3:   DA3Mono-Large, fotoğraf      -> [1,2,H,W] derinlik + gökyüzü (disparite istemcide)
+//   mask:  BiRefNet_lite, fotoğraf      -> [1,1,1024,1024] olasılık
+export type SidecarModel = 'small' | 'da3' | 'mask';
 export interface RawTensor { data: Float32Array; dims: number[] }
 
 export class SidecarDroppedError extends Error {}
+
+/** Model başına beklenen yanıt şekli (girdi [1,3,H,W]). */
+export function beklenenSekil(model: SidecarModel, inDims: number[]): number[] {
+  if (model === 'mask') return [1, 1, 1024, 1024];
+  if (model === 'da3') return [1, 2, inDims[2], inDims[3]];
+  return [1, inDims[2], inDims[3]];
+}
+
+/**
+ * Yardımcı açık mı?
+ *  - Localhost'ta VARSAYILAN AÇIK: `npm run dev` yardımcıyı kendisi başlatır
+ *    (vite.config.ts); çalışmıyorsa yoklama hemen düşer, tarayıcı yolu aynen sürer.
+ *  - Yayındaki sitede varsayılan KAPALI: hiçbir sayfa izinsiz 127.0.0.1'i yoklamaz.
+ *  - `?inference=sidecar` açar, `?inference=browser` kapatır; seçim kalıcıdır ve
+ *    localhost varsayılanını da ezer.
+ * `acikca`: kullanıcı açıkça seçti mi. Canlı video yalnız buna bakar: DirectML'de
+ * V2-small çıktısı tarayıcıdan %2,9'a kadar farklı (ölçüldü), önceki karar canlı
+ * yolu bu farkla varsayılan yapmamaktı.
+ */
+export function sidecarAcikMi(search: string, kayitli: string | null, yerel = false): { acik: boolean; acikca: boolean; kaydet: string | undefined } {
+  const istek = new URLSearchParams(search).get('inference');
+  if (istek === 'sidecar') return { acik: true, acikca: true, kaydet: '1' };
+  if (istek === 'browser') return { acik: false, acikca: false, kaydet: '0' };
+  if (kayitli === '1') return { acik: true, acikca: true, kaydet: undefined };
+  if (kayitli === '0') return { acik: false, acikca: false, kaydet: undefined };
+  return { acik: yerel, acikca: false, kaydet: undefined };
+}
 
 /** One capability probe per page. Failed inference switches to browser until
  * reload, avoiding a timeout on every video frame or repeated model allocation. */
@@ -20,7 +51,9 @@ export class SidecarClient {
       try {
         const response = await fetch(`${this.url}/health`, { signal: AbortSignal.timeout(1500) });
         const health = await response.json();
-        if (!response.ok || health.ok !== true || !['DmlExecutionProvider','CUDAExecutionProvider','CPUExecutionProvider'].includes(health.arkaUc)) return false;
+        // CPU arka ucu KABUL EDİLMEZ: DA3 CPU'da ~14 sn/çağrı, fotoğraf başına ~7 çağrı;
+        // tarayıcıdan yavaş olur ve sıradaki canlı kareleri zaman aşımına iterdi.
+        if (!response.ok || health.ok !== true || !['DmlExecutionProvider','CUDAExecutionProvider'].includes(health.arkaUc)) return false;
         this.backend = `sidecar · ${health.arkaUc}`;
         return true;
       } catch { return false; }
@@ -34,7 +67,8 @@ export class SidecarClient {
         const id = String(++this.sequence);
         const path = model === 'mask' ? '/infer/mask' : `/infer/depth?model=${model}`;
         const response = await fetch(this.url + path, {
-          method: 'POST', signal: AbortSignal.timeout(15000),
+          // BiRefNet DirectML'de ~5 sn; ilk çağrıda kabuk ısınması da eklenir.
+          method: 'POST', signal: AbortSignal.timeout(model === 'small' ? 15000 : 60000),
           headers: { 'Content-Type': 'application/octet-stream', 'X-Dims': tensor.dims.join(','), 'X-Frame-Id': id },
           // Respect views into a larger processor buffer. No JSON/base64 conversion.
           body: new Uint8Array(tensor.data.buffer, tensor.data.byteOffset, tensor.data.byteLength) as BodyInit,
@@ -43,7 +77,7 @@ export class SidecarClient {
         if (response.status === 409) throw new SidecarDroppedError('Sidecar superseded frame');
         if (!response.ok) throw new Error(`Sidecar HTTP ${response.status}`);
         const dims = (response.headers.get('x-dims') ?? '').split(',').map(Number);
-        const expected = model === 'mask' ? [1,1,1024,1024] : [1,tensor.dims[2],tensor.dims[3]];
+        const expected = beklenenSekil(model, tensor.dims);
         if (response.headers.get('x-frame-id') !== id || dims.length !== expected.length
           || dims.some((d,i) => d !== expected[i]) || buffer.byteLength !== expected.reduce((a,b)=>a*b,1)*4) {
           throw new Error('Sidecar frame or tensor shape mismatch');
@@ -62,12 +96,22 @@ export class SidecarClient {
   }
 }
 
-// Explicit experiment: DML raw-output parity is not yet within the CPU gate's
-// 1% tolerance. Keep the default browser path until GPU parity is accepted.
-// Remote deployments never probe the viewer's local services.
-const enabled = typeof location !== 'undefined'
-  && ['localhost','127.0.0.1'].includes(location.hostname)
-  && new URLSearchParams(location.search).get('inference') === 'sidecar';
-export const localInference = enabled ? new SidecarClient('http://127.0.0.1:8765') : null;
+const KAYIT_ANAHTARI = 'spatial-canvas.inference';
+function acilisDurumu(): { acik: boolean; acikca: boolean } {
+  if (typeof location === 'undefined') return { acik: false, acikca: false }; // Node (verify)
+  let kayitli: string | null = null;
+  try { kayitli = localStorage.getItem(KAYIT_ANAHTARI); } catch { /* gizli pencere vb. */ }
+  const yerel = ['localhost', '127.0.0.1'].includes(location.hostname);
+  const durum = sidecarAcikMi(location.search, kayitli, yerel);
+  try {
+    if (durum.kaydet) localStorage.setItem(KAYIT_ANAHTARI, durum.kaydet);
+  } catch { /* depolama yoksa yalnız bu sayfa için geçerli */ }
+  return durum;
+}
+const durum = acilisDurumu();
+export const localInference = durum.acik ? new SidecarClient('http://127.0.0.1:8765') : null;
+/** Canlı video için: yalnız kullanıcı açıkça seçtiyse (bkz. sidecarAcikMi). */
+export const localInferenceAvailableCanli = () =>
+  durum.acikca ? localInferenceAvailable() : Promise.resolve(false);
 export const localInferenceAvailable = () => localInference?.available() ?? Promise.resolve(false);
 export const inferenceBackend = () => localInference?.backend ?? 'browser';
