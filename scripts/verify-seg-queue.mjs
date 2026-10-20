@@ -127,4 +127,15 @@ function freshSegmentation() {
   console.log('[3] basarisiz kurulumdan sonra yeniden deneme ✓');
 }
 
+// [4] Takilan is sirayi sonsuza dek tutmaz: zaman asimi reddeder, sonraki is kosar.
+{
+  const t0 = Date.now();
+  const hung = gpuSirasinaGir(() => new Promise(() => {}), 50);
+  const next = gpuSirasinaGir(async () => 'devam');
+  await assert.rejects(hung, /sıra serbest bırakıldı/, 'takilan is zaman asiminda reddedilmeli');
+  assert.equal(await next, 'devam', 'takilan isten sonra sira serbest kalmali');
+  assert.ok(Date.now() - t0 < 5000, 'zaman asimi hizli isledi');
+  console.log('[4] takilan GPU isi sirayi kilitlemiyor ✓');
+}
+
 console.log('OK segmentasyon GPU sirasi + kurulum tekillestirme');

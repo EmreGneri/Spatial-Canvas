@@ -121,15 +121,33 @@ export const loadTransformers = onceRetry<Transformers>(() =>
  */
 let gpuKuyrugu: Promise<unknown> = Promise.resolve();
 
-export function gpuSirasinaGir<T>(is: () => Promise<T>): Promise<T> {
+/**
+ * Takılan bir iş (sürücü kilitlenmesi) sırayı ve origin genelindeki Web Lock'u
+ * sonsuza dek tutmasın: süre dolunca iş REDDEDİLİR ve sıra serbest kalır.
+ * İş gerçekte durmaz (iptal edilemez); geç gelen sonucu atılır. Sınır, ilk
+ * model indirme + kurulumu da kapsayacak kadar geniştir.
+ */
+export const GPU_ZAMAN_ASIMI_MS = 180_000;
+
+export function gpuSirasinaGir<T>(is: () => Promise<T>, zamanAsimiMs = GPU_ZAMAN_ASIMI_MS): Promise<T> {
+  const sinirli = () => new Promise<T>((coz, reddet) => {
+    const zamanlayici = setTimeout(
+      () => reddet(new Error(`GPU işi ${Math.round(zamanAsimiMs / 1000)} sn içinde bitmedi (sürücü takılmış olabilir); sıra serbest bırakıldı`)),
+      zamanAsimiMs,
+    );
+    is().then(
+      (v) => { clearTimeout(zamanlayici); coz(v); },
+      (e) => { clearTimeout(zamanlayici); reddet(e); },
+    );
+  });
   const siraliIs = () => {
     // Web Locks share one queue across the page and the tracker worker.
     // Serializing only each realm's promise chain would let two ORT WebGPU
     // sessions initialize or infer on the same device at the same time.
     if (typeof navigator !== 'undefined' && navigator.locks?.request) {
-      return navigator.locks.request('spatial-canvas-gpu-model', is);
+      return navigator.locks.request('spatial-canvas-gpu-model', sinirli);
     }
-    return is();
+    return sinirli();
   };
   const sonuc = gpuKuyrugu.then(siraliIs, siraliIs);
   gpuKuyrugu = sonuc.then(

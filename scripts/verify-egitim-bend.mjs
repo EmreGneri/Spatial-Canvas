@@ -220,4 +220,26 @@ nearArray(frameWrites.at(-1), expectedFramed, 'bend controller applies the suppl
   assert.equal(flag, 'yeni');
 }
 
+// ── .ply export reads the trained BASE, then restores the deform ─────────
+{
+  const writes = [];
+  const baseData = new Float32Array(16); baseData[13] = 2;
+  const exportSession = {
+    trainer: { device: { queue: { writeBuffer(_b, _o, data) { writes.push(new Float32Array(data)); } } }, bufParams: {} },
+    exportRawState: async () => ({ data: baseData.slice(), n: 1 }),
+  };
+  const exportBend = createGaussianBendController(exportSession, () => true, () => {});
+  assert.equal(await exportBend.withBase(async () => 'idle'), 'idle', 'no deform: withBase is a plain call');
+  assert.equal(writes.length, 0, 'no deform: nothing written to the GPU');
+  await exportBend.apply({ kind: 'bend', curvature: 0.5, halfLength: 2 }, Infinity, undefined, 1);
+  const before = writes.length;
+  let seenAtExport;
+  await exportBend.withBase(async () => { seenAtExport = writes[writes.length - 1]; });
+  assert.deepEqual([...seenAtExport], [...baseData], 'export sees the untouched trained state (no bend, no fade)');
+  assert.ok(writes.length === before + 2, 'deform is written back after the export');
+  assert.notDeepEqual([...writes[writes.length - 1]], [...baseData], 'bent/faded preview restored after export');
+  await assert.rejects(exportBend.withBase(async () => { throw new Error('boom'); }), /boom/);
+  assert.notDeepEqual([...writes[writes.length - 1]], [...baseData], 'deform restored even when the export throws');
+}
+
 console.log('3DGS post-training bend integration: OK');

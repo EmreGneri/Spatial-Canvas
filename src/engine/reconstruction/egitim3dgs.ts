@@ -296,15 +296,24 @@ export function egitimOturumAyari(ayar: EgitimAyari, olcum?: EgitimOlcumAyari) {
  * splats and held-out 28.1 -> 29.3 dB; iGPU time cost not yet measured. */
 export const IGPU_CONTINUE_ITERS = 4000;
 
+/** Everything `egitimDevamEt` can reject, with no side effects, so callers can
+ * validate BEFORE touching GPU state they would otherwise have to roll back. */
+export function egitimDevamEtKontrol(
+  session: { training: boolean },
+  moreIters = IGPU_CONTINUE_ITERS,
+): void {
+  if (!Number.isSafeInteger(moreIters) || moreIters <= 0) {
+    throw new RangeError('Additional iterations must be a positive integer');
+  }
+  if (session.training) throw new Error('Training is already running');
+}
+
 export function egitimDevamEt(
   session: { training: boolean; continueFor(moreIters: number): number },
   ayar: EgitimAyari,
   moreIters = IGPU_CONTINUE_ITERS,
 ): number {
-  if (!Number.isSafeInteger(moreIters) || moreIters <= 0) {
-    throw new RangeError('Additional iterations must be a positive integer');
-  }
-  if (session.training) throw new Error('Training is already running');
+  egitimDevamEtKontrol(session, moreIters);
   const target = session.continueFor(moreIters);
   ayar.maxIters = target;
   return target;
@@ -501,6 +510,21 @@ export function createGaussianBendController(
         current = { spec, fadeHalfLength };
         active = !identity || fadeActive;
       } finally { pending = false; }
+    },
+    /** Runs `fn` (e.g. a .ply export) against the trained BASE state, then puts
+     * the active deform/fade back. Deletions from `temizle` stay: they live in the base. */
+    async withBase<T>(fn: () => Promise<T>): Promise<T> {
+      if (!active || !snapshot) return fn();
+      checkReady();
+      pending = true;
+      const base = snapshot;
+      try {
+        write(base.data);
+        return await fn();
+      } finally {
+        try { render(base, current.spec, current.fadeHalfLength); }
+        finally { pending = false; }
+      }
     },
     restoreForTraining(): void {
       if (pending) throw new Error('Wait for the bend update before resuming training');
@@ -847,6 +871,9 @@ export async function egitimBaslat(
       devamEt: (moreIters) => {
         if (closed) throw new Error('Training session is closed');
         if (!complete) throw new Error('Training has not finished yet');
+        // Validate first: restoreForTraining rewrites the GPU buffer, and a
+        // rejected resume would leave it reset while the UI still shows the deform.
+        egitimDevamEtKontrol(s, moreIters);
         bend.restoreForTraining();
         currentDeform = noDeform;
         fadeOn = false;
@@ -870,7 +897,8 @@ export async function egitimBaslat(
       ),
       gaussianlar: () => bend.gaussianlar(),
       temizle: (indices) => bend.temizle(indices),
-      plyBlob: () => s.exportPlyBlob(),
+      // The file is the trained scene, never the slider's bent/faded preview.
+      plyBlob: () => bend.withBase(() => s.exportPlyBlob()),
       kamera,
       pivot,
       kameralar: [...s.recon.cams].filter((c: { imgIdx: number }) => !ayrilanMi(c.imgIdx))
