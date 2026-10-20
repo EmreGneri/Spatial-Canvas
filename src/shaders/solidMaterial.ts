@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { SOURCE_COLOR_GLSL } from './sourceColor.ts';
 import { POINTS_DEPTH_RANGE } from '../engine/buffers';
 import type { ParamDef } from '../engine/params';
 
@@ -26,6 +27,7 @@ import type { ParamDef } from '../engine/params';
 export interface SolidMaterialUniforms {
   /** Fotoğraf renk grid'i ya da canlı video dokusu — Engine yazar. */
   uImageTexture: { value: THREE.Texture | null };
+  uDecodeVideo: { value: number };
   /** 0 = fotoğraf yok (derinlik rampası), 1 = fotoğraf renkleri açık */
   uHasImage: { value: number };
   /** Engine.pushSharedUniforms uyumu (solid mesh arka plan taşımaz). */
@@ -117,6 +119,7 @@ const VERTEX = /* glsl */ `
 
 const FRAGMENT = /* glsl */ `
   uniform sampler2D uImageTexture;
+  ${SOURCE_COLOR_GLSL}
   uniform float uHasImage;
   uniform float uObjectSeparation;
   uniform float uUseTextureColor;
@@ -150,7 +153,7 @@ const FRAGMENT = /* glsl */ `
     // filtre köşe rengini 4 komşu texelin bilinear'ı olarak verir (mesh
     // ön yüzü parçacık yüzeyiyle birebir hizalıdır — Gün B kararı).
     // ALPHA kanalı = bakılı oklüzyon (Gün C, computeAoMap); doku yokken 1.
-    vec4 img = uHasImage > 0.5 ? texture2D(uImageTexture, vUv) : vec4(0.0, 0.0, 0.0, 1.0);
+    vec4 img = uHasImage > 0.5 ? decodeSourceColor(texture2D(uImageTexture, vUv)) : vec4(0.0, 0.0, 0.0, 1.0);
     vec3 col = (uHasImage > 0.5 && uUseTextureColor > 0.5)
       ? img.rgb
       : mix(uFarColor, uNearColor, vDepth);
@@ -213,6 +216,7 @@ const FRAGMENT = /* glsl */ `
 export function createSolidMaterial(): SolidMaterial {
   const uniforms: SolidMaterialUniforms = {
     uImageTexture: { value: null },
+    uDecodeVideo: { value: 0 },
     uHasImage: { value: 0 },
     uObjectSeparation: { value: 0 },
     uUseTextureColor: { value: 1 },

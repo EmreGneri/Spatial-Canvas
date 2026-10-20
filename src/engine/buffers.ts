@@ -198,6 +198,8 @@ export interface ImageColorFillOptions {
   foregroundMask?: Float32Array;
   /** Live video has no room for the photo-only AO pass on every frame. */
   skipAo?: boolean;
+  /** Mask-aware edge colors (sampleImageGrid); on by default when a mask is given. */
+  foregroundColorIsolation?: boolean;
 }
 
 /**
@@ -222,6 +224,7 @@ export function fillImageColorTexture(
     gridSize: n,
     importanceSampling: opts.importanceSampling === true,
     foregroundMask: opts.foregroundMask,
+    foregroundColorIsolation: opts.foregroundColorIsolation,
   };
   const grid = sampleImageGrid(rgb, imgWidth, imgHeight, depth, depthWidth, depthHeight, sampleOpts);
   // ALPHA = bakılı oklüzyon (Gün C): aynı remap, aynı hizalama. Render

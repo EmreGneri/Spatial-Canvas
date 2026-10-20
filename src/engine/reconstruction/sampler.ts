@@ -423,6 +423,9 @@ export interface ImageSampleOptions {
    * parçacıklardan kayar. Opsiyonel.
    */
   foregroundMask?: Float32Array;
+  /** Maske verildiğinde ön plan kenarında arka plan rengi karışmaz (varsayılan
+   * açık). Yalnız kenar değişir; iç ve arka plan bit bit aynı kalır. */
+  foregroundColorIsolation?: boolean;
 }
 
 /**
@@ -460,9 +463,41 @@ export function sampleImageGrid(
       const x = remap ? remap.xOf(u) * sx - 0.5 : u * imgW - 0.5;
       const o = (j * grid + i) * 3;
       sampleBilinearRgb(rgb, imgW, imgH, x, y, out, o);
+      // Only the foreground edge needs a different filter. Interior and
+      // background keep the exact original result (including soft masks).
+      const mask = opts.foregroundMask;
+      if (opts.foregroundColorIsolation !== false && mask && mask.length === depthW * depthH) {
+        const alpha = sampleBilinear(mask, depthW, depthH, (x + 0.5) / sx - 0.5, (y + 0.5) / sy - 0.5);
+        if (alpha >= 0.5) sampleForegroundRgb(rgb, imgW, imgH, x, y, mask, depthW, depthH, out, o);
+      }
     }
   }
   return out;
+}
+
+/** Renormalize the existing four bilinear taps over foreground texels only;
+ * never invent colors by searching further. If no tap is foreground, keep
+ * the ordinary sample already written to `out`. */
+function sampleForegroundRgb(
+  rgb: Float32Array, w: number, h: number, x: number, y: number,
+  mask: Float32Array, mw: number, mh: number, out: Float32Array, offset: number,
+) {
+  const x0 = Math.max(0, Math.min(w - 1, Math.floor(x)));
+  const y0 = Math.max(0, Math.min(h - 1, Math.floor(y)));
+  const tx = Math.max(0, Math.min(1, x - x0));
+  const ty = Math.max(0, Math.min(1, y - y0));
+  let total = 0, red = 0, green = 0, blue = 0;
+  for (let dy = 0; dy < 2; dy++) for (let dx = 0; dx < 2; dx++) {
+    const px = Math.min(w - 1, x0 + dx);
+    const py = Math.min(h - 1, y0 + dy);
+    const weight = (dx ? tx : 1 - tx) * (dy ? ty : 1 - ty);
+    if (!weight || sampleBilinear(mask, mw, mh, ((px + 0.5) * mw) / w - 0.5, ((py + 0.5) * mh) / h - 0.5) < 0.5) continue;
+    const at = (py * w + px) * 3;
+    total += weight; red += rgb[at] * weight; green += rgb[at + 1] * weight; blue += rgb[at + 2] * weight;
+  }
+  if (total > 0 && total < 1) {
+    out[offset] = red / total; out[offset + 1] = green / total; out[offset + 2] = blue / total;
+  }
 }
 
 // ---------------------------------------------------------------------------

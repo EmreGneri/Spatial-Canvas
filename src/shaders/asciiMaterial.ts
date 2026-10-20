@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { SOURCE_COLOR_GLSL } from './sourceColor.ts';
 import { POINTS_DEPTH_RANGE } from '../engine/buffers';
 import type { ParamDef } from '../engine/params';
 
@@ -73,6 +74,7 @@ export interface AsciiMaterialUniforms {
    * 0'dır ve uColor/uBgColor kullanılır.
    */
   uImageTexture: { value: THREE.Texture | null };
+  uDecodeVideo: { value: number };
   /** 0 = fotoğraf yok (uColor/uBgColor), 1 = fotoğraf renkleri açık */
   uHasImage: { value: number };
   /**
@@ -214,6 +216,7 @@ const FRAGMENT = /* glsl */ `
   uniform float uDepthBias;
   uniform float uCharRandom;
   uniform sampler2D uImageTexture;
+  ${SOURCE_COLOR_GLSL}
   uniform float uHasImage;
   uniform float uObjectSeparation;
   uniform float uUseTextureColor;
@@ -264,7 +267,7 @@ const FRAGMENT = /* glsl */ `
     // uColor/uBgColor kullanılır.
     vec3 col;
     if (uHasImage > 0.5 && uUseTextureColor > 0.5) {
-      col = texture2D(uImageTexture, vUv).rgb;
+      col = decodeSourceColor(texture2D(uImageTexture, vUv)).rgb;
     } else {
       col = (uColor * glyph + uBgColor * uBgOpacity * (1.0 - glyph)) / alpha;
     }
@@ -301,6 +304,7 @@ export function createAsciiMaterial(): AsciiMaterial {
     uCharRandom: { value: 0 },
     // Tur 11: fotoğraf bağlanana kadar kapalı — Engine.setPhoto açar.
     uImageTexture: { value: null },
+    uDecodeVideo: { value: 0 },
     uHasImage: { value: 0 },
     // Tur 12: nesne ayırma kapalı (tüm sahne), renk modu açık (doku) —
     // değerleri Engine yönetir.

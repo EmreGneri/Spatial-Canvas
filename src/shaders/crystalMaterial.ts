@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { SOURCE_COLOR_GLSL } from './sourceColor.ts';
 import type { ParamDef } from '../engine/params';
 
 /**
@@ -38,6 +39,7 @@ import type { ParamDef } from '../engine/params';
 export interface CrystalMaterialUniforms {
   /** Fotoğraf/video renk grid'i — diğer modlarla aynı sözleşme (Engine yazar). */
   uImageTexture: { value: THREE.Texture | null };
+  uDecodeVideo: { value: number };
   uHasImage: { value: number };
   /**
    * Arkadaki sahne rengi (Gün 5 kırılması). Değerini ENGINE yazar; Gün 2'de
@@ -189,6 +191,7 @@ const CRYSTAL_FRAGMENT = /* glsl */ `
   precision highp float;
 
   uniform sampler2D uImageTexture;
+  ${SOURCE_COLOR_GLSL}
   uniform float uHasImage;
 ${CRYSTAL_UNIFORM_GLSL}
 
@@ -213,11 +216,13 @@ ${CRYSTAL_SHADING_GLSL}
     vec3 V = normalize(-vViewPos);
     if (dot(N, V) < 0.0) N = -N; // arka yüzler ters normal taşıyabilir
 
-    vec3 base = uHasImage > 0.5 ? texture2D(uImageTexture, vUv).rgb : vec3(0.55, 0.62, 0.72);
+    vec3 base = uHasImage > 0.5 ? decodeSourceColor(texture2D(uImageTexture, vUv)).rgb : vec3(0.55, 0.62, 0.72);
     base *= uTintColor;
 
     vec3 col = crystalShade(N, V, base, max(0.0, -vViewPos.z));
-    col = mix(col, uFogColor, clamp(uFogDensity, 0.0, 1.0));
+    // Diğer modlarla aynı üstel kare sis (eskiden derinlikten bağımsız düz tint).
+    float fogF = 1.0 - exp(-uFogDensity * uFogDensity * vViewPos.z * vViewPos.z);
+    col = mix(col, uFogColor, clamp(fogF, 0.0, 1.0));
     gl_FragColor = vec4(col, 1.0);
   }
 `;
@@ -355,7 +360,8 @@ ${CRYSTAL_SHADING_GLSL}
 
     vec3 base = vColorRgb * uTintColor;
     vec3 col = crystalShade(N, V, base, vViewDepth);
-    col = mix(col, uFogColor, clamp(uFogDensity, 0.0, 1.0));
+    float fogF = 1.0 - exp(-uFogDensity * uFogDensity * vViewDepth * vViewDepth);
+    col = mix(col, uFogColor, clamp(fogF, 0.0, 1.0));
 
     float alpha = g * vOpacity;
     if (alpha < 0.003) discard;
@@ -371,6 +377,7 @@ export function createCrystalMaterial(): CrystalMaterial {
   const material = new THREE.ShaderMaterial({
     uniforms: {
       uImageTexture: { value: null },
+      uDecodeVideo: { value: 0 },
       uHasImage: { value: 0 },
       uSceneColor: { value: null },
       uNormalKaynak: { value: 0 },

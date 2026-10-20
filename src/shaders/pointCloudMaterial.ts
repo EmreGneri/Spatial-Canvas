@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { SOURCE_COLOR_GLSL } from './sourceColor.ts';
 import { POINTS_DEPTH_RANGE, POSITION_TEXTURE_SIZE } from '../engine/buffers';
 import type { ParamDef } from '../engine/params';
 
@@ -67,6 +68,7 @@ export interface PointCloudMaterialUniforms {
    * Tur 12: video aktifken Engine buraya canlı VideoTexture bağlar.
    */
   uImageTexture: { value: THREE.Texture | null };
+  uDecodeVideo: { value: number };
   /** 0 = fotoğraf yok (derinlik rampası), 1 = fotoğraf renkleri açık */
   uHasImage: { value: number };
   /**
@@ -272,6 +274,7 @@ const FRAGMENT = /* glsl */ `
   uniform vec3 uNearColor;
   uniform vec3 uFarColor;
   uniform sampler2D uImageTexture;
+  ${SOURCE_COLOR_GLSL}
   uniform float uHasImage;
   uniform float uObjectSeparation;
   uniform float uVideoFootprint;
@@ -334,7 +337,7 @@ const FRAGMENT = /* glsl */ `
     // kendi pikselinin RGB'sini alır (fotoğraf grid'i ya da canlı video);
     // KAPALI ise doku yok sayılır, renk Near/Far derinlik gradyanından gelir.
     // ALPHA kanalı = bakılı oklüzyon (Gün C); doku yokken 1 (nötr).
-    vec4 img = uHasImage > 0.5 ? texture2D(uImageTexture, vUv) : vec4(0.0, 0.0, 0.0, 1.0);
+    vec4 img = uHasImage > 0.5 ? decodeSourceColor(texture2D(uImageTexture, vUv)) : vec4(0.0, 0.0, 0.0, 1.0);
     vec3 col = (uHasImage > 0.5 && uUseTextureColor > 0.5)
       ? img.rgb
       : mix(uFarColor, uNearColor, vDepth);
@@ -409,6 +412,7 @@ export function createPointCloudMaterial(): PointCloudMaterial {
     uFarColor: { value: new THREE.Color(0.06, 0.1, 0.28) },
     // Tur 11: fotoğraf bağlanana kadar kapalı — Engine.setPhoto açar.
     uImageTexture: { value: null },
+    uDecodeVideo: { value: 0 },
     uHasImage: { value: 0 },
     // Tur 12: nesne ayırma kapalı (tüm sahne), renk modu açık (doku) —
     // değerleri Engine yönetir.
