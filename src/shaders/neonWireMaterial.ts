@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { SOURCE_COLOR_GLSL } from './sourceColor.ts';
 import { POSITION_TEXTURE_SIZE } from '../engine/buffers';
 import type { ParamDef } from '../engine/params';
 
@@ -60,6 +61,7 @@ export interface NeonWireMaterialUniforms {
    */
   /** Fotoğraf grid'i ya da canlı video dokusu; konum grid'iyle aynı eşleme. */
   uImageTexture: { value: THREE.Texture | null };
+  uDecodeVideo: { value: number };
   /** 0 = doku yok (uNeonColor), 1 = görsel dokusu bağlı */
   uHasImage: { value: number };
   /** 1 = arka plan parçacıkları atılır (yalnızca özne), 0 = çizilir ve karartılır */
@@ -119,6 +121,7 @@ const VERTEX = /* glsl */ `
   // Kenar bulma artık görüntüyü de okuyor (aşağıdaki nota bak) — fragment'ta
   // renk için zaten bağlı olan AYNI texture, aynı grid eşlemesiyle.
   uniform sampler2D uImageTexture;
+  ${SOURCE_COLOR_GLSL}
   uniform float uHasImage;
   uniform float uTextureEdge;
 
@@ -193,7 +196,7 @@ const VERTEX = /* glsl */ `
   /** Görüntünün parlaklığı, konumla AYNI grid uv'sinde (sampler.sampleImageGrid
    *  eşlemesi) — hizalama tanım gereği doğru, ek texture yok. */
   float lumAt(vec2 uv) {
-    vec3 c = texture2D(uImageTexture, clamp(uv, 0.0, 1.0)).rgb;
+    vec3 c = decodeSourceColor(texture2D(uImageTexture, clamp(uv, 0.0, 1.0))).rgb;
     return dot(c, vec3(0.299, 0.587, 0.114));
   }
 
@@ -321,6 +324,7 @@ const FRAGMENT = /* glsl */ `
   uniform float uFlickerIntensity;
   uniform float uColorVariance;
   uniform sampler2D uImageTexture;
+  ${SOURCE_COLOR_GLSL}
   uniform float uHasImage;
   uniform float uObjectSeparation;
   uniform float uUseTextureColor;
@@ -380,7 +384,7 @@ const FRAGMENT = /* glsl */ `
     // Diğer iki moddaki koşulun aynısı: doku bağlıysa VE renk modu açıksa
     // parçacık kendi fotoğraf pikselini alır, değilse uNeonColor.
     vec3 base = (uHasImage > 0.5 && uUseTextureColor > 0.5)
-      ? texture2D(uImageTexture, vUv).rgb
+      ? decodeSourceColor(texture2D(uImageTexture, vUv)).rgb
       : uNeonColor;
 
     // NEON TÜPÜ PARLAKLIĞI: fotoğraf rengi kullanılıyorsa TONU korunur ama
@@ -437,6 +441,7 @@ export function createNeonWireMaterial(): NeonWireMaterial {
     // Varsayılanlar pointCloudMaterial/asciiMaterial ile aynı; Engine ilk
     // setPhoto/setObjectSeparation çağrısında üzerine yazar.
     uImageTexture: { value: null },
+    uDecodeVideo: { value: 0 },
     uHasImage: { value: 0 },
     uObjectSeparation: { value: 0 },
     uUseTextureColor: { value: 1 },

@@ -830,6 +830,12 @@ setPointsMaterial(material: THREE.Material) {
     if (!u?.['uImageTexture']) return;
     const image = this.imageColorTexture ?? this.videoTexture;
     u['uImageTexture'].value = image;
+    // three uploads VideoTexture as linear RGBA8 and decodes it only in built-in
+    // materials; custom shaders decode the raw-video path themselves (sourceColor.ts).
+    if (u['uDecodeVideo']) {
+      u['uDecodeVideo'].value = (image as THREE.VideoTexture | null)?.isVideoTexture
+        && image?.colorSpace === THREE.SRGBColorSpace ? 1 : 0;
+    }
     u['uHasImage'].value = image ? 1 : 0;
     // GÜN 2 (Z2.2) — SAHNE RENGİ: crystal'ın Gün 5 kırılması için arkadaki
     // görüntü bir texture'da olmalı. Cevap: EVET, sahne EffectComposer'ın
