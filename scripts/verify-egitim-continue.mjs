@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { egitimDevamEt } from '../src/engine/reconstruction/egitim3dgs.ts';
+import { egitimDevamEt, egitimDevamEtKontrol } from '../src/engine/reconstruction/egitim3dgs.ts';
 import { Session } from '../src/vendor/splat.js/session.js';
 
 const ayar = { tier: 'quick', maxFrames: 24, maxIters: 3000, gpu: 'intel / gen-12lp', zayifGpu: true };
@@ -13,6 +13,10 @@ assert.throws(() => egitimDevamEt(session, ayar, 0), /positive integer/);
 assert.throws(() => egitimDevamEt(session, ayar, 1.5), /positive integer/);
 assert.equal(ayar.maxIters, 3000, 'invalid extensions must leave the original budget intact');
 
+assert.throws(() => egitimDevamEtKontrol(session, 0), /positive integer/, 'pre-check rejects bad input without side effects');
+assert.doesNotThrow(() => egitimDevamEtKontrol(session), 'pre-check passes on a finished session');
+assert.equal(ayar.maxIters, 3000, 'pre-check never mutates the budget');
+
 const target = egitimDevamEt(session, ayar);
 assert.equal(target, 7000, 'the quick-run continuation extends by 4000 iterations');
 assert.equal(ayar.maxIters, target, 'UI progress must use the new total');
@@ -20,6 +24,7 @@ assert.equal(session.trainer.horizon, target, 'the learning-rate and growth sche
 assert.equal(session.trainer, trainer, 'continuation must keep the existing Gaussian trainer');
 assert.equal(session.training, true, 'the existing session must resume without repeating SfM or seeding');
 assert.throws(() => egitimDevamEt(session, ayar), /already running/);
+assert.throws(() => egitimDevamEtKontrol(session), /already running/, 'pre-check also rejects a running session');
 assert.equal(ayar.maxIters, target, 'a second click while running must not add work');
 
 const nextRefine = session.trainer.lastRefine + (session.opts.refineEvery ?? 2500);
