@@ -6,6 +6,7 @@ dist
 # Model weights + ORT runtime (~120 MB) — regenerate with `npm run fetch:assets`
 public/models
 public/ort
+public/mediapipe-wasm
 
 # Graphify outputs — regenerate with /graphify
 graphify-out
@@ -32,3 +33,8 @@ assets/test-clips/
 # Gezinme ölçümü çıktıları — regenerate with scripts/olc-gezinme.mjs
 olcum-out/
 .bench-tmp/
+
+# Yerel yardımcı (sidecar): sanal ortam ve model dosyaları — `python sidecar/hazirla.py` üretir
+sidecar/.venv
+sidecar/models
+__pycache__

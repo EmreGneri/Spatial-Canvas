@@ -223,8 +223,8 @@ class SpatialCanvasElement extends HTMLElement {
     try {
       const img = await loadImage(src);
       // Depth modeli lazy: yalnızca fotoğraf varsa yüklenir
-      const { estimateDepth } = await import('./depth');
-      const depth = await estimateDepth(img);
+      const { estimateDepth, FOTO_KALITE } = await import('./depth');
+      const depth = await estimateDepth(img, FOTO_KALITE);
       this.engine.setPhoto(img);
       this.engine.setDepth(depth.data, depth.width, depth.height);
     } catch (err) {

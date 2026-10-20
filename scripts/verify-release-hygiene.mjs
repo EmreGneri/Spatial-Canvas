@@ -88,6 +88,7 @@ const readJson = (path) => JSON.parse(readFileSync(path, 'utf8'));
     'Apache-2.0',
     'Xenova/yolos-tiny',
     'imgly/isnet-general-onnx',
+    'MediaPipe Face Landmarker (face_landmarker.task)',
     'huggingface.co',
   ]) {
     assert.ok(notices.includes(needle), `notices file is missing "${needle}"`);

@@ -138,6 +138,11 @@ lines.push('imgly/isnet-general-onnx');
 lines.push('  License: MIT (verified via Hugging Face model card metadata, 2026-09-24)');
 lines.push('  Source: https://huggingface.co/imgly/isnet-general-onnx');
 lines.push('');
+lines.push('MediaPipe Face Landmarker (face_landmarker.task)');
+lines.push('  License: Apache-2.0 (model cards "Model Card MediaPipe Face Mesh V2" and');
+lines.push('  "BlazeFace short range", both "LICENSED UNDER Apache License, Version 2.0").');
+lines.push('  Source: https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task');
+lines.push('');
 
 writeFileSync('public/THIRD_PARTY_NOTICES.txt', lines.join('\n'));
 console.log(`wrote public/THIRD_PARTY_NOTICES.txt (${packages.length} npm packages)`);

@@ -1,0 +1,80 @@
+// Yüz rölyefi (saf): yön, ağırlık (oval içi tam, dışta geçiş), sabit çapa, modelin eğimine
+// uymama (eğim ağdan), kafa elipsoidi sınırı, güç çarpanı.
+//   node scripts/verify-yuz-rolyef.mjs
+import assert from 'node:assert/strict';
+const { yuzRolyefHaritasi, yuzRolyefiUygula, YUZ_OVAL } = await import('../src/engine/reconstruction/yuzRolyef.ts');
+
+// Sentetik yüz: merkez (0.5, 0.5), yarıçap 0.2; kubbe: merkez kameraya yakın (z küçük).
+const noktalar = Array.from({ length: 478 }, () => ({ x: 0.5, y: 0.5, z: 0 }));
+const ovalSet = new Set(YUZ_OVAL);
+YUZ_OVAL.forEach((idx, k) => {
+  const a = (k / YUZ_OVAL.length) * Math.PI * 2;
+  noktalar[idx] = { x: 0.5 + 0.2 * Math.sin(a), y: 0.5 - 0.2 * Math.cos(a), z: 0 };
+});
+let s = 1;
+const rnd = () => ((s = (s * 16807) % 2147483647) / 2147483647);
+for (let i = 0; i < 478; i++) {
+  if (ovalSet.has(i)) continue;
+  const r = 0.19 * Math.sqrt(rnd()), a = rnd() * Math.PI * 2;
+  const x = 0.5 + r * Math.cos(a), y = 0.5 + r * Math.sin(a);
+  const rr = ((x - 0.5) ** 2 + (y - 0.5) ** 2) / 0.04;
+  noktalar[i] = { x, y, z: -0.1 * (1 - rr) };
+}
+const w = 100, h = 100;
+const r = yuzRolyefHaritasi(noktalar, w, h);
+assert.ok(r, 'harita üretildi');
+const at = (a, x, y) => a[y * w + x];
+
+// Yön + ağırlık: oval içi tam (1), dışta geçiş, uzakta 0.
+assert.ok(at(r.rel, 50, 50) > at(r.rel, 50, 35), 'merkez (burun) kenardan daha yakın');
+assert.equal(at(r.agirlik, 5, 5), 0, 'uzak dış ağırlık 0');
+assert.ok(at(r.agirlik, 50, 50) > 0.999 && at(r.agirlik, 50, 32) > 0.999, 'oval içi (kenara yakın dahil) ağırlık 1');
+const disari = at(r.agirlik, 50, 28); // oval sınırı y≈30, biraz dışı
+assert.ok(disari > 0 && disari < 1, `oval dışında yumuşak geçiş (${disari.toFixed(3)})`);
+
+// Düz model derinliği: çapa = oval içi medyan(d − rel/birim); iç = çapa + rel/birim.
+const birim = 200;
+const depth = new Float32Array(w * h).fill(0.4);
+const out = yuzRolyefiUygula(depth, w, h, r, birim);
+assert.equal(at(out, 5, 5), depth[5 * w + 5], 'yüz dışı aynen');
+assert.ok(at(out, 50, 50) > at(out, 50, 35), 'burun öne geldi');
+const med = (a) => { a.sort((p, q) => p - q); return a[a.length >> 1]; };
+const icOut = [], icGir = [];
+for (let i = 0; i < w * h; i++) if (r.agirlik[i] >= 0.999) { icOut.push(out[i] - r.rel[i] / birim); icGir.push(depth[i] - r.rel[i] / birim); }
+assert.ok(Math.abs(med(icOut) - med(icGir)) < 1e-3, 'çapa: yüzün genel uzaklığı modelden (oval içi medyan)');
+
+// Geçişin dış ucunda model devralır (basamak yok).
+let enKotu = 0;
+for (let i = 0; i < w * h; i++) {
+  if (r.agirlik[i] > 0 && r.agirlik[i] < 0.1 && !(r.ustAgirlik?.[i] > 0)) enKotu = Math.max(enKotu, Math.abs(out[i] - depth[i]));
+}
+assert.ok(enKotu < 0.02, `geçiş dış ucunda basamak yok (${enKotu.toFixed(4)})`);
+
+// Eğimli model derinliği (model alını yakın, çeneyi uzak sanıyor): yüzün İÇİNDEKİ eğim
+// modele DEĞİL ağa uyar — merkez–üst farkı ağınkiyle aynı kalır.
+const egik = Float32Array.from({ length: w * h }, (_, i) => 0.7 - 0.5 * (Math.floor(i / w) / h));
+const outE = yuzRolyefiUygula(egik, w, h, r, birim);
+const agFarki = (at(r.rel, 50, 50) - at(r.rel, 50, 38)) / birim;
+const ciktiFarki = at(outE, 50, 50) - at(outE, 50, 38);
+assert.ok(Math.abs(ciktiFarki - agFarki) < 0.01, `iç eğim ağdan (${ciktiFarki.toFixed(3)} ≈ ${agFarki.toFixed(3)})`);
+
+// KAFA ELİPSOİDİ: oval üstündeki (alın/saç) bölge modelde yüzün çok ÖNÜNDE (0.95) olsun;
+// geri itilmeli. Aynı bölge yüzün çok ARKASINDA (0.05) ise dokunulmamalı.
+assert.ok(r.ust && r.ustAgirlik, 'kafa elipsoidi üretildi');
+let sacPx = -1;
+for (let y = 0; y < 30 && sacPx < 0; y++) { const i = y * w + 50; if (r.agirlik[i] === 0 && r.ustAgirlik[i] > 0.5) sacPx = i; }
+assert.ok(sacPx >= 0, 'oval dışı, elipsoid içi saç pikseli var');
+const onde = Float32Array.from(depth); onde[sacPx] = 0.95;
+const outOnde = yuzRolyefiUygula(onde, w, h, r, birim);
+assert.ok(outOnde[sacPx] < 0.8, `öne fırlamış saç geri itildi (${outOnde[sacPx].toFixed(3)})`);
+const arkada = Float32Array.from(depth); arkada[sacPx] = 0.05;
+assert.equal(yuzRolyefiUygula(arkada, w, h, r, birim)[sacPx], arkada[sacPx], 'arkadaki saç aynen');
+
+// Güç çarpanı: ×2'de rölyef iki kat (ağ ve elipsoid birlikte ölçeklenir).
+const r2 = yuzRolyefHaritasi(noktalar, w, h, 2);
+assert.ok(Math.abs(at(r2.rel, 50, 50) - 2 * at(r.rel, 50, 50)) < 1e-3, 'güç rölyefi ölçekler');
+
+// Eksik nokta → null; geçersiz birim → kopya.
+assert.equal(yuzRolyefHaritasi(noktalar.slice(0, 100), w, h), null);
+assert.deepEqual(yuzRolyefiUygula(depth, w, h, r, 0), depth);
+console.log('verify-yuz-rolyef OK');

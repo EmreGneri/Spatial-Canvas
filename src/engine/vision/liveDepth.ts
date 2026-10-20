@@ -17,7 +17,7 @@ import {
   type DepthResult,
 } from '../../depth.ts';
 import { resampleBilinear } from '../reconstruction/silhouette.ts';
-import { localInference, localInferenceAvailable, type RawTensor } from '../sidecarClient.ts';
+import { localInference, localInferenceAvailableCanli, type RawTensor } from '../sidecarClient.ts';
 import { isLiveDepthResultStale, stabilizeLiveDepthPair } from './liveDepthFlow.ts';
 
 /**
@@ -1205,7 +1205,7 @@ export function startLiveDepthDriver(opts: LiveDepthDriverOptions): () => void {
  * kalite tercihi değil, tempo eşiğidir.
  */
 export async function liveDepthKullanilabilir(): Promise<boolean> {
-  return await localInferenceAvailable() || webgpuKullanilabilir();
+  return await localInferenceAvailableCanli() || webgpuKullanilabilir();
 }
 
 interface LiveModel {
@@ -1245,7 +1245,7 @@ const yukleLiveModel = onceRetry<LiveModel>(async () => {
       dtype: 'fp16',
     }),
   )) as unknown as LiveModel['net']);
-  const useSidecar = await localInferenceAvailable();
+  const useSidecar = await localInferenceAvailableCanli();
   const browserNet = useSidecar ? null : await loadBrowserNet();
   const net: LiveModel['net'] = useSidecar ? async (inputs) => ({
     predicted_depth: await localInference!.infer('small', inputs.pixel_values as RawTensor, async () => {

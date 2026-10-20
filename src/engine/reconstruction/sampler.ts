@@ -290,11 +290,7 @@ export function sampleVolumePositions(
   // davranış AYNEN korunur (bölen 1); dikey kadrajda daralma geri alınır.
   // ANATOMIC_DEPTH_RATIO'ya dokunulmaz — düzeltilen şey anatomi değil, kadraj
   // yönünün derinliğe sızmasıdır (yön bir sahne özelliği değildir).
-  const halfWWorld = (depthWidth / depthHeight) * halfH;
-  const frameShortHalf = Math.min(halfWWorld, halfH);
-  const zSpan = body
-    ? (ANATOMIC_DEPTH_RATIO * 2 * Math.min(body.rx, body.ry)) / frameShortHalf
-    : range;
+  const zSpan = zSpanFromBody(body, depthWidth, depthHeight, halfH, range);
   const zUnit = zSpan / 2;
 
   for (let j = 0; j < grid; j++) {
@@ -606,6 +602,35 @@ export interface BodyGeometry {
   rx: number;
   /** Elipsoid yarı ekseni (y, dünya). Dejenere durumlarda küçük tutulur. */
   ry: number;
+}
+
+/**
+ * Siluet-oranlı z uzamı (yukarıdaki GÜN E notu): sampleVolumePositions ile AYNI formül.
+ * Dışa açık: yüz rölyefi (Engine.setDepth) derinlik birimini dünya ölçeğine bununla çevirir.
+ */
+export function zSpanFromBody(
+  body: BodyGeometry | null,
+  depthWidth: number,
+  depthHeight: number,
+  halfH: number,
+  range: number,
+): number {
+  const halfWWorld = (depthWidth / depthHeight) * halfH;
+  const frameShortHalf = Math.min(halfWWorld, halfH);
+  return body ? (ANATOMIC_DEPTH_RATIO * 2 * Math.min(body.rx, body.ry)) / frameShortHalf : range;
+}
+
+/** Derinlik + maske için sampler'ın kullanacağı zSpan (siluet aynı yoldan kurulur). */
+export function subjectZSpan(
+  depth: Float32Array,
+  depthWidth: number,
+  depthHeight: number,
+  foregroundMask: Float32Array | null,
+  halfH: number,
+  range: number,
+): number {
+  const { alpha } = buildSilhouette(depth, depthWidth, depthHeight, foregroundMask);
+  return zSpanFromBody(computeBodyGeometry(alpha, depthWidth, depthHeight, halfH), depthWidth, depthHeight, halfH, range);
 }
 
 export function computeBodyGeometry(

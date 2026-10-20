@@ -13,6 +13,9 @@ import {
   type HeadRoiKaynagi,
 } from './engine/reconstruction/headDetail.ts';
 import type { YuzReferansi } from './engine/vision/yuzReferansi.ts';
+import { delikleriDoldur, type DelikOlcum } from './engine/reconstruction/maskeDelik.ts';
+import { da3Plausible, da3Preprocess, da3ToDisparity, SHIFT_K } from './engine/vision/da3Mono.ts';
+import { kenarHizala, mergeTileDetail, tileGrid, type TileResult } from './engine/reconstruction/derinlikDetay.ts';
 import { POINTS_DEPTH_RANGE } from './engine/buffers.ts';
 import { localInference, localInferenceAvailable, type RawTensor } from './engine/sidecarClient.ts';
 
@@ -155,6 +158,17 @@ const MODEL = 'onnx-community/depth-anything-v2-small';
 // its native square without any aspect distortion.
 const MODEL_INPUT_SIZE = 518;
 
+/** Parça çıkarımı yalnız kaynak bunun üstündeyse anlamlı: parça girdisi 518'den küçükse ek bilgi yok. */
+export const TILE_MIN_LONG_SIDE = 800;
+
+/** Fotoğraf yolu için önerilen kalite seçenekleri (App/embed). */
+export const FOTO_KALITE: Pick<DepthEstimateOptions, 'tileDetay' | 'kenarHizalama' | 'model'> = {
+  tileDetay: true,
+  kenarHizalama: 0.5,
+  // DA3 yardımcı ya da VITE_DA3_MONO_URL varsa devreye girer; yoksa/başarısızsa V2-small.
+  model: 'da3-mono',
+};
+
 export type HeadDetailDiagnostics = {
   elapsedMs: number;
   roi: GridRect;
@@ -179,9 +193,42 @@ export type DepthResult = {
   height: number;
   /** Present only when a refined foreground mask enabled the head detail pass. */
   headDetail?: HeadDetailDiagnostics;
+  /** Delikleri kapatılmış özne maskesi (depth ızgarasında, width×height). Yalnız `delikDoldur: true` ve maske verildiyse. */
+  subjectMask?: Float32Array;
+  /** Maskedeki kapalı deliklerin ölçümü (alan, derinlik farkı, doldu mu). */
+  delikTani?: DelikOlcum[];
 };
 
 export type DepthEstimateOptions = {
+  /**
+   * Özne maskesindeki derinlik-tutarlı kapalı delikleri doldur. Varsayılan KAPALI.
+   * DAVIS 2017'de ölçüldü (2026-10-10, IS-Net maskeleri): kapalı deliklerin piksel
+   * bazında yalnız %15–21'i gerçekten özne; doldurma isabeti %16 (val) / %22 (train),
+   * J&F 0.681 → 0.677, 30 dizinin 21'inde kötü. Ayırt edici güvenli bir ölçüt bulunamadı
+   * (docs/benchmarks/maske-olcumu.md). Yalnız bilerek açılır.
+   */
+  delikDoldur?: boolean;
+  /**
+   * 'da3-mono': Depth Anything 3 Mono-Large (Apache-2.0, ~1,3 GB) — yalnız
+   * `VITE_DA3_MONO_URL` ayarlıysa ve model yüklenip makul çıktı veriyorsa;
+   * aksi hâlde sessizce V2-small. Varsayılan 'v2-small'.
+   */
+  model?: 'v2-small' | 'da3-mono';
+  /** DA3 disparite kayması (yalnız yardımcı yolunda); varsayılan SHIFT_K=0.5. SfM'e afin hizalanan yollar 0 verir. */
+  da3Kayma?: number;
+  /**
+   * Büyük fotoğraflarda 2×2 örtüşen parçayı ayrı ayrı çıkarıp YALNIZ yüksek
+   * frekansı global derinliğe ekler (bkz. derinlikDetay.ts). Her parça
+   * 518²'de, yani 2× yakından görülür. 4 ek çıkarım maliyeti; kaynak uzun
+   * kenarı `TILE_MIN_LONG_SIDE` altındaysa kazanç olmadığı için atlanır.
+   * Varsayılan KAPALI: video/gezinme yolları (kare başına çıkarım) etkilenmesin.
+   */
+  tileDetay?: boolean;
+  /**
+   * Kılavuzlu süzgeçle derinlik kenarlarını fotoğrafın luminance kenarlarına
+   * oturtma oranı (0 = kapalı, 1 = tam). Varsayılan 0 (kapalı).
+   */
+  kenarHizalama?: number;
   /**
    * 'letterbox' (default): keep the aspect ratio, pad to a square. The model
    * never sees a squeezed image — vertical portraits keep their face geometry.
@@ -256,8 +303,23 @@ export type DepthEstimateOptions = {
 let estimator: Awaited<ReturnType<typeof pipeline<'depth-estimation'>>> | null = null;
 /** Modelin GERÇEKTEN yüklendiği cihaz (ölçüm/teşhis için okunur). */
 export let depthDevice: 'wasm' | 'webgpu' | 'sidecar' | null = null;
+/** Tarayıcı V2 kabuğunun kurulduğu cihaz; `depthDevice` her çıkarımda buna ya da 'sidecar'a ayarlanır. */
+let tarayiciCihazi: 'wasm' | 'webgpu' | null = null;
 const sidecarEstimators = new WeakSet<object>();
-const loadSidecarEstimator = onceRetry(async () => {
+/**
+ * Yerel yardımcıda (sidecar/server.py) DA3Mono-Large. V2'nin kendi işlemcisi
+ * kullanılır (aynı ImageNet normalizasyonu; fotoğraf yolu zaten 518² letterbox),
+ * yanıt [1,2,H,W] derinlik+gökyüzü → istemcide V2 sözleşmesine (disparite) çevrilir.
+ * Yardımcı hata verirse ya da çıktı makul değilse AYNI girdi tarayıcı V2'sine gider.
+ */
+const sidecarKurucular = new Map<number, () => Promise<Awaited<ReturnType<typeof loadDepthModel>>>>();
+/** Kayma (`da3ToDisparity` shiftK) başına ayrı, önbellekli kabuk. */
+function loadSidecarEstimator(shiftK: number) {
+  let kur = sidecarKurucular.get(shiftK);
+  if (!kur) sidecarKurucular.set(shiftK, kur = onceRetry(() => sidecarKabugu(shiftK)));
+  return kur();
+}
+const sidecarKabugu = async (shiftK: number) => {
   const tf = await loadTransformers();
   const processor = await tf.AutoImageProcessor.from_pretrained(MODEL);
   const loadFallback = onceRetry(async () => {
@@ -265,12 +327,26 @@ const loadSidecarEstimator = onceRetry(async () => {
     const model = await loadDepthModel(device);
     return model.model;
   });
+  const v2 = async (inputs: Record<string, unknown>) => {
+    const model = await loadFallback();
+    return (await gpuSirasinaGir(() => model(inputs)) as { predicted_depth: RawTensor }).predicted_depth;
+  };
   const net = async (inputs: Record<string, unknown>) => {
-    const raw = await localInference!.infer('base', inputs.pixel_values as RawTensor, async () => {
-      const model = await loadFallback();
-      return (await gpuSirasinaGir(() => model(inputs)) as { predicted_depth: RawTensor }).predicted_depth;
+    let yardimci = true;
+    const raw = await localInference!.infer('da3', inputs.pixel_values as RawTensor, () => {
+      yardimci = false;
+      return v2(inputs);
     });
-    return { predicted_depth: new tf.Tensor('float32', raw.data, raw.dims) };
+    if (!yardimci) return { predicted_depth: new tf.Tensor('float32', raw.data, raw.dims) };
+    const [, , h, w] = raw.dims;
+    const depth = raw.data.subarray(0, h * w);
+    const sky = raw.data.subarray(h * w);
+    if (!da3Plausible(depth, sky)) {
+      console.warn('Yardımcı DA3 çıktısı makul değil; bu kare tarayıcı V2 ile.');
+      const f = await v2(inputs);
+      return { predicted_depth: new tf.Tensor('float32', f.data, f.dims) };
+    }
+    return { predicted_depth: new tf.Tensor('float32', da3ToDisparity(depth, sky, shiftK), [1, h, w]) };
   };
   // Reuse the actual Transformers pipeline, including its output interpolation.
   // Only the raw model call changes; no second implementation of preprocessing.
@@ -280,7 +356,7 @@ const loadSidecarEstimator = onceRetry(async () => {
   });
   sidecarEstimators.add(estimator);
   return estimator;
-});
+};
 
 function runPhotoModel(model: Awaited<ReturnType<typeof loadDepthModel>>, input: RawImage) {
   return sidecarEstimators.has(model) ? model(input) : gpuSirasinaGir(() => model(input));
@@ -333,10 +409,6 @@ export async function webgpuKullanilabilir(): Promise<boolean> {
 let yukleEstimator: (() => Promise<NonNullable<typeof estimator>>) | null = null;
 
 export async function loadDepthModel(device?: 'wasm' | 'webgpu') {
-  if (!device && await localInferenceAvailable()) {
-    depthDevice = 'sidecar';
-    return loadSidecarEstimator();
-  }
   if (estimator) return estimator;
   const kur = async (d: 'wasm' | 'webgpu') => {
     const tf = await loadTransformers();
@@ -355,22 +427,83 @@ export async function loadDepthModel(device?: 'wasm' | 'webgpu') {
     // tekrarlar ve derinlik hiç çalışmaz.
     if (secilen === 'wasm') {
       const f = await kur('wasm');
-      depthDevice = 'wasm';
+      depthDevice = tarayiciCihazi = 'wasm';
       return f;
     }
     try {
       const w = await kur('webgpu');
-      depthDevice = 'webgpu';
+      depthDevice = tarayiciCihazi = 'webgpu';
       return w;
     } catch {
       const f = await kur('wasm');
-      depthDevice = 'wasm';
+      depthDevice = tarayiciCihazi = 'wasm';
       return f;
     }
   });
 
   estimator = await yukleEstimator();
   return estimator;
+}
+
+type Da3Model = (input: RawImage) => Promise<{ predicted_depth: { data: Float32Array; dims: number[] } }>;
+let da3Yukle: (() => Promise<Da3Model | null>) | null = null;
+
+/**
+ * DA3Mono-Large oturumu (onnxruntime-web, WebGPU → wasm). Kaynak URL'i
+ * `VITE_DA3_MONO_URL` (…/da3mono_large.onnx; ağırlıklar aynı klasörde
+ * `<ad>.onnx.data`). Tanımsızsa ya da kurulum patlarsa null → çağıran V2'ye düşer.
+ * Çıktı V2 sözleşmesine çevrilir (yakın = büyük disparite, [1,H,W]); bozuk
+ * çıktıda V2 çalıştırılır, yani bu yol sonucu kötüleştiremez.
+ */
+async function loadDa3Model(): Promise<Awaited<ReturnType<typeof loadDepthModel>> | null> {
+  const url = (import.meta as { env?: { VITE_DA3_MONO_URL?: string } }).env?.VITE_DA3_MONO_URL;
+  if (!url) return null;
+  da3Yukle ??= onceRetry(async () => {
+    try {
+      await loadTransformers(); // ORT env (wasmPaths, tek iş parçacığı) burada kurulur
+      const ort = await import('onnxruntime-web/webgpu');
+      const dataName = url.split('/').pop()! + '.data';
+      const gpuVar = await webgpuKullanilabilir();
+      const session = await gpuSirasinaGir(() =>
+        ort.InferenceSession.create(url, {
+          executionProviders: gpuVar ? ['webgpu', 'wasm'] : ['wasm'],
+          externalData: [{ path: dataName, data: url + '.data' }],
+        }),
+      );
+      const run: Da3Model = async (input) => {
+        const { width: W, height: H, channels } = input;
+        const ext = new Float32Array(16);
+        [0, 5, 10, 15].forEach((i) => (ext[i] = 1));
+        const k = Float32Array.from([W, 0, W / 2, 0, W, H / 2, 0, 0, 1]);
+        const o = await session.run({
+          image: new ort.Tensor('float32', da3Preprocess(input.data, W, H, channels), [1, 1, 3, H, W]),
+          extrinsics_in: new ort.Tensor('float32', ext, [1, 1, 4, 4]),
+          intrinsics_in: new ort.Tensor('float32', k, [1, 1, 3, 3]),
+        });
+        const depth = o.depth.data as Float32Array;
+        const sky = o.sky.data as Float32Array;
+        if (!da3Plausible(depth, sky)) throw new Error('DA3 çıktısı makul değil');
+        return { predicted_depth: { data: da3ToDisparity(depth, sky, SHIFT_K), dims: [1, H, W] } };
+      };
+      return run;
+    } catch (err) {
+      console.warn('DA3 yüklenemedi; V2-small kullanılacak.', err);
+      return null;
+    }
+  });
+  const da3 = await da3Yukle();
+  if (!da3) return null;
+  // Çıkarım hatası/bozuk çıktı: aynı girdiyle V2.
+  const v2 = await loadDepthModel();
+  const guvenli = (async (input: RawImage) => {
+    try {
+      return await da3(input);
+    } catch (err) {
+      console.warn('DA3 çıkarımı başarısız; V2-small ile devam.', err);
+      return v2(input);
+    }
+  }) as unknown as Awaited<ReturnType<typeof loadDepthModel>>;
+  return guvenli;
 }
 
 /**
@@ -381,7 +514,23 @@ export async function estimateDepth(
   source: HTMLCanvasElement | HTMLImageElement,
   opts: DepthEstimateOptions = {},
 ): Promise<DepthResult> {
-  const model = await loadDepthModel();
+  // DA3 önceliği: yerel yardımcı (GPU, 1,3 GB tarayıcıya inmez) → tarayıcı DA3
+  // (VITE_DA3_MONO_URL) → V2-small. Diğer çağıranlar (video, gezinme) V2'de kalır.
+  let model: Awaited<ReturnType<typeof loadDepthModel>> | null = null;
+  if (opts.model === 'da3-mono') {
+    if (await localInferenceAvailable()) {
+      // Yardımcı kabuğu kurulamazsa (işlemci yüklenemedi vb.) tarayıcıya düş.
+      model = await loadSidecarEstimator(opts.da3Kayma ?? SHIFT_K).catch((err) => {
+        console.warn('Yardımcı derinlik kurulamadı; tarayıcı.', err);
+        return null;
+      });
+    } else {
+      model = await loadDa3Model();
+    }
+  }
+  const yardimciMi = model !== null && sidecarEstimators.has(model);
+  model ??= await loadDepthModel();
+  depthDevice = yardimciMi ? 'sidecar' : tarayiciCihazi;
   const { RawImage: RawImageCtor } = await loadTransformers();
   const useLetterbox = (opts.aspect ?? 'letterbox') === 'letterbox';
   const detailStrength = opts.detailStrength ?? DETAIL_STRENGTH_DEFAULT;
@@ -426,7 +575,7 @@ export async function estimateDepth(
 
   // GÜN E (bulgu 1): özne maskesi verildiyse depth uzayına örnekle. Boyutlar
   // zaten eşitse kopya çıkarılmaz (gereksiz tahsis yok).
-  const subject = opts.subjectMask
+  let subject = opts.subjectMask
     ? opts.subjectMask.width === outWidth && opts.subjectMask.height === outHeight
       ? opts.subjectMask.data
       : resampleBilinear(
@@ -439,12 +588,35 @@ export async function estimateDepth(
     : null;
 
   const normalized = normalizeDepth(data, opts.percentile ?? 1);
+  if (opts.tileDetay && rect) {
+    // Parça aşaması isteğe bağlı bir iyileştirme: hata (GPU belleği, kayıp cihaz,
+    // canvas) tüm fotoğrafı düşürmesin; parçasız global derinlik zaten geçerli.
+    const yedek = Float32Array.from(normalized);
+    try {
+      await mergeTiledDetail(normalized, outWidth, outHeight, source, model, RawImageCtor);
+    } catch (err) {
+      normalized.set(yedek);
+      console.warn('Parça detay aşaması atlandı.', err);
+    }
+  }
+  // İsteğe bağlı delik doldurma; açıksa düzeltilmiş maske çağırana da döner (motor
+  // siluet için AYNI maskeyi kullanmalı). Kapalıyken subjectMask dönmez → eski yol birebir.
+  let delikTani: DelikOlcum[] | undefined;
+  let doldurulmusMaske: Float32Array | undefined;
+  if (subject && opts.delikDoldur === true) {
+    const r = delikleriDoldur(subject, normalized, outWidth, outHeight);
+    subject = doldurulmusMaske = r.mask;
+    delikTani = r.delikler;
+  }
   // GÜN E (bulgu 11) — ÖZNE KIRPMA ÇIKARIMI + FREKANS BİRLEŞTİRME.
   if (subject) {
     await mergeSubjectDetail(normalized, subject, outWidth, outHeight, source, model, RawImageCtor);
   }
   if (smoothingEnabled) {
     smoothDepthSteps(normalized, outWidth, outHeight);
+  }
+  if ((opts.kenarHizalama ?? 0) > 0 && lum) {
+    normalized.set(kenarHizala(normalized, lum, outWidth, outHeight, opts.kenarHizalama));
   }
   if (detailStrength > 0 && lum) {
     applyDetail(normalized, lum, outWidth, outHeight, detailStrength);
@@ -494,7 +666,43 @@ export async function estimateDepth(
   const headDetail = subject
     ? await mergeHeadDetail(limited, subject, outWidth, outHeight, source, model, RawImageCtor, opts.yuz ?? null)
     : undefined;
-  return { data: limited, width: outWidth, height: outHeight, headDetail };
+  return { data: limited, width: outWidth, height: outHeight, headDetail, subjectMask: doldurulmusMaske, delikTani };
+}
+
+/**
+ * 2×2 parça çıkarımı: her parça kaynaktan kırpılıp 518²'ye letterbox edilir,
+ * çıktı depth ızgarasındaki dikdörtgene örneklenir; birleştirme saf modülde.
+ * Başarısız parça sessizce atlanır (global derinlik zaten geçerli).
+ */
+async function mergeTiledDetail(
+  depth: Float32Array,
+  w: number,
+  h: number,
+  source: HTMLCanvasElement | HTMLImageElement,
+  model: Awaited<ReturnType<typeof loadDepthModel>>,
+  RawImageCtor: typeof RawImage,
+): Promise<void> {
+  const src = toCanvas(source);
+  if (Math.max(src.width, src.height) < TILE_MIN_LONG_SIDE) return;
+  const sx = src.width / w;
+  const sy = src.height / h;
+  const results: TileResult[] = [];
+  for (const rect of tileGrid(w, h, 2, 2)) {
+    const cx = Math.round(rect.x * sx);
+    const cy = Math.round(rect.y * sy);
+    const cw = Math.min(src.width - cx, Math.max(1, Math.round(rect.w * sx)));
+    const ch = Math.min(src.height - cy, Math.max(1, Math.round(rect.h * sy)));
+    const cut = document.createElement('canvas');
+    cut.width = cw;
+    cut.height = ch;
+    cut.getContext('2d', { willReadFrequently: true })!.drawImage(src, cx, cy, cw, ch, 0, 0, cw, ch);
+    const lb = letterboxCanvas(cut, MODEL_INPUT_SIZE);
+    const out = await runPhotoModel(model, await RawImageCtor.fromCanvas(lb.canvas));
+    const sq = (out.predicted_depth.dims.slice(-1) as [number])[0];
+    const tile = normalizeDepth(cropDepth2(out.predicted_depth.data as Float32Array, sq, lb), 1);
+    results.push({ rect, depth: resampleBilinear(tile, lb.w, lb.h, rect.w, rect.h) });
+  }
+  mergeTileDetail(depth, w, h, results);
 }
 
 /** Kırpma çıkarımının atlandığı eşik: özne bbox'ı karenin bu kadarını zaten

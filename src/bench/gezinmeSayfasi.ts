@@ -28,6 +28,7 @@ import { vokselDurumuAt } from '../engine/reconstruction/bosAlan.ts';
 import { tekGozBenzetimi } from './tekGozBenzetimi.ts';
 import { bosAlanSiniri, flyStep } from '../ui/egitimControls.ts';
 import type { GezinmeDerinlikKaynagi } from '../engine/reconstruction/gezinmeDerinligi.ts';
+import { depthDevice } from '../depth.ts';
 
 // ── report schema ────────────────────────────────────────────────────────
 
@@ -67,7 +68,7 @@ export interface GezinmeRaporu {
    *  centre-only fit (degrees); `odakOrani` = reconstructed / GT focal. */
   hizalama?: { rms: number; rmsOrani: number; n: number; olcek: number; aciHatasi: number; odakOrani: number };
   zamanCizelgesi: { ms: number; asama: string }[];
-  mod?: { secim?: string; eslestirme?: string; odakAlt?: number; geometri?: string; depthWeight?: number; bolgesel?: boolean };
+  mod?: { secim?: string; eslestirme?: string; odakAlt?: number; geometri?: string; depthWeight?: number; bolgesel?: boolean; derinlikCihazi?: string | null };
   bosAlan?: { hizaliKare: number; voksel: number; boyut: [number, number, number]; kullanilabilir: Record<Bolge, Record<Yon, number>>;
     guven?: Egitim['gezinmeGuveni'];
     gtBosOrnek?: number; gtEngelIhlali?: number;
@@ -138,7 +139,7 @@ interface Parametreler {
   secim?: 'yenilik';
   eslestirme?: 'sirali';
   odakAlt?: number;
-  geometri?: 'model' | 'sentetik';
+  geometri?: 'model' | 'model-da3' | 'sentetik';
   depthWeight?: number;
   bolgesel: boolean;
 }
@@ -196,7 +197,7 @@ export function parametreleriOku(arama: string): Parametreler {
   const eslestirme = q.get('eslestirme') ?? undefined;
   if (eslestirme != null && eslestirme !== 'sirali') throw new Error(`eslestirme must be sirali: ${eslestirme}`);
   const geometri = q.get('geometri') ?? undefined;
-  if (geometri != null && geometri !== 'model' && geometri !== 'sentetik') throw new Error(`geometri must be model|sentetik: ${geometri}`);
+  if (geometri != null && geometri !== 'model' && geometri !== 'model-da3' && geometri !== 'sentetik') throw new Error(`geometri must be model|model-da3|sentetik: ${geometri}`);
   const depthWeight = q.get('derinlik-kisiti');
   if (depthWeight != null && (!(Number(depthWeight) > 0) || !Number.isFinite(Number(depthWeight))))
     throw new Error(`derinlik-kisiti must be positive: ${depthWeight}`);
@@ -479,7 +480,7 @@ async function olc(p: Parametreler): Promise<{ rapor: GezinmeRaporu | SfmRaporu;
   let finalCap = 0;
   const depthSource: GezinmeDerinlikKaynagi | undefined = p.geometri === 'sentetik'
     ? sentetikDerinlikKaynagi(gt!)
-    : p.geometri === 'model' || p.depthWeight ? 'model' : undefined;
+    : p.geometri === 'model-da3' ? 'model-da3' : p.geometri === 'model' || p.depthWeight ? 'model' : undefined;
   const e = await egitimBaslat(dosya, canvas, {
     asama: (m) => { isaretle(m); gunluk(m); },
     metrik: (m) => {
@@ -628,7 +629,8 @@ async function olc(p: Parametreler): Promise<{ rapor: GezinmeRaporu | SfmRaporu;
       sondalar: sonuclar,
       kullanilabilir,
       bugunku,
-      mod: { ...kameraSecenekleri, geometri: p.geometri, depthWeight: p.depthWeight, bolgesel: p.bolgesel },
+      // derinlikCihazi: DA3 istendiğinde yardımcının GERÇEKTEN kullanıldığını kanıtlar (sessiz V2 düşüşü raporda görünür).
+      mod: { ...kameraSecenekleri, geometri: p.geometri, depthWeight: p.depthWeight, bolgesel: p.bolgesel, derinlikCihazi: depthDevice },
       ...(e.bosAlan && bosMesafe ? { bosAlan: {
         hizaliKare: e.derinlikOzeti?.hizaliKare ?? 0, voksel: e.bosAlan.voksel, boyut: e.bosAlan.boyut,
         kullanilabilir: bosMesafe, ...(e.gezinmeGuveni ? { guven: e.gezinmeGuveni } : {}),
