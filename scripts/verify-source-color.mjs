@@ -30,6 +30,8 @@ try {
    assert.equal(material.uniforms.uImageTexture.value,source);
    assert.equal(material.uniforms.uHasImage.value,source?1:0);
   }
+  // Solid: duvar şeridi AO almaz (renk-olcum, 2026-10-22: AO 0,2'de duvar 27,6 -> 11,1 kararıyordu).
+  if(create===createSolidMaterial)assert.match(material.fragmentShader,/aoMix = uAoStrength \* \(1\.0 - wallAmt\)/,'Wall band must not take photo AO');
   material.dispose();
  }
  for(const texture of [video,photo,linear])texture.dispose();

@@ -173,8 +173,10 @@ const FRAGMENT = /* glsl */ `
 
     // BAKILI OKLÜZYON: çukurlar (göz boşluğu, çene altı, saç sınırı) kararır —
     // düz gölgeleme tek başına yüzeyi kabartma gibi göstermiyordu. uAoStrength
-    // = 0 iken çarpan tam 1 (görünüm değişmez).
-    col *= mix(1.0, img.a, uAoStrength);
+    // = 0 iken çarpan tam 1 (görünüm değişmez). Duvar şeridi (wallAmt) AO
+    // almaz: fotoğrafın kenar AO'su kaide rengini neredeyse siyaha indiriyordu.
+    float aoMix = uAoStrength * (1.0 - wallAmt);
+    col *= mix(1.0, img.a, aoMix);
 
     // DİFFUSE IŞIK — point cloud ile aynı formül ailesi: düz yüzey tam
     // aydınlık, ışığa yönelen kavisler gölgelenir. 0.5 tabanı zift siyahı
@@ -191,7 +193,7 @@ const FRAGMENT = /* glsl */ `
     if (uSpecular > 0.001) {
       vec3 h = normalize(l + v);
       float spec = pow(max(dot(n, h), 0.0), 32.0);
-      col += vec3(spec * uSpecular * mix(1.0, img.a, uAoStrength));
+      col += vec3(spec * uSpecular * mix(1.0, img.a, aoMix));
     }
 
     // FRESNEL — siluet kenarlarında (n·view → 0) parlak halka; profilde
