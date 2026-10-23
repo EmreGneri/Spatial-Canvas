@@ -1,7 +1,8 @@
 // MASKE ÖLÇÜM SAYFASI — tarayıcı tarafı (`bench/maske.html`, `scripts/olc-maske.mjs`
 // sürer). DAVIS GT maskeleriyle: A = IS-Net (uygulamanın video yolu), B = A + derinlik
 // tutarlı delik doldurma (B, A'dan YALNIZ doldurulan piksellerle ayrılır), C = BiRefNet
-// (yardımcı). Çıktı: `window.__maske = { rapor, pngler }`, hata: `window.__maskeHata`.
+// (tarayıcı/yardımcı; gerekirse IS-Net yedeği dahil). Çıktı:
+// `window.__maske = { rapor, pngler }`, hata: `window.__maskeHata`.
 
 import * as ortw from 'onnxruntime-web/webgpu';
 import { segmentForeground } from '../engine/reconstruction/segmentation.ts';
@@ -143,8 +144,9 @@ export async function maskeCalistir(man: MaskeManifesti) {
           const c = await segmentForeground(im, 'webgpu', 'foto');
           sure.yardimci.push(performance.now() - tc);
           cModel = c.model;
-          if (c.model === 'birefnet') bins.C = yukariOrnekle(c.mask, c.width, c.height, W, H);
-          else cKullanilamayan++;
+          // Fotoğraf akışını ölç: reddedilen zor kareyi dışlamak kaliteyi şişirir.
+          bins.C = yukariOrnekle(c.mask, c.width, c.height, W, H);
+          if (c.model !== 'birefnet') cKullanilamayan++;
         }
 
         for (const y of yontemler) {

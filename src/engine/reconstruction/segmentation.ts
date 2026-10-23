@@ -159,8 +159,8 @@ export function birefnetOlasilik(logit: Float32Array): Float32Array | null {
  */
 export async function tarayiciBirefnet(girdi: { data: Float32Array; dims: number[] }): Promise<Float32Array | null> {
   if (!TARAYICI_BIREFNET || birefnetKapali) return null;
-  if (typeof navigator === 'undefined' || !('gpu' in navigator)) return null;
   try {
+    if (typeof navigator === 'undefined' || !('gpu' in navigator)) throw new Error('WebGPU yok');
     // Yalnız WebGPU: wasm'a düşmek dakikalar sürer ve 32-bit yığında bad_alloc verir.
     yukleBirefnet ??= onceRetry(async () => {
       const bayt = await ilerlemeliGetir(BIREFNET_PATH, 'BiRefNet nesne ayırma modeli');
