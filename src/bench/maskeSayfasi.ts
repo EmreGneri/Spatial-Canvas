@@ -9,20 +9,23 @@ import { segmentForeground } from '../engine/reconstruction/segmentation.ts';
 import { estimateDepth } from '../depth.ts';
 import { resampleBilinear } from '../engine/reconstruction/silhouette.ts';
 import { delikleriDoldur } from '../engine/reconstruction/maskeDelik.ts';
-import { alan, ardisikIoU, davisTolPx, delikKayitlari, gtIzgaraya, icDelikOrani, ikili, jaccard, sinirF } from './maskeOlcut.ts';
+import { createMaskSmoother } from '../engine/reconstruction/maskeZamansal.ts';
+import { alan, ardisikIoU, davisTolPx, delikKayitlari, eksikBolge, gtIzgaraya, icDelikOrani, ikili, jaccard, sinirF } from './maskeOlcut.ts';
 
 export interface MaskeManifesti {
   diziler: { ad: string; kareler: { jpgUrl: string; gtUrl: string }[] }[];
   yardimci: boolean;
   delikKaydi?: boolean;
+  /** Derinlik/delik doldurma (B) atlanır; yalnız A ve D (zamansal) ölçülür. */
+  sade?: boolean;
 }
 
-type Yontem = 'A' | 'B' | 'C';
+type Yontem = 'A' | 'B' | 'C' | 'D';
 const MAX_PNG = 40;
 const PNG_GENISLIK = 640;
 
 interface KareSonucu {
-  J: number; F: number; delik: number; alan: number; ardisik?: number; alanFarki?: number;
+  J: number; F: number; delik: number; alan: number; eksik: number; ardisik?: number; alanFarki?: number;
 }
 
 const log = (s: string) => console.log(`[maske] ${s}`);
@@ -85,12 +88,12 @@ function bindirme(im: HTMLImageElement, A: Uint8Array, delta: Uint8Array, gt: Ui
 }
 
 export async function maskeCalistir(man: MaskeManifesti) {
-  const yontemler: Yontem[] = man.yardimci ? ['A', 'B', 'C'] : ['A', 'B'];
+  const yontemler: Yontem[] = [...(man.sade ? ['A'] : ['A', 'B']), ...(man.yardimci ? ['C'] : []), 'D'] as Yontem[];
   const hatalar: { dizi: string; kare: number; mesaj: string }[] = [];
   const pngAdaylari: { ad: string; yanlis: number; url: string }[] = [];
   const dizilerRapor: Record<string, unknown>[] = [];
-  const tum: Record<Yontem, KareSonucu[]> = { A: [], B: [], C: [] };
-  const diziOrt: Record<Yontem, { J: number; F: number }[]> = { A: [], B: [], C: [] };
+  const tum: Record<Yontem, KareSonucu[]> = { A: [], B: [], C: [], D: [] };
+  const diziOrt: Record<Yontem, { J: number; F: number }[]> = { A: [], B: [], C: [], D: [] };
   const sure = { seg: [] as number[], derinlik: [] as number[], doldur: [] as number[], yardimci: [] as number[] };
   const dolgu = { px: 0, dogru: 0, yanlis: 0, kareSayisi: 0, kare: 0 };
   let cModel = '';
@@ -98,7 +101,8 @@ export async function maskeCalistir(man: MaskeManifesti) {
 
   for (const dizi of man.diziler) {
     const oncekiBin: Partial<Record<Yontem, Uint8Array>> = {};
-    const topla: Record<Yontem, KareSonucu[]> = { A: [], B: [], C: [] };
+    const yumusat = createMaskSmoother(); // dizi başına sıfırlanır (kaynak değişimi)
+    const topla: Record<Yontem, KareSonucu[]> = { A: [], B: [], C: [], D: [] };
     const diziDolgu = { px: 0, dogru: 0, yanlis: 0, kareSayisi: 0 };
     for (let k = 0; k < dizi.kareler.length; k++) {
       try {
@@ -113,32 +117,35 @@ export async function maskeCalistir(man: MaskeManifesti) {
         const seg = await segmentForeground(im, 'webgpu', 'video');
         sure.seg.push(performance.now() - t);
         const A = yukariOrnekle(seg.mask, seg.width, seg.height, W, H);
+        const D = yukariOrnekle(yumusat.push(seg.mask, seg.width, seg.height), seg.width, seg.height, W, H);
 
-        t = performance.now();
-        const d = await estimateDepth(im, { detailStrength: 0, foregroundStretch: false, sobelRelief: 0, depthSmoothing: false });
-        sure.derinlik.push(performance.now() - t);
-        t = performance.now();
-        const mD = seg.width === d.width && seg.height === d.height
-          ? seg.mask : resampleBilinear(seg.mask, seg.width, seg.height, d.width, d.height);
-        if (man.delikKaydi) {
-          // Tüm kapalı delikler (doldurulan/doldurulmayan); node `__delikAl` ile boşaltır.
-          const gtD = gtIzgaraya(gt, W, H, d.width, d.height);
-          const tampon = ((window as unknown as Record<string, unknown>).__delikTampon ??= []) as unknown[];
-          for (const r of delikKayitlari(mD, d.data, d.width, d.height, gtD)) tampon.push({ dizi: dizi.ad, kare: k, ...r });
+        let B: Uint8Array | undefined, delta: Uint8Array = new Uint8Array(0), filledPx = 0, dogru = 0;
+        if (!man.sade) {
+          t = performance.now();
+          const d = await estimateDepth(im, { detailStrength: 0, foregroundStretch: false, sobelRelief: 0, depthSmoothing: false });
+          sure.derinlik.push(performance.now() - t);
+          t = performance.now();
+          const mD = seg.width === d.width && seg.height === d.height
+            ? seg.mask : resampleBilinear(seg.mask, seg.width, seg.height, d.width, d.height);
+          if (man.delikKaydi) {
+            // Tüm kapalı delikler (doldurulan/doldurulmayan); node `__delikAl` ile boşaltır.
+            const gtD = gtIzgaraya(gt, W, H, d.width, d.height);
+            const tampon = ((window as unknown as Record<string, unknown>).__delikTampon ??= []) as unknown[];
+            for (const r of delikKayitlari(mD, d.data, d.width, d.height, gtD)) tampon.push({ dizi: dizi.ad, kare: k, ...r });
+          }
+          const f = delikleriDoldur(mD, d.data, d.width, d.height).mask;
+          const deltaF = new Float32Array(f.length);
+          for (let i = 0; i < f.length; i++) deltaF[i] = f[i] >= 0.5 && mD[i] < 0.5 ? 1 : 0;
+          delta = yukariOrnekle(deltaF, d.width, d.height, W, H);
+          B = new Uint8Array(A);
+          for (let i = 0; i < B.length; i++) {
+            // delta := B \ A (A zaten 1 olan pikseller "doldurulan" sayılmaz)
+            if (delta[i] && !A[i]) { B[i] = 1; filledPx++; if (gt[i]) dogru++; } else delta[i] = 0;
+          }
+          sure.doldur.push(performance.now() - t);
         }
-        const f = delikleriDoldur(mD, d.data, d.width, d.height).mask;
-        const deltaF = new Float32Array(f.length);
-        for (let i = 0; i < f.length; i++) deltaF[i] = f[i] >= 0.5 && mD[i] < 0.5 ? 1 : 0;
-        const delta = yukariOrnekle(deltaF, d.width, d.height, W, H);
-        const B = new Uint8Array(A);
-        let filledPx = 0, dogru = 0;
-        for (let i = 0; i < B.length; i++) {
-          // delta := B \ A (A zaten 1 olan pikseller "doldurulan" sayılmaz)
-          if (delta[i] && !A[i]) { B[i] = 1; filledPx++; if (gt[i]) dogru++; } else delta[i] = 0;
-        }
-        sure.doldur.push(performance.now() - t);
 
-        const bins: Partial<Record<Yontem, Uint8Array>> = { A, B };
+        const bins: Partial<Record<Yontem, Uint8Array>> = { A, B, D };
         if (man.yardimci) {
           const tc = performance.now();
           const c = await segmentForeground(im, 'webgpu', 'foto');
@@ -152,7 +159,7 @@ export async function maskeCalistir(man: MaskeManifesti) {
         for (const y of yontemler) {
           const m = bins[y];
           if (!m) { delete oncekiBin[y]; continue; }
-          const s: KareSonucu = { J: jaccard(m, gt), F: sinirF(m, gt, W, H, tol), delik: icDelikOrani(m, W, H), alan: alan(m) / m.length };
+          const s: KareSonucu = { J: jaccard(m, gt), F: sinirF(m, gt, W, H, tol), delik: icDelikOrani(m, W, H), alan: alan(m) / m.length, eksik: eksikBolge(m, gt, W, H).oran };
           const onc = oncekiBin[y];
           if (onc) {
             s.ardisik = ardisikIoU(onc, m);
@@ -190,7 +197,7 @@ export async function maskeCalistir(man: MaskeManifesti) {
       const J = ort(kk.map((s) => s.J)), F = ort(kk.map((s) => s.F));
       diziOrt[y].push({ J, F });
       return {
-        kare: kk.length, J, F, JF: (J + F) / 2, delik: ort(kk.map((s) => s.delik)), alan: ort(kk.map((s) => s.alan)),
+        kare: kk.length, J, F, JF: (J + F) / 2, delik: ort(kk.map((s) => s.delik)), alan: ort(kk.map((s) => s.alan)), eksik: ort(kk.map((s) => s.eksik)),
         ardisik: ort(kk.filter((s) => s.ardisik != null).map((s) => s.ardisik!)),
         alanDalgalanma: ort(kk.filter((s) => s.alanFarki != null).map((s) => s.alanFarki!)),
       };
@@ -207,7 +214,7 @@ export async function maskeCalistir(man: MaskeManifesti) {
     const dz = diziOrt[y];
     const jd = ort(dz.map((s) => s.J)), fd = ort(dz.map((s) => s.F));
     return {
-      kare: kk.length, J, F, JF: (J + F) / 2, delik: ort(kk.map((s) => s.delik)), alan: ort(kk.map((s) => s.alan)),
+      kare: kk.length, J, F, JF: (J + F) / 2, delik: ort(kk.map((s) => s.delik)), alan: ort(kk.map((s) => s.alan)), eksik: ort(kk.map((s) => s.eksik)),
       ardisik: ort(kk.filter((s) => s.ardisik != null).map((s) => s.ardisik!)),
       alanDalgalanma: ort(kk.filter((s) => s.alanFarki != null).map((s) => s.alanFarki!)),
       diziOrtalamasi: { diziSayisi: dz.length, J: jd, F: fd, JF: (jd + fd) / 2 },
@@ -226,7 +233,7 @@ export async function maskeCalistir(man: MaskeManifesti) {
     cKullanilamayanKare: cKullanilamayan,
     kareSayisi: dolgu.kare,
     diziSayisi: man.diziler.length,
-    global: { A: gA, B: gB, C: man.yardimci ? global('C') : null },
+    global: { A: gA, B: gB, C: man.yardimci ? global('C') : null, D: global('D') },
     farkBA: gA && gB ? {
       J: gB.J - gA.J, F: gB.F - gA.F, JF: gB.JF - gA.JF,
       diziOrtJF: gB.diziOrtalamasi.JF - gA.diziOrtalamasi.JF, bKotuDiziSayisi: bKotu,
