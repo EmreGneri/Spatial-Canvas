@@ -95,7 +95,7 @@ const BIREFNET = {
 };
 BIREFNET.dest = join('public/models', BIREFNET.repo, BIREFNET.file);
 
-// Deney varsayılan kapalı: temiz Vercel build'i yalnız açıkça seçilirse indirir.
+// Deney varsayılan kapalı (?derinlik=moge açar): temiz Vercel build'i modeli yalnız VITE_MOGE2_PHOTO=1 ile indirir.
 const MOGE = {
   repo: 'Ruicheng/moge-2-vits-normal-onnx',
   rev: 'e50ffda41565591092adea54c6ac83d6212e1e23',

@@ -180,12 +180,15 @@ const MODEL_INPUT_SIZE = 518;
 /** Parça çıkarımı yalnız kaynak bunun üstündeyse anlamlı: parça girdisi 518'den küçükse ek bilgi yok. */
 export const TILE_MIN_LONG_SIDE = 800;
 
+/** Deneysel MoGe-2 fotoğraf geometrisi YALNIZ `?derinlik=moge` ile açılır; başka her değer varsayılan yol. */
+export const mogeIstendi = (search: string) => new URLSearchParams(search).get('derinlik') === 'moge';
+
 /** Fotoğraf yolu için önerilen kalite seçenekleri (App/embed). */
 export const FOTO_KALITE: Pick<DepthEstimateOptions, 'tileDetay' | 'kenarHizalama' | 'model'> = {
   tileDetay: true,
   kenarHizalama: 0.5,
   // DA3 yardımcı ya da VITE_DA3_MONO_URL varsa devreye girer; yoksa/başarısızsa V2-small.
-  model: (import.meta as { env?: { VITE_MOGE2_PHOTO?: string } }).env?.VITE_MOGE2_PHOTO === '1' ? 'moge-2' : 'da3-mono',
+  model: typeof location !== 'undefined' && mogeIstendi(location.search) ? 'moge-2' : 'da3-mono',
 };
 
 export type HeadDetailDiagnostics = {

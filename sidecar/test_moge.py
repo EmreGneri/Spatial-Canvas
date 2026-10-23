@@ -1,7 +1,12 @@
 """MoGe ham çıktı protokolü: gerçek model indirmeden server metodunu sınar."""
+import tempfile
 import unittest
-import numpy as np
+from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
+
+import numpy as np
+import server
 from server import Models
 
 
@@ -43,6 +48,27 @@ class MogeProtocol(unittest.TestCase):
         for value in (-1, 255, float('nan')):
             with self.assertRaises(ValueError):
                 models.run_moge(np.full((1, 3, 518, 518), value, np.float32))
+
+
+class MogeDegrades(unittest.TestCase):
+    def test_session_failure_disables_moge_without_crash(self):
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / server.MOGE_FILE).write_bytes(b'not onnx')
+            models = Models.__new__(Models)
+            models.model_dir, models.providers, models.moge, models.moge_hata = Path(d), ['CPUExecutionProvider'], None, None
+            self.assertIn('moge', models.available())
+            with mock.patch.object(server, 'session', side_effect=RuntimeError('bad allocation')) as made:
+                for _ in range(2):
+                    with self.assertRaises(RuntimeError):
+                        models.run_moge(np.full((1, 3, 518, 518), .5, np.float32))
+            self.assertEqual(made.call_count, 1, 'failed session is not retried per request')
+            self.assertNotIn('moge', models.available())
+
+    def test_missing_file_not_advertised(self):
+        with tempfile.TemporaryDirectory() as d:
+            models = Models.__new__(Models)
+            models.model_dir, models.moge_hata = Path(d), None
+            self.assertEqual(models.available(), list(server.MODEL_FILES))
 
 
 if __name__ == '__main__':

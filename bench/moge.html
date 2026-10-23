@@ -2,6 +2,8 @@
 <html lang="en"><meta charset="utf-8"><title>MoGe photo benchmark</title>
 <body><pre id="status">Ready</pre><script type="module">
 import { runMogePhotoBench } from '/src/bench/mogePhotoBench.ts';
+import { runMogeRealPhotos } from '/src/bench/mogeRealPhotos.ts';
+window.runMogeRealPhotos = urls => runMogeRealPhotos(urls, m => { document.querySelector('#status').textContent = m; console.log(m); });
 window.runMogePhotoBench = () => runMogePhotoBench(message => {
   document.querySelector('#status').textContent = message;
   console.log(message);

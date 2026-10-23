@@ -2,6 +2,11 @@ import type { DepthResult } from '../../depth.ts';
 import type { MogeRawResult } from './mogeDepth.ts';
 import { mogePointsToMetricDepth } from './mogeGeometry.ts';
 
+/** Plausibility gates; failing any one throws so estimateDepth falls back to the default chain.
+ * Focal is relative to half the diagonal: 0.36..11.4 = 140..10 degree diagonal FOV.
+ * ponytail: fixed bounds from the 3 synthetic scenes (RMSE ~0.0015); retune on real photos. */
+export const MOGE_LIMITS = { minFocal: 0.36, maxFocal: 11.4, maxProjectionRmse: 0.02, minValidFraction: 0.01 };
+
 /** Letterbox is removed only AFTER calibration in the model's image coordinates. */
 export function mogePhotoResult(raw: MogeRawResult, rect: { x: number; y: number; w: number; h: number }): DepthResult {
   const { x, y, w, h } = rect;
@@ -21,13 +26,20 @@ export function mogePhotoResult(raw: MogeRawResult, rect: { x: number; y: number
     if (validMask[target]) values.push(depth[target]);
   }
   values.sort((a,b) => a-b);
-  if (values.length < 2) throw new Error('MoGe photo has insufficient valid depth');
+  if (values.length < Math.max(2, MOGE_LIMITS.minValidFraction*w*h)) throw new Error('MoGe photo has insufficient valid depth');
+  if (!(metric.focal >= MOGE_LIMITS.minFocal && metric.focal <= MOGE_LIMITS.maxFocal)) {
+    throw new Error(`Implausible MoGe focal ${metric.focal}`);
+  }
+  if (!(metric.projectionRmse <= MOGE_LIMITS.maxProjectionRmse)) {
+    throw new Error(`MoGe calibration residual too high: ${metric.projectionRmse}`);
+  }
   const near = values[Math.floor((values.length-1)*.01)];
   const far = values[Math.ceil((values.length-1)*.99)];
   const data = new Float32Array(w*h);
   for (let i = 0; i < data.length; i++) if (validMask[i]) {
     data[i] = far > near ? Math.max(0, Math.min(1, (far-depth[i])/(far-near))) : .5;
   }
+  if (!data.every(Number.isFinite)) throw new Error('MoGe display depth is not finite');
   const K = metric.intrinsics.slice();
   K[0] *= raw.width/w; K[2] = (K[2]*raw.width-x)/w;
   K[4] *= raw.height/h; K[5] = (K[5]*raw.height-y)/h;

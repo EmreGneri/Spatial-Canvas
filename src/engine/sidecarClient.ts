@@ -43,6 +43,8 @@ export class SidecarClient {
   private disabled = false;
   private sequence = 0;
   backend = 'browser';
+  /** /health `modeller`: optional models (moge) are called only when the server lists them. */
+  models: string[] = [];
 
   constructor(url: string) { this.url = url.replace(/\/$/, ''); }
 
@@ -56,6 +58,7 @@ export class SidecarClient {
         // tarayıcıdan yavaş olur ve sıradaki canlı kareleri zaman aşımına iterdi.
         if (!response.ok || health.ok !== true || !['DmlExecutionProvider','CUDAExecutionProvider'].includes(health.arkaUc)) return false;
         this.backend = `sidecar · ${health.arkaUc}`;
+        this.models = Array.isArray(health.modeller) ? health.modeller : [];
         return true;
       } catch { return false; }
     })();
