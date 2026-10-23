@@ -1750,11 +1750,14 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
               disabled={!engine.splatAvailable || !!egitimDosya}
               aria-pressed={temizlemeAcik}
               title={engine.splatAvailable
-                ? 'floater/arka plan artığını elle seç ve sil (geri alınabilir)'
+                ? 'boşlukta kalan parçacıkları elle seçip sil (geri alınabilir)'
                 : 'splat sahnesi yok; önce splat modu ya da füzyon gerekiyor'}
               onClick={() => setTemizlemeAcik((v) => !v)}
             >
-              ⌫ temizle
+              {/* ⌫ (backspace) KALDIRILDI: 11 px'te okunmuyor, kullanıcı onu
+                  "fırça" sandı ve düğmenin neyi temizlediği anlaşılmadı.
+                  Etiket artık NESNEYİ söylüyor; glif tahmine bırakmıyor. */}
+              artıkları temizle
             </button>
           }
           altSatir={egitimDosya
