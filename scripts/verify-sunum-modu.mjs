@@ -151,7 +151,9 @@ for (const etiket of [
 // SOĞUK AÇILIŞ kablosu: bir kez bayrağı, saf karar fonksiyonu, sentetik yükleme.
 assert.match(app, /soganTetiklendi\.current = true/, 'soğuk açılış bir kez bayrağı yok — döngü riski');
 assert.match(app, /soganAcilisGerekliMi\(sunum, /, 'soğuk açılış kararı saf fonksiyondan gelmiyor');
-assert.match(app, /run\(syntheticImage\(\)\)/, 'soğuk açılış sahneyi yüklemiyor');
+// Soğuk açılış sahneyi MODELSİZ yoldan yükler (bkz. verify-acilis-sahnesi):
+// ölçüldü, açılışta inen model baytı 131,4 MB → 0.
+assert.match(app, /acilisSahnesiniCalistir\(syntheticImage\(\)\)/, 'soğuk açılış sahneyi yüklemiyor');
 
 // Mod bir KEZ okunmalı: her render'da okunursa effect bağımlılıkları oynar.
 assert.match(app, /useState\(\(\) => sunumAcikMi\(window\.location\.search\)\)/,
