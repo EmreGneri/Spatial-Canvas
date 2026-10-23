@@ -38,6 +38,7 @@ export const SUNUM_DISI = {
   videoUc3B: 'video → 3B: 3D eğit ile aynı vuruş, ikisi birden kafa karıştırır',
   nesneAyirma: 'nesne ayırma / maskeyi göster / tracker: durum okuması, fiil değil',
   orijinalRenkler: 'orijinal renkler: tek bir render kolu',
+  duzVideo: 'düz video: tracker HUD’u için tanı görünümü, tracker zaten gizli',
 } as const;
 
 /**

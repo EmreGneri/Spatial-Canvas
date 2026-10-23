@@ -1653,6 +1653,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
               engine={engine}
               materials={materials}
               mode={mode}
+              sunum={sunum}
               onChange={changeMode}
               onReset={() => { say('sıfırlandı: efektler, look ve kamera başlangıç değerlerinde (görsel korundu)'); refreshPanel(); }}
             />
