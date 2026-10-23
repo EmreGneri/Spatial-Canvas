@@ -14,7 +14,9 @@ const REPO_KOKU = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const ZAMAN_ASIMI_MS = 2 * 60 * 60 * 1000;
 const ILERLEME_ARALIGI_MS = 15_000;
 
-const BAYRAKLAR = new Set(['--chrome', '--yazilim-gpu', '--basli', '--yardimci', '--delik-kaydi']);
+// --birefnet: C = TARAYICI BiRefNet (WebGPU, yardımcı kapalı: ?inference=browser).
+// --yardimci: C = yerel yardımcıdaki BiRefNet (?inference=sidecar).
+const BAYRAKLAR = new Set(['--chrome', '--yazilim-gpu', '--basli', '--yardimci', '--birefnet', '--delik-kaydi']);
 const DEGERLI = new Set(['--davis', '--dizi', '--adim', '--en-fazla-dizi', '--etiket', '--bolum']);
 
 function kullanim(mesaj) {
@@ -73,7 +75,10 @@ async function manifestKur(kok, secenek) {
 
 function ozetMd(r, etiket) {
   const g = r.global;
-  const yontemler = [['A', 'A: IS-Net'], ['B', 'B: IS-Net + delik doldurma'], ...(r.yardimci ? [['C', `C: BiRefNet (${r.cModeli ?? '?'})`]] : [])];
+  const yontemler = [['A', 'A: IS-Net'], ['B', 'B: IS-Net + delik doldurma'], ...(r.yardimci ? [['C', `C: BiRefNet ${r.cKaynagi ?? ''} (${r.cModeli ?? '?'})`]] : [])];
+  const jf = (v) => (v ? (v.J + v.F) / 2 : null);
+  const gec = (g) => (g ? `ilk ${f1(g.ilk)}, sonra medyan ${f1(g.medyan)} / ort. ${f1(g.ort)}` : '-');
+  const ad = (a) => (a ? `${a.vendor} / ${a.architecture}${a.description ? ` (${a.description})` : ''}` : '-');
   const satirlar = yontemler.filter(([k]) => g[k]).map(([k, ad]) => {
     const v = g[k];
     return `| ${ad} | ${v.kare} | ${f3(v.J)} | ${f3(v.F)} | ${f3(v.JF)} | ${f3(v.diziOrtalamasi.JF)} | ${yuzde(v.delik)} | ${f3(v.ardisik)} | ${(v.alanDalgalanma * 100).toFixed(2)}% |`;
@@ -97,7 +102,17 @@ function ozetMd(r, etiket) {
     fa ? `- B < A olan dizi: ${fa.bKotuDiziSayisi} / ${r.diziSayisi}` : '',
     '',
     `Süre (ms/kare): segmentasyon ${f1(r.sureMs.seg)}, derinlik ${f1(r.sureMs.derinlik)}, doldurma ${f1(r.sureMs.doldur)}`,
+    r.gecikmeMs ? `Gecikme (ms, segmentForeground çağrısı): A ${gec(r.gecikmeMs.A)}${r.gecikmeMs.C ? `; C ${gec(r.gecikmeMs.C)}` : ''}` : '',
+    r.adapter ? `WebGPU adapter: ORT ${ad(r.adapter.ort)}; varsayılan requestAdapter ${ad(r.adapter.varsayilan)}` : '',
     '',
+    ...(r.yardimci ? [
+      '## Dizi başına J / F / J&F: A (IS-Net) -> C (BiRefNet)',
+      '',
+      '| Dizi | A J | A F | A J&F | C J | C F | C J&F | Delta J&F |',
+      '|---|---|---|---|---|---|---|---|',
+      ...r.diziler.map((s) => `| ${s.ad} | ${f3(s.A?.J)} | ${f3(s.A?.F)} | ${f3(jf(s.A))} | ${f3(s.C?.J)} | ${f3(s.C?.F)} | ${f3(jf(s.C))} | ${jf(s.A) != null && jf(s.C) != null ? f3(jf(s.C) - jf(s.A)) : '-'} |`),
+      '',
+    ] : []),
     '## Dizi başına J&F (A -> B), doldurulan piksel (doğru/yanlış)',
     '',
     '| Dizi | A | B | Delta | Doldurma d/y |',
@@ -123,7 +138,10 @@ async function main() {
   const etiket = d.etiket ?? new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-');
   if (/[\\/]/.test(etiket) || etiket.startsWith('.')) kullanim(`geçersiz etiket: ${etiket}`);
   const cikis = resolve(REPO_KOKU, 'olcum-out', etiket, 'maske');
-  const yardimci = secenek.bayrak.has('--yardimci');
+  const tarayiciC = secenek.bayrak.has('--birefnet');
+  if (tarayiciC && secenek.bayrak.has('--yardimci')) kullanim('--birefnet ve --yardimci birlikte verilemez');
+  const yardimci = secenek.bayrak.has('--yardimci') || tarayiciC;
+  const sorgu = tarayiciC ? '?inference=browser' : yardimci ? '?inference=sidecar' : '';
   const delikKaydi = secenek.bayrak.has('--delik-kaydi');
   if (d.bolum != null && !['train', 'val'].includes(d.bolum)) kullanim(`--bolum train|val olmalı: ${d.bolum}`);
 
@@ -157,7 +175,7 @@ async function main() {
       sonDizi = dizi; sonYazim = simdi;
       console.log(`[${damga()}] ${govde}`);
     });
-    await oturum.page.goto(oturum.url(`/bench/maske.html${yardimci ? '?inference=sidecar' : ''}`), { waitUntil: 'load' });
+    await oturum.page.goto(oturum.url(`/bench/maske.html${sorgu}`), { waitUntil: 'load' });
     await oturum.page.waitForFunction(() => typeof window.__maskeBaslat === 'function', undefined, { timeout: 60_000 });
     await oturum.page.evaluate((m) => { window.__maskeBaslat(m); }, { diziler, yardimci, delikKaydi });
     // Delik kayıtları sayfa belleğini şişirmesin: bitene dek periyodik boşalt, jsonl'e ekle.
@@ -189,6 +207,7 @@ async function main() {
       await writeFile(join(cikis, 'kareler', `${ad}.png`), dataUrlBuffer(url));
     }
     await writeFile(join(cikis, 'rapor.json'), `${JSON.stringify(rapor, null, 2)}\n`);
+    rapor.cKaynagi = tarayiciC ? 'tarayıcı WebGPU' : yardimci ? 'yardımcı' : null;
     const md = ozetMd(rapor, etiket);
     await writeFile(join(cikis, 'ozet.md'), `${md}\n`);
     console.log(md);

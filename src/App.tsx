@@ -557,7 +557,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
           maskW = seg.width;
           maskH = seg.height;
           maskLoadedRef.current = true;
-          say(`nesne ayırma (${seg.model === 'birefnet' ? 'BiRefNet · yardımcı' : 'IS-Net'})  ${Math.round(performance.now() - t2)} ms  (${maskW}x${maskH})`);
+          say(`nesne ayırma (${seg.model === 'birefnet' ? 'BiRefNet' : 'IS-Net'})  ${Math.round(performance.now() - t2)} ms  (${maskW}x${maskH})`);
         }
         updateSegment(karar.ayirmaAcik);
         engineRef.current!.setObjectSeparation(karar.ayirmaAcik);
@@ -985,7 +985,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
     try {
       const t2 = performance.now();
       const seg = await segmentForeground(lastPhotoRef.current, 'webgpu', 'foto');
-      say(`nesne ayırma (${seg.model === 'birefnet' ? 'BiRefNet · yardımcı' : 'IS-Net'})  ${Math.round(performance.now() - t2)} ms  (${seg.width}x${seg.height})`);
+      say(`nesne ayırma (${seg.model === 'birefnet' ? 'BiRefNet' : 'IS-Net'})  ${Math.round(performance.now() - t2)} ms  (${seg.width}x${seg.height})`);
       // GÜN E (bulgu 1): önbellekteki depth MASKE-KÖR hesaplandı (buton o an
       // kapalıydı). Maske geldiğine göre depth yeniden çıkarılır — yoksa bu
       // yolda stretch/eğim aşamaları düzeltmeden yararlanamazdı.

@@ -82,6 +82,19 @@ const FACE_LANDMARKER = {
   size: 3758596,
 };
 
+// src/engine/reconstruction/segmentation.ts — tarayıcı BiRefNet_lite (WebGPU,
+// yalnız fotoğraf). Stok export Chrome WebGPU'da çalışmaz; bu graf düzeltilmiş
+// hali. Revizyon SABİT (main değil): graf yeniden yüklenirse boyut kontrolü
+// yakalar. LİSANS: MIT (model kartı; ayrı LICENSE dosyası yok). DIS5K eğitim
+// verisi uyarısı THIRD_PARTY_NOTICES'te. sha256 4059896039dfccb0…cf5f4.
+const BIREFNET = {
+  repo: 'jiabins0303/birefnet-lite-1024-webgpu',
+  rev: '1ad01cef0f4101a285c5a3e0bd7f15597d93403f',
+  file: 'onnx/model_fp16.onnx',
+  size: 114834127,
+};
+BIREFNET.dest = join('public/models', BIREFNET.repo, BIREFNET.file);
+
 const mb = (n) => (n / 1024 / 1024).toFixed(2).padStart(7) + ' MB';
 
 const exists = (p) => stat(p).then(() => true, () => false);
@@ -158,6 +171,19 @@ if ((await stat(FACE_LANDMARKER.dest).catch(() => null))?.size === FACE_LANDMARK
   console.log(`${mb(buf.length)}  face_landmarker.task`);
 }
 
+console.log(`\n${BIREFNET.repo}`);
+if ((await stat(BIREFNET.dest).catch(() => null))?.size === BIREFNET.size) {
+  console.log(`     skip  ${BIREFNET.file}`);
+} else {
+  await mkdir(dirname(BIREFNET.dest), { recursive: true });
+  const res = await fetch(`https://huggingface.co/${BIREFNET.repo}/resolve/${BIREFNET.rev}/${BIREFNET.file}`);
+  if (!res.ok) throw new Error(`${BIREFNET.repo}/${BIREFNET.file}: ${res.status} ${res.statusText}`);
+  const buf = Buffer.from(await res.arrayBuffer());
+  if (buf.length !== BIREFNET.size) throw new Error(`${BIREFNET.file}: beklenen ${BIREFNET.size} bayt, gelen ${buf.length}`);
+  await writeFile(BIREFNET.dest, buf);
+  console.log(`${mb(buf.length)}  ${BIREFNET.file}`);
+}
+
 await mkdir('public/mediapipe-wasm', { recursive: true });
 for (const file of MP_WASM_FILES) {
   const src = join('node_modules/@mediapipe/tasks-vision/wasm', file);
@@ -168,6 +194,7 @@ for (const file of MP_WASM_FILES) {
 await mirror('public/models', new Set([
   ...MODEL_REPOS.flatMap(({ repo, files }) => files.map((f) => `${repo}/${f}`)),
   'mediapipe/face_landmarker.task',
+  `${BIREFNET.repo}/${BIREFNET.file}`,
 ]));
 await mirror('public/ort', new Set(ORT_FILES));
 await mirror('public/mediapipe-wasm', new Set(MP_WASM_FILES));
