@@ -61,3 +61,17 @@ assert.equal(davisTolPx(854, 480), 8);
   assert.deepEqual([...gtIzgaraya(g4, 4, 4, 2, 2)], [1, 0, 0, 1]);
 }
 console.log('verify-maske-olcut: OK');
+
+// eksik bölge: GT'nin maskenin kaçırdığı büyük parçaları (kol) sayar, ince şeritleri saymaz
+{
+  const { eksikBolge } = await import('../src/bench/maskeOlcut.ts');
+  const gt = kare(10, 10, 30, 30); for (let y = 15; y < 20; y++) for (let x = 30; x < 38; x++) gt[y * w + x] = 1; // 40 px kol
+  const tam = kare(10, 10, 30, 30);
+  const r = eksikBolge(tam, gt, w, h);
+  assert.equal(r.adet, 1);
+  assert.ok(Math.abs(r.oran - 40 / 440) < 1e-12);
+  assert.equal(eksikBolge(gt, gt, w, h).adet, 0);
+  const serit = kare(10, 10, 29, 30); // 1 px'lik şerit (20 px < %0,5*400... 20 > 2) -> yine sayılır; sınır testi minOran ile
+  assert.equal(eksikBolge(serit, kare(10, 10, 30, 30), w, h, 0.1).adet, 0);
+  assert.equal(eksikBolge(bos, bos, w, h).oran, 0);
+}

@@ -14,7 +14,7 @@ const REPO_KOKU = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const ZAMAN_ASIMI_MS = 2 * 60 * 60 * 1000;
 const ILERLEME_ARALIGI_MS = 15_000;
 
-const BAYRAKLAR = new Set(['--chrome', '--yazilim-gpu', '--basli', '--yardimci', '--delik-kaydi']);
+const BAYRAKLAR = new Set(['--chrome', '--yazilim-gpu', '--basli', '--yardimci', '--delik-kaydi', '--sade']);
 const DEGERLI = new Set(['--davis', '--dizi', '--adim', '--en-fazla-dizi', '--etiket', '--bolum']);
 
 function kullanim(mesaj) {
@@ -73,10 +73,10 @@ async function manifestKur(kok, secenek) {
 
 function ozetMd(r, etiket) {
   const g = r.global;
-  const yontemler = [['A', 'A: IS-Net'], ['B', 'B: IS-Net + delik doldurma'], ...(r.yardimci ? [['C', `C: BiRefNet (${r.cModeli ?? '?'})`]] : [])];
+  const yontemler = [['A', 'A: IS-Net'], ['B', 'B: IS-Net + delik doldurma'], ...(r.yardimci ? [['C', `C: BiRefNet (${r.cModeli ?? '?'})`]] : []), ['D', 'D: A + 3 kare zamansal ortalama']];
   const satirlar = yontemler.filter(([k]) => g[k]).map(([k, ad]) => {
     const v = g[k];
-    return `| ${ad} | ${v.kare} | ${f3(v.J)} | ${f3(v.F)} | ${f3(v.JF)} | ${f3(v.diziOrtalamasi.JF)} | ${yuzde(v.delik)} | ${f3(v.ardisik)} | ${(v.alanDalgalanma * 100).toFixed(2)}% |`;
+    return `| ${ad} | ${v.kare} | ${f3(v.J)} | ${f3(v.F)} | ${f3(v.JF)} | ${f3(v.diziOrtalamasi.JF)} | ${yuzde(v.delik)} | ${yuzde(v.eksik)} | ${f3(v.ardisik)} | ${(v.alanDalgalanma * 100).toFixed(2)}% |`;
   });
   const d = r.dolgu, fa = r.farkBA;
   return [
@@ -84,8 +84,8 @@ function ozetMd(r, etiket) {
     '',
     `${r.diziSayisi} dizi, ${r.kareSayisi} kare, hata: ${r.hataSayisi}${r.yardimci ? `, C kullanılamayan kare: ${r.cKullanilamayanKare}` : ''}`,
     '',
-    '| Yöntem | Kare | J | F | J&F (kare ort.) | J&F (dizi ort.) | İç delik/ön plan | Ardışık IoU | Alan dalgalanması |',
-    '|---|---|---|---|---|---|---|---|---|',
+    '| Yöntem | Kare | J | F | J&F (kare ort.) | J&F (dizi ort.) | İç delik/ön plan | Eksik bölge/GT | Ardışık IoU | Alan dalgalanması |',
+    '|---|---|---|---|---|---|---|---|---|---|',
     ...satirlar,
     '',
     '## Delik doldurma (B)',
@@ -107,6 +107,15 @@ function ozetMd(r, etiket) {
       return `| ${s.ad} | ${f3(a)} | ${f3(b)} | ${a != null && b != null ? f3(b - a) : '-'} | ${s.dolgu.dogru}/${s.dolgu.yanlis} |`;
     }),
     '',
+    '## Dizi başına A / D (J, F, J&F, iç delik, eksik bölge, ardışık IoU)',
+    '',
+    '| Dizi | Yöntem | J | F | J&F | İç delik | Eksik bölge | Ardışık IoU |',
+    '|---|---|---|---|---|---|---|---|',
+    ...r.diziler.flatMap((s) => ['A', 'D'].filter((k) => s[k]).map((k) => {
+      const v = s[k];
+      return `| ${s.ad} | ${k} | ${f3(v.J)} | ${f3(v.F)} | ${f3(v.JF)} | ${yuzde(v.delik)} | ${yuzde(v.eksik)} | ${f3(v.ardisik)} |`;
+    })),
+    '',
     ...(r.hataSayisi ? ['## Hatalar', '', ...r.hatalar.slice(0, 20).map((h) => `- ${h.dizi} kare ${h.kare}: ${h.mesaj}`), ''] : []),
   ].filter((x, i, a) => !(x === '' && a[i - 1] === '' )).join('\n');
 }
@@ -125,6 +134,7 @@ async function main() {
   const cikis = resolve(REPO_KOKU, 'olcum-out', etiket, 'maske');
   const yardimci = secenek.bayrak.has('--yardimci');
   const delikKaydi = secenek.bayrak.has('--delik-kaydi');
+  const sade = secenek.bayrak.has('--sade');
   if (d.bolum != null && !['train', 'val'].includes(d.bolum)) kullanim(`--bolum train|val olmalı: ${d.bolum}`);
 
   const diziler = await manifestKur(kok, d);
@@ -159,7 +169,7 @@ async function main() {
     });
     await oturum.page.goto(oturum.url(`/bench/maske.html${yardimci ? '?inference=sidecar' : ''}`), { waitUntil: 'load' });
     await oturum.page.waitForFunction(() => typeof window.__maskeBaslat === 'function', undefined, { timeout: 60_000 });
-    await oturum.page.evaluate((m) => { window.__maskeBaslat(m); }, { diziler, yardimci, delikKaydi });
+    await oturum.page.evaluate((m) => { window.__maskeBaslat(m); }, { diziler, yardimci, delikKaydi, sade });
     // Delik kayıtları sayfa belleğini şişirmesin: bitene dek periyodik boşalt, jsonl'e ekle.
     const delikDosya = join(cikis, 'delikler.jsonl');
     let delikSayisi = 0;

@@ -179,3 +179,35 @@ export function delikKayitlari(
   }
   return out;
 }
+
+/**
+ * "Eksik bölge" ölçütü: GT ön planında maskenin kaçırdığı BÜYÜK parçalar (kol/el/
+ * bacak gibi). GT\maske'nin 4-bağlı bileşenlerinden alanı GT alanının
+ * `minOran`'ından (varsayılan %0,5; kenar şeritleri sayılmasın) büyük olanlar;
+ * `oran` bu bileşenlerin toplam alanının GT alanına oranı, `adet` bileşen sayısı.
+ */
+export function eksikBolge(pred: Uint8Array, gt: Uint8Array, w: number, h: number, minOran = 0.005): { oran: number; adet: number } {
+  const n = w * h;
+  const gtAlan = alan(gt);
+  if (gtAlan === 0) return { oran: 0, adet: 0 };
+  const goruldu = new Uint8Array(n);
+  const yigin = new Int32Array(n);
+  let toplam = 0, adet = 0;
+  for (let s = 0; s < n; s++) {
+    if (!gt[s] || pred[s] || goruldu[s]) continue;
+    let sp = 0, boy = 0;
+    yigin[sp++] = s; goruldu[s] = 1;
+    while (sp > 0) {
+      const p = yigin[--sp];
+      boy++;
+      const x = p % w, y = (p / w) | 0;
+      const dene = (q: number) => { if (gt[q] && !pred[q] && !goruldu[q]) { goruldu[q] = 1; yigin[sp++] = q; } };
+      if (x > 0) dene(p - 1);
+      if (x < w - 1) dene(p + 1);
+      if (y > 0) dene(p - w);
+      if (y < h - 1) dene(p + w);
+    }
+    if (boy >= minOran * gtAlan) { toplam += boy; adet++; }
+  }
+  return { oran: toplam / gtAlan, adet };
+}
