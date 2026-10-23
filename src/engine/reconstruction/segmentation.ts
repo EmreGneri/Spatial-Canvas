@@ -76,6 +76,22 @@ const MODEL_INPUT_SIZE = 1024;
 const NORM_MEAN = 128;
 const NORM_STD = 256;
 
+/**
+ * TARAYICI BiRefNet_lite (WebGPU, yalnız fotoğraf). Stok ONNX Chrome'da
+ * çalışmıyordu (Split/Concat > 16 storage buffer; deform-conv GatherND CPU'ya
+ * düşüp ~392 MB tamponla bad_alloc — onnxruntime#21968). Bu dosya aynı
+ * ağırlıkların graf düzeltilmiş hali (`jiabins0303/birefnet-lite-1024-webgpu`,
+ * MIT; DIS5K eğitim verisi uyarısı THIRD_PARTY_NOTICES'te). Girdi
+ * `input_image` [1,3,1024,1024] (birefnetGirdisi ile aynı ön işleme), çıktı
+ * `output_image` LOGIT → sigmoid. Ölçüm: docs/benchmarks/maske-olcumu.md.
+ * Kapatmak için false: fotoğraf yolu eskisi gibi yardımcı → IS-Net olur.
+ */
+export const TARAYICI_BIREFNET = true;
+const BIREFNET_PATH = '/models/jiabins0303/birefnet-lite-1024-webgpu/onnx/model_fp16.onnx';
+/** Bu oranlar dışında maske "model pes etti" sayılır (ui/maskeKarari.ts üst ucu ile aynı). */
+const BIREFNET_MIN_ORAN = 0.001;
+const BIREFNET_MAX_ORAN = 0.92;
+
 export type SegmentationResult = {
   /** 0..1 ön plan olasılığı (maske, kadraj bandı kırpılmış). */
   mask: Float32Array;
@@ -116,15 +132,71 @@ export async function loadSegmentationModel(device: 'wasm' | 'webgpu' = 'webgpu'
   return segSession;
 }
 
+let birefnetSession: ort.InferenceSession | null = null;
+let yukleBirefnet: (() => Promise<ort.InferenceSession>) | null = null;
+/** İlk hatadan sonra oturum boyunca kapalı: 115 MB her fotoğrafta yeniden inmesin, OOM tekrarlanmasın. */
+let birefnetKapali = false;
+
+/** BiRefNet logit → 0..1 olasılık; boş / tüm kare / NaN ise null (o kare IS-Net'e düşer). */
+export function birefnetOlasilik(logit: Float32Array): Float32Array | null {
+  const p = new Float32Array(logit.length);
+  let fg = 0;
+  for (let i = 0; i < logit.length; i++) {
+    const v = 1 / (1 + Math.exp(-logit[i]));
+    if (!(v >= 0)) return null; // NaN
+    p[i] = v;
+    if (v >= 0.5) fg++;
+  }
+  const oran = fg / p.length;
+  return oran >= BIREFNET_MIN_ORAN && oran <= BIREFNET_MAX_ORAN ? p : null;
+}
+
+/**
+ * Tarayıcı BiRefNet: [1,1,1024,1024] olasılık ya da null. ASLA fırlatmaz —
+ * WebGPU yokluğu, kurulum/shader hatası, OOM, beklenmeyen şekil loglanır ve
+ * oturum boyunca kapatır; çağıran IS-Net'e düşer. Kurulum ve çıkarım IS-Net
+ * ile aynı GPU sırasından AYRI turlar olarak geçer (kuyruk yeniden girişli değil).
+ */
+export async function tarayiciBirefnet(girdi: { data: Float32Array; dims: number[] }): Promise<Float32Array | null> {
+  if (!TARAYICI_BIREFNET || birefnetKapali) return null;
+  if (typeof navigator === 'undefined' || !('gpu' in navigator)) return null;
+  try {
+    // Yalnız WebGPU: wasm'a düşmek dakikalar sürer ve 32-bit yığında bad_alloc verir.
+    yukleBirefnet ??= onceRetry(async () => {
+      const bayt = await ilerlemeliGetir(BIREFNET_PATH, 'BiRefNet nesne ayırma modeli');
+      return gpuSirasinaGir(() => ort.InferenceSession.create(bayt, { executionProviders: ['webgpu'] }));
+    });
+    birefnetSession ??= await yukleBirefnet();
+    const session = birefnetSession;
+    const r = await gpuSirasinaGir(() =>
+      session.run({ input_image: new ort.Tensor('float32', girdi.data, girdi.dims) }),
+    );
+    const out = r.output_image;
+    if (out.dims.join('x') !== `1x1x${MODEL_INPUT_SIZE}x${MODEL_INPUT_SIZE}`) {
+      throw new Error(`BiRefNet çıktısı beklenmeyen şekil: ${out.dims.join('x')}`);
+    }
+    const p = birefnetOlasilik(out.data as Float32Array);
+    if (!p) console.warn('[seg] tarayıcı BiRefNet maskesi makul değil (boş/tüm kare); bu kare IS-Net ile');
+    return p;
+  } catch (e) {
+    birefnetKapali = true;
+    console.warn(`[seg] tarayıcı BiRefNet kullanılamıyor, IS-Net'e düşüldü: ${e instanceof Error ? e.message : String(e)}`);
+    void birefnetSession?.release().catch(() => {});
+    birefnetSession = null;
+    return null;
+  }
+}
+
 /**
  * Kaynak görüntüden nesne/arka plan maskesi üretir. Letterbox + kırpım depth
  * yoluyla aynı geometridedir (modelin gördüğü kare alanın iç kısmı), böylece
  * maske depth haritasıyla hizalanır. Çıktı maskesi kırpılmış rect boyutundadır.
  *
  * `kaynak: 'foto'` ve yerel yardımcı (sidecar/server.py) açıksa maske orada
- * BiRefNet_lite ile üretilir (zor kadrajlarda belirgin daha iyi; tarayıcı
- * WebGPU'sunda çalışmıyor, bkz. sidecar/server.py). Yardımcı yoksa ya da hata
- * verirse AYNI kare tarayıcıda IS-Net ile işlenir. Video kareleri her zaman IS-Net.
+ * BiRefNet_lite ile üretilir (zor kadrajlarda belirgin daha iyi). Yardımcı yoksa
+ * ya da hata verirse aynı model tarayıcıda WebGPU ile denenir (`tarayiciBirefnet`,
+ * graf düzeltilmiş export); o da olmazsa AYNI kare IS-Net ile işlenir. Video
+ * kareleri her zaman IS-Net (BiRefNet kare başına çok yavaş).
  */
 export async function segmentForeground(
   source: HTMLCanvasElement | HTMLImageElement,
@@ -134,18 +206,25 @@ export async function segmentForeground(
   const lb = letterboxCanvas(source, MODEL_INPUT_SIZE);
   let raw: Float32Array | null = null;
   let model: SegmentationResult['model'] = 'isnet';
-  if (kaynak === 'foto' && (await localInferenceAvailable())) {
-    let yardimci = true;
-    const out = await localInference!.infer('mask', birefnetGirdisi(source), async () => {
-      yardimci = false;
-      return isnetCikti(lb, device);
-    });
-    if (yardimci) model = 'birefnet';
-    raw = yardimci
+  if (kaynak === 'foto') {
+    // Sıra: yardımcı BiRefNet → tarayıcı BiRefNet (WebGPU) → IS-Net.
+    const girdi = birefnetGirdisi(source);
+    let olasilik: Float32Array | null = null;
+    if (await localInferenceAvailable()) {
+      let yardimci = true;
+      const out = await localInference!.infer('mask', girdi, async () => {
+        yardimci = false;
+        return { data: new Float32Array(0), dims: [] };
+      });
+      if (yardimci) olasilik = out.data;
+    }
+    olasilik ??= await tarayiciBirefnet(girdi);
+    if (olasilik) {
+      model = 'birefnet';
       // BiRefNet girdisi kareye ESNETİLMİŞ görüntü (ölçüm bu yolla yapıldı);
       // çıktı letterbox iç dikdörtgeniyle aynı boyuta geri esnetilir → sözleşme aynı.
-      ? resampleBilinear(out.data, MODEL_INPUT_SIZE, MODEL_INPUT_SIZE, lb.w, lb.h)
-      : kirp(out.data, lb);
+      raw = resampleBilinear(olasilik, MODEL_INPUT_SIZE, MODEL_INPUT_SIZE, lb.w, lb.h);
+    }
   }
   raw ??= kirp((await isnetCikti(lb, device)).data, lb);
   // TUR 10: sert kesim yerine dilate + feather — yüz/el kenarı delikleri

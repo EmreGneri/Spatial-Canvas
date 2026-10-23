@@ -88,6 +88,8 @@ const readJson = (path) => JSON.parse(readFileSync(path, 'utf8'));
     'Apache-2.0',
     'Xenova/yolos-tiny',
     'imgly/isnet-general-onnx',
+    'jiabins0303/birefnet-lite-1024-webgpu',
+    'DIS5K',
     'MediaPipe Face Landmarker (face_landmarker.task)',
     'huggingface.co',
   ]) {

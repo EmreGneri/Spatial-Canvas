@@ -317,6 +317,19 @@ imgly/isnet-general-onnx
   License: MIT (verified via Hugging Face model card metadata, 2026-09-24)
   Source: https://huggingface.co/imgly/isnet-general-onnx
 
+jiabins0303/birefnet-lite-1024-webgpu (onnx/model_fp16.onnx)
+  License: MIT (Hugging Face model card metadata + "Licensing" section, verified
+  2026-10-23; the repo has no separate LICENSE file). Graph-patched ONNX export of
+  ZhengPeng7/BiRefNet_lite (MIT; model by Peng Zheng et al.), derived from
+  onnx-community/BiRefNet_lite-ONNX; weights unchanged.
+  Source: https://huggingface.co/jiabins0303/birefnet-lite-1024-webgpu
+  Revision: 1ad01cef0f4101a285c5a3e0bd7f15597d93403f
+  Base model: https://github.com/ZhengPeng7/BiRefNet
+  Training-data caveat (stated on the model card): BiRefNet_lite was trained on
+  datasets including DIS5K, whose own terms restrict commercial use of the
+  dataset. The MIT grant covers the weights; it is not a warranty about the
+  training data.
+
 MediaPipe Face Landmarker (face_landmarker.task)
   License: Apache-2.0 (model cards "Model Card MediaPipe Face Mesh V2" and
   "BlazeFace short range", both "LICENSED UNDER Apache License, Version 2.0").

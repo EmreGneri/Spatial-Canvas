@@ -3,6 +3,7 @@
 // tutarlı delik doldurma (B, A'dan YALNIZ doldurulan piksellerle ayrılır), C = BiRefNet
 // (yardımcı). Çıktı: `window.__maske = { rapor, pngler }`, hata: `window.__maskeHata`.
 
+import * as ortw from 'onnxruntime-web/webgpu';
 import { segmentForeground } from '../engine/reconstruction/segmentation.ts';
 import { estimateDepth } from '../depth.ts';
 import { resampleBilinear } from '../engine/reconstruction/silhouette.ts';
@@ -25,6 +26,9 @@ interface KareSonucu {
 
 const log = (s: string) => console.log(`[maske] ${s}`);
 const ort = (a: number[]) => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : NaN);
+const medyan = (a: number[]) => { const s = [...a].sort((x, y) => x - y); return s.length ? s[s.length >> 1] : NaN; };
+/** Isınma (indirme + derleme + ilk çalıştırma) ayrı: ilk çağrı ve sonrakilerin medyanı. */
+const sureOzet = (a: number[]) => ({ ilk: a[0] ?? NaN, medyan: medyan(a.slice(1)), ort: ort(a.slice(1)) });
 
 function yukle(url: string): Promise<HTMLImageElement> {
   return new Promise((res, rej) => {
@@ -135,7 +139,9 @@ export async function maskeCalistir(man: MaskeManifesti) {
 
         const bins: Partial<Record<Yontem, Uint8Array>> = { A, B };
         if (man.yardimci) {
+          const tc = performance.now();
           const c = await segmentForeground(im, 'webgpu', 'foto');
+          sure.yardimci.push(performance.now() - tc);
           cModel = c.model;
           if (c.model === 'birefnet') bins.C = yukariOrnekle(c.mask, c.width, c.height, W, H);
           else cKullanilamayan++;
@@ -228,6 +234,8 @@ export async function maskeCalistir(man: MaskeManifesti) {
       kesinlik: dolgu.px ? dolgu.dogru / dolgu.px : null, dolguluKareSayisi: dolgu.kareSayisi, toplamKare: dolgu.kare,
     },
     sureMs: { seg: ort(sure.seg), derinlik: ort(sure.derinlik), doldur: ort(sure.doldur) },
+    gecikmeMs: { A: sureOzet(sure.seg), C: man.yardimci ? sureOzet(sure.yardimci) : null },
+    adapter: await adapterBilgisi(),
     diziler: dizilerRapor,
     hataSayisi: hatalar.length,
     hatalar,
@@ -235,6 +243,13 @@ export async function maskeCalistir(man: MaskeManifesti) {
   const pngler: Record<string, string> = {};
   for (const p of pngAdaylari) pngler[p.ad] = p.url;
   return { rapor, pngler };
+}
+
+/** ORT'nin kullandığı WebGPU adapter'ı (hibrit dizüstünde iGPU olabilir). */
+async function adapterBilgisi() {
+  const oku = (a: GPUAdapter | undefined | null) => (a?.info ? { vendor: a.info.vendor, architecture: a.info.architecture, description: a.info.description } : null);
+  const ortA = (ortw.env.webgpu as { adapter?: GPUAdapter }).adapter;
+  return { ort: oku(ortA), varsayilan: oku(await navigator.gpu?.requestAdapter()) };
 }
 
 /** Sayfa girişi: node `__maskeBaslat(manifest)` çağırır, `__maske`/`__maskeHata` bayraklarını bekler. */
