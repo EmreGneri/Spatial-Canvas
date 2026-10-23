@@ -24,9 +24,9 @@ import { kamerayiDonustur, simUygula, umeyama, type Sim3 } from '../engine/recon
 import { cekimTuru, flySiniri, type CekimTuru } from '../ui/egitimControls.ts';
 import { ciz } from './sentetikCizim.ts';
 import { engelUzakligi, gtDerinlik } from './sentetikSahne.ts';
-import { vokselDurumuAt } from '../engine/reconstruction/bosAlan.ts';
+import { erisilebilirAlan, vokselDurumuAt } from '../engine/reconstruction/bosAlan.ts';
 import { tekGozBenzetimi } from './tekGozBenzetimi.ts';
-import { bosAlanSiniri, flyStep } from '../ui/egitimControls.ts';
+import { bosAlanSiniri, flyStep, type BosAlanSiniri } from '../ui/egitimControls.ts';
 import type { GezinmeDerinlikKaynagi } from '../engine/reconstruction/gezinmeDerinligi.ts';
 import { depthDevice } from '../depth.ts';
 
@@ -72,8 +72,21 @@ export interface GezinmeRaporu {
   bosAlan?: { hizaliKare: number; voksel: number; boyut: [number, number, number]; kullanilabilir: Record<Bolge, Record<Yon, number>>;
     guven?: Egitim['gezinmeGuveni'];
     gtBosOrnek?: number; gtEngelIhlali?: number;
-    gtErisilirOrnek?: number; gtErisilirIhlal?: number };
+    gtErisilirOrnek?: number; gtErisilirIhlal?: number;
+    /** Camera-seeded reachable free space (`erisilebilirAlan`, same radius as
+     *  `gtErisilir*`): voxel counts, volume / birim^3, distances with the
+     *  reachable constraint, and GT violations on the same 1-in-17 sampling. */
+    erisilebilir?: { aciklikVoksel: number; erisilebilirVoksel: number; hacim: number; aciklikHacim: number;
+      kullanilabilir: Record<Bolge, Record<Yon, number>>; gtOrnek?: number; gtIhlal?: number } };
+  /** Floater pruning (`--yuzen`): paired before/after on the SAME trained
+   *  model. `once` = before any pruning; each `tarama` entry is measured after
+   *  pruning with that ratio (undone before the next); the last ratio stays
+   *  applied for the rest of this report (`ayrilan`, `sondalar`). */
+  yuzen?: { once: YuzenOlcumu; tarama: (YuzenOlcumu & { oran: number; voksel: number; boyut: [number, number, number];
+    dolu: number; canli: number; kapsanan: number; budanan: number; ms: number })[] };
 }
+
+export interface YuzenOlcumu { ayrilanPsnr: number; ayrilanSsim: number; sondaPsnr?: number; sondaSsim?: number; sondaKaplama: number }
 
 type RefineMark = { kind: string; iter: number; moved: number; grown: number; ms: number };
 export interface EgitimOlcumRaporu {
@@ -142,6 +155,7 @@ interface Parametreler {
   geometri?: 'model' | 'model-da3' | 'sentetik';
   depthWeight?: number;
   bolgesel: boolean;
+  yuzen?: number[];
 }
 
 type AyrilanKare = { source: Blob; name: string; t: number };
@@ -216,7 +230,15 @@ export function parametreleriOku(arama: string): Parametreler {
     odakAlt: tamsayi(q.get('odak-alt'), 'odak-alt'), geometri,
     depthWeight: depthWeight != null ? Number(depthWeight) : undefined,
     bolgesel: q.has('bolgesel'),
+    yuzen: yuzenOranlari(q.get('yuzen')),
   };
+}
+
+function yuzenOranlari(v: string | null): number[] | undefined {
+  if (v == null || v === '') return undefined;
+  const oranlar = v.split(',').map(Number);
+  if (!oranlar.every((x) => x > 0 && Number.isFinite(x))) throw new Error(`yuzen must be positive ratios: ${v}`);
+  return oranlar;
 }
 
 function olayBekle(el: EventTarget, ad: string, ms = 60_000): Promise<void> {
@@ -527,7 +549,9 @@ async function olc(p: Parametreler): Promise<{ rapor: GezinmeRaporu | SfmRaporu;
     const bugunku = tabloYap((b, y) => bugunkuSinir(tabanKamera(pozlar, yukari, tur, BOLGELER[b]), y, sinir, yukari, birim));
     const hizalama = gt ? gtHizala(e.kayitliKameralar(), gt) : null;
     const bos = e.bosAlan ? bosAlanSiniri(e.bosAlan, birim, 0.04) : null;
-    const bosMesafe = bos ? tabloYap((b, y) => {
+    const bosErisim = e.bosAlan && bos
+      ? { ...bos, erisilebilir: erisilebilirAlan(e.bosAlan, e.kameralar, bos.yaricap, bos.aciklik) } : null;
+    const mesafeTablosu = (bos: BosAlanSiniri) => tabloYap((b, y) => {
       const camera = tabanKamera(pozlar, yukari, tur, BOLGELER[b]);
       const direction = y === 'sag' ? { forward: 0, right: 1, vertical: 0 }
         : y === 'sol' ? { forward: 0, right: -1, vertical: 0 }
@@ -536,10 +560,19 @@ async function olc(p: Parametreler): Promise<{ rapor: GezinmeRaporu | SfmRaporu;
       const target = flyStep(camera, direction, birim * 0.3, sinir, yukari, bos);
       const a = kameraMerkezi(camera), c = kameraMerkezi(target);
       return Math.hypot(c[0] - a[0], c[1] - a[1], c[2] - a[2]) / birim;
-    }) : null;
+    });
+    const bosMesafe = bos ? mesafeTablosu(bos) : null;
+    const erisimMesafe = bosErisim ? mesafeTablosu(bosErisim) : null;
     gunluk(`olcum: tur ${tur}, birim ${birim.toFixed(4)}, ${sondalar.length} sonda`);
 
-    let gtBosOrnek = 0, gtEngelIhlali = 0, gtErisilirOrnek = 0, gtErisilirIhlal = 0;
+    let gtBosOrnek = 0, gtEngelIhlali = 0, gtErisilirOrnek = 0, gtErisilirIhlal = 0, gtBagliOrnek = 0, gtBagliIhlal = 0;
+    let aciklikVoksel = 0, erisilebilirVoksel = 0;
+    if (bosErisim) {
+      for (let i = 0; i < bosErisim.erisilebilir.length; i++) {
+        if (bosErisim.erisilebilir[i]) erisilebilirVoksel++;
+        if (bosErisim.aciklik[i] >= bosErisim.yaricap && vokselDurumuAt(bosErisim.alan, i) === 'bos') aciklikVoksel++;
+      }
+    }
     if (gt && hizalama && e.bosAlan) {
       const alan = e.bosAlan;
       const [nx, ny, nz] = alan.boyut;
@@ -555,6 +588,10 @@ async function olc(p: Parametreler): Promise<{ rapor: GezinmeRaporu | SfmRaporu;
           gtErisilirOrnek++;
           if (ihlal) gtErisilirIhlal++;
         }
+        if (bosErisim?.erisilebilir[index]) {
+          gtBagliOrnek++;
+          if (ihlal) gtBagliIhlal++;
+        }
       }
     }
     if (hizalama) {
@@ -564,6 +601,7 @@ async function olc(p: Parametreler): Promise<{ rapor: GezinmeRaporu | SfmRaporu;
     }
 
     const pngler: Record<string, string> = {};
+    const sondaOlc = async (pngYaz: boolean): Promise<SondaSonucu[]> => {
     const sonuclar: SondaSonucu[] = [];
     for (const [i, s] of sondalar.entries()) {
       const siyah = await cizimAl(e, s.kamera);
@@ -574,23 +612,19 @@ async function olc(p: Parametreler): Promise<{ rapor: GezinmeRaporu | SfmRaporu;
         keskinlik: keskinlik(siyah.data, siyah.width, siyah.height),
         iyi: false,
       };
-      pngler[s.id] = pngDataUrl(siyah);
+      if (pngYaz) pngler[s.id] = pngDataUrl(siyah);
       if (gt && hizalama) {
         const gtImg = ciz(gtSondaKamerasi(s.kamera, hizalama.T, gt), gt.tohum);
         r.psnr = psnr(siyah.data, gtImg.data);
         r.ssim = ssim(siyah.data, gtImg.data, siyah.width, siyah.height);
-        pngler[`${s.id}_gt`] = pngDataUrl(gtImg);
+        if (pngYaz) pngler[`${s.id}_gt`] = pngDataUrl(gtImg);
       }
       sonuclar.push(r);
       if (i % 10 === 0) gunluk(`olcum: sonda ${i + 1}/${sondalar.length}`);
     }
-    const merkez = new Map(sonuclar.filter((r) => r.d === 0).map((r) => [r.bolge, r]));
-    for (const r of sonuclar) r.iyi = iyiMi(r, merkez.get(r.bolge)!, Boolean(hizalama));
-    const kullanilabilir = tabloYap((b, y) => kullanilabilirMesafe(
-      sonuclar.filter((r) => r.bolge === b && (r.d === 0 || r.yon === y)).map(({ d, iyi }) => ({ d, iyi })),
-    ));
-
-    gunluk('olcum: ayrılan kareler');
+    return sonuclar;
+    };
+    const ayrilanOlc = async (): Promise<GezinmeRaporu['ayrilan']> => {
     const ayrilan: GezinmeRaporu['ayrilan'] = [];
     for (const { ad, kamera, psnr: p0 } of await e.degerlendir()) {
       const kaynak = ayrilanKareler.find((k) => k.name === ad);
@@ -604,6 +638,43 @@ async function olc(p: Parametreler): Promise<{ rapor: GezinmeRaporu | SfmRaporu;
       ayrilan.push({ ad, psnr: p0, ssim: ssim(tahmin.data, gercek.data, kamera.w, kamera.h) });
     }
     ayrilan.sort((a, b) => a.ad.localeCompare(b.ad));
+    return ayrilan;
+    };
+    const ort = (xs: (number | undefined)[]) => {
+      const v = xs.filter((x): x is number => x != null && Number.isFinite(x));
+      return v.length ? v.reduce((a, b) => a + b, 0) / v.length : NaN;
+    };
+    const yuzenOlcumu = (a: GezinmeRaporu['ayrilan'], so: SondaSonucu[]): YuzenOlcumu => ({
+      ayrilanPsnr: ort(a.map((x) => x.psnr)), ayrilanSsim: ort(a.map((x) => x.ssim)),
+      ...(gt && hizalama ? { sondaPsnr: ort(so.map((x) => x.psnr)), sondaSsim: ort(so.map((x) => x.ssim)) } : {}),
+      sondaKaplama: ort(so.map((x) => x.kaplama)),
+    });
+    let yuzen: GezinmeRaporu['yuzen'];
+    if (p.yuzen?.length) {
+      gunluk('olcum: yüzen temizleme öncesi');
+      const once = yuzenOlcumu(await ayrilanOlc(), await sondaOlc(false));
+      const tarama: NonNullable<GezinmeRaporu['yuzen']>['tarama'] = [];
+      for (const [k, oran] of p.yuzen.entries()) {
+        const t = performance.now();
+        const { sonuc, geri } = await e.yuzenleriTemizle(oran);
+        const ms = performance.now() - t;
+        gunluk(`olcum: yüzen oran ${oran}: ${sonuc.indeksler.length}/${sonuc.canli} silindi, voksel ${sonuc.voksel.toFixed(4)}, ${Math.round(ms)} ms`);
+        tarama.push({ oran, voksel: sonuc.voksel, boyut: sonuc.boyut, dolu: sonuc.dolu, canli: sonuc.canli,
+          kapsanan: sonuc.kapsanan, budanan: sonuc.indeksler.length, ms,
+          ...yuzenOlcumu(await ayrilanOlc(), await sondaOlc(false)) });
+        if (k < p.yuzen.length - 1) await geri?.geriAl();
+      }
+      yuzen = { once, tarama };
+    }
+    const sonuclar = await sondaOlc(true);
+    const merkez = new Map(sonuclar.filter((r) => r.d === 0).map((r) => [r.bolge, r]));
+    for (const r of sonuclar) r.iyi = iyiMi(r, merkez.get(r.bolge)!, Boolean(hizalama));
+    const kullanilabilir = tabloYap((b, y) => kullanilabilirMesafe(
+      sonuclar.filter((r) => r.bolge === b && (r.d === 0 || r.yon === y)).map(({ d, iyi }) => ({ d, iyi })),
+    ));
+
+    gunluk('olcum: ayrılan kareler');
+    const ayrilan = await ayrilanOlc();
 
     const kayitli = e.kayitliKameralar();
     const decode = [...cizelge].reverse().find((z) => /^decode \d+\/\d+/.test(z.asama));
@@ -635,7 +706,14 @@ async function olc(p: Parametreler): Promise<{ rapor: GezinmeRaporu | SfmRaporu;
         hizaliKare: e.derinlikOzeti?.hizaliKare ?? 0, voksel: e.bosAlan.voksel, boyut: e.bosAlan.boyut,
         kullanilabilir: bosMesafe, ...(e.gezinmeGuveni ? { guven: e.gezinmeGuveni } : {}),
         ...(gt ? { gtBosOrnek, gtEngelIhlali, gtErisilirOrnek, gtErisilirIhlal } : {}),
+        ...(erisimMesafe ? { erisilebilir: {
+          aciklikVoksel, erisilebilirVoksel,
+          hacim: erisilebilirVoksel * e.bosAlan.voksel ** 3 / birim ** 3,
+          aciklikHacim: aciklikVoksel * e.bosAlan.voksel ** 3 / birim ** 3,
+          kullanilabilir: erisimMesafe, ...(gt ? { gtOrnek: gtBagliOrnek, gtIhlal: gtBagliIhlal } : {}),
+        } } : {}),
       } } : {}),
+      ...(yuzen ? { yuzen } : {}),
       esikler: { olcut: hizalama ? 'gt' : 'gtsiz', ...ESIKLER },
       ...(hizalama ? { hizalama: hizalama.ozet } : {}),
       zamanCizelgesi: cizelge,
