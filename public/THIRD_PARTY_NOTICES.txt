@@ -351,6 +351,7 @@ Optional Video-Depth-Anything-Small streaming export
   Revision: 256875362cff76724b920335dfb4b29dd611f66e (116440756 bytes).
   Modified: exported encoder/bootstrap/stream ONNX with fixed spatial shape,
   explicit temporal cache, constant positional embedding and fp16 precision.
+  Live video depth experiment, disabled by default (?videoDerinlik=vda enables it).
   Reproduce: scripts/export-video-depth-anything.py; local export not fetched by build.
   Full upstream license: /licenses/video-depth-anything-LICENSE.txt
 
