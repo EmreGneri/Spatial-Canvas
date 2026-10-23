@@ -19,6 +19,10 @@ import {
 import { resampleBilinear } from '../reconstruction/silhouette.ts';
 import { localInference, localInferenceAvailableCanli, type RawTensor } from '../sidecarClient.ts';
 import { isLiveDepthResultStale, stabilizeLiveDepthPair } from './liveDepthFlow.ts';
+import {
+  VDA_INPUT_HEIGHT, VDA_INPUT_WIDTH, vdaDus, vdaHazirla, vdaIsit, vdaIstendi, vdaKare,
+  vdaKullanilsinMi, vdaSifirla,
+} from './videoDepthAnything.ts';
 
 /**
  * CANLI VİDEO DERİNLİĞİ — düz video yükleme yolunun (sürükle-bırak → canlı 3B)
@@ -471,6 +475,9 @@ export function resetLiveDepthState() {
   // yeniden ayrılacaktı, aynı ise tutmanın da zararı yok — ama kaynak
   // kapandığında megabaytları asılı bırakmamak daha temiz.
   lumHavuz = null;
+  // Every reason the 2D filters forget (new clip, seek, loop, cut, mask or
+  // size change) also invalidates VDA's 31-frame hidden-state context.
+  vdaSifirla();
 }
 
 /**
@@ -1271,6 +1278,7 @@ const yukleLiveModel = onceRetry<LiveModel>(async () => {
 
 /** Kare yakalama tuvali — kare başına yeni canvas/context açmak GC üretir. */
 let grabCanvas: HTMLCanvasElement | null = null;
+let vdaCtx: CanvasRenderingContext2D | null = null;
 let grabCtx: CanvasRenderingContext2D | null = null;
 let colorFrameCanvas: HTMLCanvasElement | null = null;
 let colorFrameCtx: CanvasRenderingContext2D | null = null;
@@ -1314,6 +1322,10 @@ export interface LiveDepthResult extends DepthResult {
   colorFrame?: ImageData;
   /** Fraction of pixels whose inter-frame optical flow was trusted. */
   flowCoverage?: number;
+  /** Which network produced this frame (`?videoDerinlik=vda` may fall back to v2). */
+  depthModel: 'vda' | 'v2';
+  /** Raw network disparity before the live filters (benchmarks read it). */
+  modelOutput: DepthResult;
 }
 
 /** Keep shader warmup and live inference from mutating one shared model state concurrently. */
@@ -1351,6 +1363,17 @@ let activeLiveDrivers = 0;
  */
 export async function isitLiveModel(): Promise<void> {
   return liveWarmup.run(async () => {
+    if (typeof location !== 'undefined' && vdaIstendi(location.search)) {
+      try {
+        await vdaHazirla();
+      } catch (err) {
+        vdaDus(err); // load failure: warm V2 below instead
+      }
+      if (vdaKullanilsinMi(VDA_INPUT_WIDTH, VDA_INPUT_HEIGHT)) {
+        if (activeLiveDrivers === 0) await vdaIsit().catch((err) => console.warn('[videoDerinlik] VDA warmup failed', err));
+        return;
+      }
+    }
     await yukleLiveModel();
     // Once a video has started, its first real frame should compile the shader.
     if (activeLiveDrivers > 0) return;
@@ -1388,14 +1411,22 @@ export async function estimateDepthLive(
   const girdi = opts.girdi ?? LIVE_INPUT_SIZE;
   const generation = liveStateGeneration;
   const current = () => generation === liveStateGeneration && (opts.isCurrent?.() ?? true);
-  const model = await yukleLiveModel();
+  const vw = source instanceof HTMLVideoElement ? source.videoWidth : source.width;
+  const vh = source instanceof HTMLVideoElement ? source.videoHeight : source.height;
+  // VDA is video-only (temporal context) and full-frame; canvases keep V2.
+  let vda = source instanceof HTMLVideoElement && vdaKullanilsinMi(vw, vh);
+  if (vda) {
+    try {
+      await vdaHazirla();
+    } catch (err) {
+      vdaDus(err);
+      vda = false;
+    }
+  }
+  let model = vda ? null : await yukleLiveModel();
   if (!current()) throw new Error('Obsolete live frame');
   const started = performance.now();
   const mediaTime = source instanceof HTMLVideoElement ? source.currentTime : 0;
-  if (model.girdi !== girdi) model.setGirdi(girdi);
-
-  const vw = source instanceof HTMLVideoElement ? source.videoWidth : source.width;
-  const vh = source instanceof HTMLVideoElement ? source.videoHeight : source.height;
 
   // Live video uses a full-frame model prediction. Extending a cropped
   // subject prediction across the unseen scene fabricated background depth.
@@ -1439,6 +1470,18 @@ export async function estimateDepthLive(
       colorFrame = colorFrameCtx.getImageData(0, 0, size.w, size.h);
     }
   }
+  // Same synchronous task as the grabs above: VDA sees the same decoded frame.
+  let vdaFrame: ImageData | null = null;
+  if (vda) {
+    if (!vdaCtx) {
+      const c = document.createElement('canvas');
+      c.width = VDA_INPUT_WIDTH;
+      c.height = VDA_INPUT_HEIGHT;
+      vdaCtx = c.getContext('2d', { willReadFrequently: true });
+    }
+    vdaCtx!.drawImage(source, 0, 0, vw, vh, 0, 0, VDA_INPUT_WIDTH, VDA_INPUT_HEIGHT);
+    vdaFrame = vdaCtx!.getImageData(0, 0, VDA_INPUT_WIDTH, VDA_INPUT_HEIGHT);
+  }
 
   // Mikro rölyef luminance'ı — kare zaten çizili, yalnız okuma + dönüşüm.
   let kareLum: Float32Array | null = null;
@@ -1451,16 +1494,31 @@ export async function estimateDepthLive(
     }
   }
 
-  const image = model.fromCanvas(canvas);
-  const inputs = await model.proc(image);
-  // TEK KUYRUK: maske (RMBG) aynı anda koşarsa ORT'nin WebGPU tamponu
-  // geçersizleşiyor ve çıkarım patlıyor (gpuSirasinaGir docstring'i —
-  // gerçek klipte ölçüldü, canlı kol teslim olup vekile dönüyordu).
-  // The model adapter owns browser serialization; a sidecar request must not
-  // hold the browser GPU queue while a separate mask request is in flight.
-  const out = await model.net({ pixel_values: inputs.pixel_values });
+  let predicted: { data: Float32Array; dims: readonly number[] } | null = null;
+  if (vdaFrame) {
+    try {
+      predicted = await vdaKare(vdaFrame, (source as HTMLVideoElement).currentSrc || 'video', mediaTime, vw, vh);
+    } catch (err) {
+      if (!current()) throw new Error('Obsolete live frame');
+      vdaDus(err); // this frame continues on V2 from the canvas grabbed above
+    }
+  }
+  if (!predicted) {
+    model ??= await yukleLiveModel();
+    if (model.girdi !== girdi) model.setGirdi(girdi);
+    const image = model.fromCanvas(canvas);
+    const inputs = await model.proc(image);
+    // TEK KUYRUK: maske (RMBG) aynı anda koşarsa ORT'nin WebGPU tamponu
+    // geçersizleşiyor ve çıkarım patlıyor (gpuSirasinaGir docstring'i —
+    // gerçek klipte ölçüldü, canlı kol teslim olup vekile dönüyordu).
+    // The model adapter owns browser serialization; a sidecar request must not
+    // hold the browser GPU queue while a separate mask request is in flight.
+    const out = await model.net({ pixel_values: inputs.pixel_values });
+    predicted = { data: out.predicted_depth.data as Float32Array, dims: out.predicted_depth.dims };
+  }
   if (!current()) throw new Error('Obsolete live frame');
-  const dims = out.predicted_depth.dims;
+  const depthModel = vdaFrame && !model ? 'vda' : 'v2';
+  const dims = predicted.dims;
   const dh = dims[dims.length - 2];
   const dw = dims[dims.length - 1];
   // Luminance önce derinlik ızgarasına örneklenir — geri gömme İKİSİNİ de aynı
@@ -1471,8 +1529,8 @@ export async function estimateDepthLive(
   // TAM KAREYE GERİ GÖMME — kırpım öznenin dünyadaki yerini değiştirmemeli
   // (`verify-kadraj-degismezligi` canlı yol için de geçerli).
   const gomulu = kutu
-    ? kirpmaIzgarasi(out.predicted_depth.data as Float32Array, dw, dh, kutu)
-    : { data: out.predicted_depth.data as Float32Array, width: dw, height: dh };
+    ? kirpmaIzgarasi(predicted.data, dw, dh, kutu)
+    : { data: predicted.data, width: dw, height: dh };
   const gw = gomulu.width;
   const gh = gomulu.height;
   const lum = kutu && kirpimLum ? kirpmaIzgarasi(kirpimLum, dw, dh, kutu).data : kirpimLum;
@@ -1491,6 +1549,8 @@ export async function estimateDepthLive(
     inferenceMs: performance.now() - started,
     mediaTime,
     colorFrame,
+    depthModel,
+    modelOutput: { data: predicted.data, width: dw, height: dh },
   };
 }
 

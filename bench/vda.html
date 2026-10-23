@@ -1,0 +1,8 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><title>VDA vs V2 live depth</title>
+<body><pre id="status">Ready</pre><script type="module">
+import { runVdaKiyas } from '/src/bench/vdaKiyas.ts';
+window.runVdaKiyas = (ayar) => runVdaKiyas(ayar, message => {
+  document.querySelector('#status').textContent = message;
+});
+</script></body></html>
