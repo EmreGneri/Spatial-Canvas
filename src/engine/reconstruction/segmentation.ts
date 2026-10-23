@@ -52,7 +52,7 @@
 // doğrudur ve webgpu yoktur.
 import * as ort from 'onnxruntime-web/webgpu';
 import { ilerlemeliGetir } from '../../indirmeIlerleme.ts';
-import { dilateAndFeatherMask, keepLargestComponent, resampleBilinear } from './silhouette.ts';
+import { dilateAndFeatherMask, keepMainComponents, resampleBilinear } from './silhouette.ts';
 import { localInference, localInferenceAvailable } from '../sidecarClient.ts';
 import { gpuSirasinaGir, onceRetry } from '../../depth.ts';
 
@@ -152,7 +152,7 @@ export async function segmentForeground(
   // güven marjıyla kapanır; perde koruması (AND eşiği) değişmez.
   // GÜN E (bulgu 12): önce kopuk parçaları düşür (özneye bitişik OLMAYAN model
   // hataları — kapı kasası, zemin), sonra dilate + tüy.
-  const mask = dilateAndFeatherMask(keepLargestComponent(raw, lb.w, lb.h), lb.w, lb.h);
+  const mask = dilateAndFeatherMask(keepMainComponents(raw, lb.w, lb.h), lb.w, lb.h);
   return { mask, width: lb.w, height: lb.h, model };
 }
 
