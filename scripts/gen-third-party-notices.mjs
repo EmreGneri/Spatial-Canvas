@@ -144,5 +144,19 @@ lines.push('  "BlazeFace short range", both "LICENSED UNDER Apache License, Vers
 lines.push('  Source: https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task');
 lines.push('');
 
+lines.push('='.repeat(80));
+lines.push('4. BUNDLED FONTS (served from /fonts)');
+lines.push('='.repeat(80));
+lines.push('');
+lines.push('IBM Plex Sans + IBM Plex Mono (woff2, latin + latin-ext subsets)');
+lines.push('  License: SIL Open Font License 1.1');
+lines.push('  Source: https://github.com/IBM/plex');
+lines.push('  Subsetted woff2 builds fetched from Google Fonts; glyph data unmodified.');
+lines.push('  The OFL requires the license to travel with the font, so the full text');
+lines.push('  also ships verbatim at /fonts/OFL.txt.');
+lines.push('');
+lines.push(readFileSync('public/fonts/OFL.txt', 'utf8').trim().split(/\r?\n/).map((l) => `  ${l}`).join('\n'));
+lines.push('');
+
 writeFileSync('public/THIRD_PARTY_NOTICES.txt', lines.join('\n'));
 console.log(`wrote public/THIRD_PARTY_NOTICES.txt (${packages.length} npm packages)`);
