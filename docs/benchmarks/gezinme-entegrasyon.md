@@ -95,3 +95,51 @@ kötüleşiyor. Varsayılan V2'de kaldı. DA3 yalnız ölçüm bayrağıyla aç�
 `--geometri model-da3 --yardimci` (yardımcı sunucu çalışıyor olmalı). Fotoğraf
 yolundaki 1/(d+0,5·medyan) kayması SfM'in `1/z = a·d + b` uydurmasını bozacağı için
 bu yol saf 1/d kullanır (`da3Kayma: 0`); bu da sonucu değiştirmedi.
+
+## Otomatik yüzen temizleme ve erişilebilir boş alan (2026-10-23)
+
+İki ek, PlayCanvas splat-transform'dan (MIT) uyarlandı:
+
+- `yuzenTemizleme.ts` — `filterFloaters` mantığı CPU'da: voksel yoğunluğu
+  (Beer–Lambert, opaklık ≥ 0,1 → dolu), hiçbir dolu voksel merkezine ≥ 1/255
+  katkı vermeyen splat silinir. Sahne metrik olmadığı için voksel = oran × D
+  (D = kameradan SfM noktalarına medyan uzaklık); yalnız kamera AABB'si ± D
+  içindeki splat'lar değerlendirilir. `Egitim.yuzenleriTemizle()` tek
+  `temizle` + geri alma jetonu; `egitimBaslat(…, { yuzenTemizle })` eğitim
+  bitince çalıştırır. **Varsayılan kapalı.**
+- `erisilebilirAlan` (bosAlan.ts) — eğitim kameralarından 6-komşulu doldurma;
+  yalnız `bos` ve açıklığı ≥ yarıçap olan vokseller. `bosAlanSiniri(…, tohumlar)`
+  maskeyi kurar, `serbestAdim` ek kısıt olarak uygular; arayüz güven kapısını
+  (`serbestGezinmeUygun`) korur, üstüne başlangıç kamerasının erişilebilir
+  olmasını ister. Çarpışma garantisi değildir.
+
+Ölçüm: `--katman quick --kare 24 --iter 3000 --geometri model --trainer-seed 7
+--yuzen 0.06,0.03,0.015,0.01 --chrome`, RTX 5070 Laptop (Chrome'un gördüğü GPU
+"nvidia / blackwell"). Önce/sonra AYNI eğitilmiş modelde ölçülür (her oran
+sonrası geri alınır), yani eğitim gürültüsü farka girmez. Aynı tohumla iki ayrı
+koşunun ayrılan kare PSNR'ı 0,045 dB farklıydı.
+
+| Klip | Oran | Voksel / D | Silinen / canlı | Ayrılan PSNR Δ | GT sonda PSNR Δ | Süre |
+|---|---:|---:|---:|---:|---:|---:|
+| sentetik | 0,06 | 0,06 | 13 / 72 683 | −0,002 dB | −0,004 dB | 92 ms |
+| sentetik | 0,03 | 0,03 | 43 / 72 683 | −0,006 dB | −0,007 dB | 101 ms |
+| sentetik | 0,015 | 0,015 | 128 / 72 683 | −0,001 dB | −0,010 dB | 660 ms |
+| forest-3679072 | 0,015 | 0,015 | 23 / 51 142 | +0,000 dB | – | 1,3 sn |
+
+Ayrılan SSIM ve sonda kaplaması dört basamakta değişmedi. Sonuç: bu kliplerde
+temizlenecek yüzen neredeyse yok; silme gürültü içinde ve GT sondalarda hafif
+negatif. Kabul kapısı (Gaussian sayısı belirgin düşsün, PSNR kötüleşmesin)
+karşılanmadı; varsayılan kapalı kaldı. 600k splat'ta CPU süresi ~4 sn (ana
+iş parçacığı) — açılırsa worker'a taşınmalı.
+
+Erişilebilir alan (sentetik, V2 derinlik, yarıçap 0,04·yol): açıklık kümesi
+51 239 → erişilebilir 50 312 voksel (−%1,8; hacim/birim³ 0,0703 → 0,0690).
+Örneklenen GT ihlali 14/3008 → 14/2951: kalan ihlaller kameralara bağlı
+bölgede, maske yeni ihlal eklemiyor ama mevcutları da gidermiyor. Orta bölge
+yan mesafe 0,149 → 0,147 yol. Gerçek orman klibinde −%0,9. İki klipte de güven
+kapısı kapalı (en kötü hizalama artığı yüksek), yani arayüzde serbest gezinme
+zaten açılmazdı.
+
+```powershell
+node scripts/olc-gezinme.mjs assets/test-clips/sentetik-orman-yolu.webm --gt assets/test-clips/sentetik-orman-yolu.gt.json --etiket yuzen-b --katman quick --kare 24 --iter 3000 --geometri model --trainer-seed 7 --yuzen 0.06,0.03,0.015,0.01 --chrome
+```

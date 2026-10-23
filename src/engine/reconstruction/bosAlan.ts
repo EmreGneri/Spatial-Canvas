@@ -593,6 +593,63 @@ export function aciklikAt(alan: BosAlan, p: Vec3, izgara?: Float32Array): number
   return disari2 > 0 ? Math.min(deger, 0) - Math.sqrt(disari2) : deger;
 }
 
+// ── erişilebilir boş alan ───────────────────────────────────────────────
+
+/**
+ * Kamera tohumlu erişilebilir boş alan (PlayCanvas splat-transform walk/
+ * collision akışından uyarlama — flood-fill.ts, carve.ts; MIT, Copyright (c)
+ * 2011-2026 PlayCanvas Ltd. — orada yoğunluktan "katı" ızgara mühürlenip
+ * ayakta durulabilir bir tohumdan doldurulur; burada katı yerine çoklu-kare
+ * gözlenmiş boşluk kullanılır).
+ *
+ * Eğitim kameraları tanım gereği boşluktadır. Her tohumun vokselinden
+ * 6-komşulu BFS: yalnız `'bos'` ve voksel-merkezi açıklığı ≥ `yaricap` olan
+ * (bilinmeyen/dolu en yakın voksele en az `yaricap` uzak — bu, yalnız dolu
+ * voksele uzaklıktan daha sıkıdır) vokseller işaretlenir. Tohum vokseli bu
+ * testi geçmese de komşularına açılır (kamera oradaydı), ama kendisi
+ * işaretlenmez. Izgara dışı tohumlar yok sayılır. Kameralardan bağlantısız
+ * "boş kabarcıklar" (çoğu tek-göz derinliğinin zemin altına/engel arkasına
+ * oyduğu sahte boşluk) böylece elenir. ÇARPIŞMA GARANTİSİ DEĞİLDİR: girdi
+ * ızgarası ince/görülmeyen engelleri kaçırabilir.
+ */
+export function erisilebilirAlan(
+  alan: BosAlan, tohumlar: readonly Vec3[], yaricap: number, aciklikIzgarasi?: Float32Array,
+): Uint8Array {
+  const [nx, ny, nz] = alan.boyut;
+  const n = nx * ny * nz, katman = nx * ny;
+  const ac = aciklikIzgarasi ?? aciklik(alan);
+  const izinli = (i: number) => ac[i] >= yaricap && vokselDurumuAt(alan, i) === 'bos';
+  const sonuc = new Uint8Array(n);
+  const gorulen = new Uint8Array(n);
+  const kuyruk = new Int32Array(n);
+  let bas = 0, son = 0;
+  for (const t of tohumlar) {
+    const i = vokselIndeksi(alan, t);
+    if (i < 0 || gorulen[i]) continue;
+    gorulen[i] = 1;
+    if (izinli(i)) sonuc[i] = 1;
+    kuyruk[son++] = i;
+  }
+  while (bas < son) {
+    const i = kuyruk[bas++];
+    const iz = Math.floor(i / katman), r = i - iz * katman, iy = Math.floor(r / nx), ix = r - iy * nx;
+    const dene = (j: number) => {
+      if (gorulen[j]) return;
+      gorulen[j] = 1;
+      if (!izinli(j)) return;
+      sonuc[j] = 1;
+      kuyruk[son++] = j;
+    };
+    if (ix > 0) dene(i - 1);
+    if (ix < nx - 1) dene(i + 1);
+    if (iy > 0) dene(i - nx);
+    if (iy < ny - 1) dene(i + nx);
+    if (iz > 0) dene(i - katman);
+    if (iz < nz - 1) dene(i + katman);
+  }
+  return sonuc;
+}
+
 // ── zemin ───────────────────────────────────────────────────────────────
 
 /**
@@ -702,19 +759,22 @@ export function zeminBul(
  *   (tek hedef testi ince bir engelin içinden "tünel" açabilirdi); hepsi
  *   izinliyse hedef aynen döner, değilse ilk izinsiz örnek ile önceki
  *   arasında ikili aramayla izin verilen en uzak nokta.
- * - C izinli değilse (bilinmeyende ya da engele fazla yakın): yalnız
- *   açıklığı C'dekinin altına düşürmeyen hareket; izinli kümeye girilince
- *   oradan itibaren normal kural geçerlidir.
+ * - C izinli değilse (bilinmeyende ya da engele fazla yakın): hareket yok.
+ * - `erisilebilir` (bkz. `erisilebilirAlan`) verilirse izinli küme ayrıca o
+ *   maskenin vokselleriyle sınırlanır: kameralardan bağlantısız bir boş
+ *   kabarcıkta başlayan ya da ona giren hareket durur.
  */
 export function serbestAdim(
   alan: BosAlan, aciklikIzgarasi: Float32Array, C: Vec3, hedef: Vec3, yaricap: number,
+  erisilebilir?: Uint8Array,
 ): Vec3 {
   const fark: Vec3 = [hedef[0] - C[0], hedef[1] - C[1], hedef[2] - C[2]];
   const uzunluk = Math.hypot(fark[0], fark[1], fark[2]);
   if (!(uzunluk > 0)) return [hedef[0], hedef[1], hedef[2]];
   const nokta = (s: number): Vec3 => [C[0] + s * fark[0], C[1] + s * fark[1], C[2] + s * fark[2]];
   const acik = (p: Vec3) => aciklikAt(alan, p, aciklikIzgarasi);
-  const izinli = (p: Vec3) => durum(alan, p) === 'bos' && acik(p) >= yaricap;
+  const erisimde = (i: number) => !erisilebilir || (i >= 0 && erisilebilir[i] === 1);
+  const izinli = (p: Vec3) => durum(alan, p) === 'bos' && acik(p) >= yaricap && erisimde(vokselIndeksi(alan, p));
   // Recovery from unknown space by non-decreasing clearance was unsafe:
   // constant clearance allowed arbitrarily long tangential motion. Free-fly
   // is only valid when it starts in observed free space with enough clearance.
@@ -727,7 +787,8 @@ export function serbestAdim(
   const size = alan.boyut;
   const cell = (p: Vec3) => p.map((value, axis) => Math.floor((value - alan.min[axis]) / v));
   const insideAndFree = (c: number[]) => c.every((q, axis) => q >= 0 && q < size[axis])
-    && vokselDurumuAt(alan, c[0] + size[0] * (c[1] + size[1] * c[2])) === 'bos';
+    && vokselDurumuAt(alan, c[0] + size[0] * (c[1] + size[1] * c[2])) === 'bos'
+    && erisimde(c[0] + size[0] * (c[1] + size[1] * c[2]));
   const current = cell(C);
   if (!insideAndFree(current)) return [C[0], C[1], C[2]];
   const step = fark.map((d) => Math.sign(d));
