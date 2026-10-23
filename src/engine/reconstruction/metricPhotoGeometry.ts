@@ -52,11 +52,18 @@ export function createMetricPhotoProjection(
   };
   const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
   // The foreground controls framing; background retains its measured position.
+  // Mask-edge pixels can carry background depth (metres behind the subject); a Tukey
+  // far fence on foreground Z keeps them from shrinking the subject (seen on DAVIS frames).
+  const fg: number[] = [];
+  for (let i = 0; i < w * h; i++) if (valid(i) && alpha[i] >= .5) fg.push(depth[i]);
+  fg.sort((a, b) => a - b);
+  const q1 = fg[Math.floor((fg.length - 1) * .25)] ?? 0, q3 = fg[Math.ceil((fg.length - 1) * .75)] ?? 0;
+  const zLo = q1 - 3 * (q3 - q1), zHi = q3 + 3 * (q3 - q1);
   let count = 0;
   for (let pass = 0; pass < 2 && !count; pass++) {
     for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
       const i = y * w + x;
-      if (!valid(i) || (pass === 0 && alpha[i] < .5)) continue;
+      if (!valid(i) || (pass === 0 && (alpha[i] < .5 || depth[i] < zLo || depth[i] > zHi))) continue;
       const p = point((x + .5) / w, (y + .5) / h, depth[i]);
       for (let a = 0; a < 3; a++) { lo[a] = Math.min(lo[a], p[a]); hi[a] = Math.max(hi[a], p[a]); }
       count++;

@@ -53,6 +53,8 @@ MODEL_FILES = {
     'da3': 'da3mono_large.onnx',
     'mask': 'birefnet_lite_fp16_tree.onnx',
 }
+# İsteğe bağlı (hazirla.py --moge); yoksa /health listelemez, sunucu yine açılır.
+MOGE_FILE = 'moge-2-vitl-normal.onnx'
 
 # Varsayılan izinli origin'ler: yalnız yerel geliştirme (her port — yerelde çalışan
 # başka bir geliştirme sunucusunun sayfası da GPU uç noktalarını kullanabilir; yalnız
@@ -157,9 +159,11 @@ def resize_plane(plane: np.ndarray, w: int, h: int) -> np.ndarray:
 
 
 class Models:
+    moge = None  # İsteğe bağlı büyük model ilk MoGe fotoğrafında kurulur.
+    moge_hata: str | None = None  # Oturum kurulamazsa bir kez yazılır; /health artık 'moge' listelemez.
+
     def __init__(self, model_dir: Path, providers: list[str]):
         self.model_dir = model_dir
-        self.moge = None  # İsteğe bağlı büyük model ilk MoGe fotoğrafında kurulur.
         self.providers = providers
         missing = [f for f in MODEL_FILES.values() if not (model_dir / f).exists()]
         if missing:
@@ -201,13 +205,24 @@ class Models:
         logits = self.mask.run(None, {'input_image': x})[-1]
         return (1 / (1 + np.exp(-logits))).astype(np.float32).reshape(1, 1, MASK_SIZE, MASK_SIZE)
 
+    def available(self) -> list[str]:
+        return list(MODEL_FILES) + (['moge'] if (self.model_dir / MOGE_FILE).exists() and not self.moge_hata else [])
+
     def run_moge(self, x: np.ndarray) -> np.ndarray:
         if x.shape != (1, 3, DA3_SIZE, DA3_SIZE) or not np.isfinite(x).all() or x.min() < 0 or x.max() > 1:
             raise ValueError('MoGe expects RGB [1,3,518,518] in [0,1]')
+        if self.moge_hata:
+            raise RuntimeError(f'MoGe kullanılamıyor: {self.moge_hata}')
         if self.moge is None:
-            prepared = self.model_dir / 'moge-2-vitl-normal-fixed-fp16.onnx'
-            self.moge = session(prepared if prepared.exists() else self.model_dir / 'moge-2-vitl-normal.onnx', self.providers,
-                                {'batch_size': 1, 'height': DA3_SIZE, 'width': DA3_SIZE})
+            # Resmi FP32 grafı: FP16 dönüşümü DirectML'de nokta haritasını %8 (göreli L2),
+            # metrik ölçeği %9 kaydırdı; FP32 DML çıktısı CPU ile 1e-6 içinde (moge-photo.md).
+            try:
+                self.moge = session(self.model_dir / MOGE_FILE, self.providers,
+                                    {'batch_size': 1, 'height': DA3_SIZE, 'width': DA3_SIZE})
+            except Exception as e:
+                self.moge_hata = str(e)[:300] or type(e).__name__
+                print(f'MoGe oturumu kurulamadı, devre dışı: {self.moge_hata}', flush=True)
+                raise
         # ViT-S scale, ViT-L metric_scale yayımlar; sabit aktarım token girdisi istemez.
         scale_name = 'metric_scale' if 'metric_scale' in {v.name for v in self.moge.get_outputs()} else 'scale'
         feeds = {'image': x}
@@ -275,10 +290,7 @@ def make_handler(models: Models, gpu: ThreadPoolExecutor, extra_origins: set[str
             if self.origin_ok() == '':
                 return self.reply(403, b'{"ok":false}')
             if urlparse(self.path).path == '/health':
-                available = list(MODEL_FILES)
-                if (models.model_dir / 'moge-2-vitl-normal.onnx').exists():
-                    available.append('moge')
-                body = json.dumps({'ok': True, 'arkaUc': models.providers[0], 'modeller': available})
+                body = json.dumps({'ok': True, 'arkaUc': models.providers[0], 'modeller': models.available()})
                 return self.reply(200, body.encode())
             self.reply(404, b'{"ok":false}')
 
@@ -312,7 +324,7 @@ def make_handler(models: Models, gpu: ThreadPoolExecutor, extra_origins: set[str
                 model = (parse_qs(url.query).get('model') or [''])[0]
             else:
                 return self.reply(404, b'{"ok":false}')
-            if model not in MODEL_FILES and model != 'moge':
+            if model not in models.available():
                 return self.reply(400, json.dumps({'ok': False, 'hata': f'model yok: {model}'}).encode())
             try:
                 dims = [int(d) for d in self.headers.get('X-Dims', '').split(',')]

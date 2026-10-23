@@ -48,6 +48,10 @@ for(const [u,v] of [[.25,.25],[.75,.75]]){
 const bad=fixture();for(const [i,d] of [NaN,Infinity,-1,0].entries())bad.depth[i]=d;bad.validMask[4]=0;
 const bp=createMetricPhotoProjection(bad,display,mask);
 for(let x=0;x<5;x++){const v=at(bp,(x+.5)/W,.5/H);assert.equal(v[3],0);assert.ok(v.every(Number.isFinite));}
+// Mask-edge pixels with background depth must not shrink the subject framing.
+const flying=fixture();for(let x=0;x<W;x++)flying.depth[x]=20;
+const fp=createMetricPhotoProjection(flying,display,mask);
+assert.ok(fp.scale>.5*p.scale,'flying pixels ignored for framing');
 const grid=sampleMetricPhotoPositions(p,16);assert.equal(grid.length,16*16*4);
 assert.equal(typeof updateMetricPhotoSplatGeometry,'function','metric splats use measured XYZ neighbors');
 const tiltedGrid=sampleMetricPhotoPositions(q,32), splatNormals=new Float32Array(tiltedGrid.length);

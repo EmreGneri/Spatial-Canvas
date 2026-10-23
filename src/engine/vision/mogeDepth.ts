@@ -81,7 +81,8 @@ export async function inferMoge(input: RawTensor): Promise<MogeRawResult | null>
     return null;
   }
   try {
-    if (localInference && await localInferenceAvailable()) {
+    // Ask only when /health lists moge: a failed call disables the whole sidecar (DA3 fallback included).
+    if (localInference && await localInferenceAvailable() && localInference.models.includes('moge')) {
       // SidecarClient invokes this callback after disabling a failed connection;
       // browser execution remains below, keeping GPU queue entry non-recursive.
       const raw = await localInference.infer('moge', input, async () => { throw new Error('MoGe sidecar unavailable'); });

@@ -152,7 +152,7 @@ lines.push('  dataset. The MIT grant covers the weights; it is not a warranty ab
 lines.push('  training data.');
 lines.push('');
 lines.push('Optional MoGe-2 geometry: Ruicheng/moge-2-vits-normal-onnx and moge-2-vitl-normal-onnx');
-lines.push('  Photo experiment, disabled by default (VITE_MOGE2_PHOTO=1 enables it).');
+lines.push('  Photo experiment, disabled by default (?derinlik=moge enables it; VITE_MOGE2_PHOTO=1 fetches the model at build).');
 lines.push('  Upstream MoGe code and checkpoint: MIT; DINOv2 components Apache-2.0.');
 lines.push('  Copyright (c) Microsoft Corporation. Geometry postprocessing adapted in TypeScript.');
 lines.push('  Source: https://github.com/microsoft/MoGe');

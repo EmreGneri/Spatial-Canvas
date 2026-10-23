@@ -74,6 +74,71 @@ depth alignment and raw point Z shift. Report cleanup renamed that saved raw
 quantity to `rawPointShift`; no error/timing values changed. The script now keeps
 the two quantities separate on future runs.
 
+## Enabling (opt-in)
+
+MoGe runs only with the URL flag `?derinlik=moge` (any other value, or none, keeps
+the default chain DA3 sidecar -> browser DA3 -> V2-small; `FOTO_KALITE` is byte
+identical to before). The browser model must be present at
+`public/models/Ruicheng/moge-2-vits-normal-onnx/model.onnx` (`VITE_MOGE2_PHOTO=1
+node scripts/fetch-assets.mjs` downloads it). Every failure logs a warning and
+falls back to the default chain: no WebGPU, session/inference error, invalid
+output shape/NaN/mask, focal outside 0.36..11.4 (half-diagonal units, 140..10
+degree diagonal FOV), calibration residual above 0.02, or fewer than 1% valid
+pixels in the photo crop. With metric geometry the artistic face relief and
+stretch are skipped; on the default path face relief (x1.5) is unchanged.
+
+Default-path evidence (2026-10-24): `fillPositionsFromDepth` with default photo
+options (mask/blend 1, blend 0.8, no mask) and `buildShellMesh` produce SHA-256
+`c25d31d1...` for both 02f500f (pre-checkpoint) and this tree on a fixed
+synthetic bust depth. Engine/App changes are guarded by `metricGeometry`, which
+is `undefined` unless MoGe succeeded.
+
+## ViT-L sidecar (DirectML)
+
+The earlier `bad allocation` while loading the 1.32 GB FP32 graph did not
+reproduce on 2026-10-24 with 8 GB system RAM free; it was most likely memory
+pressure at that moment. Measurements on `assets/thumbnail.jpg`, ORT 1.24.4,
+`scripts/bench-moge-sidecar.py` (DirectML default adapter; physical GPU not
+asserted):
+
+| Graph | Provider | Optimizer | Session | Warm call | Metric scale |
+|---|---|---|---:|---:|---:|
+| Official FP32 | CPU | disabled | 4.0 s | 9.0-23.7 s | 2.39339 (reference) |
+| Official FP32 | DML | disabled | 3.1 s | 3.2 s | 2.39339 |
+| Official FP32 | DML | basic (server setting) | 3.8 s | 1.7 s | 2.39339 |
+| Fixed mixed FP16 | DML | disabled | 1.9 s | 1.3 s | 2.17969 |
+
+FP16 on DML drifts from FP32 CPU: points relative L2 0.083, metric scale 8.9%
+(the same FP16 graph on CPU keeps metric scale within 1e-4 relative), so the server now loads only the
+official FP32 file. Session creation is lazy (first MoGe request); if it fails
+the error is logged once, `/health` stops listing `moge`, and the browser
+client only calls `model=moge` when `/health` lists it, so a MoGe failure
+cannot disable the sidecar's DA3 path. No end-to-end app run of ViT-L was done:
+port 8765 was occupied by another sidecar instance during this session.
+
+## Real-photo qualitative check (no ground truth)
+
+`node scripts/bench-moge-real.mjs --chrome [--sidecar] <photos...>` renders, per
+photo, default vs MoGe rows: depth map, then the engine's own home positions
+(`fillPositionsFromDepth`, face relief x1.5 on the default row, no crop) seen
+orthographically at 0, 45 and 90 degrees. Outputs (gitignored):
+`olcum-out/moge-real/browser/` (default = V2-small) and
+`olcum-out/moge-real/sidecar/` (default = DA3 sidecar; MoGe = browser ViT-S since
+that sidecar had no MoGe). Photos: `assets/thumbnail.jpg` and DAVIS 480p
+`lucia`, `lab-coat`, `dance-twirl` frame 00000.
+
+Observations, visual only: MoGe produces true-perspective geometry: the person
+keeps believable proportions and limbs separate in depth (dancer), the ground
+recedes as a plane, and backgrounds spread out metres behind. The default rows
+are a relief "card" in front of a curved backdrop; silhouettes are cleaner.
+MoGe rows show streaks of mask-edge points flying toward the background at
+every subject boundary, and the bust is very thin in profile. Recovered focal
+1.5-2.2 (about 48-67 degree diagonal FOV) and residual 0.0008-0.0036 on these
+photos, all inside the gates. First implementation framed the scene by the full
+foreground Z range, so those edge pixels shrank the subject to a sliver; framing
+now uses a Tukey far fence on foreground Z (test in
+`verify-metric-photo-geometry`). Still opt-in: no quality gain is established.
+
 ## Upstream references
 
 - [Official ONNX support](https://github.com/microsoft/MoGe/blob/main/docs/onnx.md)

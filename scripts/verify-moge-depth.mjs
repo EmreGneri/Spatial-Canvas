@@ -93,7 +93,7 @@ execFileSync(process.execPath, ['--input-type=module', '-e', `
   const n = 518*518, data = new Float32Array(n*5).fill(1);
   data.fill(2,n*4);
   globalThis.fetch = async url => {
-    if(url.endsWith('/health')) return {ok:true,json:async()=>({ok:true,arkaUc:'DmlExecutionProvider'})};
+    if(url.endsWith('/health')) return {ok:true,json:async()=>({ok:true,arkaUc:'DmlExecutionProvider',modeller:['small','da3','mask','moge']})};
     assert.ok(url.includes('model=moge'));
     return {ok:true,status:200,headers:{get:key=>key==='x-dims'?'1,5,518,518':'1'},arrayBuffer:async()=>data.buffer};
   };
@@ -102,5 +102,23 @@ execFileSync(process.execPath, ['--input-type=module', '-e', `
   assert.equal(result.backend,'sidecar');
   assert.equal(result.metricScale,2);
   assert.equal(result.points.length,n*3);
+`], { cwd: new URL('..', import.meta.url), stdio: 'pipe' });
+// Sidecar without MoGe (file absent or session failed): never POST moge, which
+// would disable the whole sidecar including the DA3 fallback; browser path follows.
+execFileSync(process.execPath, ['--input-type=module', '-e', `
+  import assert from 'node:assert/strict';
+  globalThis.location = { hostname: 'localhost', search: '' };
+  const urls = [];
+  globalThis.fetch = async url => {
+    urls.push(url);
+    if(url.endsWith('/health')) return {ok:true,json:async()=>({ok:true,arkaUc:'DmlExecutionProvider',modeller:['small','da3','mask']})};
+    throw new Error('unexpected request '+url);
+  };
+  console.warn = () => {};
+  const {inferMoge}=await import('./src/engine/vision/mogeDepth.ts');
+  const {localInference}=await import('./src/engine/sidecarClient.ts');
+  assert.equal(await inferMoge({data:new Float32Array(518*518*3),dims:[1,3,518,518]}), null);
+  assert.ok(!urls.some(u => u.includes('model=moge')), 'unlisted moge is not requested');
+  assert.equal(await localInference.available(), true, 'sidecar stays enabled for DA3');
 `], { cwd: new URL('..', import.meta.url), stdio: 'pipe' });
 console.log('verify-moge-depth OK (fake runtime; no GPU inference)');
