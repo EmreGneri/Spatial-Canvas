@@ -24,7 +24,7 @@ import { soganAcilisGerekliMi, sunumAcikMi } from './ui/sunumModu';
 import { serializeRenderState } from './shaders/renderPreset';
 import { maskeKarari } from './ui/maskeKarari';
 import { useDarEkran } from './ui/useDarEkran';
-import { bosluk, cam, dugme as temaDugme, led, MONO, renk, SANS, yaricap, yazi, yuzey } from './ui/tema';
+import { birincilDugme, bosluk, cam, dugme as temaDugme, led, MONO, renk, SANS, yaricap, yazi, yuzey } from './ui/tema';
 import { YetenekUyarisi } from './ui/YetenekUyarisi';
 import { Egitim3D } from './ui/Egitim3D';
 import { EgitimGrafik } from './ui/EgitimGrafik';
@@ -1435,10 +1435,21 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
             run(syntheticImage());
           }}
         >
-          sentetik görsel
+          {sunum ? 'örnek sahne' : 'sentetik görsel'}
         </button>
-        <label style={{ ...toolButton, display: 'inline-flex', gap: 4, alignItems: 'center' }} title="görsel ya da video seç (sürükle-bırak da çalışır)">
-          dosya…
+        {/* İLK HAMLE. Sunumda bu düğme tek DOLGU kontrolüdür: ziyaretçi
+            kendi fotoğrafını yüklemeden hiçbir şey anlam kazanmıyor, ama
+            düğme diğer yirmi kontrolle aynı ağırlıktaydı. */}
+        <label
+          style={{
+            ...(sunum ? birincilDugme() : toolButton),
+            display: 'inline-flex',
+            gap: 4,
+            alignItems: 'center',
+          }}
+          title="görsel ya da video seç (sürükle-bırak da çalışır)"
+        >
+          {sunum ? 'fotoğrafını yükle' : 'dosya…'}
           <input
             type="file"
             accept="image/*,video/*"
@@ -1468,7 +1479,11 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
         >
           video → 3B
         </button>}
-        <button
+        {/* Video yüklenmeden ÇALIŞAMAZ. Sunumda devre dışı göstermek yerine
+            HİÇ çizilmez: ilk ekranda tıklanamayan bir düğme hem kontrol
+            sayısına giriyor hem "neden çalışmıyor" sorusu doğuruyor.
+            Video gelince kendiliğinden belirir — 3. vuruş kaybolmaz. */}
+        {(!sunum || !!videoDosya) && <button
           style={toolButton}
           disabled={busy || !videoDosya || !!egitimDosya || captureRunning}
           onClick={() => {
@@ -1489,7 +1504,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
           }
         >
           3D eğit
-        </button>
+        </button>}
         {/* DURUM OKUMALARI — "nesne ayırma: kapalı" bir FİİL değil, bir
             geliştirici göstergesi. Sunumda mount edilmez. */}
         {!sunum && (
@@ -1658,6 +1673,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
               onReset={() => { say('sıfırlandı: efektler, look ve kamera başlangıç değerlerinde (görsel korundu)'); refreshPanel(); }}
             />
           }
+          ciktiKatlanir={sunum}
           cikti={
             <>
               <ExportBar engine={engine} say={say} />

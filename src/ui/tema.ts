@@ -167,6 +167,26 @@ export function dugme(etkin = false): CSSProperties {
   };
 }
 
+/**
+ * BİRİNCİL EYLEM — ekranda EN FAZLA BİR TANE.
+ *
+ * NEDEN: ilk ekranda 22 birincil kontrol vardı ve hepsi aynı ağırlıktaydı;
+ * ziyaretçi "ne yapacağını bilemedi" (hoca geri bildirimi, 2026-10-23).
+ * Bir arayüzün ilk hamleyi söylemesinin yolu, o hamleyi tek DOLGU yapmak.
+ * İkinci bir dolgu düğme eklenirse ikisi de birincil olmaktan çıkar.
+ *
+ * Metin kehribar üzerinde ölçüldü: 6.6:1.
+ */
+export function birincilDugme(): CSSProperties {
+  return {
+    ...dugme(false),
+    fontWeight: 600,
+    background: renk.vurgu,
+    borderColor: renk.vurgu,
+    color: '#1a1206',
+  };
+}
+
 /** Tek ışık kaynağı: etkin LED. Kontroller ışımaz. */
 export function led(acik: boolean, renkAcik: string = renk.iyi): CSSProperties {
   return {
