@@ -67,6 +67,7 @@ export function ModeSelector({
   mode,
   onChange,
   onReset,
+  sunum = false,
 }: {
   engine: Engine;
   materials: RenderModeMaterials;
@@ -74,6 +75,12 @@ export function ModeSelector({
   onChange: (mode: RenderMode) => void;
   /** Sıfırlama sonrası kabuk (App) log/gösterge tazelemek isterse. */
   onReset?: () => void;
+  /**
+   * Sunum modu: tanı kumandaları mount EDİLMEZ. Şu an yalnız "düz video"
+   * — o düğme tracker HUD'u için var, tracker ise zaten SUNUM_DISI'da;
+   * gizli bir özelliğin kumandası ekranda kalmamalı.
+   */
+  sunum?: boolean;
 }) {
   function select(next: RenderMode) {
     // Aynı moda tekrar tıklamak boşuna takas: Engine giden material'ı dispose
@@ -118,7 +125,7 @@ export function ModeSelector({
         ↺
       </button>
       <LivePhotoControls engine={engine} />
-      <FlatVideoToggle engine={engine} />
+      {!sunum && <FlatVideoToggle engine={engine} />}
     </div>
   );
 }
