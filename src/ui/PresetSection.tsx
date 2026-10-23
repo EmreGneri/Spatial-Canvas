@@ -113,6 +113,13 @@ export function PresetSection({
   const gorunenler = filtre.trim()
     ? tumPresetler.filter((p) => p.name.toLocaleLowerCase('tr').includes(filtre.trim().toLocaleLowerCase('tr')))
     : tumPresetler;
+  /**
+   * Bu kaynak için kapağı olmayan preset sayısı. Üretme düğmesinin YERİ buna
+   * bağlı: kapaklar eksikken eylem listenin ÜSTÜNDE durur, çünkü listenin
+   * kendisi o eylemin yapılmadığının kanıtı. (Ölçüldü: düğme 26 boş
+   * kartın altında, sayfa başından 1609 px aşağıdaydı — kimse bulamıyordu.)
+   */
+  const eksikKapak = tumPresetler.reduce((n, p) => (kapaklar[p.name] ? n : n + 1), 0);
 
   /**
    * Preset uygulanınca kapağı da tazelenir: bir sonraki karede sahne yeni
@@ -203,6 +210,21 @@ export function PresetSection({
 
   return (
     <div style={{ display: 'grid', gap: bosluk.s }}>
+      {sahne && (
+        <button
+          type="button"
+          style={{ ...temaDugme(false), width: '100%' }}
+          disabled={uretiliyor !== null}
+          title="her preset'i sırayla uygulayıp kapağını üretir; sonunda mevcut görünüme geri döner"
+          onClick={hepsiniUret}
+        >
+          {uretiliyor
+            ? `önizleme üretiliyor · ${uretiliyor}`
+            : eksikKapak > 0
+              ? `⟳ ${eksikKapak} kapağı bu sahneden üret`
+              : '⟳ kapakları tazele'}
+        </button>
+      )}
       {/* İnce sütunda tek kolon: 228 px'de iki kapak yan yana sıkışıyordu. */}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: bosluk.s }}>
         {gorunenler.map(({ name, state, hazir }) => {
@@ -256,17 +278,6 @@ export function PresetSection({
         <button type="button" style={{ ...temaDugme(false), flex: 1 }} onClick={copyJson}>
           JSON
         </button>
-        {sahne && (
-          <button
-            type="button"
-            style={{ ...temaDugme(false), width: '100%' }}
-            disabled={uretiliyor !== null}
-            title="her preset'i sırayla uygulayıp kapağını üretir; sonunda mevcut görünüme geri döner"
-            onClick={hepsiniUret}
-          >
-            {uretiliyor ? `önizleme üretiliyor · ${uretiliyor}` : '⟳ önizlemeleri üret'}
-          </button>
-        )}
       </div>
 
       {filtre.trim() && gorunenler.length === 0 && (
