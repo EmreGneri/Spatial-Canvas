@@ -63,8 +63,12 @@ function makulLogit() {
   let creates = 0;
   ort.InferenceSession.create = async () => { creates++; return {}; };
   const { tarayiciBirefnet } = await taze();
+  const oncekiUyari = uyarilar.length;
+  assert.equal(await tarayiciBirefnet(girdi), null);
   assert.equal(await tarayiciBirefnet(girdi), null);
   assert.equal(creates, 0, 'WebGPU yokken oturum kurulmamalı');
+  assert.equal(uyarilar.length, oncekiUyari + 1, 'WebGPU yokluğu oturumda yalnız bir kez loglanmalı');
+  assert.ok(uyarilar.at(-1).includes('WebGPU'), 'geri düşüş nedeni logda görünmeli');
   console.log('[2] WebGPU yok → null, kurulum yok ✓');
 }
 
@@ -87,7 +91,8 @@ function makulLogit() {
   let creates = 0;
   let runs = 0;
   let siradaki = makulLogit();
-  ort.InferenceSession.create = async () => {
+  ort.InferenceSession.create = async (_bayt, secenek) => {
+    assert.deepEqual(secenek.executionProviders, ['webgpu'], 'BiRefNet ağır çıkarımı CPU yedeğine düşmemeli');
     creates++;
     return {
       run: async (feeds) => {
@@ -126,5 +131,23 @@ function makulLogit() {
   assert.equal(released, 1, 'hatalı oturum bırakılmalı (GPU belleği)');
   console.log('[5] beklenmeyen şekil → null, oturum bırakıldı, kapalı ✓');
 }
+
+// [6] kurulum başarılı olsa da çıkarım shader/OOM hatası verebilir.
+for (const mesaj of ['out of memory', 'shader compilation failed']) {
+  gpuVar(true);
+  let runs = 0;
+  let released = 0;
+  ort.InferenceSession.create = async () => ({
+    run: async () => { runs++; throw new Error(mesaj); },
+    release: async () => { released++; },
+  });
+  const { tarayiciBirefnet } = await taze();
+  assert.equal(await tarayiciBirefnet(girdi), null, 'çıkarım hatası fotoğrafı kırmamalı');
+  assert.equal(await tarayiciBirefnet(girdi), null);
+  assert.equal(runs, 1, 'başarısız çıkarım oturumda yeniden denenmemeli');
+  assert.equal(released, 1, 'GPU oturumu bırakılmalı');
+  assert.ok(uyarilar.at(-1).includes(mesaj), 'çıkarım hatasının nedeni loglanmalı');
+}
+console.log('[6] OOM ve shader hatası → null, oturum bırakıldı, kapalı ✓');
 
 console.log(`OK tarayıcı BiRefNet geri düşüş sözleşmesi (${uyarilar.length} beklenen uyarı)`);

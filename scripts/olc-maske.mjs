@@ -2,7 +2,7 @@
 // doldurmayı (`delikleriDoldur`) karşılaştırır; `bench/maske.html`'i Vite + Playwright
 // ile sürer, çıktıyı `olcum-out/<etiket>/maske/` altına yazar.
 //   node scripts/olc-maske.mjs --davis <kök> [--dizi a,b,c] [--adim N=5] [--en-fazla-dizi N]
-//     [--etiket ad] [--chrome] [--yazilim-gpu] [--basli] [--yardimci]
+//     [--etiket ad] [--chrome] [--yazilim-gpu] [--basli] [--yardimci|--birefnet]
 // <kök>: JPEGImages/480p, Annotations/480p, ImageSets/2017/val.txt içeren DAVIS dizini.
 import { appendFile, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
@@ -22,7 +22,7 @@ const DEGERLI = new Set(['--davis', '--dizi', '--adim', '--en-fazla-dizi', '--et
 function kullanim(mesaj) {
   if (mesaj) console.error(`olc-maske: ${mesaj}`);
   console.error('kullanım: node scripts/olc-maske.mjs --davis <kök> [--dizi a,b,c] [--adim N=5] [--en-fazla-dizi N]\n'
-    + '          [--etiket ad] [--chrome] [--yazilim-gpu] [--basli] [--yardimci]');
+    + '          [--etiket ad] [--chrome] [--yazilim-gpu] [--basli] [--yardimci|--birefnet]');
   process.exit(2);
 }
 
@@ -75,7 +75,7 @@ async function manifestKur(kok, secenek) {
 
 function ozetMd(r, etiket) {
   const g = r.global;
-  const yontemler = [['A', 'A: IS-Net'], ['B', 'B: IS-Net + delik doldurma'], ...(r.yardimci ? [['C', `C: BiRefNet ${r.cKaynagi ?? ''} (${r.cModeli ?? '?'})`]] : [])];
+  const yontemler = [['A', 'A: IS-Net'], ['B', 'B: IS-Net + delik doldurma'], ...(r.yardimci ? [['C', `C: BiRefNet ${r.cKaynagi ?? ''}${r.cKullanilamayanKare ? ' + IS-Net yedek' : ''}`]] : [])];
   const jf = (v) => (v ? (v.J + v.F) / 2 : null);
   const gec = (g) => (g ? `ilk ${f1(g.ilk)}, sonra medyan ${f1(g.medyan)} / ort. ${f1(g.ort)}` : '-');
   const ad = (a) => (a ? `${a.vendor} / ${a.architecture}${a.description ? ` (${a.description})` : ''}` : '-');
@@ -87,7 +87,7 @@ function ozetMd(r, etiket) {
   return [
     `# Maske ölçümü: ${etiket}`,
     '',
-    `${r.diziSayisi} dizi, ${r.kareSayisi} kare, hata: ${r.hataSayisi}${r.yardimci ? `, C kullanılamayan kare: ${r.cKullanilamayanKare}` : ''}`,
+    `${r.diziSayisi} dizi, ${r.kareSayisi} kare, hata: ${r.hataSayisi}${r.yardimci ? `, C IS-Net yedek kare: ${r.cKullanilamayanKare}` : ''}`,
     '',
     '| Yöntem | Kare | J | F | J&F (kare ort.) | J&F (dizi ort.) | İç delik/ön plan | Ardışık IoU | Alan dalgalanması |',
     '|---|---|---|---|---|---|---|---|---|',
@@ -104,6 +104,7 @@ function ozetMd(r, etiket) {
     `Süre (ms/kare): segmentasyon ${f1(r.sureMs.seg)}, derinlik ${f1(r.sureMs.derinlik)}, doldurma ${f1(r.sureMs.doldur)}`,
     r.gecikmeMs ? `Gecikme (ms, segmentForeground çağrısı): A ${gec(r.gecikmeMs.A)}${r.gecikmeMs.C ? `; C ${gec(r.gecikmeMs.C)}` : ''}` : '',
     r.adapter ? `WebGPU adapter: ORT ${ad(r.adapter.ort)}; varsayılan requestAdapter ${ad(r.adapter.varsayilan)}` : '',
+    r.adapter?.gercekCihazlar ? `Gerçek requestDevice adapter: ${r.adapter.gercekCihazlar.map(ad).join('; ')}` : '',
     '',
     ...(r.yardimci ? [
       '## Dizi başına J / F / J&F: A (IS-Net) -> C (BiRefNet)',
@@ -162,6 +163,26 @@ async function main() {
     fsAllow: [kok],
   });
   try {
+    // Native ORT EP adapter'ı env.webgpu.adapter'a yazmayabilir. Başarılı
+    // requestDevice çağrısının adapter'ını izle; seçim ve seçenekleri değiştirme.
+    await oturum.page.addInitScript(() => {
+      const gpu = navigator.gpu;
+      if (!gpu) return;
+      const requestAdapter = gpu.requestAdapter.bind(gpu);
+      gpu.requestAdapter = async (...args) => {
+        const adapter = await requestAdapter(...args);
+        if (adapter) {
+          const requestDevice = adapter.requestDevice.bind(adapter);
+          adapter.requestDevice = async (...deviceArgs) => {
+            const device = await requestDevice(...deviceArgs);
+            const { vendor, architecture, description } = adapter.info;
+            (window.__maskeCihazlar ??= []).push({ vendor, architecture, description });
+            return device;
+          };
+        }
+        return adapter;
+      };
+    });
     // İlerleme: dizi değişince hemen, aynı dizide en çok ILERLEME_ARALIGI_MS'de bir.
     let sonDizi = '', sonYazim = 0;
     oturum.page.on('console', (msg) => {
@@ -206,8 +227,9 @@ async function main() {
       const url = await oturum.page.evaluate((k) => window.__maske.pngler[k], ad);
       await writeFile(join(cikis, 'kareler', `${ad}.png`), dataUrlBuffer(url));
     }
-    await writeFile(join(cikis, 'rapor.json'), `${JSON.stringify(rapor, null, 2)}\n`);
+    rapor.adapter.gercekCihazlar = await oturum.page.evaluate(() => window.__maskeCihazlar ?? []);
     rapor.cKaynagi = tarayiciC ? 'tarayıcı WebGPU' : yardimci ? 'yardımcı' : null;
+    await writeFile(join(cikis, 'rapor.json'), `${JSON.stringify(rapor, null, 2)}\n`);
     const md = ozetMd(rapor, etiket);
     await writeFile(join(cikis, 'ozet.md'), `${md}\n`);
     console.log(md);
