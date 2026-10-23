@@ -2,7 +2,7 @@
 // public/, which is gitignored. `npm run build` runs this first: Vite copies
 // public/ verbatim into dist/, so public/ must hold exactly what may ship.
 //   npm run fetch:assets
-import { mkdir, writeFile, copyFile, stat, readdir, rm, rmdir } from 'node:fs/promises';
+import { mkdir, writeFile, copyFile, stat, readdir, readFile, rm, rmdir } from 'node:fs/promises';
 import { dirname, extname, join, relative, sep } from 'node:path';
 
 // Her tüketici kendi modelini ister; ikisi de aynı dtype eşlemesini kullanır:
@@ -105,6 +105,8 @@ MOGE.dest = join('public/models', MOGE.repo, MOGE.file);
 const EXTRA_MODELS = [BIREFNET, ...(process.env.VITE_MOGE2_PHOTO === '1' ? [MOGE] : [])];
 // VDA resmî ağırlıktan yerelde üretilir (scripts/export-video-depth-anything.py).
 // Build Python/Torch kurmaz ve ölçümde çöken eski topluluk aktarımını dağıtmaz.
+// Bu aktarım HİÇBİR YERDE barındırılmıyor (açık karar): temiz Vercel build'inde
+// dosyalar yoktur, adım atlanır ve `?videoDerinlik=vda` V2-small'a düşer.
 const VDA_DIR = 'DepthAnything/video-depth-anything-small-stream-154x266';
 const VDA_FILES = ['encoder_fp16.onnx', 'bootstrap_fp16.onnx', 'stream_fp16.onnx', 'export-manifest.json'];
 
@@ -197,6 +199,24 @@ for (const model of EXTRA_MODELS) {
   if (buf.length !== model.size) throw new Error(`${model.file}: beklenen ${model.size} bayt, gelen ${buf.length}`);
   await writeFile(model.dest, buf);
   console.log(`${mb(buf.length)}  ${model.file}`);
+}
+
+// Optional and local-only: never fails the build. Ships only if present.
+console.log(`\n${VDA_DIR} (local export, optional)`);
+const vdaPath = (file) => join('public/models', VDA_DIR, file);
+const vdaMissing = [];
+for (const file of VDA_FILES) if (!await exists(vdaPath(file))) vdaMissing.push(file);
+if (vdaMissing.length) {
+  console.log(`     skip  missing ${vdaMissing.join(', ')}; ?videoDerinlik=vda will fall back to V2-small.`);
+  console.log('           Produce: python scripts/export-video-depth-anything.py --source <Video-Depth-Anything checkout>'
+    + ` --checkpoint <video_depth_anything_vits.pth> --output public/models/${VDA_DIR}`);
+} else {
+  const manifest = JSON.parse(await readFile(vdaPath('export-manifest.json'), 'utf8'));
+  for (const file of VDA_FILES.filter((f) => f.endsWith('.onnx'))) {
+    const size = (await stat(vdaPath(file))).size;
+    const expected = manifest.files?.[file]?.bytes;
+    console.log(size === expected ? `${mb(size)}  ${file}` : `  WARNING  ${file}: ${size} bytes, manifest says ${expected}`);
+  }
 }
 
 await mkdir('public/mediapipe-wasm', { recursive: true });

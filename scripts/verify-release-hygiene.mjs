@@ -20,7 +20,7 @@
  *   node scripts/verify-release-hygiene.mjs
  */
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 
 const readJson = (path) => JSON.parse(readFileSync(path, 'utf8'));
 
@@ -96,6 +96,10 @@ const readJson = (path) => JSON.parse(readFileSync(path, 'utf8'));
     'huggingface.co',
   ]) {
     assert.ok(notices.includes(needle), `notices file is missing "${needle}"`);
+  }
+  // A notice that points at a full license text must ship that text.
+  for (const [, file] of notices.matchAll(/\/licenses\/([\w.-]+)/g)) {
+    assert.ok(existsSync(`public/licenses/${file}`), `notices reference /licenses/${file}, which public/licenses lacks`);
   }
 
   // Scope the next two checks to the npm-packages section only: section 2
