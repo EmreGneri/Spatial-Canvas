@@ -52,6 +52,19 @@ for(let x=0;x<5;x++){const v=at(bp,(x+.5)/W,.5/H);assert.equal(v[3],0);assert.ok
 const flying=fixture();for(let x=0;x<W;x++)flying.depth[x]=20;
 const fp=createMetricPhotoProjection(flying,display,mask);
 assert.ok(fp.scale>.5*p.scale,'flying pixels ignored for framing');
+// Background metres behind the subject is softly capped to ARKA_PLAN_PAYI world units behind it.
+{ const { ARKA_PLAN_PAYI }=await import('../src/engine/reconstruction/metricPhotoGeometry.ts');
+  const fgMask=Float32Array.from({length:W*H},(_,i)=>{const x=i%W,y=Math.floor(i/W);return x>8&&x<24&&y>8&&y<24?1:0;});
+  const deep=fixture((u,v)=>(u>.28&&u<.75&&v>.28&&v<.75)?2:30);
+  const dp=createMetricPhotoProjection(deep,display,fgMask);
+  const fgZ=at(dp,.5,.5)[2], bgZ=at(dp,.05,.05)[2];
+  assert.ok(bgZ<fgZ,'background stays behind subject');
+  assert.ok(fgZ-bgZ<=ARKA_PLAN_PAYI+1e-4,`background gap capped (${(fgZ-bgZ).toFixed(3)})`);
+  // Steep (but continuous) surfaces: radius never exceeds 3x the screen-plane footprint.
+  const steep=sampleMetricPhotoPositions(createMetricPhotoProjection(fixture((u)=>2/(1-1.6*(u-.5))),display,mask),32), sn=new Float32Array(steep.length);
+  updateMetricPhotoSplatGeometry(steep,32,sn);
+  for(let y=1;y<31;y++)for(let x=1;x<31;x++){const o=(y*32+x)*4;const iz=.5*Math.max(...[[1,0],[-1,0],[0,1],[0,-1]].map(([dx,dy])=>{const j=((y+dy)*32+x+dx)*4;return Math.hypot(steep[j]-steep[o],steep[j+1]-steep[o+1]);}));assert.ok(sn[o+3]<=3*iz+1e-6,'radius capped');}
+}
 const grid=sampleMetricPhotoPositions(p,16);assert.equal(grid.length,16*16*4);
 assert.equal(typeof updateMetricPhotoSplatGeometry,'function','metric splats use measured XYZ neighbors');
 const tiltedGrid=sampleMetricPhotoPositions(q,32), splatNormals=new Float32Array(tiltedGrid.length);

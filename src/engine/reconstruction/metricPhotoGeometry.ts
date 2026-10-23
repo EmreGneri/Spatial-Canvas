@@ -2,6 +2,16 @@ import { cropChannels, type CropRect } from './crop.ts';
 import { buildSilhouette } from './silhouette.ts';
 import { BACKDROP_OPACITY } from './sampler.ts';
 import type { ShellMeshData } from './mesh.ts';
+import { YARICAP_BUYUME_MAKS } from '../splatGeometri.ts';
+
+/**
+ * Arka planın öznenin arkasında alabileceği en büyük derinlik payı, sığdırılmış dünya
+ * biriminde. Metrik arka plan metrelerce geride kalır; öznenin [-1,1] sığdırmasıyla
+ * çarpılınca onlarca birim uzağa gidip perspektifle dev, bulanık splatlara dönüşüyordu
+ * (kullanıcı görsel geri bildirimi, 2026-10-24). Sıkıştırma ışın boyunca yapılır: sıra ve
+ * izdüşüm korunur, yalnız uzaklık yumuşakça tavanlanır.
+ */
+export const ARKA_PLAN_PAYI = 1;
 
 /** Camera Z in metres; row-major K uses normalized image coordinates. */
 export interface MetricPhotoGeometry {
@@ -74,6 +84,8 @@ export function createMetricPhotoProjection(
   let scale = Infinity;
   if (count) for (let a = 0; a < 3; a++) if (hi[a] > lo[a]) scale = Math.min(scale, limits[a] / (hi[a] - lo[a]));
   if (!Number.isFinite(scale)) scale = 1;
+  // Öznenin en uzak yüzü (metrik Z; kamera −Z'ye bakar, uzak = daha negatif).
+  const zFg = count ? lo[2] : 0, pay = ARKA_PLAN_PAYI / scale;
   return {
     center, scale,
     project(u, v, output, offset) {
@@ -93,6 +105,13 @@ export function createMetricPhotoProjection(
       // Border texels repeat their measured ray as well as their Z; extending
       // only the ray would bend a tilted plane at the image boundary.
       const p = point((x + .5) / w, (y + .5) / h, z);
+      // Arka plan: öznenin arkasındaki mesafe `pay`a yumuşakça tavanlanır (ışın boyunca).
+      const geri = zFg - p[2];
+      if (a < .5 && geri > 0 && p[2] < 0) {
+        const hedef = zFg - pay * (1 - Math.exp(-geri / pay));
+        const k = hedef / p[2];
+        for (let axis = 0; axis < 3; axis++) p[axis] *= k;
+      }
       for (let axis = 0; axis < 3; axis++) output[offset + axis] = (p[axis] - center[axis]) * scale;
       if (!output.subarray(offset, offset + 3).every(Number.isFinite)) { output.fill(0, offset, offset + 4); return; }
       output[offset + 3] = a >= .5 ? 1 : BACKDROP_OPACITY;
@@ -128,11 +147,14 @@ export function updateMetricPhotoSplatGeometry(home: Float32Array, grid: number,
     const n = [dy[1]*dx[2]-dy[2]*dx[1],dy[2]*dx[0]-dy[0]*dx[2],dy[0]*dx[1]-dy[1]*dx[0]];
     const length = Math.hypot(...n);
     if (length) for (let k=0;k<3;k++) normalScale[o+k]=n[k]/length;
-    let radius = 0;
+    // Yarıçap: komşuya yarı mesafe, ama ekran düzlemindeki ayak izinin en fazla
+    // YARICAP_BUYUME_MAKS katı (splatGeometri ile aynı tavan) — dik yüzeyde dev diskler olmasın.
+    let radius = 0, iz = 0;
     for (const j of [left,right,top,bottom]) if (j !== i) {
       radius = Math.max(radius, .5 * Math.hypot(home[j*4]-home[o],home[j*4+1]-home[o+1],home[j*4+2]-home[o+2]));
+      iz = Math.max(iz, .5 * Math.hypot(home[j*4]-home[o],home[j*4+1]-home[o+1]));
     }
-    normalScale[o+3] = radius;
+    normalScale[o+3] = iz > 0 ? Math.min(radius, iz * YARICAP_BUYUME_MAKS) : radius;
   }
 }
 
@@ -156,6 +178,12 @@ export function buildMetricPhotoShell(projection: MetricPhotoProjection, gridSiz
   const indices: number[] = [], edges = new Map<string, [number, number] | null>();
   const triangle = (a: number, b: number, c: number) => {
     if (samples[a * 4 + 3] < .5 || samples[b * 4 + 3] < .5 || samples[c * 4 + 3] < .5) return;
+    // Derinlik sıçraması iki yüzeyi bağlamaz (splat komşuluğuyla aynı kural): yandan
+    // bakınca gerilmiş "perde" üçgenleri oluşmasın.
+    for (const [u, v] of [[a, b], [b, c], [c, a]]) {
+      const xy = Math.hypot(samples[u * 4] - samples[v * 4], samples[u * 4 + 1] - samples[v * 4 + 1]);
+      if (Math.abs(samples[u * 4 + 2] - samples[v * 4 + 2]) > 6 * xy) return;
+    }
     indices.push(a,b,c,c+count,b+count,a+count);
     for (const [u,v] of [[a,b],[b,c],[c,a]]) {
       const key = u < v ? `${u},${v}` : `${v},${u}`;
