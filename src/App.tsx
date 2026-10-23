@@ -24,6 +24,7 @@ import { soganAcilisGerekliMi, sunumAcikMi } from './ui/sunumModu';
 import { serializeRenderState } from './shaders/renderPreset';
 import { maskeKarari } from './ui/maskeKarari';
 import { useDarEkran } from './ui/useDarEkran';
+import { ACILIS_BOY, ACILIS_EN, ACILIS_NOTU, acilisDerinligi, BINALAR, GOK, KURE, UFUK_Y, ZEMIN } from './ui/acilisSahnesi';
 import { birincilDugme, bosluk, cam, dugme as temaDugme, led, MONO, renk, SANS, yaricap, yazi, yuzey } from './ui/tema';
 import { YetenekUyarisi } from './ui/YetenekUyarisi';
 import { Egitim3D } from './ui/Egitim3D';
@@ -262,6 +263,12 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
   // Gerçek 3DGS eğitimi: son yüklenen video dosyası (kare seçimi dosyanın
   // kendisini ister, <video> öğesini değil) ve eğitimi süren dosya.
   const [videoDosya, setVideoDosya] = useState<File | null>(null);
+  /**
+   * Ziyaretçi KENDİ kaynağını seçti mi (dosya ya da kamera)? Açılıştaki
+   * örnek sahne bunu kurmaz — o sahne modelsiz çalışır. Canlı derinlik
+   * modelinin 47 MB'lık ön ısıtması bu bayrağa bağlıdır.
+   */
+  const [kullaniciKaynagi, setKullaniciKaynagi] = useState(false);
   const [egitimDosya, setEgitimDosya] = useState<File | null>(null);
   /** 3D eğitim kalite eğrisi — transport şeridinin altında çizilir. */
   const [egitimSeri, setEgitimSeri] = useState<GrafikNoktasi[]>([]);
@@ -459,6 +466,39 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
     // kaynakla karşılaştırılırsa sahte akış üretir — kaynak değişiminde sil.
     trackerRef.current?.reset();
     trackerTargetsRef.current = [];
+  }
+
+  /**
+   * ÖRNEK SAHNE — MODELSİZ YOL. `run()`'a DOKUNMAZ; ayrı ve eklemeli.
+   *
+   * `run()` sırasıyla derinlik modelini (47 MB) ve nesne ayırmayı (84 MB)
+   * indirir. Örnek sahnede ikisi de gereksiz: sahneyi biz çiziyoruz, derinliği
+   * biliyoruz (`acilisDerinligi`), ve ayırma sonucu zaten atılıyordu.
+   *
+   * Motora iki çağrı yeter ve SIRA ÖNEMLİ: önce `setPhoto`, sonra `setDepth`
+   * (Engine.ts: setPhoto sonradan gelirse renk grid'i maskesiz remap kurar).
+   *
+   * Ölçüm: bu yolla açılışta indirilen model baytı SIFIR.
+   */
+  async function acilisSahnesiniCalistir(source: HTMLCanvasElement) {
+    const e = engineRef.current;
+    if (!e) return;
+    setBusy(true);
+    const isCurrent = captureGeneration(sourceGenRef);
+    try {
+      const derinlik = acilisDerinligi(source.width, source.height);
+      if (!isCurrent()) return;
+      lastPhotoRef.current = source;
+      lastDepthRef.current = { data: derinlik, width: source.width, height: source.height };
+      maskLoadedRef.current = false;
+      updateSegment(false);
+      e.setObjectSeparation(false);
+      e.setPhoto(source);
+      e.setDepth(derinlik, source.width, source.height, undefined, 0, 0);
+      say(ACILIS_NOTU);
+    } finally {
+      if (isCurrent()) setBusy(false);
+    }
   }
 
   async function run(source: HTMLCanvasElement | HTMLImageElement) {
@@ -703,12 +743,18 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
     // değilken rIC hiç tetiklenmiyor (timeout verilse bile), ısıtma da hiç
     // koşmuyordu. Sabit gecikme her durumda çalışır; 1.5 sn açılış işlerinin
     // (motor kurulumu, preset) önüne geçmemek için.
+    // SUNUMDA SPEKÜLATİF INDIRME YOK. Isıtma canlı (kamera/video) yolunu
+    // hazır tutmak için var; linke bakıp örnek sahneyi izleyen biri o yolu
+    // hiç açmıyor ve 47 MB boşuna iniyordu (ölçüldü 2026-10-23).
+    // Kodun kendi gerekçesinin ("WebGPU yoksa ısıtılmaz") aynısı: kullanım
+    // ihtimali yokken indirme.
+    if (sunum && !kullaniciKaynagi) return () => { iptal = true; };
     const id = window.setTimeout(isit, 1500);
     return () => {
       iptal = true;
       clearTimeout(id);
     };
-  }, []);
+  }, [sunum, kullaniciKaynagi]);
 
   /**
    * VİDEO/KAMERA DERİNLİĞİ — parlaklık vekiliyle başlar, MODEL devralır.
@@ -1043,6 +1089,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
   }
 
   async function toggleCamera() {
+    setKullaniciKaynagi(true);
     if (cameraOn) {
       teardownSource();
       setCameraOn(false);
@@ -1104,6 +1151,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
   }
 
   async function handleFile(file: File) {
+    setKullaniciKaynagi(true);
     const isVideo = file.type.startsWith('video/');
     if (!isVideo && !file.type.startsWith('image/')) {
       say(`desteklenmiyor: ${file.type || file.name}`);
@@ -1243,7 +1291,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
     soganTetiklendi.current = true;
     e!.mediaType = 'synthetic';
     kaynakBelirle('sentetik');
-    void run(syntheticImage());
+    void acilisSahnesiniCalistir(syntheticImage());
     // `run` ve `syntheticImage` modül/bileşen düzeyinde bildirilmiş
     // fonksiyonlar; bağımlılık listesine girerlerse effect her render'da
     // yeniden kurulur ve soğuk açılış döngüye girer.
@@ -1432,7 +1480,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
             setCameraOn(false);
             engineRef.current!.mediaType = 'synthetic';
             kaynakBelirle('sentetik');
-            run(syntheticImage());
+            void acilisSahnesiniCalistir(syntheticImage());
           }}
         >
           {sunum ? 'örnek sahne' : 'sentetik görsel'}
@@ -1967,28 +2015,33 @@ function Slider({
   );
 }
 
-/** Şekiller farklı ölçeklerde — depth çıktısının düz olmadığı görülsün. */
+/**
+ * Örnek sahnenin 2B çizimi. Geometri `ui/acilisSahnesi` içinde TEK yerde
+ * durur; derinlik haritası da aynı tanımdan türer. Buradaki çizim sırası
+ * (gök → zemin → binalar → küre) `acilisDerinligi` ile AYNI olmalı:
+ * sonra çizilen önceki örter, derinlik de aynı örtmeyi uygular.
+ */
 function syntheticImage(): HTMLCanvasElement {
   const canvas = document.createElement('canvas');
-  canvas.width = 512;
-  canvas.height = 512;
+  canvas.width = ACILIS_EN;
+  canvas.height = ACILIS_BOY;
   const ctx = canvas.getContext('2d')!;
 
-  const sky = ctx.createLinearGradient(0, 0, 0, 512);
-  sky.addColorStop(0, '#9dc3e6');
-  sky.addColorStop(1, '#e8d9b0');
+  const sky = ctx.createLinearGradient(0, 0, 0, ACILIS_BOY);
+  sky.addColorStop(0, GOK.ust);
+  sky.addColorStop(1, GOK.alt);
   ctx.fillStyle = sky;
-  ctx.fillRect(0, 0, 512, 512);
+  ctx.fillRect(0, 0, ACILIS_EN, ACILIS_BOY);
 
-  ctx.fillStyle = '#3a3a44';
-  ctx.fillRect(0, 380, 512, 132);
-  for (const [x, w, h] of [[40, 70, 160], [150, 90, 240], [300, 60, 120], [400, 100, 300]]) {
-    ctx.fillStyle = '#5a5a68';
-    ctx.fillRect(x, 380 - h, w, h);
+  ctx.fillStyle = ZEMIN.renk;
+  ctx.fillRect(0, UFUK_Y, ACILIS_EN, ACILIS_BOY - UFUK_Y);
+  for (const b of BINALAR) {
+    ctx.fillStyle = b.renk;
+    ctx.fillRect(b.x, UFUK_Y - b.boy, b.en, b.boy);
   }
-  ctx.fillStyle = '#c94f4f';
+  ctx.fillStyle = KURE.renk;
   ctx.beginPath();
-  ctx.arc(256, 430, 60, 0, Math.PI * 2);
+  ctx.arc(KURE.x, KURE.y, KURE.r, 0, Math.PI * 2);
   ctx.fill();
 
   return canvas;
