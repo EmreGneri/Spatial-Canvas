@@ -9,13 +9,13 @@ import * as page from '../src/bench/gezinmeSayfasi.ts';
 const quick = { tier: 'quick', maxFrames: 24, maxIters: 3000, gpu: 'test', zayifGpu: true, entegreGpu: false };
 
 assert.deepEqual(egitimOturumAyari(quick), {
-  maxIters: 3000, holdout: 'auto', refineEvery: 375,
+  maxIters: 3000, holdout: 'auto', refineEvery: 375, trainer: { scaleReg: 0.1 },
 });
 assert.deepEqual(egitimOturumAyari(quick, {
   refineEvery: 200, capMult: 2, maxSplats: 90000, seed: 17,
 }), {
   maxIters: 3000, holdout: 'auto', refineEvery: 200,
-  trainer: { capMult: 2, maxSplats: 90000, seed: 17 },
+  trainer: { scaleReg: 0.1, capMult: 2, maxSplats: 90000, seed: 17 },
 });
 
 const parsed = page.parametreleriOku('?klip=/clip.webm&refine-every=200&cap-mult=2.5&max-splats=90000&trainer-seed=0');
@@ -31,7 +31,7 @@ assert.deepEqual(page.egitimOlcumRaporu(quick, parsed.egitim, [
   { kind: 'refine', iter: 1904, moved: 0, grown: 200, ms: 40 },
   { kind: 'refine', iter: 2304, moved: 0, grown: 0, ms: 0 },
 ], 1200, 1500, 12345, [{ psnr: 28 }, { psnr: 30 }]), {
-  settings: { refineEvery: 200, capMult: 2.5, maxSplats: 90000, seed: 0, actualCap: 1500 },
+  settings: { refineEvery: 200, capMult: 2.5, maxSplats: 90000, seed: 0, actualCap: 1500, scaleReg: 0.1 },
   initialN: 900,
   refinements: [
     { iter: 1520, moved: 2, grown: 100, n: 1000, ms: 25 },

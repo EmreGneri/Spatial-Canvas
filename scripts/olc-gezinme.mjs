@@ -9,6 +9,7 @@
 //     [--secim yenilik] [--eslestirme sirali] [--odak-alt N]
 //     [--geometri model|model-da3|sentetik] [--derinlik-kisiti WEIGHT] [--bolgesel] [--yardimci]
 //     [--refine-every N] [--cap-mult N] [--max-splats N] [--trainer-seed N]
+//     [--opacity-reg W] [--scale-reg W] [--abs-grad TAU]  (gsplat düzenleyicileri; sayfa doğrular)
 //     [--yuzen ORAN[,ORAN...]]  (yüzen temizleme: aynı modelde önce/sonra; son oran uygulanmış kalır)
 // Karşılaştırma:
 //   node scripts/olc-gezinme.mjs --karsilastir <raporA.json> <raporB.json> [--cikti dizin]
@@ -26,7 +27,8 @@ const ILERLEME_ARALIGI_MS = 20_000;
 const BAYRAKLAR = new Set(['--chrome', '--yazilim-gpu', '--basli', '--yalniz-sfm', '--bolgesel', '--yardimci']);
 const DEGERLI = new Set(['--gt', '--etiket', '--katman', '--kare', '--iter', '--ayrilan', '--genislik', '--cikti',
   '--secim', '--eslestirme', '--odak-alt', '--geometri', '--derinlik-kisiti',
-  '--refine-every', '--cap-mult', '--max-splats', '--trainer-seed', '--yuzen']);
+  '--refine-every', '--cap-mult', '--max-splats', '--trainer-seed', '--yuzen',
+  '--opacity-reg', '--scale-reg', '--abs-grad']);
 
 function kullanim(mesaj) {
   if (mesaj) console.error(`olc-gezinme: ${mesaj}`);
@@ -104,7 +106,7 @@ async function olc(secenek) {
     kullanim('--yalniz-sfm ile derinlik seçenekleri kullanılamaz');
   if (secenek.deger.yuzen != null && !secenek.deger.yuzen.split(',').every((x) => Number(x) > 0 && Number.isFinite(Number(x))))
     kullanim('--yuzen pozitif oranlar listesi olmalı (ör. 0.01,0.02)');
-  if (secenek.bayrak.has('--yalniz-sfm') && ['refine-every', 'cap-mult', 'max-splats', 'trainer-seed', 'yuzen'].some((k) => secenek.deger[k] != null))
+  if (secenek.bayrak.has('--yalniz-sfm') && ['refine-every', 'cap-mult', 'max-splats', 'trainer-seed', 'yuzen', 'opacity-reg', 'scale-reg', 'abs-grad'].some((k) => secenek.deger[k] != null))
     kullanim('Training benchmark flags require a training run');
   const etiket = secenek.deger.etiket ?? new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-');
   if (/[\\/]/.test(etiket) || etiket.startsWith('.')) kullanim(`geçersiz etiket: ${etiket}`);
@@ -113,7 +115,7 @@ async function olc(secenek) {
   const q = new URLSearchParams({ klip: fsUrl(klip), etiket });
   if (gt) q.set('gt', fsUrl(gt));
   for (const k of ['katman', 'kare', 'iter', 'ayrilan', 'genislik', 'secim', 'eslestirme', 'odak-alt', 'geometri', 'derinlik-kisiti',
-    'refine-every', 'cap-mult', 'max-splats', 'trainer-seed', 'yuzen'])
+    'refine-every', 'cap-mult', 'max-splats', 'trainer-seed', 'yuzen', 'opacity-reg', 'scale-reg', 'abs-grad'])
     if (secenek.deger[k] != null) q.set(k, secenek.deger[k]);
   for (const k of ['yalniz-sfm', 'bolgesel']) if (secenek.bayrak.has(`--${k}`)) q.set(k, '1');
   // --yardimci: sayfa yerel çıkarım yardımcısını (sidecar/server.py) kullanır; sunucu çalışıyor olmalı.

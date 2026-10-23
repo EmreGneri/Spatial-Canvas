@@ -143,3 +143,98 @@ zaten açılmazdı.
 ```powershell
 node scripts/olc-gezinme.mjs assets/test-clips/sentetik-orman-yolu.webm --gt assets/test-clips/sentetik-orman-yolu.gt.json --etiket yuzen-b --katman quick --kare 24 --iter 3000 --geometri model --trainer-seed 7 --yuzen 0.06,0.03,0.015,0.01 --chrome
 ```
+
+## gsplat düzenleyicileri: ölçek/opaklık L1, AbsGS, sert bütçe (2026-10-24)
+
+Kaynak: nerfstudio-project/gsplat (Apache-2.0) — `losses.py`
+(`opacity_reg_loss`, `scale_reg_loss`), `strategy/default.py` (`absgrad`),
+`strategy/mcmc.py` (`cap_max`). Her biri ayrı seçenek; bench bayrakları
+`--opacity-reg W`, `--scale-reg W`, `--abs-grad TAU`, `--max-splats N`.
+
+Eğiticide zaten olan / yeni olan:
+
+- **Opaklık L1** — zaten vardı (`opacityReg`, eski motorda varsayılan 0,01).
+  gsplat: `L += w·mean(σ(o))`; bizde Adam çekirdeği (`shaders.js`) logit
+  gradyanına `w·σ(1−σ)` ekler. Fark: gsplat `mean()` (splat başına w/N), bizim
+  kayıp piksel toplamı olduğu için ağırlık splat başına sabit; aynı sayı aynı
+  güç DEĞİL, değerler deneysel taranır.
+- **Ölçek L1** — zaten vardı (`scaleReg`, varsayılan 0). gsplat:
+  `L += w·mean(exp(s))`; bizde log-ölçek gradyanına `w·exp(s)`. Yalnız
+  bench/oturum geçişi eklendi.
+- **AbsGS** — yeni (`opts.absGrad = tau`, `trainer.js` `_refineLegacy`). Render
+  geçişi zaten piksel başına `|∂L/∂μx| + |∂L/∂μy|` toplamını gradP yuva 12'ye
+  yazıyordu (mutlak değer toplamdan ÖNCE: zıt işaretli piksel gradyanları
+  birbirini silmez). `absGrad` açıkken istatistik derlenir (`useStats`), refine
+  bunu gather ile okur; büyüme donörleri `istatistik ≥ tau × medyan` olanlarla
+  sınırlanır (growRegion ile kesişim), büyüme sayısı aday sayısını aşmaz;
+  taşıma (relocation) etkilenmez. gsplat mutlak `grow_grad2d` eşiğini absgrad
+  için 0,0002 → 0,0008 (×4) yükseltir; bizim kayıp normalize olmadığından
+  mutlak eşik taşınamaz, medyana göreli eşik bu ×4'ü kendiliğinden emer
+  (`_refineV3` ile aynı yol). Sapma: pencere toplamı görünür görüş sayısına
+  bölünmez.
+- **Sert bütçe** — zaten vardı: `cap = min(n0·capMult, maxSplats)`, büyüme
+  `limit − n` ile kesilir, cap doluyken MCMC taşıması sürer. growRegion/absGrad
+  yalnız donör havuzunu daraltır, tavanı değiştirmez (`verify-gs-duzenleyici`
+  bunu sınar).
+
+Ölçüm: `--katman quick --kare 24 --iter 3000 --trainer-seed 7 --chrome
+--geometri model` (+ eşleşmiş `--trainer-seed 11`), RTX 5070 Laptop
+(Chrome'un gördüğü adaptör `nvidia / blackwell`). Ayrılan kare ortalaması.
+Aynı ayarla taban tekrarı: sentetik 35,298 / 35,257 (0,041 dB), orman
+34,076 / 34,096 (0,020 dB). Eğitim süresi aynı GPU'yu paylaşan başka işler
+yüzünden ±3 sn oynuyor; yalnız tutarlı eğilim olarak okunmalı.
+
+| Klip / tohum | Seçenek | PSNR | SSIM | Gaussian | Eğitim |
+|---|---|---:|---:|---:|---:|
+| sentetik / 7 | taban (2 koşu ort.) | 35,278 | 0,9443 | 78 531 | 16,3 sn |
+| sentetik / 7 | scale-reg 0,01 | 35,706 | 0,9462 | 78 531 | 15,3 sn |
+| sentetik / 7 | **scale-reg 0,1** | **35,714** | **0,9489** | 78 531 | 13,0 sn |
+| sentetik / 7 | opacity-reg 0 (varsayılan 0,01 yerine) | 35,211 | 0,9464 | 78 531 | 18,5 sn |
+| sentetik / 7 | opacity-reg 0,05 | 35,365 | 0,9412 | 78 531 | 17,4 sn |
+| sentetik / 7 | abs-grad 1 | 35,395 | 0,9442 | 78 531 | 19,9 sn |
+| sentetik / 7 | abs-grad 2 | 35,482 | 0,9440 | 78 531 | 19,5 sn |
+| sentetik / 7 | abs-grad 4 | 35,373 | 0,9439 | 78 531 | 20,6 sn |
+| sentetik / 7 | max-splats 70 000 | 35,063 | 0,9411 | 70 000 | 19,1 sn |
+| sentetik / 7 | max-splats 65 000 | 34,810 | 0,9388 | 65 000 | 25,6 sn |
+| sentetik / 7 | scale-reg 0,1 + abs-grad 2 | 35,544 | 0,9480 | 78 531 | 12,7 sn |
+| sentetik / 11 | taban | 35,257 | 0,9423 | 78 531 | 15,6 sn |
+| sentetik / 11 | **scale-reg 0,1** | **35,416** | **0,9469** | 78 531 | 11,6 sn |
+| sentetik / 11 | abs-grad 2 | 34,957 | 0,9421 | 78 531 | 17,2 sn |
+| sentetik / 11 | scale-reg 0,1 + abs-grad 2 | 35,375 | 0,9465 | 78 531 | 12,5 sn |
+| orman / 7 | taban (2 koşu ort.) | 34,086 | 0,8857 | 79 816 | 27,8 sn |
+| orman / 7 | scale-reg 0,01 | 34,077 | 0,8853 | 79 816 | 25,0 sn |
+| orman / 7 | **scale-reg 0,1** | **34,106** | 0,8832 | 79 816 | 22,9 sn |
+| orman / 7 | abs-grad 2 | 34,265 | 0,8864 | 79 816 | 29,6 sn |
+| orman / 7 | scale-reg 0,1 + abs-grad 2 | 34,003 | 0,8844 | 79 816 | 25,0 sn |
+| orman / 11 | taban | 33,918 | 0,8823 | 79 816 | 27,2 sn |
+| orman / 11 | **scale-reg 0,1** | **34,073** | **0,8831** | 79 816 | 23,2 sn |
+| sentetik / 7 | yeni varsayılan (bayraksız) | 35,733 | 0,9494 | 78 531 | 11,9 sn |
+
+Kabul kapısı (PSNR gürültü ötesinde kötüleşmesin VE sayı düşsün ya da PSNR
+artsın):
+
+- **scale-reg 0,1: GEÇTİ → varsayılan açık** (`egitimOturumAyari`,
+  `VARSAYILAN_SCALE_REG`). Dört eşleşmiş çiftte PSNR +0,44 / +0,16 / +0,02 /
+  +0,16 dB, hiçbiri negatif; SSIM üçünde arttı, ormanda tohum 7'de −0,0025.
+  Eğitim her çiftte ~%15–20 kısa (küçük splat'lar daha az döşeme girişi).
+  Gaussian sayısı değişmez (büyüme takvimi sabit, düzenleyici budamaz).
+  0,01 sentetikte benzer, ormanda etkisiz; 0,1 seçildi. `--scale-reg 0` eski
+  davranışı verir.
+- **opacity-reg**: varsayılan 0,01 korunur; 0 ve 0,05 gürültü içinde/karışık
+  (0,05 SSIM −0,003).
+- **abs-grad: KALDI, varsayılan kapalı.** Tohum 7'de +0,20 (sentetik) ve
+  +0,18 (orman), ama sentetik tohum 11'de −0,30; scale-reg ile birlikte her
+  koşuda scale-reg'in tek başınasından kötü. Sayıyı da düşürmedi: istatistik
+  ağır kuyruklu, tau 4'te bile aday sayısı büyüme kotasını (%15·n) aşıyor,
+  yani yalnız donörleri yeniden yönlendiriyor.
+- **Sert bütçe**: beklendiği gibi sayıyı sınırlar ama kalite bedeli var
+  (70k −0,22, 65k −0,47 dB) → kazanç değil, değiş tokuş; mevcut
+  `maxSplats` seçeneği olarak kalır. Basit MCMC taşıması zaten vardı.
+
+Doğrulama: `node scripts/verify-gs-duzenleyici.mjs` (seçenek geçişi, AbsGS
+donör havuzu, cap + growRegion + absGrad), `verify-grow-region.mjs`
+(`absGrad` yokken eski `_refineLegacy` ile birebir).
+
+```powershell
+node scripts/olc-gezinme.mjs assets/test-clips/sentetik-orman-yolu.webm --gt assets/test-clips/sentetik-orman-yolu.gt.json --etiket sr --katman quick --kare 24 --iter 3000 --trainer-seed 7 --chrome --geometri model --scale-reg 0.1
+```

@@ -79,6 +79,12 @@ export interface EgitimOlcumAyari {
   capMult?: number;
   maxSplats?: number;
   seed?: number;
+  /** gsplat `opacity_reg` karşılığı: σ(o) L1 (eğiticinin varsayılanı 0,01). */
+  opacityReg?: number;
+  /** gsplat `scale_reg` karşılığı: exp(s) L1 (varsayılan 0). */
+  scaleReg?: number;
+  /** AbsGS büyüme ölçütü: medyan |grad| katı (açık değilse yok). */
+  absGrad?: number;
 }
 
 const CIKARILAN_KARE_ADI = /^frame_\d+\.jpg$/;
@@ -271,23 +277,27 @@ export async function kameraCoz(
  * ufka göre seçilmiş 2500 aralığı kısa bütçelerde pencereyi kaçırıyordu:
  * quick (3k) ilk refine'ı ~2518'de, pencere 2250'de kapanmış — hiç büyüme,
  * hiç taşıma yok; standard (10k) yalnız 2 büyüme. Aralık bütçeyle ölçeklenir
- * (quick 375, standard 1250); ölçüm: src/vendor/splat.js/VENDORED.md. */
+ * (quick 375, standard 1250); ölçüm: src/vendor/splat.js/VENDORED.md.
+ *
+ * Ölçek L1 (`scaleReg`, gsplat `scale_reg` karşılığı) varsayılan açık: sabit
+ * tohum/kare bütçesinde 4 eşleşmiş koşuda ayrılan PSNR +0,02…+0,44 dB (ort.
+ * +0,19), eğitim ~%15–20 kısa; ölçüm docs/benchmarks/gezinme-entegrasyon.md. */
+export const VARSAYILAN_SCALE_REG = 0.1;
+
 export function egitimOturumAyari(ayar: EgitimAyari, olcum?: EgitimOlcumAyari) {
-  const defaults = {
-    maxIters: ayar.maxIters,
-    holdout: 'auto' as const,
-    refineEvery: Math.max(300, Math.round(ayar.maxIters / 8)),
-  };
-  if (!olcum) return defaults;
   const trainer = {
-    ...(olcum.capMult !== undefined ? { capMult: olcum.capMult } : {}),
-    ...(olcum.maxSplats !== undefined ? { maxSplats: olcum.maxSplats } : {}),
-    ...(olcum.seed !== undefined ? { seed: olcum.seed } : {}),
+    scaleReg: olcum?.scaleReg ?? VARSAYILAN_SCALE_REG,
+    ...(olcum?.capMult !== undefined ? { capMult: olcum.capMult } : {}),
+    ...(olcum?.maxSplats !== undefined ? { maxSplats: olcum.maxSplats } : {}),
+    ...(olcum?.seed !== undefined ? { seed: olcum.seed } : {}),
+    ...(olcum?.opacityReg !== undefined ? { opacityReg: olcum.opacityReg } : {}),
+    ...(olcum?.absGrad !== undefined ? { absGrad: olcum.absGrad } : {}),
   };
   return {
-    ...defaults,
-    refineEvery: olcum.refineEvery ?? defaults.refineEvery,
-    ...(Object.keys(trainer).length ? { trainer } : {}),
+    maxIters: ayar.maxIters,
+    holdout: 'auto' as const,
+    refineEvery: olcum?.refineEvery ?? Math.max(300, Math.round(ayar.maxIters / 8)),
+    trainer,
   };
 }
 
