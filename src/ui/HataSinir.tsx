@@ -173,7 +173,7 @@ const birincil = {
   borderStyle: 'solid' as const,
   borderColor: kenarDurum.bilgi,
   background: renk.vurguSakin,
-  color: '#dce9ff',
+  color: '#f5d8b4',
   cursor: 'pointer',
 };
 

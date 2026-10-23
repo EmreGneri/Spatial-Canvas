@@ -20,43 +20,66 @@ import type { CSSProperties } from 'react';
  */
 
 /**
- * SİSTEM YIĞINI. "Inter" BİLEREK YOK: yığında `-apple-system`'den sonra
- * duruyordu, yani macOS'ta hiç render edilmiyordu — işe yaramayan ama
- * "her AI arayüzünde Inter var" izlenimi veren bir kalıntıydı. Sistem fontu
- * kullanıcının kendi arayüzüyle aynı ritmi tutar; yüklenecek dosya da yok.
+ * IBM PLEX — teknik arayüzler için çizilmiş, hümanist detaylı bir grotesk.
+ *
+ * NEDEN SİSTEM FONTU DEĞİL: sistem yığını bir karar değil, kararın
+ * yokluğuydu — üretilmiş her koyu panelin dizgisi. Plex’in kendi karakteri
+ * var ama dikkat çekmez; ekrandaki tek gösterili şey render olsun diye.
+ *
+ * YERELDEN SUNULUYOR (`public/fonts`, 230 KB). Google CDN kullanılmıyor:
+ * sunum salonunda internet olmayabilir ve font gelmezse arayüz sessizce
+ * sistem fontuna düşer. **latin-ext ŞART** — Türkçe ğ ş ı İ o alt kümede.
  */
 export const SANS =
-  '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, system-ui, sans-serif';
-export const MONO = 'ui-monospace, "SF Mono", "Cascadia Mono", Consolas, monospace';
+  '"IBM Plex Sans", -apple-system, BlinkMacSystemFont, system-ui, sans-serif';
+export const MONO = '"IBM Plex Mono", ui-monospace, "SF Mono", Consolas, monospace';
 
 /**
- * TEK EKSEN: siyah → gri → koyu mavi. Her yüzey bu merdivenin bir basamağı;
- * "biraz mor", "biraz teal" yok. Vurgu da aynı ailenin canlı ucu.
+ * KARANLIK ODA. İkinci eleştiri turu (2026-10-23) paletin hâlâ "AI”
+ * durduğunu söyledi; sebep mor gradyan değildi, şuydu:
+ *
+ *  1. DURUM RENKLERİ TAILWIND VARSAYILANIYDI — #4ade80/#eab308/#f87171
+ *     sırasıyla green-400/yellow-500/red-400. Seçilmemiş, miras alınmış.
+ *  2. VURGU SAAS MAVİSİYDİ. Daha kötüsü: ekranda render edilen özne
+ *     sıcak kehribar/kemik — arayüz, içeriğin tam KARŞITINI vurgu
+ *     yapıyordu. İki ayrı dünya tek ekranda.
+ *  3. YÜZEY MERDİVENİ MAVİ-GRİYDİ — her üretilmiş panelin rengi.
+ *
+ * Palet artık bir yerden geliyor: KARANLIK ODA. Güvenlik lambasının
+ * kehribarı, film tabanının sıcak siyahı, alçı/kemik beyazı (zaten
+ * ekrandaki büstün rengi), anotlanmış objektif grisi, pirinç ölçek
+ * kadranı. Yüzeyler nötr-sıcak grafit; ekrandaki tek DOYGUN şey işin
+ * kendisi kalıyor.
+ *
+ * Kontrastlar ölçüldü (WCAG, zemin üstünde): metin 16.8, solgun 7.9,
+ * silik 5.9 — üçü de eski değerlerin üzerinde.
  */
 export const renk = {
-  /** Sayfanın en altı — sahnenin siyahıyla aynı aile. */
-  zemin: '#0a0c10',
-  /** Yüzey basamakları (kart, panel, kutu). */
-  yuzey1: '#12151c',
-  yuzey2: '#171b24',
-  yuzey3: '#1d222d',
+  /** Sayfanın en altı — film tabanının sıcak siyahı, mavi değil. */
+  zemin: '#0b0a09',
+  /** Yüzey basamakları (kart, panel, kutu) — anotlanmış grafit. */
+  yuzey1: '#141311',
+  yuzey2: '#1c1a18',
+  yuzey3: '#242120',
   /** Kenarlar: renk değil, ışık. Çok düşük kontrast. */
   kenar: 'rgba(255,255,255,0.07)',
   kenarGuclu: 'rgba(255,255,255,0.13)',
 
-  metin: '#e9ecf2',
-  /** Ölçüldü: zeminde 7.4:1 — gövde metni için rahat. */
-  metinSolgun: '#9aa3b5',
-  /** Ölçüldü: 5.6:1 — eski #6b7185 (4.0) AA sınırının altındaydı. */
-  metinSilik: '#7d8697',
+  /** Kemik beyazı — ölçüldü 16.8:1. */
+  metin: '#f0ece6',
+  /** Ölçüldü: 7.9:1 — gövde metni için rahat. */
+  metinSolgun: '#a9a39a',
+  /** Ölçüldü: zeminde 5.9, en açık yüzeyde 4.7 — ikisi de AA. */
+  metinSilik: '#918b82',
 
-  /** Tek vurgu: koyu mavinin canlı ucu. */
-  vurgu: '#4d8dff',
-  vurguSakin: 'rgba(77,141,255,0.16)',
+  /** TEK vurgu: karanlık oda güvenlik lambası. Render’ın kendi sıcaklığı. */
+  vurgu: '#d9873f',
+  vurguSakin: 'rgba(217,135,63,0.15)',
 
-  iyi: '#4ade80',
-  uyari: '#eab308',
-  kotu: '#f87171',
+  /** Durum renkleri boyalı alet paneli ailesinden; Tailwind değil. */
+  iyi: '#7fa263',
+  uyari: '#c9a227',
+  kotu: '#d2694f',
 } as const;
 
 /**
@@ -69,10 +92,10 @@ export const renk = {
  * kendi durumunun rengidir, ayrı bir koyu ton icat edilmez.
  */
 export const kenarDurum = {
-  bilgi: 'rgba(77,141,255,0.32)',
-  iyi: 'rgba(74,222,128,0.32)',
-  uyari: 'rgba(234,179,8,0.38)',
-  kotu: 'rgba(248,113,113,0.38)',
+  bilgi: 'rgba(217,135,63,0.32)',
+  iyi: 'rgba(127,162,99,0.34)',
+  uyari: 'rgba(201,162,39,0.38)',
+  kotu: 'rgba(210,105,79,0.38)',
 } as const;
 
 /** ÜÇ KADEME yarıçap — ölçümde 6 farklı değer çıkmıştı, tutarsızdı. */
@@ -97,7 +120,7 @@ export const yazi = {
 export function cam(opts: { blur?: number; radius?: number } = {}): CSSProperties {
   const { blur = 24, radius = yaricap.panel } = opts;
   return {
-    background: 'rgba(18,21,28,0.72)',
+    background: 'rgba(20,19,17,0.74)',
     backdropFilter: `blur(${blur}px)`,
     WebkitBackdropFilter: `blur(${blur}px)`,
     borderWidth: 1,
@@ -136,9 +159,9 @@ export function dugme(etkin = false): CSSProperties {
     borderRadius: yaricap.kontrol,
     borderWidth: 1,
     borderStyle: 'solid',
-    borderColor: etkin ? 'rgba(77,141,255,0.45)' : renk.kenar,
+    borderColor: etkin ? 'rgba(217,135,63,0.45)' : renk.kenar,
     background: etkin ? renk.vurguSakin : renk.yuzey2,
-    color: etkin ? '#dce9ff' : renk.metin,
+    color: etkin ? '#f5d8b4' : renk.metin,
     cursor: 'pointer',
     transition: 'background 120ms ease, border-color 120ms ease',
   };
