@@ -2,7 +2,7 @@
 //   small: V2-small, canlı video        -> [1,H,W] disparite
 //   da3:   DA3Mono-Large, fotoğraf      -> [1,2,H,W] derinlik + gökyüzü (disparite istemcide)
 //   mask:  BiRefNet_lite, fotoğraf      -> [1,1,1024,1024] olasılık
-export type SidecarModel = 'small' | 'da3' | 'mask';
+export type SidecarModel = 'small' | 'da3' | 'moge' | 'mask';
 export interface RawTensor { data: Float32Array; dims: number[] }
 
 export class SidecarDroppedError extends Error {}
@@ -11,6 +11,7 @@ export class SidecarDroppedError extends Error {}
 export function beklenenSekil(model: SidecarModel, inDims: number[]): number[] {
   if (model === 'mask') return [1, 1, 1024, 1024];
   if (model === 'da3') return [1, 2, inDims[2], inDims[3]];
+  if (model === 'moge') return [1, 5, inDims[2], inDims[3]];
   return [1, inDims[2], inDims[3]];
 }
 

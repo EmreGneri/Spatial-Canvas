@@ -237,6 +237,7 @@ class SpatialCanvasElement extends HTMLElement {
       const { estimateDepth, FOTO_KALITE } = await import('./depth');
       const depth = await estimateDepth(img, FOTO_KALITE);
       this.engine.setPhoto(img);
+      this.engine.setMetricPhotoGeometry(depth.metricGeometry ?? null);
       this.engine.setDepth(depth.data, depth.width, depth.height);
     } catch (err) {
       this.showFallback(`Görsel yüklenemedi: ${err instanceof Error ? err.message : String(err)}`);

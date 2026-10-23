@@ -17,6 +17,7 @@ assert.deepEqual(sidecarAcikMi('', '0', true), { acik: false, acikca: false, kay
 
 assert.deepEqual(beklenenSekil('small', [1, 3, 392, 518]), [1, 392, 518]);
 assert.deepEqual(beklenenSekil('da3', [1, 3, 518, 518]), [1, 2, 518, 518]);
+assert.deepEqual(beklenenSekil('moge', [1, 3, 518, 518]), [1, 5, 518, 518]);
 assert.deepEqual(beklenenSekil('mask', [1, 3, 1024, 1024]), [1, 1, 1024, 1024]);
 
 // Node'da (location yok) istemci hiç kurulmaz.

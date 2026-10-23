@@ -1,0 +1,9 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><title>MoGe photo benchmark</title>
+<body><pre id="status">Ready</pre><script type="module">
+import { runMogePhotoBench } from '/src/bench/mogePhotoBench.ts';
+window.runMogePhotoBench = () => runMogePhotoBench(message => {
+  document.querySelector('#status').textContent = message;
+  console.log(message);
+});
+</script></body></html>
