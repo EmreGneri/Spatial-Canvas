@@ -22,6 +22,7 @@ resmi ağırlıklardan kendi dışa aktarımınızı yapın.
 from __future__ import annotations
 
 import subprocess
+import argparse
 import sys
 import urllib.request
 from pathlib import Path
@@ -76,11 +77,18 @@ def agacla():
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--moge', action='store_true', help='isteğe bağlı MoGe-2 ViT-L (1,32 GB)')
+    args = parser.parse_args()
     kur_ortam()
     MODELS.mkdir(exist_ok=True)
     for ad, url, boyut in DOSYALAR:
         indir(ad, url, boyut)
     agacla()
+    if args.moge:
+        indir('moge-2-vitl-normal.onnx',
+              f'{HF}/Ruicheng/moge-2-vitl-normal-onnx/resolve/1c02388b024dd34da413e1a934d7a941785f1460/model.onnx',
+              1324265014)
     print(f'hazır. Başlatmak için: {venv_python()} {HERE / "server.py"}')
 
 

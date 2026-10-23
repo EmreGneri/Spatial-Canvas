@@ -52,6 +52,7 @@ import { activeNodes, createDefaultGraph, topologicalOrder, validateGraph, type 
 import { buildSilhouette, resampleBilinear } from './reconstruction/silhouette.ts';
 import { buildShellMesh, type ShellMeshData } from './reconstruction/mesh.ts';
 import { applySeparationCrop, computeMaskCropRect, cropChannels } from './reconstruction/crop.ts';
+import { buildMetricPhotoShell, createMetricPhotoProjection, cropMetricPhotoGeometry, updateMetricPhotoSplatGeometry, type MetricPhotoGeometry } from './reconstruction/metricPhotoGeometry.ts';
 import { subjectZSpan } from './reconstruction/sampler.ts';
 import { yuzRolyefiUygula, type YuzRolyefi } from './reconstruction/yuzRolyef.ts';
 import { inpaintMaskedPhoto } from './reconstruction/photo-inpaint.ts';
@@ -94,6 +95,7 @@ export class Engine {
   /** setPhoto ile alÄ±nan fotoÄŸraf pikselleri (0..1, interleaved rgb) â€” CPU
    *  Ã¶rneklemesi iÃ§in saklanÄ±r; GPU tarafÄ± imageColorTexture'tÄ±r. */
   private photoData: Float32Array | null = null;
+  private metricPhotoGeometry: MetricPhotoGeometry | null = null;
   private photoWidth = 0;
   private photoHeight = 0;
   private photoBackdrop: THREE.Mesh | null = null;
@@ -950,6 +952,7 @@ setPointsMaterial(material: THREE.Material) {
    * edilir, yoksa uHasImage = 0 â†’ shader'lar derinlik rampasÄ±na dÃ¼ÅŸer.
    */
   setVideoSource(video: HTMLVideoElement | null) {
+    if (video) this.metricPhotoGeometry = null;
     if (video === this.videoElement) return;
     this.gaussianSource = 'point-cloud';
     this.gaussiansDirty = true;
@@ -994,6 +997,7 @@ setPointsMaterial(material: THREE.Material) {
    * varsa uHasImage yeniden 1 olur; yoksa derinlik rampasÄ±na dÃ¼ÅŸÃ¼lÃ¼r.
    */
   releasePhoto() {
+    this.metricPhotoGeometry = null;
     this.neonCropDensity = 1;
     this.imageColorTexture?.dispose();
     this.imageColorTexture = null;
@@ -1057,6 +1061,15 @@ setPointsMaterial(material: THREE.Material) {
       this.imageColorTexture ? (this.imageColorTexture.image.data as Uint8Array) : null,
       POSITION_TEXTURE_SIZE,
     );
+    if (!this.videoTexture && this.metricPhotoGeometry
+      && this.metricPhotoGeometry.width === this.currentDepthTexture.image.width
+      && this.metricPhotoGeometry.height === this.currentDepthTexture.image.height) {
+      updateMetricPhotoSplatGeometry(
+        this.homeTexture.image.data as Float32Array,
+        POSITION_TEXTURE_SIZE,
+        this.splatObject.textures.b.image.data as Float32Array,
+      );
+    }
     this.splatObject.syncFromTextures(count);
     this.gaussiansDirty = false;
     this.syncRenderVisibility();
@@ -1574,6 +1587,11 @@ if (entry && entry.material !== this.pointsMaterial) {
     return this.simulation.uniforms as SimulationUniforms & Record<string, THREE.IUniform>;
   }
 
+  /** Photo calibration survives internal resampling and mask toggles, until source replacement. */
+  setMetricPhotoGeometry(geometry: MetricPhotoGeometry | null) {
+    this.metricPhotoGeometry = this.videoTexture ? null : geometry;
+  }
+
   /** Depth sÃ¶zleÅŸmesi: R32F, 0=uzak/1=yakÄ±n, satÄ±r 0 = Ã¼st. Flip yalnÄ±zca burada. */
   setDepth(
     data: Float32Array,
@@ -1584,6 +1602,7 @@ if (entry && entry.material !== this.pointsMaterial) {
     maskHeight?: number,
     videoFrame?: { data: Uint8ClampedArray; width: number; height: number },
   ) {
+    if (this.videoTexture) this.metricPhotoGeometry = null;
     // Nesne maskesi (segmentation.ts) depth ile aynÄ± boyutta deÄŸilse (letterbox
     // yuvarlama farklarÄ±) depth boyutuna yeniden Ã¶rneklenir â€” siluet AND koÅŸulu
     // piksel-piksel hizalÄ± yÃ¼rÃ¼sÃ¼n.
@@ -1666,13 +1685,19 @@ if (entry && entry.material !== this.pointsMaterial) {
       },
       !this.videoTexture && this.objectSeparation,
     );
+    const metric = this.metricPhotoGeometry;
+    const metricCropRect = metric && (crop.depthWidth !== width || crop.depthHeight !== height) && mask
+      ? computeMaskCropRect(mask, width, height) : null;
+    const metricProjection = metric && metric.width === width && metric.height === height
+      ? createMetricPhotoProjection(metricCropRect ? cropMetricPhotoGeometry(metric, metricCropRect) : metric, crop.depth, crop.mask)
+      : null;
     // YÜZ RÖLYEFİ (yalnız fotoğraf): kırpmadan SONRA, örneklemeden ÖNCE derinliğe işlenir —
     // konum, renk ve kabuk aynı derinliği görür. Ölçek motorun kendi dünya eşlemesinden:
     // 1 derinlik birimi = zSpan dünya = zSpan·kırpımYüksekliği/(2·halfH) piksel.
     const rolyefler = [this.yuzRolyefi].filter(
       (r): r is YuzRolyefi => !!r && r.rel.length === width * height,
     );
-    if (rolyefler.length && !this.videoTexture) {
+    if (rolyefler.length && !this.videoTexture && !metricProjection) {
       const rect = crop.depthWidth !== width || crop.depthHeight !== height
         ? (mask ? computeMaskCropRect(mask, width, height) : null) : null;
       const kes = (a: Float32Array) => (rect ? cropChannels(a, width, height, 1, rect).data : a);
@@ -1693,8 +1718,9 @@ if (entry && entry.material !== this.pointsMaterial) {
       if (this.renderModes) this.pushSharedUniformsAll();
     }
     fillPositionsFromDepth(this.homeTexture, crop.depth, crop.depthWidth, crop.depthHeight, {
+      metricProjection,
       foregroundMask: crop.mask,
-      blend: this.videoTexture ? 1 : this.dynamicHome ? 0.8 : 1,
+      blend: metricProjection || this.videoTexture ? 1 : this.dynamicHome ? 0.8 : 1,
       // No importance remap for photos either: it bends only the sampling
       // coordinate while world xy stays on the grid, which magnified the
       // subject in x/y but not z (flat, wide bust). Photo color fills and
@@ -1724,7 +1750,7 @@ if (this.photoData) {
       // Aynı kırpma (crop) burada da uygulanır — mesh, parçacık bulutuyla
       // aynı bbox'ı görmezse 'solid' modunda yüzey hizası kayar.
       this.setShellGeometry(
-        buildShellMesh(crop.depth, crop.depthWidth, crop.depthHeight, {
+        metricProjection ? buildMetricPhotoShell(metricProjection) : buildShellMesh(crop.depth, crop.depthWidth, crop.depthHeight, {
           foregroundMask: crop.mask,
         }),
       );

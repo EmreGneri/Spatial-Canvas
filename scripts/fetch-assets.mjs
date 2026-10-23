@@ -95,6 +95,19 @@ const BIREFNET = {
 };
 BIREFNET.dest = join('public/models', BIREFNET.repo, BIREFNET.file);
 
+// Deney varsayılan kapalı: temiz Vercel build'i yalnız açıkça seçilirse indirir.
+const MOGE = {
+  repo: 'Ruicheng/moge-2-vits-normal-onnx',
+  rev: 'e50ffda41565591092adea54c6ac83d6212e1e23',
+  file: 'model.onnx', size: 140852051,
+};
+MOGE.dest = join('public/models', MOGE.repo, MOGE.file);
+const EXTRA_MODELS = [BIREFNET, ...(process.env.VITE_MOGE2_PHOTO === '1' ? [MOGE] : [])];
+// VDA resmî ağırlıktan yerelde üretilir (scripts/export-video-depth-anything.py).
+// Build Python/Torch kurmaz ve ölçümde çöken eski topluluk aktarımını dağıtmaz.
+const VDA_DIR = 'DepthAnything/video-depth-anything-small-stream-154x266';
+const VDA_FILES = ['encoder_fp16.onnx', 'bootstrap_fp16.onnx', 'stream_fp16.onnx', 'export-manifest.json'];
+
 const mb = (n) => (n / 1024 / 1024).toFixed(2).padStart(7) + ' MB';
 
 const exists = (p) => stat(p).then(() => true, () => false);
@@ -171,17 +184,19 @@ if ((await stat(FACE_LANDMARKER.dest).catch(() => null))?.size === FACE_LANDMARK
   console.log(`${mb(buf.length)}  face_landmarker.task`);
 }
 
-console.log(`\n${BIREFNET.repo}`);
-if ((await stat(BIREFNET.dest).catch(() => null))?.size === BIREFNET.size) {
-  console.log(`     skip  ${BIREFNET.file}`);
-} else {
-  await mkdir(dirname(BIREFNET.dest), { recursive: true });
-  const res = await fetch(`https://huggingface.co/${BIREFNET.repo}/resolve/${BIREFNET.rev}/${BIREFNET.file}`);
-  if (!res.ok) throw new Error(`${BIREFNET.repo}/${BIREFNET.file}: ${res.status} ${res.statusText}`);
+for (const model of EXTRA_MODELS) {
+  console.log(`\n${model.repo}`);
+  if ((await stat(model.dest).catch(() => null))?.size === model.size) {
+    console.log(`     skip  ${model.file}`);
+    continue;
+  }
+  await mkdir(dirname(model.dest), { recursive: true });
+  const res = await fetch(`https://huggingface.co/${model.repo}/resolve/${model.rev}/${model.file}`);
+  if (!res.ok) throw new Error(`${model.repo}/${model.file}: ${res.status} ${res.statusText}`);
   const buf = Buffer.from(await res.arrayBuffer());
-  if (buf.length !== BIREFNET.size) throw new Error(`${BIREFNET.file}: beklenen ${BIREFNET.size} bayt, gelen ${buf.length}`);
-  await writeFile(BIREFNET.dest, buf);
-  console.log(`${mb(buf.length)}  ${BIREFNET.file}`);
+  if (buf.length !== model.size) throw new Error(`${model.file}: beklenen ${model.size} bayt, gelen ${buf.length}`);
+  await writeFile(model.dest, buf);
+  console.log(`${mb(buf.length)}  ${model.file}`);
 }
 
 await mkdir('public/mediapipe-wasm', { recursive: true });
@@ -195,6 +210,8 @@ await mirror('public/models', new Set([
   ...MODEL_REPOS.flatMap(({ repo, files }) => files.map((f) => `${repo}/${f}`)),
   'mediapipe/face_landmarker.task',
   `${BIREFNET.repo}/${BIREFNET.file}`,
+  `${MOGE.repo}/${MOGE.file}`,
+  ...VDA_FILES.map(file => `${VDA_DIR}/${file}`),
 ]));
 await mirror('public/ort', new Set(ORT_FILES));
 await mirror('public/mediapipe-wasm', new Set(MP_WASM_FILES));

@@ -158,6 +158,8 @@ def resize_plane(plane: np.ndarray, w: int, h: int) -> np.ndarray:
 
 class Models:
     def __init__(self, model_dir: Path, providers: list[str]):
+        self.model_dir = model_dir
+        self.moge = None  # İsteğe bağlı büyük model ilk MoGe fotoğrafında kurulur.
         self.providers = providers
         missing = [f for f in MODEL_FILES.values() if not (model_dir / f).exists()]
         if missing:
@@ -198,6 +200,27 @@ class Models:
     def run_mask(self, x: np.ndarray) -> np.ndarray:
         logits = self.mask.run(None, {'input_image': x})[-1]
         return (1 / (1 + np.exp(-logits))).astype(np.float32).reshape(1, 1, MASK_SIZE, MASK_SIZE)
+
+    def run_moge(self, x: np.ndarray) -> np.ndarray:
+        if x.shape != (1, 3, DA3_SIZE, DA3_SIZE) or not np.isfinite(x).all() or x.min() < 0 or x.max() > 1:
+            raise ValueError('MoGe expects RGB [1,3,518,518] in [0,1]')
+        if self.moge is None:
+            prepared = self.model_dir / 'moge-2-vitl-normal-fixed-fp16.onnx'
+            self.moge = session(prepared if prepared.exists() else self.model_dir / 'moge-2-vitl-normal.onnx', self.providers,
+                                {'batch_size': 1, 'height': DA3_SIZE, 'width': DA3_SIZE})
+        # ViT-S scale, ViT-L metric_scale yayımlar; sabit aktarım token girdisi istemez.
+        scale_name = 'metric_scale' if 'metric_scale' in {v.name for v in self.moge.get_outputs()} else 'scale'
+        feeds = {'image': x}
+        if 'num_tokens' in {v.name for v in self.moge.get_inputs()}:
+            feeds['num_tokens'] = np.array(1800, dtype=np.int64)
+        points, mask, scale = self.moge.run(['points', 'mask', scale_name], feeds)
+        if points.shape != (1, DA3_SIZE, DA3_SIZE, 3) or mask.shape != (1, DA3_SIZE, DA3_SIZE):
+            raise ValueError('Unexpected MoGe point-map or mask shape')
+        scale_value = float(scale.reshape(-1)[0])
+        if not np.isfinite(scale_value) or scale_value <= 0:
+            raise ValueError('Invalid MoGe metric scale')
+        return np.concatenate([points.transpose(0, 3, 1, 2), mask[:, None],
+            np.full((1, 1, DA3_SIZE, DA3_SIZE), scale_value, dtype=np.float32)], axis=1)
 
 
 def make_handler(models: Models, gpu: ThreadPoolExecutor, extra_origins: set[str]):
@@ -252,7 +275,10 @@ def make_handler(models: Models, gpu: ThreadPoolExecutor, extra_origins: set[str
             if self.origin_ok() == '':
                 return self.reply(403, b'{"ok":false}')
             if urlparse(self.path).path == '/health':
-                body = json.dumps({'ok': True, 'arkaUc': models.providers[0], 'modeller': list(MODEL_FILES)})
+                available = list(MODEL_FILES)
+                if (models.model_dir / 'moge-2-vitl-normal.onnx').exists():
+                    available.append('moge')
+                body = json.dumps({'ok': True, 'arkaUc': models.providers[0], 'modeller': available})
                 return self.reply(200, body.encode())
             self.reply(404, b'{"ok":false}')
 
@@ -286,7 +312,7 @@ def make_handler(models: Models, gpu: ThreadPoolExecutor, extra_origins: set[str
                 model = (parse_qs(url.query).get('model') or [''])[0]
             else:
                 return self.reply(404, b'{"ok":false}')
-            if model not in MODEL_FILES:
+            if model not in MODEL_FILES and model != 'moge':
                 return self.reply(400, json.dumps({'ok': False, 'hata': f'model yok: {model}'}).encode())
             try:
                 dims = [int(d) for d in self.headers.get('X-Dims', '').split(',')]
@@ -295,6 +321,8 @@ def make_handler(models: Models, gpu: ThreadPoolExecutor, extra_origins: set[str
                     raise ValueError(f'geçersiz girdi: dims={dims} bayt={len(body)}')
                 if model == 'mask' and dims[2:] != [MASK_SIZE, MASK_SIZE]:
                     raise ValueError('mask girdisi 1024x1024 olmalı')
+                if model == 'moge' and dims[2:] != [DA3_SIZE, DA3_SIZE]:
+                    raise ValueError('MoGe girdisi 518x518 olmalı')
                 x = np.frombuffer(body, dtype=np.float32).reshape(dims)
             except ValueError as e:
                 return self.reply(400, json.dumps({'ok': False, 'hata': str(e)}).encode())
@@ -310,7 +338,8 @@ def make_handler(models: Models, gpu: ThreadPoolExecutor, extra_origins: set[str
                 if model == 'small' and mine != models.small_seq:
                     return None
                 t = time.perf_counter()
-                out = {'small': models.run_small, 'da3': models.run_da3, 'mask': models.run_mask}[model](x)
+                out = {'small': models.run_small, 'da3': models.run_da3, 'mask': models.run_mask,
+                       'moge': models.run_moge}[model](x)
                 if models.debug:
                     print(f'{model} {x.shape[2]}x{x.shape[3]} {1000 * (time.perf_counter() - t):.0f} ms '
                           f'thread={threading.current_thread().name}', flush=True)

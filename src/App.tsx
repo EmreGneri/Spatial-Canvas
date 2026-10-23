@@ -585,10 +585,11 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
       // varsayılan mavi rampa yerine orijinal RGB). Kamera/video yolu bu
       // çağrıyı yapmaz → shader'lar derinlik rampasına düşer.
       engineRef.current!.setPhoto(source);
+      engineRef.current!.setMetricPhotoGeometry(depth.metricGeometry ?? null);
       // YÜZ RÖLYEFİ (varsayılan, ?yuz=0 kapatır): MediaPipe yüz ağının 3B şekli yüz bölgesine işlenir
       // (yuzRolyef.ts). Yüz bulunamazsa ya da kapalıysa null → eski davranış birebir.
       let rolyef: YuzRolyefi | null = null;
-      if (YUZ_GUCU > 0) {
+      if (YUZ_GUCU > 0 && !depth.metricGeometry) {
         const t3 = performance.now();
         const yuz = await yuzNoktalari(source);
         if (!isCurrent()) return;
@@ -994,6 +995,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
         subjectMask: { data: seg.mask, width: seg.width, height: seg.height },
       });
       lastDepthRef.current = { data: d.data, width: d.width, height: d.height };
+      engineRef.current!.setMetricPhotoGeometry(d.metricGeometry ?? null);
       if (d.subjectMask) engineRef.current!.setDepth(d.data, d.width, d.height, d.subjectMask, d.width, d.height);
       else engineRef.current!.setDepth(d.data, d.width, d.height, seg.mask, seg.width, seg.height);
       if (maskOverlayOnRef.current) drawMaskOverlay();

@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { sampleAoGrid, sampleImageGrid, sampleVolumePositions } from './reconstruction/index.ts';
+import { sampleMetricPhotoPositions, type MetricPhotoProjection } from './reconstruction/metricPhotoGeometry.ts';
 
 /**
  * Texture sözleşmesi — ARCHITECTURE.md ile birebir.
@@ -88,6 +89,8 @@ export function createHomeTexture(): THREE.DataTexture {
 }
 
 export interface PositionFillOptions {
+  /** Calibrated photo surface, already cropped and fitted with one similarity transform. */
+  metricProjection?: MetricPhotoProjection | null;
   /** Elipsoit kavis şiddeti (α). 0 = kapalı (düz kart). Varsayılan VOLUME_CURVATURE. */
   curvature?: number;
   /**
@@ -134,7 +137,9 @@ export function fillPositionsFromDepth(
 ) {
   const n = POSITION_TEXTURE_SIZE;
   const data = tex.image.data as Float32Array;
-  const xyz = sampleVolumePositions(depth, depthWidth, depthHeight, {
+  const xyz = opts.metricProjection && !opts.fullFrame
+    ? sampleMetricPhotoPositions(opts.metricProjection, n)
+    : sampleVolumePositions(depth, depthWidth, depthHeight, {
     gridSize: n,
     worldHeight: opts.worldHeight ?? POINTS_WORLD_HEIGHT,
     depthRange: POINTS_DEPTH_RANGE,

@@ -18,6 +18,7 @@ import { da3Plausible, da3Preprocess, da3ToDisparity, SHIFT_K } from './engine/v
 import { kenarHizala, mergeTileDetail, tileGrid, type TileResult } from './engine/reconstruction/derinlikDetay.ts';
 import { POINTS_DEPTH_RANGE } from './engine/buffers.ts';
 import { localInference, localInferenceAvailable, type RawTensor } from './engine/sidecarClient.ts';
+import type { MetricPhotoGeometry } from './engine/reconstruction/metricPhotoGeometry.ts';
 
 /**
  * GÜN D/1 (M6 düzeltmesi) — transformers TEMBEL yüklenir.
@@ -184,7 +185,7 @@ export const FOTO_KALITE: Pick<DepthEstimateOptions, 'tileDetay' | 'kenarHizalam
   tileDetay: true,
   kenarHizalama: 0.5,
   // DA3 yardımcı ya da VITE_DA3_MONO_URL varsa devreye girer; yoksa/başarısızsa V2-small.
-  model: 'da3-mono',
+  model: (import.meta as { env?: { VITE_MOGE2_PHOTO?: string } }).env?.VITE_MOGE2_PHOTO === '1' ? 'moge-2' : 'da3-mono',
 };
 
 export type HeadDetailDiagnostics = {
@@ -205,6 +206,9 @@ export type HeadDetailDiagnostics = {
 };
 
 export type DepthResult = {
+  /** MoGe camera geometry bypasses artistic normalization in the renderer. */
+  metricGeometry?: MetricPhotoGeometry;
+  moge?: { backend: 'webgpu' | 'sidecar'; focal: number; shift: number; projectionRmse: number; metricScale: number };
   /** Normalized 0..1, 0 = far, 1 = near. Row 0 is the TOP of the image. */
   data: Float32Array;
   width: number;
@@ -231,7 +235,7 @@ export type DepthEstimateOptions = {
    * `VITE_DA3_MONO_URL` ayarlıysa ve model yüklenip makul çıktı veriyorsa;
    * aksi hâlde sessizce V2-small. Varsayılan 'v2-small'.
    */
-  model?: 'v2-small' | 'da3-mono';
+  model?: 'v2-small' | 'da3-mono' | 'moge-2';
   /** DA3 disparite kayması (yalnız yardımcı yolunda); varsayılan SHIFT_K=0.5. SfM'e afin hizalanan yollar 0 verir. */
   da3Kayma?: number;
   /**
@@ -550,6 +554,27 @@ export async function estimateDepth(
   source: HTMLCanvasElement | HTMLImageElement,
   opts: DepthEstimateOptions = {},
 ): Promise<DepthResult> {
+  if (opts.model === 'moge-2') {
+    try {
+      const [{ inferMoge }, { mogePhotoResult }] = await Promise.all([
+        import('./engine/vision/mogeDepth.ts'), import('./engine/vision/mogePhoto.ts'),
+      ]);
+      const lb = letterboxCanvas(source, MODEL_INPUT_SIZE);
+      const rgba = lb.canvas.getContext('2d', { willReadFrequently: true })!
+        .getImageData(0, 0, MODEL_INPUT_SIZE, MODEL_INPUT_SIZE).data;
+      const n = MODEL_INPUT_SIZE*MODEL_INPUT_SIZE, rgb = new Float32Array(3*n);
+      for (let i = 0; i < n; i++) for (let c = 0; c < 3; c++) rgb[c*n+i] = rgba[4*i+c]/255;
+      const raw = await inferMoge({ data: rgb, dims: [1,3,MODEL_INPUT_SIZE,MODEL_INPUT_SIZE] });
+      if (raw) {
+        const result = mogePhotoResult(raw, lb);
+        depthDevice = raw.backend;
+        return result;
+      }
+    } catch (error) {
+      console.warn('MoGe-2 geometry unavailable; existing photo depth fallback.', error);
+    }
+    return estimateDepth(source, { ...opts, model: 'da3-mono' });
+  }
   // DA3 önceliği: yerel yardımcı (GPU, 1,3 GB tarayıcıya inmez) → tarayıcı DA3
   // (VITE_DA3_MONO_URL) → V2-small. Diğer çağıranlar (video, gezinme) V2'de kalır.
   let model: Awaited<ReturnType<typeof loadDepthModel>> | null = null;
