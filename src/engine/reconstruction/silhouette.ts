@@ -149,6 +149,90 @@ export function keepLargestComponent(mask: Float32Array, w: number, h: number): 
   return out;
 }
 
+/** İkili maskeyi (Chebyshev, kare çekirdek) `r` piksel genişletir — ayrılabilir, O(n). */
+function dilateBinary(src: Uint8Array, w: number, h: number, r: number): Uint8Array {
+  const tmp = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) {
+    const o = y * w;
+    let last = -Infinity; // en son 1'in x'i
+    for (let x = 0; x < w; x++) if (src[o + x]) last = x, tmp[o + x] = 1; else if (x - last <= r) tmp[o + x] = 1;
+    last = Infinity;
+    for (let x = w - 1; x >= 0; x--) if (src[o + x]) last = x; else if (last - x <= r) tmp[o + x] = 1;
+  }
+  const out = new Uint8Array(w * h);
+  for (let x = 0; x < w; x++) {
+    let last = -Infinity;
+    for (let y = 0; y < h; y++) if (tmp[y * w + x]) last = y, out[y * w + x] = 1; else if (y - last <= r) out[y * w + x] = 1;
+    last = Infinity;
+    for (let y = h - 1; y >= 0; y--) if (tmp[y * w + x]) last = y; else if (last - y <= r) out[y * w + x] = 1;
+  }
+  return out;
+}
+
+/** Ana bileşene eklenecek ikincil parçanın en küçük alanı (ana bileşen alanının oranı). */
+export const MASK_SECONDARY_MIN_FRAC = 0.002;
+/** İkincil parçanın ana kütleye en fazla uzaklığı (piksel) — dilate yarıçapının 3 katı. */
+export const MASK_SECONDARY_NEAR_PX = 3 * MASK_DILATE_RADIUS;
+
+/**
+ * `keepLargestComponent`'in uzuv dostu hali: en büyük bileşene EK OLARAK ona
+ * (ya da zaten kabul edilmiş parçalara) `nearPx` içinde olan ve alanı ana
+ * bileşenin en az `minFrac`'i kadar olan bileşenler korunur. İnce bir boşlukla
+ * gövdeden ayrılmış kol/el böylece düşmez (Background Matting uyarısı); uzaktaki
+ * kapı kasası/zemin parçaları ve küçük benekler yine düşer. Tek parçada çıktı
+ * değişmez.
+ */
+export function keepMainComponents(
+  mask: Float32Array, w: number, h: number,
+  nearPx: number = MASK_SECONDARY_NEAR_PX, minFrac: number = MASK_SECONDARY_MIN_FRAC,
+): Float32Array {
+  const n = w * h;
+  const id = new Int32Array(n).fill(-1);
+  const stack = new Int32Array(n);
+  const sizes: number[] = [];
+  let next = 0;
+  for (let s = 0; s < n; s++) {
+    if (mask[s] < 0.5 || id[s] >= 0) continue;
+    let sp = 0;
+    stack[sp++] = s;
+    id[s] = next;
+    let size = 0;
+    while (sp > 0) {
+      const p = stack[--sp];
+      size++;
+      const x = p % w;
+      const y = (p / w) | 0;
+      if (x > 0 && mask[p - 1] >= 0.5 && id[p - 1] < 0) { id[p - 1] = next; stack[sp++] = p - 1; }
+      if (x < w - 1 && mask[p + 1] >= 0.5 && id[p + 1] < 0) { id[p + 1] = next; stack[sp++] = p + 1; }
+      if (y > 0 && mask[p - w] >= 0.5 && id[p - w] < 0) { id[p - w] = next; stack[sp++] = p - w; }
+      if (y < h - 1 && mask[p + w] >= 0.5 && id[p + w] < 0) { id[p + w] = next; stack[sp++] = p + w; }
+    }
+    sizes.push(size);
+    next++;
+  }
+  if (next <= 1) return mask;
+  let big = 0;
+  for (let i = 1; i < next; i++) if (sizes[i] > sizes[big]) big = i;
+  const kept = new Uint8Array(next);
+  kept[big] = 1;
+  const minSize = sizes[big] * minFrac;
+  // Aday varken yakınlık turu: kabul edilenlerin genişletilmişine değen aday da kabul (zincir el→kol→gövde).
+  for (let tur = 0; tur < 4; tur++) {
+    const cur = new Uint8Array(n);
+    for (let i = 0; i < n; i++) if (id[i] >= 0 && kept[id[i]]) cur[i] = 1;
+    const near = dilateBinary(cur, w, h, nearPx);
+    let eklendi = false;
+    for (let i = 0; i < n; i++) {
+      const c = id[i];
+      if (c >= 0 && !kept[c] && near[i] && sizes[c] >= minSize) { kept[c] = 1; eklendi = true; }
+    }
+    if (!eklendi) break;
+  }
+  const out = new Float32Array(n);
+  for (let i = 0; i < n; i++) out[i] = id[i] >= 0 && kept[id[i]] ? mask[i] : 0;
+  return out;
+}
+
 export function dilateAndFeatherMask(
   mask: Float32Array,
   w: number,
