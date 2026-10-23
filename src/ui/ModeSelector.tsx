@@ -198,19 +198,24 @@ function LivePhotoControls({ engine }: { engine: Engine }) {
       >
         ◍ canlı
       </button>
-      <label title="salınım hızı" style={{ display: 'flex', gap: 4, alignItems: 'center', color: on ? '#889' : '#556' }}>
-        <input
-          type="range"
-          min={0.3}
-          max={2.5}
-          step={0.1}
-          value={speed}
-          disabled={!on}
-          onChange={(e) => changeSpeed(Number(e.target.value))}
-          style={{ width: 70 }}
-        />
-        <span style={{ fontVariantNumeric: 'tabular-nums' }}>{speed.toFixed(1)}×</span>
-      </label>
+      {/* Hız kolu YALNIZ salınım açıkken. Kapalıyken devre dışı bir kol ve
+          bir sayı olarak duruyordu: hiçbir işe yaramıyor ama ilk ekranın
+          kontrol sayısına giriyordu. Bir ayarın, ait olduğu özellik
+          kapalıyken görünmesi için bir sebep yok. */}
+      {on && (
+        <label title="salınım hızı" style={{ display: 'flex', gap: 4, alignItems: 'center', color: renk.metinSolgun }}>
+          <input
+            type="range"
+            min={0.3}
+            max={2.5}
+            step={0.1}
+            value={speed}
+            onChange={(e) => changeSpeed(Number(e.target.value))}
+            style={{ width: 70 }}
+          />
+          <span style={{ fontVariantNumeric: 'tabular-nums' }}>{speed.toFixed(1)}×</span>
+        </label>
+      )}
     </>
   );
 }

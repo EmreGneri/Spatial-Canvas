@@ -22,6 +22,7 @@ export function TransportSerit({
   mod,
   modlar,
   cikti,
+  ciktiKatlanir = false,
   araclar,
   altSatir,
 }: {
@@ -33,6 +34,15 @@ export function TransportSerit({
   modlar: ReactNode;
   /** Sağ blok: çıktı şeridi (ExportBar). */
   cikti: ReactNode;
+  /**
+   * Çıktı bloğunu TEK düğmenin arkasına katlar.
+   *
+   * NEDEN: PNG · WebM · 5/10/20sn · PLY · imza · AR = 8 kontrol, ilk
+   * ekrandaki birincil kontrollerin 8/22'si. Hepsi KAPANIŞ vuruşuna ait;
+   * ilk kez giren biri hiçbirine dokunmaz ama hepsini sayar. Katlanınca
+   * sayı 8'den 1'e iner, eylem bir tık uzakta kalır.
+   */
+  ciktiKatlanir?: boolean;
   /** Sol bloğa eklenen sahne araçları (splat temizleme düğmesi gibi). */
   araclar?: ReactNode;
   /**
@@ -43,6 +53,7 @@ export function TransportSerit({
   altSatir?: ReactNode;
 }) {
   const [durdu, setDurdu] = useState(false);
+  const [ciktiAcik, setCiktiAcik] = useState(false);
 
   function oynatDurdur() {
     if (!engine) return;
@@ -82,7 +93,21 @@ export function TransportSerit({
           kendi `flexWrap`'i devreye girer ve blok BÜTÜN olarak alt satıra iner. */}
       <div style={{ ...blok, flex: '1 1 auto' }}>{modlar}</div>
 
-      <div style={blok}>{cikti}</div>
+      {ciktiKatlanir && !ciktiAcik ? (
+        <div style={blok}>
+          <button
+            type="button"
+            style={dugme(false)}
+            title="PNG · WebM · PLY · AR"
+            aria-expanded={false}
+            onClick={() => setCiktiAcik(true)}
+          >
+            ↓ çıktı
+          </button>
+        </div>
+      ) : (
+        <div style={blok}>{cikti}</div>
+      )}
 
       {altSatir && <div style={{ flexBasis: '100%', minWidth: 0 }}>{altSatir}</div>}
     </div>

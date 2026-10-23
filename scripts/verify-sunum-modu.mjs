@@ -108,9 +108,37 @@ const gizlendiMi = (etiket) => {
   assert.ok(i > 0, `${etiket} bulunamadı`);
   return gizliAraliklar.some(([a, b]) => i > a && i < b);
 };
-for (const [etiket, ad] of [['sentetik görsel', '1. vuruş'], ['3D eğit', '3. vuruş']]) {
-  assert.equal(gizlendiMi(etiket), false, `${etiket} (${ad}) sunumda gizlenmiş — demo senaryosu kırılır`);
-}
+assert.equal(gizlendiMi('sentetik görsel'), false, 'sentetik görsel (1. vuruş) sunumda gizlenmiş — demo senaryosu kırılır');
+
+// İLK EKRAN BÜTÇESİ (hoca geri bildirimi 2026-10-23: "ne yapacağını
+// bilemedi" + "kontrolün çokluğu boğdu"). Ölçüldü: 22 birincil kontrol,
+// kuralın (tasarim-kurallari.md) iki katı. Üç kol çekildi; her biri
+// burada ayrı ayrı kilitlenir, yoksa sonraki tur sessizce geri açar.
+
+// 1. ÇIKTI BLOĞU KATLANIR: PNG·WebM·5/10/20sn·PLY·imza·AR = 8 kontrol,
+//    hepsi kapanış vuruşuna ait. Katlanınca 8 → 1.
+assert.match(app, /ciktiKatlanir=\{sunum\}/, 'çıktı bloğu sunumda katlanmıyor');
+const serit = readFileSync(new URL('../src/ui/TransportSerit.tsx', import.meta.url), 'utf8');
+assert.match(serit, /ciktiKatlanir && !ciktiAcik \?/, 'TransportSerit katlama dalını uygulamıyor');
+assert.match(serit, /↓ çıktı/, 'katlanmış hâlde açma düğmesi yok — çıktı erişilemez olur');
+
+// 2. İLK HAMLE TEK DOLGU: ekranda birden fazla birincil düğme olursa
+//    hiçbiri birincil olmaz.
+const birincilSayisi = (app.match(/birincilDugme\(\)/g) || []).length;
+assert.equal(birincilSayisi, 1, `birincil dolgu düğme sayısı ${birincilSayisi} — tam 1 olmalı`);
+assert.match(app, /sunum \? 'fotoğrafını yükle' : 'dosya…'/, 'ilk hamle sunumda açıkça adlandırılmıyor');
+
+// 3. TIKLANAMAYAN DÜĞME ÇİZİLMEZ: `3D eğit` video olmadan zaten devre
+//    dışıydı. Sunumda hiç mount edilmez; video gelince belirir, yani
+//    3. vuruş KAYBOLMAZ — koşulun ikinci yarısı bunun garantisi.
+assert.match(app, /\{\(!sunum \|\| !!videoDosya\) && <button/,
+  '3D eğit koşullu mount edilmiyor (video gelince belirmeli)');
+assert.ok(app.includes('3D eğit'), '3D eğit tamamen kaldırılmış — 3. vuruş yok olur');
+
+// Salınım hızı kolu, ait olduğu özellik kapalıyken çizilmez.
+const modSec = readFileSync(new URL('../src/ui/ModeSelector.tsx', import.meta.url), 'utf8');
+assert.match(modSec, /\{on && \(\s*\n\s*<label title="salınım hızı"/,
+  'hız kolu salınım kapalıyken de çiziliyor');
 // Ve tersi: tanı kontrolleri GERÇEKTEN blokların içinde olmalı.
 // DÜĞMENİN KENDİSİ aranır, log mesajı değil: `say('nesne ayırma: ...')`
 // satırları dosyada daha yukarıda geçiyor ve düz metin araması onları buluyordu.
