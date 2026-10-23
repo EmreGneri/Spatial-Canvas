@@ -143,7 +143,7 @@ export function kapakUret(canvas: HTMLCanvasElement, renderFrame: () => void): s
  */
 export function yerTutucu(state: unknown): string {
   const renkler = (JSON.stringify(state).match(/#[0-9a-fA-F]{6}/g) ?? []).slice(0, 2);
-  const a = renkler[0] ?? '#1d222d';
-  const b = renkler[1] ?? '#12151c';
+  const a = renkler[0] ?? '#242120';
+  const b = renkler[1] ?? '#141311';
   return `linear-gradient(135deg, ${a}, ${b})`;
 }

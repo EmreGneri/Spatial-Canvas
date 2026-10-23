@@ -240,7 +240,7 @@ function sureDugmesi(secili: boolean): CSSProperties {
     minHeight: 32,
     padding: '8px 8px',
     background: secili ? renk.vurguSakin : 'transparent',
-    color: secili ? '#dce9ff' : renk.metinSilik,
+    color: secili ? '#f5d8b4' : renk.metinSilik,
     borderWidth: 0,
     borderRadius: yaricap.kontrol,
     cursor: secili ? 'default' : 'pointer',
