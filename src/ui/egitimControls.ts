@@ -1,5 +1,5 @@
 import { kameraMerkezi, yorunge, type GsKamera } from '../engine/reconstruction/egitim3dgs.ts';
-import { aciklik, serbestAdim, type BosAlan } from '../engine/reconstruction/bosAlan.ts';
+import { aciklik, erisilebilirAlan, serbestAdim, type BosAlan } from '../engine/reconstruction/bosAlan.ts';
 
 /** Use a non-passive listener so zooming the training canvas never scrolls the page. */
 export function bindWheelZoom(
@@ -214,6 +214,10 @@ export interface BosAlanSiniri {
   aciklik: Float32Array;
   /** Minimum clearance a step may land in (`oran` × `birim`). */
   yaricap: number;
+  /** Camera-seeded reachable free space (`erisilebilirAlan`, same `yaricap`),
+   *  when seeds were given: steps must also stay inside it. An extra
+   *  constraint on top of the confidence gate, not a collision guarantee. */
+  erisilebilir?: Uint8Array;
 }
 
 /**
@@ -224,8 +228,12 @@ export interface BosAlanSiniri {
  * for an orbit (`FlySiniri.olcek`) — the caller passes whichever matches
  * the capture, since `bosAlan.ts` carries no capture shape of its own.
  */
-export function bosAlanSiniri(alan: BosAlan, birim: number, oran = 0.02): BosAlanSiniri {
-  return { alan, aciklik: aciklik(alan), yaricap: oran * birim };
+export function bosAlanSiniri(
+  alan: BosAlan, birim: number, oran = 0.02, tohumlar?: readonly Vec3[],
+): BosAlanSiniri {
+  const ac = aciklik(alan), yaricap = oran * birim;
+  return { alan, aciklik: ac, yaricap,
+    ...(tohumlar ? { erisilebilir: erisilebilirAlan(alan, tohumlar, yaricap, ac) } : {}) };
 }
 
 /**
@@ -251,7 +259,7 @@ export function flyStep(
     C[i] + s * (axes.forward * k.R[6 + i] + axes.right * k.R[i] + axes.vertical * up[i])) as Vec3;
   let C2: Vec3;
   if (bos) {
-    C2 = serbestAdim(bos.alan, bos.aciklik, C, next, bos.yaricap);
+    C2 = serbestAdim(bos.alan, bos.aciklik, C, next, bos.yaricap, bos.erisilebilir);
   } else {
     // Distances in units of the local margin: > 1 is outside the bound.
     const [P, d, pay] = hacmeEnYakin(next, sinir);
