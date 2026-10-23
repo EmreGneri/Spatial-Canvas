@@ -34,6 +34,20 @@ import assert from 'node:assert/strict';
 // asagidaki testler GOZLENEBILIR sirayi dogrular, mekanizmayi degil.
 console.log(`navigator.locks: ${typeof navigator !== 'undefined' && navigator.locks ? 'var (gercek Web Lock yolu)' : 'yok (dogrudan cagri yolu)'}`);
 
+// MODEL BAYTLARI DA SAHTE. segmentation.ts artık oturumu bir yoldan değil
+// TAMPONDAN kurar (`ilerlemeliGetir`), çünkü `create(yol)` ilerleme
+// bildirmiyordu ve 84 MB boyunca ekranda hiçbir şey değişmiyordu. Node'da
+// göreli bir yol fetch edilemez; bu script indirmeyi değil KUYRUK
+// sözleşmesini kanıtladığı için getirme burada kısa devre edilir.
+// (İndirmenin kendi sözleşmesi: scripts/verify-indirme-ilerleme.mjs)
+globalThis.fetch = async () => ({
+  ok: true,
+  status: 200,
+  headers: { get: () => '8' },
+  body: null,
+  arrayBuffer: async () => new ArrayBuffer(8),
+});
+
 const ort = await import('onnxruntime-web/webgpu');
 const { gpuSirasinaGir } = await import('../src/depth.ts');
 

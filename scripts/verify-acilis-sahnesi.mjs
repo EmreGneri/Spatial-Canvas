@@ -98,10 +98,14 @@ assert.ok(!/\[40, 70, 160\]|\[150, 90, 240\]/.test(app), 'bina koordinatları Ap
 // Asıl kazanç bu: açılışta hiçbir model indirilmemeli (ölçüldü: 131,4 MB → 0).
 assert.match(app, /acilisSahnesiniCalistir\(syntheticImage\(\)\)/, 'soğuk açılış modelsiz yolu kullanmıyor');
 assert.ok(!/void run\(syntheticImage\(\)\)/.test(app), 'örnek sahne hâlâ model indiren run() ile koşuyor');
-assert.match(app, /if \(sunum && !kullaniciKaynagi\) return/, 'canlı model ön ısıtması sunumda hâlâ spekülatif');
+assert.match(app, /if \(sunum && !canliKaynak\) return/, 'canlı model ön ısıtması sunumda hâlâ spekülatif');
+// Isıtma GERÇEKTEN canlı yolu kullanacak kaynağa bağlı olmalı. "Bir dosya
+// seçildi mi" yetmez: fotoğraf yüklenince de tetikleniyordu ve aynı 47 MB
+// iki kez paralel iniyordu (ölçüldü: 131 MB beklenirken 178,8 MB).
+assert.match(app, /const canliKaynak = cameraOn \|\| !!videoDosya;/, 'ısıtma koşulu canlı kaynağa bağlı değil');
 // Kullanıcının kendi görüntüsü GERÇEK boru hattından geçmeli — analitik
 // derinlik yalnız bizim çizdiğimiz sahne için geçerlidir.
-assert.match(app, /handleFile\(file: File\) \{\s*\n\s*setKullaniciKaynagi\(true\);/, 'kullanıcı kaynağı işaretlenmiyor');
+assert.match(app, /handleFile\(file: File\) \{\s*\n\s*indirmeSifirla\(\);/, 'yeni işte artakalan indirme satırı temizlenmiyor');
 
 // ── DÜRÜSTLÜK BEYANI ───────────────────────────────────────────────────────
 // Analitik sahneyi model çıktısıymış gibi sunmak, projenin eleştirdiği şey.

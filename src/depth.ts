@@ -430,6 +430,24 @@ export async function loadDepthModel(device?: 'wasm' | 'webgpu') {
   if (estimator) return estimator;
   const kur = async (d: 'wasm' | 'webgpu') => {
     const tf = await loadTransformers();
+    /**
+     * `progress_callback` DENENDİ VE KALDIRILDI — indirmeyi İKİYE KATLIYOR.
+     *
+     * Ölçüldü (2026-10-23, boş önbellek, aynı fotoğraf, aynı makine):
+     *   geri çağrı YOK → model_fp16.onnx 1 kez indi,  47,34 MB
+     *   geri çağrı VAR → aynı dosya 2 kez, 17 ms arayla, 94,68 MB
+     *
+     * transformers.js geri çağrı verildiğinde dosyayı ikinci kez çekiyor.
+     * Bir ilerleme çubuğu, gösterdiği indirmeyi iki katına çıkarıyorsa
+     * kazanç negatiftir — ziyaretçi daha iyi bilgilendirilmiş olarak daha
+     * uzun bekler.
+     *
+     * İlerleme BÜYÜK dosyada zaten var: nesne ayırma modeli (84 MB, fotoğraf
+     * yolundaki yükün %64'ü) `ilerlemeliGetir` ile elle akıtılıyor ve çift
+     * indirme yapmıyor (segmentation.ts). Derinlik sessiz iner; onun da
+     * yüzdesi istenirse yol, transformers.js'in geri çağrısına güvenmek
+     * değil, aynı elle akıtma desenidir.
+     */
     const olustur = () => tf.pipeline('depth-estimation', MODEL, {
       device: d,
       dtype: d === 'webgpu' ? 'fp16' : 'q8',
