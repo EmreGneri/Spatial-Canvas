@@ -6,7 +6,7 @@ import {
   bindWheelZoom, boundedZoomFactor, bosAlanSiniri, cekimTuru, flyAxes, flySiniri, flyStepBirlesik, lookAround,
   type BosAlanSiniri, type CekimTuru,
 } from './egitimControls';
-import { aciklikAt, durum } from '../engine/reconstruction/bosAlan';
+import { aciklikAt, durum, vokselIndeksi } from '../engine/reconstruction/bosAlan';
 import { egitimGpuHint } from './egitimGpuHint';
 import { ayarOzeti, egitimOnKontrol, type OnKontrol } from './egitimOnKontrol';
 import { cekimNotlari, type CekimNotu } from './cekimNotlari';
@@ -190,11 +190,15 @@ export function Egitim3D({ dosya, onKapat, say, onIlerleme }: {
       const guven = e.gezinmeGuveni;
       if (e.bosAlan && guven?.serbestGezinmeUygun) {
         const sinir = flySiniri(e.kameralar, e.pivot, cekimTuruRef.current);
+        // Training cameras seed the reachable region: an extra constraint on
+        // top of the confidence gate above, not a replacement for it.
         const bosSiniri = bosAlanSiniri(e.bosAlan,
-          sinir.pivot === null ? sinir.olcek * 4 : sinir.olcek, 0.04);
+          sinir.pivot === null ? sinir.olcek * 4 : sinir.olcek, 0.04, e.kameralar);
         const merkez = kameraMerkezi(yurumeKamerasi);
+        const merkezIndeksi = vokselIndeksi(e.bosAlan, merkez);
         const baslangicGuvenli = durum(e.bosAlan, merkez) === 'bos'
-          && aciklikAt(e.bosAlan, merkez, bosSiniri.aciklik) >= bosSiniri.yaricap;
+          && aciklikAt(e.bosAlan, merkez, bosSiniri.aciklik) >= bosSiniri.yaricap
+          && merkezIndeksi >= 0 && bosSiniri.erisilebilir?.[merkezIndeksi] === 1;
         if (baslangicGuvenli) {
           bosSiniriRef.current = bosSiniri;
           if (cekimTuruRef.current === 'yol') {
@@ -205,7 +209,7 @@ export function Egitim3D({ dosya, onKapat, say, onIlerleme }: {
         } else {
           bosSiniriRef.current = null;
           setUcus(false);
-          setGezinmeNotu('Başlangıç kamerası doğrulanmış boş alanda değil; yörünge modunda kaldın.');
+          setGezinmeNotu('Başlangıç kamerası kameralardan erişilebilir, doğrulanmış boş alanda değil; yörünge modunda kaldın.');
         }
       } else if (gezilebilir) {
         bosSiniriRef.current = null;

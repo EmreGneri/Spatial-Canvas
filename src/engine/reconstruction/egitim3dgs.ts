@@ -17,6 +17,7 @@ import { yenilikIncelemesi } from './kareSecimi.ts';
 import { siraliCiftler } from './ciftGrafigi.ts';
 import { gezinmeDerinligiHazirla, type GezinmeDerinlikKaynagi, type GezinmeGuveni } from './gezinmeDerinligi.ts';
 import { durum, type BosAlan } from './bosAlan.ts';
+import { yuzenBolgesi, yuzenleriBul, type YuzenSonucu } from './yuzenTemizleme.ts';
 import {
   bendFrame, deformGaussianBuffer, fadeGaussianOpacity, isIdentityDeform, noiseAmplitudeLimit,
   type BendDirection, type DeformSpec, type Mat3,
@@ -578,6 +579,12 @@ export interface Egitim {
    * Invalid indices reject the entire selection. devamEt preserves edits
    * initially but may relocate dead splats: fetch fresh indices afterwards. */
   temizle(indices: readonly number[]): Promise<GaussianUndo>;
+  /** Automatic floater removal (`yuzenTemizleme.ts`, PlayCanvas filterFloaters
+   * logic) over the BASE state, applied through `temizle` (one undo token;
+   * `geri` is null when nothing was pruned). `oran`: voxel edge as a fraction
+   * of the median camera-to-SfM-point distance D (scene is not metric); only
+   * splats centred within the camera AABB ± D are judged (`yuzenBolgesi`). */
+  yuzenleriTemizle(oran?: number): Promise<{ sonuc: YuzenSonucu; geri: GaussianUndo | null }>;
   plyBlob(): Promise<Blob>;
   /** Serbest kamera; `ciz` kanvası bu kamerayla çizer. */
   kamera: GsKamera;
@@ -625,6 +632,17 @@ export async function applyWithFlagRollback<T>(
   }
 }
 
+/** Yüzen temizleme vokseli = bu oran × kameradan SfM noktalarına medyan
+ *  uzaklık D. PlayCanvas'ın 5 cm'i birkaç metrelik çekim mesafesinde ≈ %1–2;
+ *  0.015 iki ölçüm sahnesinde 8M voksel tavanına takılmayan en ince değer
+ *  (0.01 tavana takılıp 0.02'ye kabalaşıyordu). */
+export const YUZEN_VOKSEL_ORANI = 0.015;
+/** Otomatik yüzen temizleme eğitim bitince çalışsın mı. KAPALI: sentetik ve
+ *  gerçek orman klibinde canlı splat'ların ≤ %0,2'sini siliyor, ayrılan kare
+ *  PSNR'ı ±0,006 dB (gürültü), GT sonda PSNR'ı −0,01 dB; fayda ölçülmedi
+ *  (docs/benchmarks/gezinme-entegrasyon.md, 2026-10-23). */
+export const YUZEN_TEMIZLEME_VARSAYILAN = false;
+
 /**
  * Videodan eğitimi başlatır. `canvas` hazırlanınca canlı görüntü oraya
  * çizilir (eğitim sürerken sahne ekranda netleşir). Söz, eğitim BAŞLAYINCA
@@ -642,6 +660,9 @@ export async function egitimBaslat(
     kamera?: KameraCozSecenekleri;
     geometri?: { kaynak: GezinmeDerinlikKaynagi };
     derinlikKisiti?: DerinlikKisitiSecenekleri;
+    /** Run `yuzenleriTemizle` once training completes, before `olay.bitti`.
+     *  Default `YUZEN_TEMIZLEME_VARSAYILAN`. */
+    yuzenTemizle?: boolean;
   },
 ): Promise<Egitim> {
   signal?.throwIfAborted();
@@ -725,6 +746,7 @@ export async function egitimBaslat(
     signal.throwIfAborted();
   }
   let sonMetrik: EgitimMetrik | null = null;
+  let egitimNesnesi: Egitim | null = null;
   s.on('stage', (e: { stage: string; done?: number; total?: number }) => {
     if (closed) return;
     hareket();
@@ -745,7 +767,14 @@ export async function egitimBaslat(
           .map((mark: { iter: number; moved: number; grown: number; ms: number }) => ({ kind: 'refine' as const, ...mark }));
         options.olcum.refineMarks(marks, s.trainer.n, s.trainer.cap);
       }
-      olay.bitti(sonMetrik);
+      const bitir = () => { if (!closed) olay.bitti(sonMetrik); };
+      if (!(options?.yuzenTemizle ?? YUZEN_TEMIZLEME_VARSAYILAN) || !egitimNesnesi) { bitir(); return; }
+      // Optional cleanup must never cost the user a finished run.
+      egitimNesnesi.yuzenleriTemizle().then(
+        ({ sonuc }) => { if (!closed) olay.asama(`yüzen temizleme: ${sonuc.indeksler.length}/${sonuc.canli} Gaussian silindi`); },
+        (error) => { if (!closed) olay.asama(`yüzen temizleme atlandı (${error instanceof Error ? error.message : String(error)})`); },
+      ).finally(bitir);
+      return;
     }
     if (e.kind === 'device-lost') {
       olay.hata(new Error('GPU cihazı kayboldu — eğitim durdu. Sayfayı yenile.'));
@@ -897,6 +926,11 @@ export async function egitimBaslat(
       ),
       gaussianlar: () => bend.gaussianlar(),
       temizle: (indices) => bend.temizle(indices),
+      yuzenleriTemizle: async (oran = YUZEN_VOKSEL_ORANI) => {
+        const g = await bend.gaussianlar();
+        const sonuc = yuzenleriBul(g.data, g.n, yuzenBolgesi(e.kameralar, noktalar, oran));
+        return { sonuc, geri: sonuc.indeksler.length ? await bend.temizle(sonuc.indeksler) : null };
+      },
       // The file is the trained scene, never the slider's bent/faded preview.
       plyBlob: () => bend.withBase(() => s.exportPlyBlob()),
       kamera,
@@ -937,6 +971,7 @@ export async function egitimBaslat(
       },
     };
     signal?.throwIfAborted();
+    egitimNesnesi = e;
     s.start();
     armTrainWatch();
     return e;
