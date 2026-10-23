@@ -51,6 +51,7 @@
 // (scripts/verify-seg.mjs) düz içe aktarımı kullanır; orada zaten wasm yolu
 // doğrudur ve webgpu yoktur.
 import * as ort from 'onnxruntime-web/webgpu';
+import { ilerlemeliGetir } from '../../indirmeIlerleme.ts';
 import { dilateAndFeatherMask, keepLargestComponent, resampleBilinear } from './silhouette.ts';
 import { localInference, localInferenceAvailable } from '../sidecarClient.ts';
 import { gpuSirasinaGir, onceRetry } from '../../depth.ts';
@@ -100,13 +101,17 @@ export async function loadSegmentationModel(device: 'wasm' | 'webgpu' = 'webgpu'
   // WebGPU tercih edilir. Ağırlık fp16 olduğu için wasm yolunda desteklenmeyen
   // op'a düşülebilir; o durumda hata YUTULMAZ, çağırana bildirilir — sessiz
   // bozulma yasağı (bkz. vision/yetenek.ts).
-  yukleSession ??= onceRetry(() =>
-    gpuSirasinaGir(() =>
-      ort.InferenceSession.create(MODEL_PATH, {
+  // MODEL YOL DEĞİL BAYT olarak verilir: `create(yol)` dosyayı kendi çeker ve
+  // ilerleme bildirmez — 84 MB boyunca ekranda hiçbir şey değişmez.
+  // `ilerlemeliGetir` aynı dosyayı akıtır, yüzdeyi bildirir ve tamponu verir.
+  yukleSession ??= onceRetry(async () => {
+    const bayt = await ilerlemeliGetir(MODEL_PATH, 'nesne ayırma modeli');
+    return gpuSirasinaGir(() =>
+      ort.InferenceSession.create(bayt, {
         executionProviders: device === 'webgpu' ? ['webgpu', 'wasm'] : ['wasm'],
       }),
-    ),
-  );
+    );
+  });
   segSession = await yukleSession();
   return segSession;
 }

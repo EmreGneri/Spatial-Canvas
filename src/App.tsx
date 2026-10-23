@@ -25,6 +25,7 @@ import { serializeRenderState } from './shaders/renderPreset';
 import { maskeKarari } from './ui/maskeKarari';
 import { useDarEkran } from './ui/useDarEkran';
 import { ACILIS_BOY, ACILIS_EN, ACILIS_NOTU, acilisDerinligi, BINALAR, GOK, KURE, UFUK_Y, ZEMIN } from './ui/acilisSahnesi';
+import { indirmeDinle, indirmeSifirla } from './indirmeIlerleme';
 import { birincilDugme, bosluk, cam, dugme as temaDugme, led, MONO, renk, SANS, yaricap, yazi, yuzey } from './ui/tema';
 import { YetenekUyarisi } from './ui/YetenekUyarisi';
 import { Egitim3D } from './ui/Egitim3D';
@@ -263,12 +264,10 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
   // Gerçek 3DGS eğitimi: son yüklenen video dosyası (kare seçimi dosyanın
   // kendisini ister, <video> öğesini değil) ve eğitimi süren dosya.
   const [videoDosya, setVideoDosya] = useState<File | null>(null);
-  /**
-   * Ziyaretçi KENDİ kaynağını seçti mi (dosya ya da kamera)? Açılıştaki
-   * örnek sahne bunu kurmaz — o sahne modelsiz çalışır. Canlı derinlik
-   * modelinin 47 MB'lık ön ısıtması bu bayrağa bağlıdır.
-   */
-  const [kullaniciKaynagi, setKullaniciKaynagi] = useState(false);
+
+  /** Model indirme satiri (`indirmeIlerleme`); indirme yokken null. */
+  const [indirme, setIndirme] = useState<string | null>(null);
+  useEffect(() => indirmeDinle(setIndirme), []);
   const [egitimDosya, setEgitimDosya] = useState<File | null>(null);
   /** 3D eğitim kalite eğrisi — transport şeridinin altında çizilir. */
   const [egitimSeri, setEgitimSeri] = useState<GrafikNoktasi[]>([]);
@@ -748,13 +747,20 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
     // hiç açmıyor ve 47 MB boşuna iniyordu (ölçüldü 2026-10-23).
     // Kodun kendi gerekçesinin ("WebGPU yoksa ısıtılmaz") aynısı: kullanım
     // ihtimali yokken indirme.
-    if (sunum && !kullaniciKaynagi) return () => { iptal = true; };
+    // CANLI KAYNAK YOKSA ISITMA YOK. Isıtma yalnız kamera/video yolu için;
+    // fotoğraf yolu bu modeli HİÇ kullanmaz. Bir ara "kullanıcı bir dosya
+    // seçti mi" diye bağlamıştım ve fotoğraf yüklenince ısıtma da
+    // tetikleniyordu: aynı 47 MB iki kez, paralel indi (ölçüldü, 131 MB
+    // beklenirken 178,8 MB). Koşul artık GERÇEKTEN canlı yolu kullanacak
+    // kaynak: kamera açık ya da video yüklü.
+    const canliKaynak = cameraOn || !!videoDosya;
+    if (sunum && !canliKaynak) return () => { iptal = true; };
     const id = window.setTimeout(isit, 1500);
     return () => {
       iptal = true;
       clearTimeout(id);
     };
-  }, [sunum, kullaniciKaynagi]);
+  }, [sunum, cameraOn, videoDosya]);
 
   /**
    * VİDEO/KAMERA DERİNLİĞİ — parlaklık vekiliyle başlar, MODEL devralır.
@@ -1089,7 +1095,6 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
   }
 
   async function toggleCamera() {
-    setKullaniciKaynagi(true);
     if (cameraOn) {
       teardownSource();
       setCameraOn(false);
@@ -1151,7 +1156,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
   }
 
   async function handleFile(file: File) {
-    setKullaniciKaynagi(true);
+    indirmeSifirla();
     const isVideo = file.type.startsWith('video/');
     if (!isVideo && !file.type.startsWith('image/')) {
       say(`desteklenmiyor: ${file.type || file.name}`);
@@ -1682,7 +1687,15 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
         {busy && (
           <div style={calismaKatmani}>
             <span style={calismaNokta} />
-            <span>işleniyor…</span>
+            {/* İNDİRME VARSA ONU SÖYLE. "işleniyor…" 131 MB boyunca da aynı
+                kalıyordu; değişmeyen bir ekran "bozuldu" diye okunur. İndirme
+                bitince satir düşer ve yine "işleniyor…" yazılır. */}
+            <span>{indirme ?? 'işleniyor…'}</span>
+            {indirme && (
+              <span style={{ fontSize: yazi.kucuk, color: renk.metinSilik }}>
+                görüntün bilgisayarından çıkmıyor
+              </span>
+            )}
           </div>
         )}
         {/* SPLAT TEMİZLEME — seçim katmanı sahnenin üstünde (TrackerOverlay ile
