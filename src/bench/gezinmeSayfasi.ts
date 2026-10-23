@@ -90,7 +90,8 @@ export interface YuzenOlcumu { ayrilanPsnr: number; ayrilanSsim: number; sondaPs
 
 type RefineMark = { kind: string; iter: number; moved: number; grown: number; ms: number };
 export interface EgitimOlcumRaporu {
-  settings: { refineEvery: number; capMult: number; maxSplats: number; seed: number | null; actualCap: number };
+  settings: { refineEvery: number; capMult: number; maxSplats: number; seed: number | null; actualCap: number;
+    opacityReg?: number; scaleReg: number; absGrad?: number };
   initialN: number;
   refinements: { iter: number; moved: number; grown: number; n: number; ms: number }[];
   elapsedMs: number;
@@ -118,6 +119,9 @@ export function egitimOlcumRaporu(
       maxSplats: override?.maxSplats ?? 600000,
       seed: override?.seed ?? null,
       actualCap,
+      ...(override?.opacityReg !== undefined ? { opacityReg: override.opacityReg } : {}),
+      scaleReg: session.trainer.scaleReg,
+      ...(override?.absGrad !== undefined ? { absGrad: override.absGrad } : {}),
     },
     initialN,
     refinements,
@@ -176,7 +180,7 @@ function tamsayi(v: string | null, ad: string): number | undefined {
 }
 
 function egitimOlcumuOku(q: URLSearchParams): EgitimOlcumAyari | undefined {
-  const keys = ['refine-every', 'cap-mult', 'max-splats', 'trainer-seed'];
+  const keys = ['refine-every', 'cap-mult', 'max-splats', 'trainer-seed', 'opacity-reg', 'scale-reg', 'abs-grad'];
   if (!keys.some((key) => q.has(key))) return undefined;
   const positiveInt = (key: string): number | undefined => {
     const raw = q.get(key);
@@ -192,11 +196,26 @@ function egitimOlcumuOku(q: URLSearchParams): EgitimOlcumAyari | undefined {
   const seedRaw = q.get('trainer-seed');
   const seed = seedRaw === null ? undefined : tamsayi(seedRaw, 'trainer-seed');
   if (seedRaw !== null && seed === undefined) throw new Error('trainer-seed must be a non-negative integer');
+  // gsplat düzenleyicileri: ağırlıklar >= 0, AbsGS eşik katı > 0
+  const sayi = (key: string, min0: boolean): number | undefined => {
+    const raw = q.get(key);
+    if (raw === null) return undefined;
+    const v = Number(raw);
+    if (raw === '' || !Number.isFinite(v) || v < 0 || (!min0 && v === 0))
+      throw new Error(`${key} must be a finite number ${min0 ? '>= 0' : '> 0'}`);
+    return v;
+  };
+  const opacityReg = sayi('opacity-reg', true);
+  const scaleReg = sayi('scale-reg', true);
+  const absGrad = sayi('abs-grad', false);
   return {
     ...(q.has('refine-every') ? { refineEvery: positiveInt('refine-every') } : {}),
     ...(capMult !== undefined ? { capMult } : {}),
     ...(q.has('max-splats') ? { maxSplats: positiveInt('max-splats') } : {}),
     ...(seed !== undefined ? { seed } : {}),
+    ...(opacityReg !== undefined ? { opacityReg } : {}),
+    ...(scaleReg !== undefined ? { scaleReg } : {}),
+    ...(absGrad !== undefined ? { absGrad } : {}),
   };
 }
 

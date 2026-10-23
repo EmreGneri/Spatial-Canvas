@@ -147,7 +147,8 @@ export function ozetMd(r) {
     const b = r.egitimOlcumu;
     const c = b.settings;
     out.push('## Training benchmark', '',
-      `- settings: refineEvery ${c.refineEvery}, capMult ${c.capMult}, maxSplats ${c.maxSplats}, seed ${c.seed ?? 'unseeded'}, actualCap ${c.actualCap}`,
+      `- settings: refineEvery ${c.refineEvery}, capMult ${c.capMult}, maxSplats ${c.maxSplats}, seed ${c.seed ?? 'unseeded'}, actualCap ${c.actualCap}`
+        + ['opacityReg', 'scaleReg', 'absGrad'].filter((k) => c[k] != null).map((k) => `, ${k} ${c[k]}`).join(''),
       `- initial Gaussians: ${b.initialN}; training: ${bicim(sn(b.elapsedMs), 1)} s; held-out PSNR: ${bicim(b.heldoutPsnrMean, 2)} dB`, '',
       tablo(['iter', 'moved', 'grown', 'n', 'ms'], (b.refinements ?? []).map((event) => [
         String(event.iter), String(event.moved), String(event.grown), String(event.n), String(event.ms),

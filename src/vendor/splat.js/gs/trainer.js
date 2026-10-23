@@ -162,7 +162,7 @@ export class GSTrainer {
     // bufCamGrad without enabling camOpt/aspectOpt/expComp).
     this.camGrads = !!(this.opts.camGrads ?? (this.opts.camOpt || this.opts.aspectOpt || this.opts.expComp));
     this.useStats = !!(this.opts.useStats ?? (this.opts.engine === 'v2' || this.opts.refineV2 === true ||
-      this.opts.errDonors || this.opts.statMax));
+      this.opts.errDonors || this.opts.statMax || this.opts.absGrad > 0));
     // covW: mask-supervised coverage (see makeRenderSrc). Off unless a masked
     // set asks for it, and compiled out of the kernel entirely when 0.
     this.renderFeat = { camGrad: this.camGrads, stats: this.useStats, robust: !!this.opts.robustLoss,
@@ -2080,8 +2080,11 @@ export class GSTrainer {
     // accumulated since the last refine; the gather zeroes it) through the
     // refineV2 gather pass. Donor choice ∝ error instead of ∝ size — new
     // capacity goes where the image is wrong, not where splats are big.
-    let emass = null;
-    if (this.opts.errDonors) {
+    // opts.absGrad (AbsGS) reads the same gather: slot 1 = window-summed
+    // per-pixel |d mean2d| (gradP slot 12), see the growth pool below.
+    const absTau = this.opts.absGrad > 0 ? this.opts.absGrad : 0;
+    let emass = null, gat = null;
+    if (this.opts.errDonors || absTau) {
       d.queue.writeBuffer(this.uniGather, 0, new Uint32Array([this.n, 0, 0, 0]));
       const encG = d.createCommandEncoder();
       const pg = encG.beginComputePass();
@@ -2094,8 +2097,9 @@ export class GSTrainer {
       encG.copyBufferToBuffer(this.bufGather, 0, this.bufGatherRead, 0, this.n * 16);
       d.queue.submit([encG.finish()]);
       await this.bufGatherRead.mapAsync(GPUMapMode.READ, 0, this.n * 16);
-      emass = new Float32Array(this.bufGatherRead.getMappedRange(0, this.n * 16)).slice();
+      gat = new Float32Array(this.bufGatherRead.getMappedRange(0, this.n * 16)).slice();
       this.bufGatherRead.unmap();
+      if (this.opts.errDonors) emass = gat;
     }
 
     let dead = [];
@@ -2162,10 +2166,35 @@ export class GSTrainer {
     // Undefined growRegion leaves both null and every rng() call below is
     // identical in count and order to the pre-existing code path.
     const growRegion = this.opts.growRegion;
-    const growDonors = growRegion
-      ? donors.filter((i) => growRegion(params[i * STRIDE], params[i * STRIDE + 1], params[i * STRIDE + 2]))
+    // opts.absGrad = tau: AbsGS growth criterion, adapted from gsplat
+    // DefaultStrategy(absgrad=True) (nerfstudio-project/gsplat, Apache-2.0;
+    // Ye et al. 2024, arXiv:2404.10484). The render pass already sums
+    // |dL/dmean2d.x| + |dL/dmean2d.y| PER PIXEL into gradP slot 12 (the
+    // absolute value is taken before summation, so opposite-signed pixel
+    // gradients no longer cancel — the AbsGS fix for blurry large splats).
+    // gsplat grows splats whose view-averaged absgrad exceeds an ABSOLUTE
+    // grow_grad2d, raised 4x (0.0002 -> 0.0008) for absgrad because the abs
+    // sum is larger. Our loss is unnormalized (per-pixel sum) so absolute
+    // thresholds do not transfer; the threshold is instead relative to the
+    // donors' median of the same stat (tau x median, like _refineV3), which
+    // absorbs that 4x by construction. Deviations: window sum, not divided
+    // by the visible-view count (growNorm measured worse in _refineV3); the
+    // donor pool is intersected with growRegion; growth spends at most one
+    // row per candidate (gsplat grows each high-grad splat once), still
+    // bounded by growRate and the hard cap. Relocation is untouched.
+    let absOk = null;
+    if (absTau && gat) {
+      const st = donors.map((i) => gat[i * 4 + 1]).sort((a, b) => a - b);
+      const thr = absTau * (st[st.length >> 1] || 0);
+      if (thr > 0) absOk = (i) => gat[i * 4 + 1] >= thr;
+      else if (!this._absGradWarned) { this._absGradWarned = true; console.warn('[trainer] absGrad: grad stat is zero this refine; growth unfiltered'); }
+    }
+    const growFilter = growRegion || absOk;
+    const growDonors = growFilter
+      ? donors.filter((i) => (!absOk || absOk(i)) &&
+        (!growRegion || growRegion(params[i * STRIDE], params[i * STRIDE + 1], params[i * STRIDE + 2])))
       : null;
-    const growBigDonors = growRegion
+    const growBigDonors = growFilter
       ? [...growDonors].sort((a, b) => meanLogScale(b) - meanLogScale(a)).slice(0, Math.max(16, growDonors.length >> 2))
       : null;
     // error-weighted donor draw (only when the window carries any mass)
@@ -2190,7 +2219,7 @@ export class GSTrainer {
       // exactly one call site (the growth loop below); the relocation loop
       // (`for (const i of dead) ...`) always passes allowSplit = false, so
       // useGrowPool is false there and it keeps reading the full pools.
-      const useGrowPool = allowSplit && !!growRegion;
+      const useGrowPool = allowSplit && !!growFilter;
       const poolBig = useGrowPool ? growBigDonors : bigDonors;
       const poolDonors = useGrowPool ? growDonors : donors;
       const doSplit = splitV2
@@ -2276,13 +2305,14 @@ export class GSTrainer {
     const limit = Math.min(this.cap, this.growLimit || this.cap);
     let grown = this.iter < (this.opts.growUntil ?? 0.75 * this.horizon)
       ? Math.max(0, Math.min(Math.ceil(this.n * (this.opts.growRate ?? 0.15)), limit - this.n)) : 0;
-    if (grown > 0 && growRegion && growDonors.length === 0) {
+    if (grown > 0 && growFilter && growDonors.length === 0) {
       // the region excludes every current donor: nothing is spatially valid
       // to grow from this round. Skip rather than silently fall back to an
       // unrestricted draw (relocation above already ran, unaffected).
-      console.warn('[trainer] growRegion matched no donors this refine; skipping growth');
+      console.warn('[trainer] growRegion/absGrad matched no donors this refine; skipping growth');
       grown = 0;
     }
+    if (absOk) grown = Math.min(grown, growDonors.length);
     for (let k = 0; k < grown; k++) spawnAt((this.n + k) * STRIDE, true);
     if (grown > 0) {
       this.n += grown;

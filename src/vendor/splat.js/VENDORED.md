@@ -274,3 +274,14 @@ secimi), `session.js` (secenek gecisi, `depthWeight` ile ayni desen).
   calisir. `node --check` (`trainer.js`, `session.js`, yeni betik) ve mevcut
   `verify-egitim-densify.mjs`, `verify-egitim-continue.mjs`,
   `verify-egitim-cleanup.mjs`, `verify-gaussian-ownership.mjs` yesil kaldi.
+
+## AbsGS buyume olcutu: `absGrad` (2026-10-24)
+
+- 2026-10-24 `gs/trainer.js` `opts.absGrad = tau` (AbsGS, gsplat
+  `DefaultStrategy(absgrad=True)` uyarlamasi, Apache-2.0): `useStats`'i acar;
+  `_refineLegacy` gather ile gradP yuva 12'yi (piksel basina |d mean2d|
+  toplami) okur, buyume donorlerini `>= tau x medyan` olanlarla sinirlar
+  (growRegion ile kesisim), buyume sayisi aday sayisini asmaz; tasima
+  degismez. Verilmezse RNG/sonuc birebir ayni (`verify-grow-region.mjs` 2/3).
+  Bos havuz uyarisi `growRegion/absGrad` diye guncellendi. Olcum ve karar:
+  docs/benchmarks/gezinme-entegrasyon.md (varsayilan kapali).
