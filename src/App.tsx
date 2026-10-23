@@ -146,10 +146,20 @@ const calismaNokta: CSSProperties = {
   animation: 'sc-nabiz 1s ease-in-out infinite',
 };
 
-function calismaAlani(dar: boolean): CSSProperties {
+function calismaAlani(dar: boolean, sunum: boolean): CSSProperties {
+  /**
+   * SUNUMDA İKİ SÜTUN. Normalde kütüphane ve efektler ayrı sütunlar; efekt
+   * rafı sunumda kapalı başladığı için 6 satırdan sonra sütunun altı boş
+   * kalıyordu (ölçüldü 1680×1050: ~296×600 px hiçbir şey göstermiyor).
+   * İkisi tek sütunda üst üste konunca o boşluk kütüphaneyle dolar ve
+   * artı ~270 px tuvale geçer.
+   */
+  const genisSutunlar = sunum
+    ? 'minmax(360px, 1fr) minmax(0, 264px)'
+    : 'minmax(360px, 1fr) minmax(0, 228px) minmax(0, 296px)';
   return {
     display: 'grid',
-    gridTemplateColumns: dar ? 'minmax(0, 1fr)' : 'minmax(360px, 1fr) minmax(0, 228px) minmax(0, 296px)',
+    gridTemplateColumns: dar ? 'minmax(0, 1fr)' : genisSutunlar,
     alignItems: 'start',
     gap: dar ? 10 : 12,
     width: '100%',
@@ -1315,6 +1325,45 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
     }
   }
 
+  /**
+   * SAĞ PANELLER değişkende tutulur: normal düzende ayrı birer ızgara
+   * sütunu, sunumda tek sütunda üst üste — iki yerleşim de aynı
+   * elemanları kullanır, prop listesi iki kez yazılmaz.
+   */
+  const kutuphanePaneli = engine && (
+    <KutuphanePaneli
+      targets={panelHedefleri()}
+      onApplied={refreshPanel}
+      sahne={{
+        canvas: engine.renderer.domElement,
+        renderFrame: () => engine.renderFrame(),
+        serialize: () => serializeRenderState(panelHedefleri()),
+        setMode: (m) => changeModeRef.current(m),
+      }}
+    />
+  );
+  const efektPaneli = engine && (
+    <ControlPanel
+      engine={engine}
+      baslangicKapali={sunum}
+      setModeGuncel={(m) => changeModeRef.current(m)}
+      grain={engine.grainUniforms}
+      feedback={engine.feedbackUniforms}
+      chromatic={engine.chromaticUniforms}
+      bloom={engine.bloomUniforms}
+      look={engine.lookUniforms}
+      points={materials.points}
+      ascii={materials.ascii}
+      neon={materials.neon}
+      solid={materials.solid}
+      splat={materials.splat}
+      crystal={materials.crystal}
+      setMode={changeMode}
+      mode={mode}
+      syncKey={panelTick}
+    />
+  );
+
   return (
     <div
       style={{
@@ -1487,7 +1536,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
           Göz soldan sağa akar: ne çizildiği → neyle çizileceği → nasıl
           ayarlandığı. Alt bölüm (graf/capture/metrik/log) bu grid'in DIŞINDA,
           eskisi gibi tam genişlikte akar. */}
-      <div style={calismaAlani(dar)}>
+      <div style={calismaAlani(dar, sunum)}>
       {/* SOL SÜTUN: canvas ve onun kumandası (transport) birlikte. */}
       <div style={{ display: 'grid', gap: dar ? 10 : 12, minWidth: 0 }}>
       <div
@@ -1511,6 +1560,16 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
           // parçacık yoğunluğu seyrelip görüntü zayıflıyor.
           width: '100%',
           aspectRatio: '16 / 10',
+          /**
+           * SUNUMDA TEK EKRAN. Sağ sütun ikiye inince tuval genişledi,
+           * 16/10 oranı yüzden boyu da uzadı ve mod şeridi katlamanın
+           * altına düştü (ölçüldü 1680×1050: şerit 1030 px'de, pencere
+           * 1050). Sunumda modlara CANLI tıklanıyor — kaydirmak kabul
+           * edilemez. Tavan konunca oran serbest kalır ve sahne biraz daha
+           * geniş bir kadraja oturur; Engine konteyneri okuduğu için
+           * sorunsuz. 300 px = üst bar + kaynak satırı + ipucu + transport.
+           */
+          ...(sunum ? { maxHeight: 'calc(100vh - 300px)' } : null),
           background: '#000',
           borderRadius: yaricap.kart,
           // Çerçeve yerine iç gölge: sahne "kutuda" değil, gömülü durur.
@@ -1627,44 +1686,33 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
       )}
       </div>
 
-      {/* KÜTÜPHANE — orta sütun, ince. Eskiden efekt rafının 07. kartının
-          içindeydi: kapak görmek için önce kartı açmak gerekiyordu ve
-          kapaklar dar bir sütuna sıkışıyordu. */}
-      {engine && (
-        <KutuphanePaneli
-          targets={panelHedefleri()}
-          onApplied={refreshPanel}
-          sahne={{
-            canvas: engine.renderer.domElement,
-            renderFrame: () => engine.renderFrame(),
-            serialize: () => serializeRenderState(panelHedefleri()),
-            setMode: (m) => changeModeRef.current(m),
+      {/* SAĞ PANELLER — düzene göre iki sütun ya da tek.
+          Kütüphane eskiden efekt rafının 07. kartının içindeydi: kapak
+          görmek için önce kartı açmak gerekiyordu. Sunumda ikisi tek
+          sütunda üst üste (calismaAlani); efekt rafı ÜSTTE, çünkü kapalı
+          başlıyor ve kısa — kaydırmalı kütüphane altındaki yeri doldurur. */}
+      {engine && (sunum ? (
+        <div
+          style={{
+            display: 'grid',
+            // Efekt rafı kendi boyunda, kütüphane KALANI alır ve kendi içinde
+            // kaydırılır. minmax(0,1fr) şart: 1fr tek başına içeriğin altına
+            // inemez ve sütun sayfayı 1,41 ekrana uzatıyordu (ölçüldü).
+            gridTemplateRows: 'auto minmax(0, 1fr)',
+            gap: 12,
+            minWidth: 0,
+            maxHeight: 'calc(100vh - 120px)',
           }}
-        />
-      )}
-
-      {/* EFEKTLER — sağ sütun, kaydırmalı akordeon. */}
-      {engine && (
-        <ControlPanel
-          engine={engine}
-          baslangicKapali={sunum}
-          setModeGuncel={(m) => changeModeRef.current(m)}
-          grain={engine.grainUniforms}
-          feedback={engine.feedbackUniforms}
-          chromatic={engine.chromaticUniforms}
-          bloom={engine.bloomUniforms}
-          look={engine.lookUniforms}
-          points={materials.points}
-          ascii={materials.ascii}
-          neon={materials.neon}
-          solid={materials.solid}
-          splat={materials.splat}
-          crystal={materials.crystal}
-          setMode={changeMode}
-          mode={mode}
-          syncKey={panelTick}
-        />
-      )}
+        >
+          {efektPaneli}
+          {kutuphanePaneli}
+        </div>
+      ) : (
+        <>
+          {kutuphanePaneli}
+          {efektPaneli}
+        </>
+      ))}
       </div>
 
       {/* ── ENSTRÜMAN KATMANI ────────────────────────────────────────────
