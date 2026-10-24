@@ -11,6 +11,7 @@
 // dünyasına hizalanır; her sonda kamerası oraya taşınıp `sentetikCizim.ciz`
 // ile GT'si çizilir.
 
+import { kazancHizaliPsnr } from '../engine/reconstruction/pozlamaDengeleme.ts';
 import {
   ayarSec, egitimBaslat, egitimOturumAyari, kameraCoz, kameraMerkezi,
   type Egitim, type EgitimAyari, type EgitimMetrik, type EgitimOlcumAyari, type GsKamera,
@@ -58,7 +59,8 @@ export interface GezinmeRaporu {
   sfm: { kayitli: number; toplamKare: number; medErr?: number; rmsBA?: number };
   gauss: number;
   egitimOlcumu: EgitimOlcumRaporu;
-  ayrilan: { ad: string; psnr: number; ssim: number }[];
+  /** psnrHizali: kanal kazancıyla hizalanmış PSNR (`kazancHizaliPsnr`). */
+  ayrilan: { ad: string; psnr: number; ssim: number; psnrHizali?: number }[];
   sondalar: SondaSonucu[];
   kullanilabilir: Record<Bolge, Record<Yon, number>>;
   bugunku: Record<Bolge, Record<Yon, number>>;
@@ -68,7 +70,8 @@ export interface GezinmeRaporu {
    *  centre-only fit (degrees); `odakOrani` = reconstructed / GT focal. */
   hizalama?: { rms: number; rmsOrani: number; n: number; olcek: number; aciHatasi: number; odakOrani: number };
   zamanCizelgesi: { ms: number; asama: string }[];
-  mod?: { secim?: string; eslestirme?: string; odakAlt?: number; geometri?: string; depthWeight?: number; bolgesel?: boolean; derinlikCihazi?: string | null };
+  cekimKalitesi?: import('../engine/reconstruction/egitim3dgs.ts').CekimKalitesiOlcusu;
+  mod?: { pozlama?: boolean; secim?: string; eslestirme?: string; odakAlt?: number; geometri?: string; depthWeight?: number; bolgesel?: boolean; derinlikCihazi?: string | null };
   bosAlan?: { hizaliKare: number; voksel: number; boyut: [number, number, number]; kullanilabilir: Record<Bolge, Record<Yon, number>>;
     guven?: Egitim['gezinmeGuveni'];
     gtBosOrnek?: number; gtEngelIhlali?: number;
@@ -153,9 +156,10 @@ interface Parametreler {
   ayrilan: number;
   genislik: number;
   yalnizSfm: boolean;
-  secim?: 'yenilik';
+  secim?: 'yenilik' | 'netlik';
   eslestirme?: 'sirali';
   odakAlt?: number;
+  pozlama: boolean;
   geometri?: 'model' | 'model-da3' | 'sentetik';
   depthWeight?: number;
   bolgesel: boolean;
@@ -226,7 +230,7 @@ export function parametreleriOku(arama: string): Parametreler {
   const katman = q.get('katman') ?? undefined;
   if (katman != null && katman !== 'quick' && katman !== 'standard') throw new Error(`katman must be quick|standard: ${katman}`);
   const secim = q.get('secim') ?? undefined;
-  if (secim != null && secim !== 'yenilik') throw new Error(`secim must be yenilik: ${secim}`);
+  if (secim != null && secim !== 'yenilik' && secim !== 'netlik') throw new Error(`secim must be yenilik|netlik: ${secim}`);
   const eslestirme = q.get('eslestirme') ?? undefined;
   if (eslestirme != null && eslestirme !== 'sirali') throw new Error(`eslestirme must be sirali: ${eslestirme}`);
   const geometri = q.get('geometri') ?? undefined;
@@ -249,6 +253,7 @@ export function parametreleriOku(arama: string): Parametreler {
     odakAlt: tamsayi(q.get('odak-alt'), 'odak-alt'), geometri,
     depthWeight: depthWeight != null ? Number(depthWeight) : undefined,
     bolgesel: q.has('bolgesel'),
+    pozlama: q.has('pozlama'),
     yuzen: yuzenOranlari(q.get('yuzen')),
   };
 }
@@ -539,6 +544,7 @@ async function olc(p: Parametreler): Promise<{ rapor: GezinmeRaporu | SfmRaporu;
       egitim: p.egitim,
       refineMarks: (marks, n, cap) => { refineMarks = marks; finalN = n; finalCap = cap; },
     }, kamera: kameraSecenekleri,
+    pozlamaDengele: p.pozlama,
     ...(depthSource ? { geometri: { kaynak: depthSource } } : {}),
     ...(p.depthWeight && depthSource ? { derinlikKisiti: {
       agirlik: p.depthWeight, kaynak: depthSource, bolgesel: p.bolgesel,
@@ -654,7 +660,8 @@ async function olc(p: Parametreler): Promise<{ rapor: GezinmeRaporu | SfmRaporu;
       ctx.drawImage(bmp, 0, 0, kamera.w, kamera.h);
       bmp.close();
       const gercek = ctx.getImageData(0, 0, kamera.w, kamera.h);
-      ayrilan.push({ ad, psnr: p0, ssim: ssim(tahmin.data, gercek.data, kamera.w, kamera.h) });
+      ayrilan.push({ ad, psnr: p0, ssim: ssim(tahmin.data, gercek.data, kamera.w, kamera.h),
+        psnrHizali: kazancHizaliPsnr(tahmin.data, gercek.data) });
     }
     ayrilan.sort((a, b) => a.ad.localeCompare(b.ad));
     return ayrilan;
@@ -720,7 +727,8 @@ async function olc(p: Parametreler): Promise<{ rapor: GezinmeRaporu | SfmRaporu;
       kullanilabilir,
       bugunku,
       // derinlikCihazi: DA3 istendiğinde yardımcının GERÇEKTEN kullanıldığını kanıtlar (sessiz V2 düşüşü raporda görünür).
-      mod: { ...kameraSecenekleri, geometri: p.geometri, depthWeight: p.depthWeight, bolgesel: p.bolgesel, derinlikCihazi: depthDevice },
+      cekimKalitesi: e.cekimKalitesi,
+      mod: { ...kameraSecenekleri, pozlama: p.pozlama, geometri: p.geometri, depthWeight: p.depthWeight, bolgesel: p.bolgesel, derinlikCihazi: depthDevice },
       ...(e.bosAlan && bosMesafe ? { bosAlan: {
         hizaliKare: e.derinlikOzeti?.hizaliKare ?? 0, voksel: e.bosAlan.voksel, boyut: e.bosAlan.boyut,
         kullanilabilir: bosMesafe, ...(e.gezinmeGuveni ? { guven: e.gezinmeGuveni } : {}),

@@ -134,6 +134,61 @@ export function yenilikSec(
   return secim;
 }
 
+/** `netlikKutusuSec` adayı: vendor taramasının `focus`'u ve `markOutliers`
+ *  bayrağı (`blur`). */
+export interface NetlikAday extends YenilikAday {
+  bulanik?: boolean;
+}
+
+/**
+ * Zaman kutusu başına en net kare (Postshot/Scaniverse tarzı seçim; saf).
+ *
+ * Adayların zaman aralığı `n` eşit kutuya bölünür; her kutudan bulanık
+ * İŞARETLİ OLMAYAN en net aday, kutunun hepsi bulanıksa en az kötüsü seçilir.
+ * Boş kutu atlanır (zamanda boşluk varsa sonuç `n`'den az olabilir).
+ *
+ * Netlik ölçüsü yeniden hesaplanmaz: vendor taraması zaten 512 px gri
+ * görüntüde Laplace varyansı + Tenengrad (`focusScore`) ve komşu medyanına
+ * göreli bulanıklık çukuru (`markOutliers`) üretiyor.
+ */
+export function netlikKutusuSec(adaylar: NetlikAday[], n: number): number[] {
+  if (adaylar.length === 0 || n <= 0) return [];
+  if (n >= adaylar.length) return adaylar.map((_, i) => i);
+  const t0 = adaylar[0].t;
+  const genislik = (adaylar[adaylar.length - 1].t - t0) / n;
+  const enIyi: number[] = new Array(n).fill(-1);
+  const daha = (a: number, b: number): boolean => {
+    // bulanık olmayan her zaman bulanıktan iyidir; eşitlikte netlik
+    const ba = !!adaylar[a].bulanik, bb = !!adaylar[b].bulanik;
+    return ba !== bb ? !ba : adaylar[a].netlik > adaylar[b].netlik;
+  };
+  for (let i = 0; i < adaylar.length; i++) {
+    const k = genislik > 0 ? Math.min(n - 1, Math.floor((adaylar[i].t - t0) / genislik)) : 0;
+    if (enIyi[k] < 0 || daha(i, enIyi[k])) enIyi[k] = i;
+  }
+  return enIyi.filter((i) => i >= 0);
+}
+
+/** Tarayıcı tarafı: `netlikKutusuSec`'i vendor'ın `review` kancasına takar.
+ *  Kare SAYISI vendor'ın otomatik seçimiyle aynı tutulur (bütçe/ön ayar
+ *  değişmez; yalnız HANGİ karelerin alındığı değişir) ve vendor'ın seçtiği
+ *  çekim (en uzun kesintisiz çekim) aralığının dışına çıkılmaz. */
+export function netlikKutusuIncelemesi(): {
+  review: (ctx: VideoIncelemeBaglami & { shot?: { start: number; end: number } | null }) => Promise<{ picks: number[] }>;
+} {
+  return {
+    async review(ctx) {
+      const kareler = ctx.frames ?? [];
+      if (kareler.length === 0 || ctx.picks.length === 0) return { picks: ctx.picks };
+      const bas = ctx.shot?.start ?? 0;
+      const son = ctx.shot?.end ?? kareler.length - 1;
+      const dilim = kareler.slice(bas, son + 1);
+      const secim = netlikKutusuSec(dilim.map((f) => ({ t: f.t, netlik: f.focus, bulanik: f.blur })), ctx.picks.length);
+      return { picks: secim.map((i) => i + bas) };
+    },
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Tarayıcı tarafı — extractSharpFrames'in review kancasına takılır
 // ---------------------------------------------------------------------------

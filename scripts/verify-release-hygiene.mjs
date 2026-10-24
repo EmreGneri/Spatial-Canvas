@@ -81,6 +81,7 @@ const readJson = (path) => JSON.parse(readFileSync(path, 'utf8'));
 
   for (const needle of [
     'splat.js',
+    'nerfstudio-project/gsplat',
     'MIT',
     'mediabunny',
     'MPL-2.0',
