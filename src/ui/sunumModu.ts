@@ -55,14 +55,30 @@ export const SUNUM_ICI = {
 } as const;
 
 /**
- * Adres yerel geliştirme sunucusu mu? `arDurum.ts` ile aynı ölçüt.
+ * Adres yerel geliştirme sunucusu mu?
+ *
+ * ÖZEL AĞ ADRESLERİ DE YEREL SAYILIR. Başlangıçta yalnız localhost/127.0.0.1
+ * vardı ve `vite --host` ile LAN üzerinden (örn. 192.168.1.5:5173) açan
+ * geliştirici kendini SUNUM modunda buluyordu — tanı düğmeleri (nesne
+ * ayırma, maske, tracker) kaybolmuş görünüyordu (Emre'nin bildirimi,
+ * 2026-10-24). Telefondan yerel sunucuyu denemek de aynı duruma düşüyordu.
+ *
+ * Sınır dar tutulur: yalnız RFC1918 özel aralıkları ve mDNS `.local`.
+ * `localhost.evil.com` gibi adresler yerel SAYILMAZ — verify bunu denetler.
  */
 export function yerelHostMu(hostname: string): boolean {
-  return hostname === 'localhost'
-    || hostname === '127.0.0.1'
-    || hostname === '[::1]'
-    || hostname === '::1'
-    || hostname.endsWith('.localhost');
+  const h = hostname.replace(/^\[|\]$/g, '');
+  if (h === 'localhost' || h === '127.0.0.1' || h === '::1') return true;
+  if (h.endsWith('.localhost') || h.endsWith('.local')) return true;
+  // RFC1918: 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16
+  const m = /^(\d{1,3})\.(\d{1,3})\.\d{1,3}\.\d{1,3}$/.exec(h);
+  if (!m) return false;
+  const a = Number(m[1]);
+  const b = Number(m[2]);
+  if (a === 10) return true;
+  if (a === 192 && b === 168) return true;
+  if (a === 172 && b >= 16 && b <= 31) return true;
+  return false;
 }
 
 /**
