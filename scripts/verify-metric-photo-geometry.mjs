@@ -65,6 +65,20 @@ assert.ok(fp.scale>.5*p.scale,'flying pixels ignored for framing');
   updateMetricPhotoSplatGeometry(steep,32,sn);
   for(let y=1;y<31;y++)for(let x=1;x<31;x++){const o=(y*32+x)*4;const iz=.5*Math.max(...[[1,0],[-1,0],[0,1],[0,-1]].map(([dx,dy])=>{const j=((y+dy)*32+x+dx)*4;return Math.hypot(steep[j]-steep[o],steep[j+1]-steep[o+1]);}));assert.ok(sn[o+3]<=3*iz+1e-6,'radius capped');}
 }
+// Face relief on metric depth: nose (centre) comes toward the camera, far outside untouched.
+{ const { metrikYuzRolyefi }=await import('../src/engine/reconstruction/metricPhotoGeometry.ts');
+  const { yuzRolyefHaritasi, YUZ_OVAL }=await import('../src/engine/reconstruction/yuzRolyef.ts');
+  const pts=Array.from({length:478},()=>({x:.5,y:.5,z:0})), ov=new Set(YUZ_OVAL);
+  YUZ_OVAL.forEach((idx,k)=>{const a=k/YUZ_OVAL.length*Math.PI*2;pts[idx]={x:.5+.2*Math.sin(a),y:.5-.2*Math.cos(a),z:0};});
+  let sd=1;const rnd=()=>((sd=(sd*16807)%2147483647)/2147483647);
+  for(let i=0;i<478;i++){if(ov.has(i))continue;const r=.19*Math.sqrt(rnd()),a=rnd()*Math.PI*2,x=.5+r*Math.cos(a),y=.5+r*Math.sin(a);pts[i]={x,y,z:-.1*(1-((x-.5)**2+(y-.5)**2)/.04)};}
+  const rol=yuzRolyefHaritasi(pts,W,H);
+  const g=fixture(), out=metrikYuzRolyefi(g,rol);
+  const c=(H>>1)*W+(W>>1);
+  assert.ok(out.depth[c]<g.depth[c],`face centre nearer (${out.depth[c].toFixed(3)} < 2)`);
+  assert.equal(out.depth[0],g.depth[0],'far corner unchanged');
+  assert.ok(out.depth.every(z=>z>0&&Number.isFinite(z)),'metric depth stays positive');
+}
 const grid=sampleMetricPhotoPositions(p,16);assert.equal(grid.length,16*16*4);
 assert.equal(typeof updateMetricPhotoSplatGeometry,'function','metric splats use measured XYZ neighbors');
 const tiltedGrid=sampleMetricPhotoPositions(q,32), splatNormals=new Float32Array(tiltedGrid.length);

@@ -589,7 +589,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
       // YÜZ RÖLYEFİ (varsayılan, ?yuz=0 kapatır): MediaPipe yüz ağının 3B şekli yüz bölgesine işlenir
       // (yuzRolyef.ts). Yüz bulunamazsa ya da kapalıysa null → eski davranış birebir.
       let rolyef: YuzRolyefi | null = null;
-      if (YUZ_GUCU > 0 && !depth.metricGeometry) {
+      if (YUZ_GUCU > 0) {
         const t3 = performance.now();
         const yuz = await yuzNoktalari(source);
         if (!isCurrent()) return;
