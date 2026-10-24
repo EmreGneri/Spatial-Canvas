@@ -1,0 +1,12 @@
+import assert from 'node:assert/strict';
+import { POINT_COUNTS, pointTextureSize, summarizeFrames, classifyAdapter } from '../src/bench/pointCountStats.ts';
+assert.deepEqual(POINT_COUNTS, [147456, 262144, 524288, 1048576]);
+assert.deepEqual(POINT_COUNTS.map(pointTextureSize), [[384, 384], [512, 512], [1024, 512], [1024, 1024]]);
+assert.throws(() => pointTextureSize(1));
+assert.deepEqual(summarizeFrames([10, 20, 30, 40]), { frames: 4, fps: 40, frameMsP50: 20, frameMsP95: 40 });
+assert.throws(() => summarizeFrames([]));
+assert.equal(classifyAdapter('ANGLE (NVIDIA RTX 5070)'), 'rtx');
+assert.equal(classifyAdapter('ANGLE (Intel(R) Graphics)'), 'intel');
+assert.equal(classifyAdapter('ANGLE (SwiftShader)'), 'software');
+assert.equal(classifyAdapter('WebKit WebGL'), 'unknown');
+console.log('Point count statistics and hardware classification passed.');

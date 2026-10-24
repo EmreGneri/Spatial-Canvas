@@ -195,6 +195,7 @@ lines.push('  Weights: https://huggingface.co/depth-anything/Video-Depth-Anythin
 lines.push('  Revision: 256875362cff76724b920335dfb4b29dd611f66e (116440756 bytes).');
 lines.push('  Modified: exported encoder/bootstrap/stream ONNX with fixed spatial shape,');
 lines.push('  explicit temporal cache, constant positional embedding and fp16 precision.');
+lines.push('  Additional local exports: experimental context16 and a genuine offline T32 head.');
 lines.push('  Live video depth experiment, disabled by default (?videoDerinlik=vda enables it).');
 lines.push('  Reproduce: scripts/export-video-depth-anything.py; local export not fetched by build.');
 lines.push('  Full upstream license: /licenses/video-depth-anything-LICENSE.txt');

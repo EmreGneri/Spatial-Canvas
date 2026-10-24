@@ -787,7 +787,7 @@ export async function estimateDepth(
     if (f) ({ data: cikti, tani: david } = f);
   }
   // subject, delikDoldur'da zaten deliği kapatılmış maske (doldurulmusMaske).
-  const dm = await davidMaskeUygula(opts.insanMaskesi, source, subject, outWidth, outHeight);
+  const dm = await applyDavidMask(opts.insanMaskesi, source, subject, outWidth, outHeight);
   return {
     data: cikti, width: outWidth, height: outHeight, headDetail, subjectMask: dm?.maske ?? doldurulmusMaske, delikTani,
     ...(david ? { david } : {}), ...(dm ? { davidMaske: dm.tani } : {}),
@@ -795,7 +795,7 @@ export async function estimateDepth(
 }
 
 /** DAViD ön plan maskesi (davidPlani izin verdiyse) → depth ızgarasında DAViD ∩ özne. Hata → null. */
-async function davidMaskeUygula(
+export async function applyDavidMask(
   secim: DepthEstimateOptions['insanMaskesi'], source: HTMLCanvasElement | HTMLImageElement,
   ozne: Float32Array | null, w: number, h: number,
 ) {

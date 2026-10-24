@@ -18,7 +18,9 @@ import {
 } from '../../depth.ts';
 import { resampleBilinear } from '../reconstruction/silhouette.ts';
 import { localInference, localInferenceAvailableCanli, type RawTensor } from '../sidecarClient.ts';
-import { isLiveDepthResultStale, stabilizeLiveDepthPair } from './liveDepthFlow.ts';
+import { isLiveDepthResultStale, stabilizeLiveDepthPair, LIVE_DEPTH_MAX_AGE_SECONDS } from './liveDepthFlow.ts';
+import type { LiveDepthFlowInput, LiveDepthFrame } from './liveDepthFlow.ts';
+import { LiveDepthFlowClient } from './liveDepthFlowClient.ts';
 import {
   VDA_INPUT_HEIGHT, VDA_INPUT_WIDTH, vdaDus, vdaHazirla, vdaIsit, vdaIstendi, vdaKare,
   vdaKullanilsinMi, vdaSifirla,
@@ -1300,6 +1302,8 @@ const havuz = (buf: Float32Array | null, n: number) =>
  * tek geçişli özne kırpma ve maskeye bağlı son işleme uygulanır.
  */
 export interface LiveDepthOptions {
+  /** Buffered uploads use the lower-latency V2 path while their offline cache is behind. */
+  forceV2?: boolean;
   /** Discard obsolete work before it can mutate temporal normalization. */
   isCurrent?: () => boolean;
   /** Model girdi kenarı (varsayılan `LIVE_INPUT_SIZE`). */
@@ -1322,6 +1326,12 @@ export interface LiveDepthResult extends DepthResult {
   colorFrame?: ImageData;
   /** Fraction of pixels whose inter-frame optical flow was trusted. */
   flowCoverage?: number;
+  /** Zero-confidence pixels are newly exposed or lack a consistent flow match. */
+  flowConfidence?: Float32Array;
+  flowMask?: { data: Float32Array; width: number; height: number };
+  /** Interpolated frames do not count as a new network inference. */
+  interpolated?: boolean;
+  modelMediaTime?: number;
   /** Which network produced this frame (`?videoDerinlik=vda` may fall back to v2). */
   depthModel: 'vda' | 'v2';
   /** Raw network disparity before the live filters (benchmarks read it). */
@@ -1351,7 +1361,7 @@ const liveWarmup = createLiveWarmupGate();
 let activeLiveDrivers = 0;
 
 /**
- * MODELİ ÖNDEN ISIT (v2 eklemesi — kişisel repodaki sürümde yok).
+ * MODELİ ÖNDEN ISIT (v2 eklemesi — referans yoldaki sürümde yok).
  *
  * Ölçüldü: ilk derinlik karesi 4815 ms, sonrakiler 268 ms. Aradaki fark
  * model indirme + derleme. Video yüklenince bu bedel tam da kullanıcının
@@ -1414,7 +1424,7 @@ export async function estimateDepthLive(
   const vw = source instanceof HTMLVideoElement ? source.videoWidth : source.width;
   const vh = source instanceof HTMLVideoElement ? source.videoHeight : source.height;
   // VDA is video-only (temporal context) and full-frame; canvases keep V2.
-  let vda = source instanceof HTMLVideoElement && vdaKullanilsinMi(vw, vh);
+  let vda = !opts.forceV2 && source instanceof HTMLVideoElement && vdaKullanilsinMi(vw, vh);
   if (vda) {
     try {
       await vdaHazirla();
@@ -1576,9 +1586,14 @@ export function startLiveDepth(
      * değer geçirmek onu hiç göremezdi.
      */
     maskeAl?: () => { data: Float32Array; width: number; height: number } | null;
+    flowMaskAl?: () => LiveDepthFlowInput['mask'] | null;
+    onInterpolatedDepth?: (depth: LiveDepthResult) => void;
+    /** Stored video depth can suspend inference without stopping the fallback driver. */
+    shouldInfer?: () => boolean;
+    forceV2?: () => boolean;
     onError?: (err: unknown, ardisik: number) => void;
     onVazgec?: () => void;
-    onDiscontinuity?: (reason: 'seek' | 'loop') => void;
+    onDiscontinuity?: (reason: 'seek' | 'loop' | 'scene-cut') => void;
     onStaleDrop?: (ageMs: number) => void;
   } = {},
 ): () => void {
@@ -1599,10 +1614,51 @@ export function startLiveDepth(
   let processedMask = opts.maskeAl?.() ?? null;
   let previousAccepted: LiveDepthResult | null = null;
   let frameCallback: number | null = null;
-  const invalidate = (reason: 'seek' | 'loop') => {
+  let animationCallback: number | null = null;
+  let interpolationCanvas: HTMLCanvasElement | null = null;
+  let interpolationContext: CanvasRenderingContext2D | null = null;
+  let lastInterpolatedTime = -Infinity;
+  const flowClient = opts.onInterpolatedDepth ? new LiveDepthFlowClient((result, input) => {
+    const model = previousAccepted;
+    if (!active || video.paused || video.seeking || !model || input.modelMediaTime !== model.mediaTime
+      || input.mediaTime <= lastInterpolatedTime || input.mediaTime < model.mediaTime
+      || isLiveDepthResultStale(input.mediaTime, video.currentTime)) return;
+    if (result.sceneCut) { invalidate('scene-cut'); return; }
+    if (result.coverage < 0.12) return;
+    lastInterpolatedTime = input.mediaTime;
+    opts.onInterpolatedDepth?.({
+      ...model, data: result.depth, mediaTime: input.mediaTime, modelMediaTime: model.mediaTime,
+      colorFrame: input.currentFrame as ImageData, flowCoverage: result.coverage,
+      flowConfidence: result.confidence, interpolated: true,
+      flowMask: result.mask && input.mask === (opts.flowMaskAl?.() ?? undefined)
+        ? { data: result.mask, width: input.width, height: input.height } : undefined,
+    });
+  }) : null;
+  const interpolate = (mediaTime: number) => {
+    const model = previousAccepted;
+    if (!flowClient || !model?.colorFrame || video.paused || video.seeking || video.readyState < 2
+      || mediaTime <= model.mediaTime || mediaTime - model.mediaTime > LIVE_DEPTH_MAX_AGE_SECONDS) return;
+    if (!interpolationCanvas) {
+      interpolationCanvas = document.createElement('canvas');
+      interpolationContext = interpolationCanvas.getContext('2d', { willReadFrequently: true });
+    }
+    if (!interpolationContext) return;
+    const { width, height } = model.colorFrame;
+    if (interpolationCanvas.width !== width || interpolationCanvas.height !== height) {
+      interpolationCanvas.width = width; interpolationCanvas.height = height;
+    }
+    interpolationContext.drawImage(video, 0, 0, width, height);
+    const colorFrame: LiveDepthFrame = interpolationContext.getImageData(0, 0, width, height);
+    flowClient.submit({ depth: model.data, previousFrame: model.colorFrame, currentFrame: colorFrame,
+      width: model.width, height: model.height, mediaTime, modelMediaTime: model.mediaTime,
+      mask: opts.flowMaskAl?.() ?? undefined });
+  };
+  const invalidate = (reason: 'seek' | 'loop' | 'scene-cut') => {
     revision++;
     processedTime = Number.NaN;
     previousAccepted = null;
+    flowClient?.reset();
+    lastInterpolatedTime = -Infinity;
     resetLiveDepthState();
     opts.onDiscontinuity?.(reason);
   };
@@ -1644,13 +1700,29 @@ export function startLiveDepth(
       wrapHandled = false;
     }
     frameTime = metadata.mediaTime;
+    interpolate(frameTime);
     frameCallback = video.requestVideoFrameCallback(presented);
   };
   if (hasFrameCallback) frameCallback = video.requestVideoFrameCallback(presented);
+  else if (flowClient && typeof requestAnimationFrame === 'function') {
+    const animate = () => {
+      if (!active) return;
+      if (video.currentTime !== frameTime) {
+        if (video.currentTime < frameTime - 0.001) invalidate('loop');
+        frameTime = video.currentTime;
+        interpolate(frameTime);
+      }
+      animationCallback = requestAnimationFrame(animate);
+    };
+    animationCallback = requestAnimationFrame(animate);
+  }
   const cleanup = () => {
     if (!active) return;
     active = false;
     previousAccepted = null;
+    flowClient?.dispose();
+    interpolationCanvas = null;
+    interpolationContext = null;
     activeLiveDrivers--;
     video.removeEventListener('seeking', seeking);
     video.removeEventListener('seeked', seeked);
@@ -1658,9 +1730,11 @@ export function startLiveDepth(
       video.cancelVideoFrameCallback(frameCallback);
       frameCallback = null;
     }
+    if (animationCallback !== null) cancelAnimationFrame(animationCallback);
   };
   const stopDriver = startLiveDepthDriver({
     infer: async () => {
+      if (opts.shouldInfer?.() === false) return null;
       // Warmup may be compiling the same model shape when a video is opened.
       // If warmup fails, live inference gets its own normal retry path.
       await liveWarmup.wait().catch(() => {});
@@ -1681,6 +1755,7 @@ export function startLiveDepth(
         processedMask = mask;
         processedTime = Number.NaN;
         previousAccepted = null;
+        flowClient?.reset();
         resetLiveDepthState();
         // A mask arriving while a model call is in flight changes the
         // post-processing contract. Invalidate that call instead of allowing
@@ -1690,6 +1765,7 @@ export function startLiveDepth(
       if (size !== processedSize) {
         resetLiveDepthState();
         previousAccepted = null;
+        flowClient?.reset();
         processedTime = Number.NaN;
         processedSize = size;
         // A quality change also changes processor dimensions and temporal
@@ -1710,6 +1786,7 @@ export function startLiveDepth(
         && mask === (opts.maskeAl?.() ?? null);
       try {
         return await estimateDepthLive(video, {
+          forceV2: opts.forceV2?.(),
           girdi: size,
           subjectMask: mask,
           isCurrent,
@@ -1734,6 +1811,7 @@ export function startLiveDepth(
         const aligned = stabilizeLiveDepthPair(
           previous.data, raw.data, previous.colorFrame, raw.colorFrame, raw.width, raw.height,
         );
+        if (aligned.sceneCut) invalidate('scene-cut');
         depth = { ...raw, data: aligned.depth, flowCoverage: aligned.coverage };
       } else {
         depth = { ...raw, flowCoverage: 0 };

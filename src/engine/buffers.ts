@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { sampleAoGrid, sampleImageGrid, sampleVolumePositions } from './reconstruction/index.ts';
 import { sampleMetricPhotoPositions, type MetricPhotoProjection } from './reconstruction/metricPhotoGeometry.ts';
+import type { VideoGuideMask } from './reconstruction/videoDepthEdges.ts';
 
 /**
  * Texture sözleşmesi — ARCHITECTURE.md ile birebir.
@@ -107,6 +108,10 @@ export interface PositionFillOptions {
   importanceSampling?: boolean;
   /** Preserve video UVs and depth regardless of segmentation mask. */
   fullFrame?: { cameraDistance: number };
+  /** Video-only disparity edge cleanup, 0 (off) through 4. */
+  videoEdgeCleanup?: number;
+  videoFlowConfidence?: Float32Array;
+  videoGuideMask?: VideoGuideMask;
   /** Override the default point cloud height for video frame fitting. */
   worldHeight?: number;
   /**
@@ -147,6 +152,9 @@ export function fillPositionsFromDepth(
     foregroundMask: opts.foregroundMask,
     importanceSampling: opts.importanceSampling === true,
     fullFrame: opts.fullFrame,
+    videoEdgeCleanup: opts.videoEdgeCleanup,
+    videoFlowConfidence: opts.videoFlowConfidence,
+    videoGuideMask: opts.videoGuideMask,
   });
   const blend = opts.blend ?? 1;
   if (blend >= 1) {

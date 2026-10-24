@@ -119,6 +119,11 @@ const URL_MODELS = process.env.VITE_DAVID_PHOTO === '1' ? DAVID : [];
 // dosyalar yoktur, adım atlanır ve `?videoDerinlik=vda` V2-small'a düşer.
 const VDA_DIR = 'DepthAnything/video-depth-anything-small-stream-154x266';
 const VDA_FILES = ['encoder_fp16.onnx', 'bootstrap_fp16.onnx', 'stream_fp16.onnx', 'export-manifest.json'];
+const VDA_OPTIONAL_FILES = [
+  ...VDA_FILES.map(file => `${VDA_DIR}-context16/${file}`),
+  'DepthAnything/video-depth-anything-small-offline-154x266/offline32_fp16.onnx',
+  'DepthAnything/video-depth-anything-small-offline-154x266/offline-manifest.json',
+];
 
 const mb = (n) => (n / 1024 / 1024).toFixed(2).padStart(7) + ' MB';
 
@@ -255,6 +260,7 @@ await mirror('public/models', new Set([
   `${MOGE.repo}/${MOGE.file}`,
   ...DAVID.map((m) => `microsoft-david/${m.file}`),
   ...VDA_FILES.map(file => `${VDA_DIR}/${file}`),
+  ...VDA_OPTIONAL_FILES,
 ]));
 await mirror('public/ort', new Set(ORT_FILES));
 await mirror('public/mediapipe-wasm', new Set(MP_WASM_FILES));

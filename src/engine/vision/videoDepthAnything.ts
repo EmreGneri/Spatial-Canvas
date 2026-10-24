@@ -138,11 +138,61 @@ let activeStream: VdaStream | null = null;
 let lastStamp: VdaFrameStamp | null = null;
 let disabledReason: string | null = null;
 let aspectLogged = false;
+let runtimeMode: 'legacy' | 'gpu' | 'capture' = 'legacy';
+let runtimeContext: 16 | 32 = 32;
+export function vdaRuntimeInfo() { return { mode: runtimeMode, context: runtimeContext, precision: 'fp16' as const }; }
 
 /** Load once; a failure is reported to the caller, who falls back with `vdaDus`. */
 export function vdaHazirla(): Promise<VdaStream> {
-  streamPromise ??= openVdaRunners().then((runners) => (activeStream = createVdaStream(runners)));
+  streamPromise ??= openVdaRuntime().then(stream => (activeStream = stream));
   return streamPromise;
+}
+
+/** Capture can reject an operator/device; retry without capture, then the established CPU-cache path. */
+async function openVdaRuntime(): Promise<VdaStream> {
+  const { openVdaGpuStream, vdaGpuOptions, vdaContext } = await import('./vdaGpu.ts');
+  const search = typeof location === 'undefined' ? '' : location.search;
+  const options = vdaGpuOptions(search);
+  if (!options.enabled) return createVdaStream(await openVdaRunners());
+  const { gpuSirasinaGir, webgpuKullanilabilir } = await import('../../depth.ts');
+  if (!await webgpuKullanilabilir()) throw Error('VDA needs WebGPU (no adapter)');
+  const ort = await import('onnxruntime-web/webgpu');
+  const dev = (import.meta as { env?: { DEV?: boolean } }).env?.DEV === true;
+  ort.env.wasm.wasmPaths = dev ? '/node_modules/onnxruntime-web/dist/' : '/ort/';
+  ort.env.wasm.numThreads = 1;
+  let current: (VdaStream & { dispose?(): Promise<void> }) | null = null;
+  let mode = options.capture ? 0 : 1;
+  let context = vdaContext(search);
+  const open = async () => {
+    const base = context === 16 ? '/models/DepthAnything/video-depth-anything-small-stream-154x266-context16/' : VDA_BASE;
+    const stream = mode < 2
+      ? await openVdaGpuStream(ort, base, mode === 0, gpuSirasinaGir, context)
+      : createVdaStream(await openVdaRunners());
+    runtimeMode = mode === 0 ? 'capture' : mode === 1 ? 'gpu' : 'legacy';
+    runtimeContext = mode < 2 ? context : 32;
+    return stream;
+  };
+  const fallback = async (error: unknown) => {
+    if (context === 16) {
+      console.warn('[videoDerinlik] Experimental VDA context16 failed; retrying validated context32', error);
+      await current?.dispose?.(); current = null; context = 32; return;
+    }
+    console.warn(`[videoDerinlik] VDA ${mode === 0 ? 'graph capture' : 'GPU cache'} failed; retrying with ${mode === 0 ? 'uncaptured GPU cache' : 'legacy cache'}`, error);
+    await current?.dispose?.(); current = null; mode++;
+  };
+  while (!current) {
+    try { current = await open(); } catch (error) { if (mode >= 2) throw error; await fallback(error); }
+  }
+  return {
+    frames: () => current?.frames() ?? 0,
+    reset: () => current?.reset(),
+    async infer(pixels) {
+      for (;;) {
+        try { current ??= await open(); return await current.infer(pixels); }
+        catch (error) { if (mode >= 2) throw error; await fallback(error); }
+      }
+    },
+  };
 }
 
 export function vdaKullanilsinMi(width: number, height: number, search = typeof location === 'undefined' ? '' : location.search): boolean {
@@ -175,31 +225,39 @@ export async function vdaKare(frame: ImageData, sourceId: string, time: number, 
   return { data: depth, dims: [1, VDA_INPUT_HEIGHT, VDA_INPUT_WIDTH] };
 }
 
+/** Bootstrap, stream capture and replay are all compiled before user frames start. */
+export async function vdaIsitAkis(stream: VdaStream, pixels: Float32Array): Promise<void> {
+  try {
+    await stream.infer(pixels);
+    await stream.infer(pixels);
+    await stream.infer(pixels);
+  } finally {
+    stream.reset();
+  }
+}
+
 /** Shader compilation happens on the first real run; warm with a gradient, then drop the context. */
 export async function vdaIsit(): Promise<void> {
   const stream = await vdaHazirla();
   const rgba = new Uint8ClampedArray(VDA_PIXELS * 4);
   for (let i = 0; i < VDA_PIXELS; i++) rgba.fill((i % VDA_INPUT_WIDTH) % 256, i * 4, i * 4 + 4);
-  try {
-    await stream.infer(vdaOnIsle(rgba, VDA_INPUT_WIDTH, VDA_INPUT_HEIGHT));
-  } finally {
-    vdaSifirla();
-  }
+  try { await vdaIsitAkis(stream, vdaOnIsle(rgba, VDA_INPUT_WIDTH, VDA_INPUT_HEIGHT)); }
+  finally { vdaSifirla(); }
 }
 
 export interface VdaHistory<T> { frames: T[]; frameId: number }
 export function createVdaHistory<T>(): VdaHistory<T> { return { frames: [], frameId: -1 }; }
 
 /** Match upstream first2 + latest29, including its persistent first-frame anchor. */
-export function selectVdaHistory<T>(history: VdaHistory<T>): T[] {
-  return history.frames.slice(0, 2).concat(history.frames.slice(-29));
+export function selectVdaHistory<T>(history: VdaHistory<T>, context = 32): T[] {
+  return history.frames.slice(0, 2).concat(history.frames.slice(-(context - 3)));
 }
 
-export function advanceVdaHistory<T>(history: VdaHistory<T>, frame: T): void {
+export function advanceVdaHistory<T>(history: VdaHistory<T>, frame: T, context = 32): void {
   history.frameId++;
-  if (history.frameId === 0) history.frames = new Array(32).fill(frame);
+  if (history.frameId === 0) history.frames = new Array(context).fill(frame);
   else history.frames.push(frame);
-  if (history.frameId + 32 > 42) history.frames.splice(1, 1);
+  if (history.frameId + context > 42) history.frames.splice(1, 1);
 }
 
 /** Upstream torch.cat(dim=1): flattening time first silently corrupts attention. */

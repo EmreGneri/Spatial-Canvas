@@ -27,6 +27,7 @@ export default defineConfig({
       input: {
         main: resolve(__dirname, 'index.html'),
         embed: resolve(__dirname, 'src/embed.ts'),
+        points: resolve(__dirname, 'bench/points.html'),
       },
     },
   },

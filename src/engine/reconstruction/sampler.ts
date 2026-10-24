@@ -64,6 +64,7 @@
  */
 
 import { buildSilhouette } from './silhouette.ts';
+import { resampleVideoDepthEdges, type VideoGuideMask } from './videoDepthEdges.ts';
 
 export const VOLUME_GRID_SIZE = 384;
 
@@ -185,6 +186,12 @@ export interface VolumeSampleOptions {
   importanceSampling?: boolean;
   /** A video is a complete scene; its mask affects opacity but never geometry. */
   fullFrame?: { cameraDistance: number };
+  /** Video-only edge cleanup strength (0 = off, 1..4 = 1..2 source pixels). */
+  videoEdgeCleanup?: number;
+  /** Confidence in propagated video depth, at the input depth resolution. */
+  videoFlowConfidence?: Float32Array;
+  /** Original-resolution segmentation for subpixel contour placement. */
+  videoGuideMask?: VideoGuideMask;
 }
 
 /**
@@ -216,9 +223,21 @@ export function sampleVolumePositions(
     const cameraDistance = opts.fullFrame.cameraDistance;
     const videoMask = opts.foregroundMask?.length === depthWidth * depthHeight
       ? opts.foregroundMask : null;
+    const flowConfidence = opts.videoFlowConfidence?.length === depth.length
+      ? Float32Array.from(opts.videoFlowConfidence, value =>
+        Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : 0)
+      : null;
     if (!(cameraDistance > range / 2)) {
       throw new Error('Full-frame camera distance must exceed the depth range');
     }
+    const edges = (opts.videoEdgeCleanup ?? 0) > 0
+      ? resampleVideoDepthEdges(depth, depthWidth, depthHeight, grid,
+        opts.videoEdgeCleanup!, videoMask, opts.videoGuideMask)
+      : null;
+    const guide = edges && opts.videoGuideMask && opts.videoGuideMask.width > 0
+      && opts.videoGuideMask.height > 0
+      && opts.videoGuideMask.data.length === opts.videoGuideMask.width * opts.videoGuideMask.height
+      ? opts.videoGuideMask : null;
     for (let j = 0; j < grid; j++) {
       const v = 1 - (j + 0.5) / grid;
       const y = (j + 0.5) / grid * depthHeight - 0.5;
@@ -227,7 +246,8 @@ export function sampleVolumePositions(
         const x = u * depthWidth - 0.5;
         const offset = (j * grid + i) * 4;
         const z = Math.min(1, Math.max(-1,
-          (sampleBilinear(depth, depthWidth, depthHeight, x, y) - 0.5) * range));
+          ((edges ? edges.depth[j * grid + i]
+            : sampleBilinear(depth, depthWidth, depthHeight, x, y)) - 0.5) * range));
         // Perspective division uses cameraDistance - z. Undo it here so the
         // original video frame stays aligned from the reference camera.
         const xyScale = (cameraDistance - z) / cameraDistance;
@@ -238,6 +258,15 @@ export function sampleVolumePositions(
           ? (sampleBilinear(videoMask, depthWidth, depthHeight, x, y) >= 0.5
             ? 1 : BACKDROP_OPACITY)
           : 1;
+        if (guide) {
+          const gx = Math.min(guide.width - 1, Math.floor(u * guide.width));
+          const gy = Math.min(guide.height - 1, Math.floor((j + 0.5) / grid * guide.height));
+          out[offset + 3] = guide.data[gy * guide.width + gx] >= 0.5 ? 1 : BACKDROP_OPACITY;
+        }
+        if (edges) out[offset + 3] *= edges.confidence[j * grid + i];
+        if (flowConfidence) {
+          out[offset + 3] *= sampleBilinear(flowConfidence, depthWidth, depthHeight, x, y);
+        }
       }
     }
     return out;

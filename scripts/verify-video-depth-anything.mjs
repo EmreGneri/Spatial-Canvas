@@ -117,4 +117,13 @@ vda.vdaDus(new Error('second failure'));
 console.warn = warn;
 assert.equal(warned, 1, 'Fallback is logged once');
 assert.equal(vda.vdaKullanilsinMi(1920, 1080, '?videoDerinlik=vda'), false, 'After a failure the page stays on V2');
-console.log('verify-video-depth-anything: runtime flag, preprocessing, validation, stream, reset and fallback passed');
+// Warmup must compile bootstrap and two stream runs (capture and replay), then reset.
+encoderDims = [1, 209, 384];
+const warmCalls = calls.length;
+await vda.vdaIsitAkis(stream, pixels);
+assert.deepEqual(calls.slice(warmCalls).filter(c => c.name !== 'encoder').map(c => c.name), ['bootstrap', 'stream', 'stream']);
+assert.equal(stream.frames(), 0, 'Warmup never seeds the user temporal context');
+encoderDims = [1, 200, 384];
+await assert.rejects(vda.vdaIsitAkis(stream, pixels), /shape/);
+assert.equal(stream.frames(), 0, 'A failed warmup still resets the temporal context');
+console.log('verify-video-depth-anything: runtime flag, preprocessing, validation, stream, reset, fallback and warmup passed');

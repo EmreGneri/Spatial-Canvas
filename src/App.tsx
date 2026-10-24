@@ -3,6 +3,10 @@ import { yuzNoktalari } from './engine/vision/yuzTespit';
 import { yuzRolyefHaritasi, type YuzRolyefi } from './engine/reconstruction/yuzRolyef';
 import { estimateDepth, FOTO_KALITE, loadDepthModel, luminanceHeightMap, resetLuminanceState } from './depth';
 import { segmentForeground } from './engine/reconstruction/segmentation';
+import { captureLiveMask } from './engine/vision/liveMask';
+import { isLiveFrameUnchanged, shouldPresentLiveDepth } from './engine/vision/liveDepthFlow';
+import { prepareVideoDepth, type VideoDepthHandle, type VideoDepthProgress } from './engine/vision/videoPrecompute';
+import { startBufferedVideoPlayback } from './engine/vision/bufferedVideoPlayback';
 import { Engine } from './engine';
 import { ControlPanel } from './ui/ControlPanel';
 import { createPointCloudMaterial, POINTS_PARAMS } from './shaders/pointCloudMaterial';
@@ -46,7 +50,7 @@ import * as THREE from 'three';
 import { type TrackedTarget, type TrackerModu } from './engine/vision/tracker';
 import { TrackerClient } from './engine/vision/trackerClient';
 import {
-  isitLiveModel, liveDepthKullanilabilir, maskeKacirmaOrani,
+  isitLiveModel, liveDepthKullanilabilir, liveGrabSize, maskeKacirmaOrani,
   maskeYenilenmeliMi, startLiveDepth, ustPercentilEsigi, type LiveDepthResult,
 } from './engine/vision/liveDepth';
 import { yetenekRaporu } from './engine/vision/yetenek';
@@ -221,6 +225,13 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
   const luminanceActiveRef = useRef(false);
   const luminanceFrameRef = useRef<{ video: HTMLVideoElement; id: number } | null>(null);
   const videoMaskRequestRef = useRef<(() => void) | null>(null);
+  const videoDepthRefreshRef = useRef<(() => void) | null>(null);
+  const preparedVideoRef = useRef<VideoDepthHandle | null>(null);
+  const preparedVideoAbortRef = useRef<AbortController | null>(null);
+  const preparedVideoStopRef = useRef<(() => void) | null>(null);
+  const preparedVideoUsableRef = useRef(false);
+  const preparedFrameTimeRef = useRef(-Infinity);
+  const preparedFramePresenterRef = useRef<((frame: LiveDepthResult) => void) | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   /** Bumped by teardownSource; async source paths bail out once it moves (sourceGuard.ts). */
   const sourceGenRef = useRef(0);
@@ -248,6 +259,9 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
   const [log, setLog] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [cameraOn, setCameraOn] = useState(false);
+  const [videoEdgeCleanup, setVideoEdgeCleanup] = useState(0);
+  const [liveRates, setLiveRates] = useState({ model: 0, flow: 0 });
+  const [videoPreparation, setVideoPreparation] = useState<VideoDepthProgress | null>(null);
   const [segment, setSegment] = useState(false);
   const segmentRef = useRef(false);
   const segmentRevisionRef = useRef(0);
@@ -431,6 +445,16 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
     // Every pending async source path (photo inference, camera prompt, video
     // decode, live-depth start) sees this and stops before writing anything.
     sourceGenRef.current++;
+    preparedVideoAbortRef.current?.abort();
+    preparedVideoAbortRef.current = null;
+    preparedVideoStopRef.current?.();
+    preparedVideoStopRef.current = null;
+    void preparedVideoRef.current?.dispose().catch(() => {});
+    preparedVideoRef.current = null;
+    preparedVideoUsableRef.current = false;
+    preparedFrameTimeRef.current = -Infinity;
+    preparedFramePresenterRef.current = null;
+    setVideoPreparation(null);
     clearTimer();
     luminanceActiveRef.current = false;
     cancelLuminanceFrame();
@@ -438,6 +462,9 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
     // sürücüyle çakışmasın (iki döngü aynı GPU kuyruğunda çekişir).
     liveDepthStopRef.current?.();
     liveDepthStopRef.current = null;
+    videoMaskRequestRef.current = null;
+    videoDepthRefreshRef.current = null;
+    setLiveRates({ model: 0, flow: 0 });
     // GÜN 6 (madde 4): canlı home modunu kapat — sonraki fotoğraf yolu toptan
     // yazar (eski davranış korunur).
     const engine = engineRef.current;
@@ -794,7 +821,8 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
     const isCurrent = captureGeneration(sourceGenRef);
     startLuminanceLoop(video, label);
     let iptal = false;
-    let videoMask: { data: Float32Array; width: number; height: number } | null = null;
+    let videoMask: { data: Float32Array; width: number; height: number; mediaTime: number;
+      colorFrame: { data: Uint8ClampedArray; width: number; height: number } } | null = null;
     let maskBusy = false;
     let maskUnavailable = false;
     let maskErrors = 0;
@@ -807,15 +835,31 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
     let lastDepth: LiveDepthResult | null = null;
     // The mask only sets particle opacity. Re-applying the last depth lets a
     // mask that arrives while the video is paused take effect immediately.
-    const applyDepth = (d: LiveDepthResult) => {
-      const mask = segmentRef.current ? videoMask : null;
+    const applyDepth = (d: LiveDepthResult, fromCache = false) => {
+      if (!fromCache && preparedVideoUsableRef.current && preparedFrameTimeRef.current >= d.mediaTime) return;
+      const capturedMask = videoMask && (Math.abs(d.mediaTime - videoMask.mediaTime) <= 0.2
+        || isLiveFrameUnchanged(videoMask.colorFrame, d.colorFrame))
+        ? videoMask : null;
+      const mask = segmentRef.current ? (d.flowMask ?? capturedMask) : null;
       engineRef.current?.setDepth(d.data, d.width, d.height,
-        mask?.data, mask?.width, mask?.height, d.colorFrame);
+        mask?.data, mask?.width, mask?.height, d.colorFrame, d.flowConfidence);
+    };
+    videoDepthRefreshRef.current = () => {
+      if (!iptal && isCurrent() && lastDepth) applyDepth(lastDepth, preparedVideoUsableRef.current);
+    };
+    preparedFramePresenterRef.current = (frame) => {
+      if (iptal || !isCurrent() || videoRef.current !== video) return;
+      stopLuminanceLoop();
+      if (preparedFrameTimeRef.current === -Infinity) setLiveRates({ model: 0, flow: 0 });
+      lastDepth = frame;
+      preparedFrameTimeRef.current = frame.mediaTime;
+      applyDepth(frame, true);
     };
     const syncMaskRequest = () => {
       if (requestedRevision === segmentRevisionRef.current) return;
       requestedRevision = segmentRevisionRef.current;
       maskRevision++;
+      if (lastDepth) lastDepth = { ...lastDepth, flowMask: undefined };
       videoMask = null;
       maskBaseline = null;
       maskUnavailable = false;
@@ -826,7 +870,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
     };
     const captureMask = () => {
       syncMaskRequest();
-      if (label !== 'video' || !segmentRef.current || iptal || maskBusy || maskUnavailable ||
+      if (!segmentRef.current || iptal || maskBusy || maskUnavailable ||
         performance.now() < maskNextRetryAt || videoRef.current !== video) return;
       if (video.readyState < 2 || video.videoWidth === 0 || video.videoHeight === 0) return;
       maskBusy = true;
@@ -839,16 +883,26 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
       canvas.height = Math.max(1, Math.round(video.videoHeight * scale));
       const ctx = canvas.getContext('2d');
       if (!ctx) { maskBusy = false; maskUnavailable = true; return; }
+      const maskMediaTime = video.currentTime;
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      const flowCanvas = document.createElement('canvas');
+      const flowSize = liveGrabSize(video.videoWidth, video.videoHeight);
+      flowCanvas.width = flowSize.w;
+      flowCanvas.height = flowSize.h;
+      const flowContext = flowCanvas.getContext('2d', { willReadFrequently: true });
+      if (!flowContext) { maskBusy = false; return; }
+      flowContext.drawImage(canvas, 0, 0, flowSize.w, flowSize.h);
+      const maskColorFrame = { data: flowContext.getImageData(0, 0, flowSize.w, flowSize.h).data,
+        width: flowSize.w, height: flowSize.h };
       // segmentForeground kendi içinde GPU sırasına girer (segmentation.ts) —
       // burada ikinci kez sarmalamak kuyruğu KİLİTLERDİ (yeniden girişli
       // değil, depth.ts:~112).
-      void segmentForeground(canvas)
+      void captureLiveMask(canvas)
         .then((result) => {
           if (iptal || videoRef.current !== video || revision !== maskRevision) return;
           let foreground = 0;
-          for (const value of result.mask) if (value >= 0.5) foreground++;
-          const coverage = foreground / result.mask.length;
+          for (const value of result.data) if (value >= 0.5) foreground++;
+          const coverage = foreground / result.data.length;
           if (coverage < 0.08 || coverage >= 0.92) {
             videoMask = null;
             maskBaseline = null;
@@ -857,12 +911,13 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
             say(`video maskesi güvenilir değil (%${(coverage * 100).toFixed(0)} ön plan); sonra yeniden denenecek`);
             return;
           }
-          videoMask = { data: result.mask, width: result.width, height: result.height };
+          videoMask = { data: result.data, width: result.width, height: result.height,
+            mediaTime: maskMediaTime, colorFrame: maskColorFrame };
           maskBaseline = null;
           invalidMasks = 0;
           maskErrors = 0;
           maskNextRetryAt = 0;
-          say(`video özne maskesi hazır · ${(coverage * 100).toFixed(0)}% ön plan`);
+          say(`Foreground mask ready · ${result.model} · ${(coverage * 100).toFixed(0)}% foreground`);
           if (lastDepth) applyDepth(lastDepth);
         })
         .catch((err) => {
@@ -885,12 +940,14 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
       // replace the newer source's without ever being called.
       if (iptal || !isCurrent()) return;
       if (!varMi) {
+        liveDepthStopRef.current = null;
         say('canlı derinlik: WebGPU yok; parlaklık vekiliyle devam');
         return;
       }
       say(`canlı derinlik başlıyor · video ${video.videoWidth}x${video.videoHeight} · ${video.duration.toFixed(1)} sn`);
       let devraldi = false;
       let sayac = 0;
+      let flowCount = 0;
       const ageSamples: number[] = [];
       let flowCoverageTotal = 0;
       let staleDrops = 0;
@@ -909,8 +966,13 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
             say('canlı derinlik: model devraldı (depth-anything-v2-small · fp16)');
           }
           syncMaskRequest();
-          lastDepth = d;
-          applyDepth(d);
+          // Let the Worker align the new model anchor before replacing a masked flow frame.
+          const awaitingMask = segmentRef.current && lastDepth?.flowMask && !d.flowMask
+            && !video.paused && d.mediaTime - lastDepth.mediaTime < 0.5;
+          if (!awaitingMask && shouldPresentLiveDepth(d.mediaTime, lastDepth?.mediaTime ?? -Infinity)) {
+            lastDepth = d;
+            applyDepth(d);
+          }
           const mask = segmentRef.current ? videoMask : null;
           if (!mask && segmentRef.current) {
             captureMask();
@@ -929,8 +991,11 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
           flowCoverageTotal += d.flowCoverage ?? 0;
           const simdi = performance.now();
           if (simdi - sonLog > 3000) {
+            const elapsed = (simdi - sonLog) / 1000;
+            if (!preparedVideoUsableRef.current) setLiveRates({ model: sayac / elapsed, flow: flowCount / elapsed });
             say(`canlı derinlik · ${(sayac / ((simdi - sonLog) / 1000)).toFixed(1)} Hz · ${d.width}x${d.height} · kare yaşı p50/p95 ${Math.round(percentile(ageSamples, 0.5))}/${Math.round(percentile(ageSamples, 0.95))} ms · akış kapsaması ${Math.round(100 * flowCoverageTotal / Math.max(1, sayac))}% · eski kare atlandı ${staleDrops}`);
             sayac = 0;
+            flowCount = 0;
             ageSamples.length = 0;
             flowCoverageTotal = 0;
             staleDrops = 0;
@@ -938,11 +1003,24 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
           }
         },
         {
+          shouldInfer: () => segmentRef.current || !preparedVideoUsableRef.current
+            || !preparedVideoRef.current?.hasFrame(video.currentTime),
+          forceV2: () => preparedVideoAbortRef.current !== null,
+          flowMaskAl: () => segmentRef.current ? videoMask : null,
+          onInterpolatedDepth: (d) => {
+            if (iptal || !isCurrent() || videoRef.current !== video) return;
+            if (preparedVideoUsableRef.current && preparedVideoRef.current?.hasFrame(video.currentTime)) return;
+            if (!shouldPresentLiveDepth(d.mediaTime, lastDepth?.mediaTime ?? -Infinity)) return;
+            lastDepth = d;
+            applyDepth(d);
+            flowCount++;
+          },
           // No `maskeAl`: a mask must not alter live video depth, or mask
           // arrival would move the geometry. The driver keeps looped masks;
           // only a user seek shows a different subject.
           onDiscontinuity: (reason) => {
-            if (reason === 'seek') {
+            lastDepth = null;
+            if (reason !== 'loop') {
               maskRevision++;
               videoMask = null;
               maskBaseline = null;
@@ -978,8 +1056,60 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
    * maske üretilmediyse ve fotoğraf hâlâ eldeyse RMBG şimdi yeniden çalıştırılır
    * (depth korunur, yalnızca maske türetilir).
    */
+  function prepareUploadedVideo(file: File, video: HTMLVideoElement) {
+    const isCurrent = captureGeneration(sourceGenRef);
+    const controller = new AbortController();
+    preparedVideoAbortRef.current = controller;
+    const fallback = () => {
+      if (!isCurrent() || controller.signal.aborted) return;
+      preparedVideoUsableRef.current = false;
+      preparedFrameTimeRef.current = -Infinity;
+      if (!liveDepthStopRef.current && !luminanceActiveRef.current) startLuminanceLoop(video, 'video');
+    };
+    void prepareVideoDepth(file, {
+      signal: controller.signal,
+      onProgress: (progress) => {
+        if (!isCurrent() || controller.signal.aborted) return;
+        setVideoPreparation(progress);
+        if (progress.stage === 'fallback') say(`Video preparation unavailable: ${progress.error ?? 'using live depth'}`);
+      },
+    }).then(async (handle) => {
+      if (!isCurrent() || controller.signal.aborted) { await handle.dispose(); return; }
+      preparedVideoRef.current = handle;
+      const beginPlayback = () => startBufferedVideoPlayback(video, handle, {
+        onFrame: (frame) => {
+          if (!isCurrent() || controller.signal.aborted) return;
+          if (Math.abs(video.currentTime - frame.mediaTime) > 0.25) { fallback(); return; }
+          // Prepared files contain depth only; preserve the live mask pipeline when separation is enabled.
+          if (segmentRef.current) { fallback(); return; }
+          preparedVideoUsableRef.current = true;
+          preparedFramePresenterRef.current?.({ ...frame, inferenceMs: 0, depthModel: 'vda',
+            modelOutput: { data: frame.data, width: frame.width, height: frame.height } });
+        },
+        onFallback: fallback,
+        onError: (error) => {
+          if (isCurrent()) say(`Depth cache read failed; using live depth: ${String(error)}`);
+        },
+      });
+      preparedVideoStopRef.current = beginPlayback();
+      await handle.done;
+      if (!isCurrent() || controller.signal.aborted || !handle.hasFrame(video.currentTime)) return;
+      // Paused videos have no new decoded callback when preparation finishes.
+      if (video.paused) {
+        preparedVideoStopRef.current?.();
+        preparedVideoStopRef.current = beginPlayback();
+      }
+    }).catch((error) => {
+      if (!isCurrent() || controller.signal.aborted) return;
+      preparedVideoUsableRef.current = false;
+      say(`Video preparation failed; using live depth: ${String(error)}`);
+    });
+  }
+
   async function toggleSegment() {
     const next = !segment;
+    if (next) preparedVideoUsableRef.current = false;
+    if (next && !liveDepthStopRef.current && !luminanceActiveRef.current && videoRef.current) startLuminanceLoop(videoRef.current, 'video');
     updateSegment(next);
     engineRef.current!.setObjectSeparation(next);
     say(`nesne ayırma: ${next ? 'AÇIK (arka plan parçacıkları atılır, sadece büst)' : 'kapalı (tüm sahne, arka plan karartılır)'}`);
@@ -1205,6 +1335,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
         engineRef.current!.setVideoSource(video);
         say(`video yüklendi · ${file.name} · model gelene kadar geçici parlaklık önizlemesi`);
         startVideoDepth(video, 'video');
+        prepareUploadedVideo(file, video);
       } else {
         const image = await loadImage(url);
         if (!isCurrent()) return;
@@ -1567,10 +1698,44 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
         >
           3D eğit
         </button>}
+        {!!videoDosya && videoPreparation && <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
+          <span>Video depth: {videoPreparation.stage}</span>
+          <progress aria-label="Prepared video depth" max={Math.max(1, videoPreparation.totalSeconds)}
+            value={videoPreparation.readySeconds} />
+          <span>{videoPreparation.readySeconds.toFixed(1)} / {videoPreparation.totalSeconds.toFixed(1)} s</span>
+          {videoPreparation.stage !== 'ready' && <span>Processed {(videoPreparation.processedSeconds ?? 0).toFixed(1)} s</span>}
+          {!['ready', 'fallback', 'cancelled'].includes(videoPreparation.stage) && <button onClick={() => {
+            preparedVideoAbortRef.current?.abort();
+            preparedVideoRef.current?.cancel();
+            preparedVideoUsableRef.current = false;
+            setVideoPreparation({ ...videoPreparation, stage: 'cancelled' });
+          }}>Cancel preparation</button>}
+          {videoPreparation.error && <span role="status">Live depth fallback</span>}
+          {videoPreparation.stage === 'ready' && segment && <span>Live depth for object separation</span>}
+        </div>}
+        {(cameraOn || !!videoDosya) && <>
+          <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 12 }}>
+            Edge cleanup
+            <input type="range" min={0} max={4} step={1} value={videoEdgeCleanup}
+              aria-label="Video edge cleanup"
+              onChange={(event) => {
+                const strength = Number(event.target.value);
+                setVideoEdgeCleanup(strength);
+                engineRef.current?.setVideoEdgeCleanup(strength);
+                videoDepthRefreshRef.current?.();
+              }} />
+            <output>{videoEdgeCleanup}</output>
+          </label>
+          <span style={{ fontFamily: MONO, fontSize: 11 }} aria-live="polite">
+            Model {liveRates.model.toFixed(1)} Hz · Flow {liveRates.flow.toFixed(1)} Hz
+          </span>
+        </>}
         {/* DURUM OKUMALARI — "nesne ayırma: kapalı" bir FİİL değil, bir
             geliştirici göstergesi. Sunumda mount edilmez. */}
         {!sunum && (
           <>
+            <a href="/bench/points.html" target="_blank" rel="noreferrer"
+              style={{ color: renk.metin, fontSize: 12 }}>Point count benchmark</a>
             <button style={toggleButton(segment, '#2a3')} disabled={busy} onClick={toggleSegment}>
               nesne ayırma: {segment ? 'AÇIK' : 'kapalı'}
             </button>

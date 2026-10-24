@@ -77,6 +77,16 @@ export interface TickablePass {
  * Ã¶rnekler (texture2D(uPositions, aUv)).
  */
 export class Engine {
+  // Varsayılan KAPALI: CPU'da ~11–13 ms/kare ek (384² ızgara, ölçüldü 2026-10-25) ve akışla
+  // ara kareler de setDepth çağırdığı için ana iş parçacığını boğabiliyor. GPU'ya taşınınca açılmalı.
+  private videoEdgeCleanupStrength = 0;
+
+  /** Disparity expansion and discontinuity rejection, only for full-frame video. */
+  setVideoEdgeCleanup(strength: number) {
+    this.videoEdgeCleanupStrength = Number.isFinite(strength)
+      ? Math.max(0, Math.min(4, Math.round(strength))) : 0;
+  }
+
   readonly renderer: THREE.WebGLRenderer;
   readonly homeTexture: THREE.DataTexture;
   readonly points: THREE.Points;
@@ -1626,6 +1636,7 @@ if (entry && entry.material !== this.pointsMaterial) {
     maskWidth?: number,
     maskHeight?: number,
     videoFrame?: { data: Uint8ClampedArray; width: number; height: number },
+    videoFlowConfidence?: Float32Array,
   ) {
     if (this.videoTexture) this.metricPhotoGeometry = null;
     // Nesne maskesi (segmentation.ts) depth ile aynÄ± boyutta deÄŸilse (letterbox
@@ -1755,6 +1766,10 @@ if (entry && entry.material !== this.pointsMaterial) {
       // the shell mesh below use the same off default, so they stay aligned.
       importanceSampling: false,
       fullFrame: this.videoTexture ? { cameraDistance: DEFAULT_CAMERA_DISTANCE } : undefined,
+      videoEdgeCleanup: this.videoTexture ? this.videoEdgeCleanupStrength : 0,
+      videoFlowConfidence: this.videoTexture ? videoFlowConfidence : undefined,
+      videoGuideMask: this.videoTexture && foregroundMask && maskWidth && maskHeight
+        ? { data: foregroundMask, width: maskWidth, height: maskHeight } : undefined,
       worldHeight: videoWorldHeight,
     });
     // TUR 11: fotoÄŸraf yÃ¼klÃ¼yse parÃ§acÄ±k renklerini de aynÄ± grid/remap ile

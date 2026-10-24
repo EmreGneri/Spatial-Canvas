@@ -8,8 +8,10 @@ onnxconverter-common. Upstream source/checkpoint must already be present.
 import argparse
 import hashlib
 import json
+import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 CHECKPOINT_SHA256 = '13379300b739e659f076a59d52e9801bd8d38c541a7e71f73bbca4dcfb013609'
@@ -30,6 +32,8 @@ def main():
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--height', type=int, default=154)
     parser.add_argument('--width', type=int, default=266)
+    parser.add_argument('--context', type=int, choices=[16, 32], default=32,
+                        help='Attention context. 16 is an experimental shorter-cache export; use a separate output directory.')
     args = parser.parse_args()
     if args.height % 14 or args.width % 14 or min(args.height, args.width) < 28:
         parser.error('Width and height must be positive multiples of 14, at least 28')
@@ -79,7 +83,7 @@ def main():
     with torch.inference_mode():
         features = encoder(sample)
         initial = head(*features)
-        history = tuple(c.repeat(1, 31, 1) for c in initial[1:])
+        history = tuple(c.repeat(1, args.context - 1, 1) for c in initial[1:])
         next_features = encoder(next_sample)
         streamed = head(*next_features, *history)
         # Wrapper must preserve the official forward_depth tensor and cache semantics.
@@ -88,13 +92,20 @@ def main():
         for actual, expected in zip(streamed[1:], official[1], strict=True):
             torch.testing.assert_close(actual, expected)
 
-    args.output.mkdir(parents=True, exist_ok=True)
+    destination = args.output
+    manifest_path = destination / 'export-manifest.json'
+    if manifest_path.exists() and json.loads(manifest_path.read_text(encoding='utf-8')).get('window') != args.context:
+        raise ValueError('Use a separate output directory for each attention context; existing assets were not changed')
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    staging = tempfile.TemporaryDirectory(prefix='vda-export-', dir=destination.parent)
+    args.output = Path(staging.name)
     for name, tensor in [('pixels0', sample), ('pixels1', next_sample), ('depth0', initial[0]), ('depth1', streamed[0])]:
         tensor.detach().numpy().astype('<f4').tofile(args.output / f'parity-{name}.bin')
     feature_names = [f'feat{i}' for i in range(1, 5)]
     cache_names = [f'cache{i}' for i in range(8)]
     report = {'checkpointSha256': digest, 'upstreamCommit': commit, 'torch': torch.__version__,
-              'resolution': [height, width], 'window': 32, 'cacheFrames': 31, 'license': 'Apache-2.0', 'files': {}}
+              'resolution': [height, width], 'window': args.context, 'cacheFrames': args.context - 1,
+              'experimentalContext': args.context != 32, 'license': 'Apache-2.0', 'files': {}}
 
     def export(name, wrapper, inputs, names, outputs, expected):
         print(f'Exporting {name}', flush=True)
@@ -150,6 +161,11 @@ def main():
     export('bootstrap', head, tuple(features), feature_names, ['depth', *cache_names], initial)
     export('stream', head, (*next_features, *history), [*feature_names, *cache_names], ['depth', *[f'nextCache{i}' for i in range(8)]], streamed)
     (args.output / 'export-manifest.json').write_text(json.dumps(report, indent=2), encoding='utf-8')
+    # Publish only after every graph and fp16 output has passed parity.
+    destination.mkdir(parents=True, exist_ok=True)
+    for path in args.output.iterdir():
+        os.replace(path, destination / path.name)
+    staging.cleanup()
     print(json.dumps(report, indent=2), flush=True)
 
 

@@ -14,6 +14,8 @@ const { gtDerinlik } = await import('../src/bench/sentetikSahne.ts');
 const { computeOpticalFlow } = await import('../src/engine/vision/flow.ts');
 
 const quick = process.argv.includes('--quick');
+const gpuContexts = process.argv.includes('--gpu-contexts');
+const reportPath = gpuContexts ? 'olcum-out/vda/quality-gpu-contexts.json' : 'olcum-out/vda/quality.json';
 const n = (count) => (quick ? Math.min(count, 12) : count);
 const CLIPS = [
   { name: 'sentetik-orman-yolu', clip: '/assets/test-clips/sentetik-orman-yolu.webm', gt: 'assets/test-clips/sentetik-orman-yolu.gt.json', fps: 30, startFrame: 0, stride: 5, count: n(72) },
@@ -126,22 +128,24 @@ session.page.on('console', (m) => {
 session.page.on('pageerror', (e) => errors.push(`pageerror: ${e}`));
 const report = { started: new Date().toISOString(), quick, clips: {} };
 try {
-  for (const clip of CLIPS) {
+  for (const clip of CLIPS.filter(clip => !process.argv.includes('--synthetic-only') || clip.gt)) {
     report.clips[clip.name] = { stride: clip.stride, fps: clip.fps };
-    for (const mode of ['v2', 'vda']) {
+    for (const mode of (gpuContexts ? ['vda32', 'vda16'] : ['v2', 'vda'])) {
       const before = errors.length;
-      await session.page.goto(session.url(`/bench/vda.html?inference=browser${mode === 'vda' ? '&videoDerinlik=vda' : ''}`), { waitUntil: 'load' });
+      const flags = mode === 'v2' ? '' : `&videoDerinlik=vda${gpuContexts ? `&vdaGpu=1&vdaContext=${mode === 'vda16' ? 16 : 32}` : ''}`;
+      await session.page.goto(session.url(`/bench/vda.html?inference=browser${flags}`), { waitUntil: 'load' });
       await session.page.bringToFront();
       await session.page.waitForFunction(() => typeof window.runVdaKiyas === 'function');
       console.log(`${clip.name} ${mode}: running ${clip.count} frames, stride ${clip.stride}`);
       const run = await session.page.evaluate((ayar) => window.runVdaKiyas(ayar), clip);
       const metrics = evaluate(run, clip);
-      report.clips[clip.name][mode] = { adapters: run.adapters, visibility: run.visibility, hasFocus: run.hasFocus, video: run.video, errors: errors.slice(before), ...metrics };
+      const runtime = mode === 'v2' ? null : await session.page.evaluate(async () => (await import('/src/engine/vision/videoDepthAnything.ts')).vdaRuntimeInfo());
+      report.clips[clip.name][mode] = { runtime, adapters: run.adapters, visibility: run.visibility, hasFocus: run.hasFocus, video: run.video, errors: errors.slice(before), ...metrics };
       console.log(JSON.stringify({ clip: clip.name, mode, ...metrics }));
-      writeFileSync('olcum-out/vda/quality.json', JSON.stringify(report, null, 2));
+      writeFileSync(reportPath, JSON.stringify(report, null, 2));
     }
   }
 } finally {
-  writeFileSync('olcum-out/vda/quality.json', JSON.stringify(report, null, 2));
+  writeFileSync(reportPath, JSON.stringify(report, null, 2));
   await session.kapat();
 }

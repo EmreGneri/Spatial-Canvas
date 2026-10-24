@@ -64,6 +64,8 @@ export async function tarayiciOturumu({ chrome = false, yazilimGpu = false, basl
     // No HMR / file watching: a measurement page runs for minutes to hours and
     // a full reload on any source edit would silently restart it.
     server: { port: 0, hmr: false, watch: null, fs: { allow: [REPO_KOKU, ...fsAllow] } },
+    // Export environments contain thousands of unrelated HTML files; scan only the application entry.
+    optimizeDeps: { entries: ['index.html'] },
     logLevel: 'error',
   });
   await server.listen();
