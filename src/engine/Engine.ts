@@ -52,7 +52,7 @@ import { activeNodes, createDefaultGraph, topologicalOrder, validateGraph, type 
 import { buildSilhouette, resampleBilinear } from './reconstruction/silhouette.ts';
 import { buildShellMesh, type ShellMeshData } from './reconstruction/mesh.ts';
 import { applySeparationCrop, computeMaskCropRect, cropChannels } from './reconstruction/crop.ts';
-import { buildMetricPhotoShell, createMetricPhotoProjection, cropMetricPhotoGeometry, updateMetricPhotoSplatGeometry, type MetricPhotoGeometry } from './reconstruction/metricPhotoGeometry.ts';
+import { buildMetricPhotoShell, createMetricPhotoProjection, cropMetricPhotoGeometry, metrikYuzRolyefi, updateMetricPhotoSplatGeometry, type MetricPhotoGeometry } from './reconstruction/metricPhotoGeometry.ts';
 import { subjectZSpan } from './reconstruction/sampler.ts';
 import { yuzRolyefiUygula, type YuzRolyefi } from './reconstruction/yuzRolyef.ts';
 import { inpaintMaskedPhoto } from './reconstruction/photo-inpaint.ts';
@@ -1685,7 +1685,10 @@ if (entry && entry.material !== this.pointsMaterial) {
       },
       !this.videoTexture && this.objectSeparation,
     );
-    const metric = this.metricPhotoGeometry;
+    // Metrik yolda yüz rölyefi metrik derinliğe işlenir (aşağıdaki görüntü-derinliği yolu yerine).
+    const metric = this.metricPhotoGeometry && this.yuzRolyefi && this.metricPhotoGeometry.width === width
+      && this.metricPhotoGeometry.height === height
+      ? metrikYuzRolyefi(this.metricPhotoGeometry, this.yuzRolyefi) : this.metricPhotoGeometry;
     const metricCropRect = metric && (crop.depthWidth !== width || crop.depthHeight !== height) && mask
       ? computeMaskCropRect(mask, width, height) : null;
     const metricProjection = metric && metric.width === width && metric.height === height

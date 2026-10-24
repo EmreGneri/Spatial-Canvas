@@ -3,6 +3,7 @@ import { buildSilhouette } from './silhouette.ts';
 import { BACKDROP_OPACITY } from './sampler.ts';
 import type { ShellMeshData } from './mesh.ts';
 import { YARICAP_BUYUME_MAKS } from '../splatGeometri.ts';
+import { yuzRolyefiUygula, type YuzRolyefi } from './yuzRolyef.ts';
 
 /**
  * Arka planın öznenin arkasında alabileceği en büyük derinlik payı, sığdırılmış dünya
@@ -12,6 +13,9 @@ import { YARICAP_BUYUME_MAKS } from '../splatGeometri.ts';
  * izdüşüm korunur, yalnız uzaklık yumuşakça tavanlanır.
  */
 export const ARKA_PLAN_PAYI = 1;
+
+/** MoGe arayüzünün derinlik-kenarı eşiği (utils3d depth_edge rtol). */
+export const KENAR_RTOL = 0.04;
 
 /** Camera Z in metres; row-major K uses normalized image coordinates. */
 export interface MetricPhotoGeometry {
@@ -35,6 +39,37 @@ export function cropMetricPhotoGeometry(g: MetricPhotoGeometry, rect: CropRect):
   return { depth: d.data, width: d.width, height: d.height, intrinsics: k, validMask: Uint8Array.from(validity.data) };
 }
 
+/**
+ * YÜZ RÖLYEFİ metrik geometride (kullanıcı isteği, 2026-10-24: MoGe modunda yüz yassı
+ * kalıyordu). yuzRolyefiUygula "büyük = yakın" doğrusal bir derinlik bekler; metrik Z'nin
+ * negatifi tam budur. Birim: yüz derinliğinde 1 metre = fx_px / z_yüz piksel (yüz ağının
+ * z'si x ile aynı ölçekte, pikselde). Çapa, eğim ve kafa elipsoidi mantığı aynen geçerli.
+ */
+export function metrikYuzRolyefi(g: MetricPhotoGeometry, rolyef: YuzRolyefi): MetricPhotoGeometry {
+  const n = g.width * g.height;
+  if (rolyef.rel.length !== n) return g;
+  const gecerli = (i: number) => g.validMask[i] !== 0 && Number.isFinite(g.depth[i]) && g.depth[i] > 0;
+  const yuz: number[] = [];
+  for (let i = 0; i < n; i++) if (rolyef.agirlik[i] >= .999 && gecerli(i)) yuz.push(g.depth[i]);
+  if (!yuz.length) return g;
+  yuz.sort((a, b) => a - b);
+  const zYuz = yuz[yuz.length >> 1];
+  // yuzRolyefiUygula görüntü derinliği sözleşmesinde çalışır (0..1, büyük = yakın, kırpılır):
+  // metrik Z doğrusal olarak [0,1]'e eşlenir; yakın tarafta rölyef için pay bırakılır.
+  let zMin = Infinity, zMax = -Infinity;
+  for (let i = 0; i < n; i++) if (gecerli(i)) { if (g.depth[i] < zMin) zMin = g.depth[i]; if (g.depth[i] > zMax) zMax = g.depth[i]; }
+  const yakin = Math.max(1e-6, zMin - .5 * (zMax - zMin + zYuz * .2)), uzak = zMax;
+  const S = uzak - yakin;
+  if (!(S > 0)) return g;
+  const birim = (S * g.intrinsics[0] * g.width) / zYuz;
+  const d = new Float32Array(n);
+  for (let i = 0; i < n; i++) d[i] = ((gecerli(i) ? g.depth[i] : zYuz) - uzak) / -S;
+  const out = yuzRolyefiUygula(d, g.width, g.height, rolyef, birim);
+  const depth = Float32Array.from(g.depth);
+  for (let i = 0; i < n; i++) if (gecerli(i)) depth[i] = uzak - out[i] * S;
+  return { ...g, depth };
+}
+
 export interface MetricPhotoProjection {
   scale: number;
   center: readonly [number, number, number];
@@ -55,7 +90,27 @@ export function createMetricPhotoProjection(
     throw new RangeError('Invalid calibrated photo dimensions or normalized camera intrinsics');
   }
   const alpha = buildSilhouette(displayDepth, w, h, mask ?? null).alpha;
-  const valid = (i: number) => validMask[i] !== 0 && Number.isFinite(depth[i]) && depth[i] > 0;
+  const olcumlu = (i: number) => validMask[i] !== 0 && Number.isFinite(depth[i]) && depth[i] > 0;
+  // DERİNLİK KENARI (MoGe'nin kendi `depth_edge` ayıklaması): 3×3 komşulukta en uzak/en yakın
+  // oranı 1+KENAR_RTOL'u aşan piksel, iki yüzey arasında enterpole edilmiş "uçan" piksel
+  // sayılır ve atılır. Bunlar maske içinde de olabilir; kamera ışını boyunca geriye uzanıp
+  // yandan bakınca dev, bulanık splat şeritleri veriyordu (gerçek fotoğrafta ölçüldü: bu
+  // pikseller medyan yarıçapın 75–190 katı).
+  const kenar = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const i = y * w + x;
+    if (!olcumlu(i)) continue;
+    let mn = depth[i], mx = depth[i];
+    for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+      const yy = y + dy, xx = x + dx;
+      if (yy < 0 || yy >= h || xx < 0 || xx >= w) continue;
+      const j = yy * w + xx;
+      if (!olcumlu(j)) continue;
+      if (depth[j] < mn) mn = depth[j]; else if (depth[j] > mx) mx = depth[j];
+    }
+    if (mx > mn * (1 + KENAR_RTOL)) kenar[i] = 1;
+  }
+  const valid = (i: number) => olcumlu(i) && !kenar[i];
   const point = (u: number, v: number, z: number): [number, number, number] => {
     const y = (v - k[5]) / k[4];
     return [((u - k[2] - k[1] * y) / k[0]) * z, -y * z, -z];
