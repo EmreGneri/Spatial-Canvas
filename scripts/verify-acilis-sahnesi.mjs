@@ -96,7 +96,9 @@ assert.ok(!/\[40, 70, 160\]|\[150, 90, 240\]/.test(app), 'bina koordinatları Ap
 
 // ── MODELSİZ YOL ───────────────────────────────────────────────────────────
 // Asıl kazanç bu: açılışta hiçbir model indirilmemeli (ölçüldü: 131,4 MB → 0).
-assert.match(app, /acilisSahnesiniCalistir\(syntheticImage\(\)\)/, 'soğuk açılış modelsiz yolu kullanmıyor');
+// Örnek sahne TEK KOD YOLUNDAN geçer: run() analitik derinliği alır,
+// çıkarımı atlar ama diğer tüm yan etkileri aynen işler.
+assert.match(app, /return run\(g, acilisDerinligi\(/, 'soğuk açılış modelsiz yolu kullanmıyor');
 assert.ok(!/void run\(syntheticImage\(\)\)/.test(app), 'örnek sahne hâlâ model indiren run() ile koşuyor');
 assert.match(app, /if \(sunum && !canliKaynak\) return/, 'canlı model ön ısıtması sunumda hâlâ spekülatif');
 // Isıtma GERÇEKTEN canlı yolu kullanacak kaynağa bağlı olmalı. "Bir dosya

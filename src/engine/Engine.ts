@@ -1227,6 +1227,24 @@ setPointsMaterial(material: THREE.Material) {
     return this.xrSunuyor;
   }
 
+  /**
+   * BİR SONRAKİ `setDepth` parçacıkları YENİDEN TOHUMLASIN.
+   *
+   * `setDepth` oturumun İLK çağrısında `seedFrom` ile parçacıkları sahneye
+   * yerleştirir; sonraki çağrılar `setHome` ile yalnız hedefi değiştirir
+   * (kaynaklar arası yumuşak geçiş). Bu doğru davranış, ama ÖRNEK SAHNE
+   * oturumun tohumunu harcamamalı: açılıştaki analitik sahne (ui/acilisSahnesi)
+   * parçacıkları 512×512 kare düzene göre dağıtıyordu ve kullanıcının kendi
+   * fotoğrafı o düzenin üzerine biniyordu — point cloud, ASCII ve neon'da
+   * özne yatayda ezilmiş görünüyordu (Emre'nin bildirimi, 2026-10-24).
+   *
+   * Fotoğraf→fotoğraf geçişi ETKİLENMEZ: bu yalnız örnek sahnenin
+   * sonunda çağrılır, yumuşak geçiş diğer durumlarda aynen sürer.
+   */
+  tohumuGecersizKil(): void {
+    this.seeded = false;
+  }
+
   /** Splat modu çizilebilir mi (GaussianBuffer dolu)? UI bunu söyler. */
   get splatAvailable(): boolean {
     return this.splatObject?.ready ?? false;

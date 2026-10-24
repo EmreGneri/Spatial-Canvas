@@ -467,49 +467,39 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
     trackerTargetsRef.current = [];
   }
 
-  /**
-   * ÖRNEK SAHNE — MODELSİZ YOL. `run()`'a DOKUNMAZ; ayrı ve eklemeli.
-   *
-   * `run()` sırasıyla derinlik modelini (47 MB) ve nesne ayırmayı (84 MB)
-   * indirir. Örnek sahnede ikisi de gereksiz: sahneyi biz çiziyoruz, derinliği
-   * biliyoruz (`acilisDerinligi`), ve ayırma sonucu zaten atılıyordu.
-   *
-   * Motora iki çağrı yeter ve SIRA ÖNEMLİ: önce `setPhoto`, sonra `setDepth`
-   * (Engine.ts: setPhoto sonradan gelirse renk grid'i maskesiz remap kurar).
-   *
-   * Ölçüm: bu yolla açılışta indirilen model baytı SIFIR.
-   */
-  async function acilisSahnesiniCalistir(source: HTMLCanvasElement) {
-    const e = engineRef.current;
-    if (!e) return;
-    setBusy(true);
-    const isCurrent = captureGeneration(sourceGenRef);
-    try {
-      const derinlik = acilisDerinligi(source.width, source.height);
-      if (!isCurrent()) return;
-      lastPhotoRef.current = source;
-      lastDepthRef.current = { data: derinlik, width: source.width, height: source.height };
-      maskLoadedRef.current = false;
-      updateSegment(false);
-      e.setObjectSeparation(false);
-      e.setPhoto(source);
-      e.setDepth(derinlik, source.width, source.height, undefined, 0, 0);
-      say(ACILIS_NOTU);
-    } finally {
-      if (isCurrent()) setBusy(false);
-    }
+  /** Örnek sahne: çizim + YAZILI derinlik, tek kod yolundan (`run`). */
+  function acilisSahne() {
+    const g = syntheticImage();
+    return run(g, acilisDerinligi(g.width, g.height));
   }
 
-  async function run(source: HTMLCanvasElement | HTMLImageElement) {
+  /**
+   * @param analitikDerinlik ÖRNEK SAHNE için YAZILI derinlik (ui/acilisSahnesi).
+   *   Verilirse model yükleme, nesne ayırma, çıkarım ve yüz rölyefi ATLANIR;
+   *   geri kalan her şey (setPhoto, setYuzRolyefi, setDepth, overlay, meşgul
+   *   durumu) AYNEN işler.
+   *
+   *   NEDEN BURADA, AYRI BİR FONKSİYONDA DEĞİL: önce `run`'ı baypas eden ayrı
+   *   bir yol yazmıştım. `run`'ın yaptığı birkaç yan etkiyi atladığı için
+   *   örnek sahneden sonra yüklenen fotoğraf sentetik düzenin üstüne biniyordu
+   *   (Emre'nin bildirimi, 2026-10-24: point cloud/ASCII/neon'da özne ezik).
+   *   Tek kod yolu = iki sahne arasında fark yok.
+   */
+  async function run(
+    source: HTMLCanvasElement | HTMLImageElement,
+    analitikDerinlik?: Float32Array,
+  ) {
     setBusy(true);
     // Captured after the caller's teardownSource. A stale result must not
     // write depth, mask, photo or segmentation settings over a newer source.
     const isCurrent = captureGeneration(sourceGenRef);
     try {
-      const t0 = performance.now();
-      await loadDepthModel();
-      if (!isCurrent()) return;
-      say(`model yüklendi            ${Math.round(performance.now() - t0)} ms`);
+      if (!analitikDerinlik) {
+        const t0 = performance.now();
+        await loadDepthModel();
+        if (!isCurrent()) return;
+        say(`model yüklendi            ${Math.round(performance.now() - t0)} ms`);
+      }
 
       // Nesne/arka plan ayırma (RMBG): fotoğraflarda OTOMATİK — Gün B temizlik
       // kararı: solid mesh silüeti maskeyle kesilir (arka plan büstü yastığa
@@ -529,56 +519,68 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
       let maskH = 0;
       lastPhotoRef.current = source;
       maskLoadedRef.current = false;
-      const t2 = performance.now();
-      try {
-        const seg = await segmentForeground(source, 'webgpu', 'foto');
-        if (!isCurrent()) return;
-        // Güvenlik: boş maske (sentetik/soyut görsel) kullanılmaz — AND tüm
-        // silueti sıfırlar, mesh null'a düşer, parçacıklar ölür.
-        // GÜN E (bulgu 9): boş maske kadar TÜM KAREYİ kaplayan maske de
-        // kullanılamaz. RMBG bazı karelerde (ölçüldü: ayna selfie'si) "her
-        // piksel ön plan" döndürüyor — o maske hiçbir şey ayırmaz ama ZARAR
-        // verir: stretch aralığı sahnenin tamamına açılır (özne bandı yine
-        // sıkışır) ve siluet AND'i arka planı elemez. Eşik %92: gerçek bir
-        // özne kadrajı tamamen doldursa bile RMBG kenarlarda 0 bırakır;
-        // %92 üstü pratikte "model pes etti" demektir.
-        let fgCount = 0;
-        for (let q = 0; q < seg.mask.length; q++) {
-          if (seg.mask[q] >= 0.5) fgCount++;
-        }
-        // GÜN 25 (düzeltme): karar ÜÇ uçlu. Alt uç eskiden yoktu ve IS-Net'e
-        // geçince sentetik görselde maske kadrajın %4,7'sini seçip sahnenin
-        // gerisini siliyordu — ekran pratikte siyahtı, sebebi de yazmıyordu.
-        // Eşiklerin ölçümü: ui/maskeKarari.ts başlığı.
-        const karar = maskeKarari(fgCount / seg.mask.length);
-        if (karar.sebep) say(karar.sebep);
-        if (karar.tip === 'kullan') {
-          mask = seg.mask;
-          maskW = seg.width;
-          maskH = seg.height;
-          maskLoadedRef.current = true;
-          say(`nesne ayırma (${seg.model === 'birefnet' ? 'BiRefNet · yardımcı' : 'IS-Net'})  ${Math.round(performance.now() - t2)} ms  (${maskW}x${maskH})`);
-        }
-        updateSegment(karar.ayirmaAcik);
-        engineRef.current!.setObjectSeparation(karar.ayirmaAcik);
-      } catch (err) {
-        if (!isCurrent()) return;
-        say(`nesne ayırma atlandı (${err instanceof Error ? err.message : String(err)}); maske olmadan devam`);
+      if (analitikDerinlik) {
+        // Analitik sahnede ayırma YOK: maske zaten anlamsız, IS-Net de inmez.
         updateSegment(false);
         engineRef.current!.setObjectSeparation(false);
+      } else {
+        const t2 = performance.now();
+        try {
+          const seg = await segmentForeground(source, 'webgpu', 'foto');
+          if (!isCurrent()) return;
+          // Güvenlik: boş maske (sentetik/soyut görsel) kullanılmaz — AND tüm
+          // silueti sıfırlar, mesh null'a düşer, parçacıklar ölür.
+          // GÜN E (bulgu 9): boş maske kadar TÜM KAREYİ kaplayan maske de
+          // kullanılamaz. RMBG bazı karelerde (ölçüldü: ayna selfie'si) "her
+          // piksel ön plan" döndürüyor — o maske hiçbir şey ayırmaz ama ZARAR
+          // verir: stretch aralığı sahnenin tamamına açılır (özne bandı yine
+          // sıkışır) ve siluet AND'i arka planı elemez. Eşik %92: gerçek bir
+          // özne kadrajı tamamen doldursa bile RMBG kenarlarda 0 bırakır;
+          // %92 üstü pratikte "model pes etti" demektir.
+          let fgCount = 0;
+          for (let q = 0; q < seg.mask.length; q++) {
+            if (seg.mask[q] >= 0.5) fgCount++;
+          }
+          // GÜN 25 (düzeltme): karar ÜÇ uçlu. Alt uç eskiden yoktu ve IS-Net'e
+          // geçince sentetik görselde maske kadrajın %4,7'sini seçip sahnenin
+          // gerisini siliyordu — ekran pratikte siyahtı, sebebi de yazmıyordu.
+          // Eşiklerin ölçümü: ui/maskeKarari.ts başlığı.
+          const karar = maskeKarari(fgCount / seg.mask.length);
+          if (karar.sebep) say(karar.sebep);
+          if (karar.tip === 'kullan') {
+            mask = seg.mask;
+            maskW = seg.width;
+            maskH = seg.height;
+            maskLoadedRef.current = true;
+            say(`nesne ayırma (${seg.model === 'birefnet' ? 'BiRefNet · yardımcı' : 'IS-Net'})  ${Math.round(performance.now() - t2)} ms  (${maskW}x${maskH})`);
+          }
+          updateSegment(karar.ayirmaAcik);
+          engineRef.current!.setObjectSeparation(karar.ayirmaAcik);
+        } catch (err) {
+          if (!isCurrent()) return;
+          say(`nesne ayırma atlandı (${err instanceof Error ? err.message : String(err)}); maske olmadan devam`);
+          updateSegment(false);
+          engineRef.current!.setObjectSeparation(false);
+        }
       }
 
       // Depth ARTIK maskeyi görüyor (GÜN E, bulgu 1).
-      const t1 = performance.now();
-      const depth = await estimateDepth(
-        source,
-        mask ? { ...FOTO_KALITE, subjectMask: { data: mask, width: maskW, height: maskH } } : FOTO_KALITE,
-      );
-      if (!isCurrent()) return;
-      say(
-        `çıkarım                  ${Math.round(performance.now() - t1)} ms  (${depth.width}x${depth.height})` +
-          (mask ? ' · özne maskesi kullanıldı' : ' · maskesiz'),
-      );
+      let depth: { data: Float32Array; width: number; height: number; subjectMask?: Float32Array };
+      if (analitikDerinlik) {
+        depth = { data: analitikDerinlik, width: source.width, height: source.height };
+        say(ACILIS_NOTU);
+      } else {
+        const t1 = performance.now();
+        depth = await estimateDepth(
+          source,
+          mask ? { ...FOTO_KALITE, subjectMask: { data: mask, width: maskW, height: maskH } } : FOTO_KALITE,
+        );
+        if (!isCurrent()) return;
+        say(
+          `çıkarım                  ${Math.round(performance.now() - t1)} ms  (${depth.width}x${depth.height})` +
+            (mask ? ' · özne maskesi kullanıldı' : ' · maskesiz'),
+        );
+      }
       lastDepthRef.current = { data: depth.data, width: depth.width, height: depth.height };
 
       // TUR 11: fotoğrafın kendisi de parçacık renklerine bağlanır (görev 1 —
@@ -588,7 +590,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
       // YÜZ RÖLYEFİ (varsayılan, ?yuz=0 kapatır): MediaPipe yüz ağının 3B şekli yüz bölgesine işlenir
       // (yuzRolyef.ts). Yüz bulunamazsa ya da kapalıysa null → eski davranış birebir.
       let rolyef: YuzRolyefi | null = null;
-      if (YUZ_GUCU > 0) {
+      if (YUZ_GUCU > 0 && !analitikDerinlik) {
         const t3 = performance.now();
         const yuz = await yuzNoktalari(source);
         if (!isCurrent()) return;
@@ -1296,7 +1298,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
     soganTetiklendi.current = true;
     e!.mediaType = 'synthetic';
     kaynakBelirle('sentetik');
-    void acilisSahnesiniCalistir(syntheticImage());
+    void acilisSahne();
     // `run` ve `syntheticImage` modül/bileşen düzeyinde bildirilmiş
     // fonksiyonlar; bağımlılık listesine girerlerse effect her render'da
     // yeniden kurulur ve soğuk açılış döngüye girer.
@@ -1485,7 +1487,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
             setCameraOn(false);
             engineRef.current!.mediaType = 'synthetic';
             kaynakBelirle('sentetik');
-            void acilisSahnesiniCalistir(syntheticImage());
+            void acilisSahne();
           }}
         >
           {sunum ? 'örnek sahne' : 'sentetik görsel'}
