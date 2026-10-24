@@ -33,6 +33,15 @@ export const DAVID_DOSYALARI = {
   maske: `foreground-segmentation-model-vitb16_384${ek}.onnx`,
 } as const;
 
+/**
+ * Tarayıcı maskesi Hugging Face'teki int8 kopyadan iner (180 MB; MIT, provenance model kartında:
+ * https://huggingface.co/EmreGneri/david-foreground-int8). Revizyon SABİT. Yerel 449 MB fp32
+ * kopyayla karşılaştırma için `&david=fp32`.
+ */
+const HF_MASKE = 'https://huggingface.co/EmreGneri/david-foreground-int8/resolve/7b404af3cfa9c1fb8851bae03a20b4250608aa7b/foreground-segmentation-model-vitb16_384-int8.onnx';
+const FP32_MASKE = typeof location !== 'undefined' && new URLSearchParams(location.search).get('david') === 'fp32';
+const kaynak = (ad: keyof typeof DAVID_DOSYALARI) => (ad === 'maske' && !FP32_MASKE ? HF_MASKE : KOK + DAVID_DOSYALARI[ad]);
+
 const VITE_DEV = (import.meta as { env?: { DEV?: boolean } }).env?.DEV === true;
 ort.env.wasm.wasmPaths = VITE_DEV ? '/node_modules/onnxruntime-web/dist/' : '/ort/';
 ort.env.wasm.numThreads = 1;
@@ -65,7 +74,7 @@ let yardimciKapali = false;
 /** Oturumlar tembel ve ayrı: maske yolu derinlik modelini (449 MB) hiç indirmez. */
 function oturumlariHazirla({ gpuSirasinaGir, onceRetry }: DavidAraclari) {
   const oturum = (ad: keyof typeof DAVID_DOSYALARI) => onceRetry(async () => {
-    const bayt = await ilerlemeliGetir(KOK + DAVID_DOSYALARI[ad], `DAViD ${ad}`);
+    const bayt = await ilerlemeliGetir(kaynak(ad), `DAViD ${ad}`);
     return gpuSirasinaGir(() => ort.InferenceSession.create(bayt, { executionProviders: ['webgpu'] }));
   });
   return oturumlar ??= { derinlik: oturum('derinlik'), maske: oturum('maske') };

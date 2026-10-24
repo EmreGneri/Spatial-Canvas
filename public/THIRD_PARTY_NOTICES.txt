@@ -354,7 +354,10 @@ Optional MoGe-2 geometry: Ruicheng/moge-2-vits-normal-onnx and moge-2-vitl-norma
 Optional DAViD human depth + soft foreground (microsoft/DAViD, ViT-B/16)
   License: MIT ("DAViD models and runtime code are licensed under the MIT License";
   model cards list MIT; verified 2026-10-24). Copyright (c) Microsoft Corporation.
-  Photo experiment, disabled by default (?derinlik=david enables it; VITE_DAVID_PHOTO=1 fetches the models at build).
+  The foreground mask is used by default for person masks: on the local sidecar, or in the
+  browser from a dynamic-int8 copy (MatMul/Gemm weights uint8, onnxruntime quantize_dynamic)
+  hosted at https://huggingface.co/EmreGneri/david-foreground-int8 (MIT, provenance in its model card).
+  Depth fusion is opt-in (?derinlik=david; VITE_DAVID_PHOTO=1 fetches the fp32 models at build).
   Files: depth-model-vitb16_384.onnx (449231953 bytes),
   foreground-segmentation-model-vitb16_384.onnx (449231719 bytes), unmodified.
   Source: https://github.com/microsoft/DAViD

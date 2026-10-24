@@ -16,7 +16,7 @@ assert.equal(insanMaskesiSecimi('?maske=isnet'), undefined);
 assert.equal(insanMaskesiSecimi('?maske=varsayilan'), undefined);
 assert.deepEqual(davidPlani('david', true, false), { tarayici: true });
 assert.deepEqual(davidPlani('otomatik', true, true), { tarayici: false });
-assert.equal(davidPlani('otomatik', true, false), null, 'yardımcıda DAViD yok (Vercel): yol birebir eski');
+assert.deepEqual(davidPlani('otomatik', true, false), { tarayici: true }, 'yardımcı yok (Vercel): tarayıcıda HF int8 maskesi');
 assert.equal(davidPlani('david', false, true), null, 'özne maskesi yok: DAViD maskesi tek başına sızıyor');
 assert.equal(davidPlani(undefined, true, true), null);
 assert.deepEqual(FOTO_KALITE, { tileDetay: true, kenarHizalama: 0.5, model: 'da3-mono', insanMaskesi: 'otomatik' });
@@ -103,6 +103,6 @@ kos(`
   assert.equal(r.arkaUc, 'webgpu');
   assert.equal(r.maske[5], 0.25);
   assert.equal(olusan, 1);
-  assert.deepEqual(istekler, ['/models/microsoft-david/foreground-segmentation-model-vitb16_384-int8.onnx']);
-`, '?maske=david&david=int8', 'example.com');
+  assert.deepEqual(istekler, ['https://huggingface.co/EmreGneri/david-foreground-int8/resolve/7b404af3cfa9c1fb8851bae03a20b4250608aa7b/foreground-segmentation-model-vitb16_384-int8.onnx'], 'tarayıcı maskesi: HF int8, sabit revizyon');
+`, '', 'example.com');
 console.log('OK DAViD maskesi: yardımcı protokolü, hata yalıtımı, indirme yok, tarayıcı/int8 açık isteği, politika');
