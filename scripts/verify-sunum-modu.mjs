@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
-  olcumSatiri, soganAcilisGerekliMi, sunumAcikMi, SUNUM_DISI, SUNUM_ICI, yerelHostMu,
+  olcumSatiri, soganAcilisGerekliMi, sunumAcikMi, SUNUM_DISI, SUNUM_ICI,
 } from '../src/ui/sunumModu.ts';
 
 // ── ANAHTAR ────────────────────────────────────────────────────────────────
@@ -13,38 +13,20 @@ for (const q of ['?sunum', '?sunum=1', '?sunum=true', '?sunum=TRUE', '?a=1&sunum
 for (const q of ['?sunum=0', '?sunum=false', '?sunum=kapali']) {
   assert.equal(sunumAcikMi(q), false, `${q}: kapatmıyor`);
 }
-// AÇIK SEÇİM YOKSA ADRES KARAR VERİR — `sidecarAcikMi` deseninin aynısı.
-// Ölçüldü: çıplak adreste 52 düğme + boş siyah tuval çıkıyordu, yani
-// bağlantıyı tıklayan kişi geliştirici enstrümanını görüyordu.
+// VARSAYILAN KAPALI. Bir ara adres-tabanli varsayilan denendi (yayinda
+// sunum acik) ve GERI ALINDI: arayuzun yarisini (kamera, video → 3B, nesne
+// ayirma, maske, tracker, orijinal renkler) yayindaki siteden kaldiriyordu.
+// Mod gizlemeyi SECEREK acilir.
 for (const q of ['', '?', '?a=1', '?sunumlu=1', '?xsunum=1', '?a=sunum']) {
-  assert.equal(sunumAcikMi(q, true), false, `${q}: localhost'ta yanlışlıkla açıyor`);
-  assert.equal(sunumAcikMi(q, false), true, `${q}: YAYINDA kapalı — ziyaretçi geliştirici arayüzünü görür`);
+  assert.equal(sunumAcikMi(q), false, `${q}: varsayilan olarak aciyor — arayuzun yarisi gizlenir`);
 }
-// AÇIK İSTEK HER ZAMAN ADRESİ EZER (iki yönde de).
-assert.equal(sunumAcikMi('?sunum=0', false), false, 'yayında ?sunum=0 kapatmıyor — geliştirici tam arayüze ulaşamaz');
-assert.equal(sunumAcikMi('?sunum=1', true), true, 'localhost’ta ?sunum=1 açmıyor — prova yapılamaz');
+assert.equal(sunumAcikMi('?sunum=1'), true, '?sunum=1 acmiyor');
+assert.equal(sunumAcikMi('?sunum=0'), false, '?sunum=0 kapatmiyor');
 
-// Yerel host ölçütü (arDurum.ts ile aynı aile).
-// `vite --host` ile LAN'dan açan geliştirici de YEREL sayılır: aksi hâlde
-// kendini sunum modunda bulup tanı düğmelerini kayıp sanıyor.
-for (const h of [
-  'localhost', '127.0.0.1', '::1', '[::1]', 'app.localhost', 'macbook.local',
-  '192.168.1.5', '10.0.0.7', '172.16.3.2', '172.31.255.254',
-]) {
-  assert.equal(yerelHostMu(h), true, `${h}: yerel sayılmıyor`);
-}
-// Sınır dar: benzeyen ama YEREL OLMAYAN adresler geçmemeli.
-for (const h of [
-  'spatial-canvas.vercel.app', 'example.com', 'localhost.evil.com',
-  '127.0.0.1.evil.com', '172.15.0.1', '172.32.0.1', '11.0.0.1', '192.169.1.1',
-  '8.8.8.8', 'notlocal', 'local',
-]) {
-  assert.equal(yerelHostMu(h), false, `${h}: YANLIŞLIKLA yerel sayılıyor`);
-}
 // `?` olsun olmasın aynı sonuç (çağrıcı `location.search` de verebilir, düz dize de).
 assert.equal(sunumAcikMi('sunum=1'), sunumAcikMi('?sunum=1'));
 // Benzer adlı başka bir parametre karıştırmamalı.
-assert.equal(sunumAcikMi('?sunumModu=1', true), false);
+assert.equal(sunumAcikMi('?sunumModu=1'), false);
 
 // ── SOĞUK AÇILIŞ ───────────────────────────────────────────────────────────
 // motorHazir · zatenTetiklendi · kaynakVar
@@ -182,8 +164,8 @@ assert.match(app, /soganAcilisGerekliMi\(!!engine/, 'soğuk açılış kararı s
 assert.match(app, /void acilisSahne\(\)/, 'soğuk açılış sahneyi yüklemiyor');
 
 // Mod bir KEZ okunmalı: her render'da okunursa effect bağımlılıkları oynar.
-assert.match(app, /useState\(\(\) => sunumAcikMi\(window\.location\.search, yerelHostMu\(window\.location\.hostname\)\)\)/,
-  'sunum modu render başına yeniden okunuyor ya da adres ölçütü geçilmiyor');
+assert.match(app, /useState\(\(\) => sunumAcikMi\(window\.location\.search\)\)/,
+  'sunum modu render başına yeniden okunuyor');
 
 // Efekt rafı sunumda KAPALI başlamalı (açık kart 9 kaydırıcı + 2 renk gösteriyor).
 assert.match(app, /baslangicKapali=\{sunum\}/, 'efekt rafı sunumda kapalı başlamıyor');
