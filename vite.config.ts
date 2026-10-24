@@ -20,8 +20,9 @@ export default defineConfig({
   },
   plugins: [react(), yardimciEklentisi()],
   // Ajan çalışma kopyaları (.claude/worktrees) ve ölçüm çıktıları izlenmez: içlerindeki
-  // dev model dosyaları/dist klasörleri izleyiciyi EBUSY ile çökertiyordu.
-  server: { watch: { ignored: ['**/.claude/**', '**/olcum-out/**', '**/dist/**'] } },
+  // dev model dosyaları/dist klasörleri izleyiciyi EBUSY ile çökertiyordu; .bench-tmp'deki
+  // Python dışa aktarım ortamı da her dosya değişiminde sayfayı yeniden yüklüyordu.
+  server: { watch: { ignored: ['**/.claude/**', '**/olcum-out/**', '**/dist/**', '**/.bench-tmp/**', '**/public/models/**'] } },
   build: {
     rollupOptions: {
       input: {
