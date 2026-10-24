@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
-  olcumSatiri, soganAcilisGerekliMi, sunumAcikMi, SUNUM_DISI, SUNUM_ICI,
+  olcumSatiri, soganAcilisGerekliMi, sunumAcikMi, SUNUM_DISI, SUNUM_ICI, yerelHostMu,
 } from '../src/ui/sunumModu.ts';
 
 // ── ANAHTAR ────────────────────────────────────────────────────────────────
@@ -13,23 +13,39 @@ for (const q of ['?sunum', '?sunum=1', '?sunum=true', '?sunum=TRUE', '?a=1&sunum
 for (const q of ['?sunum=0', '?sunum=false', '?sunum=kapali']) {
   assert.equal(sunumAcikMi(q), false, `${q}: kapatmıyor`);
 }
+// AÇIK SEÇİM YOKSA ADRES KARAR VERİR — `sidecarAcikMi` deseninin aynısı.
+// Ölçüldü: çıplak adreste 52 düğme + boş siyah tuval çıkıyordu, yani
+// bağlantıyı tıklayan kişi geliştirici enstrümanını görüyordu.
 for (const q of ['', '?', '?a=1', '?sunumlu=1', '?xsunum=1', '?a=sunum']) {
-  assert.equal(sunumAcikMi(q), false, `${q}: yanlışlıkla açıyor`);
+  assert.equal(sunumAcikMi(q, true), false, `${q}: localhost'ta yanlışlıkla açıyor`);
+  assert.equal(sunumAcikMi(q, false), true, `${q}: YAYINDA kapalı — ziyaretçi geliştirici arayüzünü görür`);
+}
+// AÇIK İSTEK HER ZAMAN ADRESİ EZER (iki yönde de).
+assert.equal(sunumAcikMi('?sunum=0', false), false, 'yayında ?sunum=0 kapatmıyor — geliştirici tam arayüze ulaşamaz');
+assert.equal(sunumAcikMi('?sunum=1', true), true, 'localhost’ta ?sunum=1 açmıyor — prova yapılamaz');
+
+// Yerel host ölçütü (arDurum.ts ile aynı aile).
+for (const h of ['localhost', '127.0.0.1', '::1', 'app.localhost']) {
+  assert.equal(yerelHostMu(h), true, `${h}: yerel sayılmıyor`);
+}
+for (const h of ['spatial-canvas.vercel.app', 'example.com', 'localhost.evil.com', '127.0.0.1.evil.com']) {
+  assert.equal(yerelHostMu(h), false, `${h}: YANLIŞLIKLA yerel sayılıyor`);
 }
 // `?` olsun olmasın aynı sonuç (çağrıcı `location.search` de verebilir, düz dize de).
 assert.equal(sunumAcikMi('sunum=1'), sunumAcikMi('?sunum=1'));
 // Benzer adlı başka bir parametre karıştırmamalı.
-assert.equal(sunumAcikMi('?sunumModu=1'), false);
+assert.equal(sunumAcikMi('?sunumModu=1', true), false);
 
 // ── SOĞUK AÇILIŞ ───────────────────────────────────────────────────────────
-// sunum · motorHazir · zatenTetiklendi · kaynakVar
-assert.equal(soganAcilisGerekliMi(true, true, false, false), true, 'sunumda soğuk açılış tetiklenmiyor');
-assert.equal(soganAcilisGerekliMi(false, true, false, false), false, 'NORMAL modda sahne zorla yükleniyor');
-assert.equal(soganAcilisGerekliMi(true, false, false, false), false, 'motor hazır olmadan yükleniyor');
-assert.equal(soganAcilisGerekliMi(true, true, true, false), false, 'ikinci kez tetikleniyor — döngü riski');
-// KULLANICININ KAYNAĞI EZİLMEZ: sunumda bile kendi dosyasını açtıysa
-// sentetik sahne onun üstüne yazılmamalı.
-assert.equal(soganAcilisGerekliMi(true, true, false, true), false, 'kullanıcının kaynağı eziliyor');
+// motorHazir · zatenTetiklendi · kaynakVar
+// Örnek sahne HER İKİ MODDA yüklenir: boş siyah tuval kimseye yaramıyordu
+// ve sahne artık model indirmiyor (acilisSahnesi.ts — 131,4 MB → 0).
+assert.equal(soganAcilisGerekliMi(true, false, false), true, 'soğuk açılış tetiklenmiyor — ziyaretçi boş ekran görür');
+assert.equal(soganAcilisGerekliMi(false, false, false), false, 'motor hazır olmadan yükleniyor');
+assert.equal(soganAcilisGerekliMi(true, true, false), false, 'ikinci kez tetikleniyor — döngü riski');
+// KULLANICININ KAYNAĞI EZİLMEZ: kendi dosyasını açtıysa örnek sahne onun
+// üstüne yazılmamalı.
+assert.equal(soganAcilisGerekliMi(true, false, true), false, 'kullanıcının kaynağı eziliyor');
 
 // ── ÖLÇÜM SATIRI ───────────────────────────────────────────────────────────
 // Eval duvarının (AbsRel/RMSE/IoU tablosu) yerine geçen TEK cümle.
@@ -150,14 +166,14 @@ for (const etiket of [
 
 // SOĞUK AÇILIŞ kablosu: bir kez bayrağı, saf karar fonksiyonu, sentetik yükleme.
 assert.match(app, /soganTetiklendi\.current = true/, 'soğuk açılış bir kez bayrağı yok — döngü riski');
-assert.match(app, /soganAcilisGerekliMi\(sunum, /, 'soğuk açılış kararı saf fonksiyondan gelmiyor');
+assert.match(app, /soganAcilisGerekliMi\(!!engine/, 'soğuk açılış kararı saf fonksiyondan gelmiyor');
 // Soğuk açılış sahneyi MODELSİZ yoldan yükler (bkz. verify-acilis-sahnesi):
 // ölçüldü, açılışta inen model baytı 131,4 MB → 0.
 assert.match(app, /acilisSahnesiniCalistir\(syntheticImage\(\)\)/, 'soğuk açılış sahneyi yüklemiyor');
 
 // Mod bir KEZ okunmalı: her render'da okunursa effect bağımlılıkları oynar.
-assert.match(app, /useState\(\(\) => sunumAcikMi\(window\.location\.search\)\)/,
-  'sunum modu render başına yeniden okunuyor');
+assert.match(app, /useState\(\(\) => sunumAcikMi\(window\.location\.search, yerelHostMu\(window\.location\.hostname\)\)\)/,
+  'sunum modu render başına yeniden okunuyor ya da adres ölçütü geçilmiyor');
 
 // Efekt rafı sunumda KAPALI başlamalı (açık kart 9 kaydırıcı + 2 renk gösteriyor).
 assert.match(app, /baslangicKapali=\{sunum\}/, 'efekt rafı sunumda kapalı başlamıyor');
