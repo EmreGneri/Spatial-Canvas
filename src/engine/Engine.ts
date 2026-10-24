@@ -1240,6 +1240,31 @@ setPointsMaterial(material: THREE.Material) {
     return this.xrSunuyor;
   }
 
+  /**
+   * PARÇACIKLARI HEMEN EV KONUMLARINA OTURT.
+   *
+   * `setDepth` yeni bir sahneyi şöyle yazıyor: oturumun İLK çağrısında
+   * `seedFrom` (parçacıklar anında yerine), sonrakilerde `setHome` (yay
+   * simülasyonu taşısın, yumuşak geçiş).
+   *
+   * Ölçüldü (2026-10-24): İKİNCİ YOL HEDEFE VARMIYOR. Örnek sahneden sonra
+   * fotoğraf yüklenince ev konumları DOĞRU hesaplanıyor (bbox 0.817×1.995×1.704,
+   * boş tuvalden yüklemeyle birebir aynı) ama parçacıklar sentetik sahnenin
+   * kare yayılımında (1.995×1.995) kalıyor — 18 saniye sonra bile. Ekranda
+   * özne yatayda ezilmiş görünüyor (Emre'nin bildirimi).
+   *
+   * Konsoldan `simulation.seedFrom(homeTexture)` çağırınca render ANİNDA
+   * düzeliyor; doğrulama bu. Yay yolunun neden yakınsamadığı ayrı bir soru
+   * (simülasyon tarafi) — bu metot semptomu kapatır, sebebi değil.
+   *
+   * `run()` yalnız KAYNAK DEĞİŞTİĞİNDE çağrılır (video kareleri ayrı yoldan
+   * gider), yani bu çağrı canlı akışı etkilemez.
+   */
+  yenidenTohumla(): void {
+    this.simulation.seedFrom(this.homeTexture);
+    this.seeded = true;
+  }
+
   /** Splat modu çizilebilir mi (GaussianBuffer dolu)? UI bunu söyler. */
   get splatAvailable(): boolean {
     return this.splatObject?.ready ?? false;
