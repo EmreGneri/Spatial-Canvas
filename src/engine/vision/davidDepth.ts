@@ -18,9 +18,16 @@ export interface DavidAraclari {
 /** Resmî giriş: 512×512, BGR, [0,1], NCHW (model_cards/depth_model.md). */
 export const DAVID_BOYUT = 512;
 const KOK = '/models/microsoft-david/';
+/**
+ * DENEME (2026-10-24, görsel karşılaştırma): `&david=int8` → onnxruntime quantize_dynamic
+ * (MatMul/Gemm ağırlıkları uint8) ile küçültülmüş kopyalar, 449 → 180 MB. Dosyalar yerelde
+ * üretildi, fetch-assets'te yok; kalite kullanıcının gözüyle karşılaştırılacak.
+ */
+const INT8 = typeof location !== 'undefined' && new URLSearchParams(location.search).get('david') === 'int8';
+const ek = INT8 ? '-int8' : '';
 export const DAVID_DOSYALARI = {
-  derinlik: 'depth-model-vitb16_384.onnx',
-  maske: 'foreground-segmentation-model-vitb16_384.onnx',
+  derinlik: `depth-model-vitb16_384${ek}.onnx`,
+  maske: `foreground-segmentation-model-vitb16_384${ek}.onnx`,
 } as const;
 
 const VITE_DEV = (import.meta as { env?: { DEV?: boolean } }).env?.DEV === true;
