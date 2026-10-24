@@ -2,7 +2,8 @@
 //   small: V2-small, canlı video        -> [1,H,W] disparite
 //   da3:   DA3Mono-Large, fotoğraf      -> [1,2,H,W] derinlik + gökyüzü (disparite istemcide)
 //   mask:  BiRefNet_lite, fotoğraf      -> [1,1,1024,1024] olasılık
-export type SidecarModel = 'small' | 'da3' | 'moge' | 'mask';
+//   david-mask: DAViD ViT-B, fotoğraf    -> [1,1,512,512] ön plan olasılığı (özne maskesini inceltir)
+export type SidecarModel = 'small' | 'da3' | 'moge' | 'mask' | 'david-mask';
 export interface RawTensor { data: Float32Array; dims: number[] }
 
 export class SidecarDroppedError extends Error {}
@@ -11,6 +12,7 @@ export class SidecarDroppedError extends Error {}
 export function beklenenSekil(model: SidecarModel, inDims: number[]): number[] {
   if (model === 'mask') return [1, 1, 1024, 1024];
   if (model === 'da3') return [1, 2, inDims[2], inDims[3]];
+  if (model === 'david-mask') return [1, 1, inDims[2], inDims[3]];
   if (model === 'moge') return [1, 5, inDims[2], inDims[3]];
   return [1, inDims[2], inDims[3]];
 }
@@ -91,8 +93,11 @@ export class SidecarClient {
         return { data, dims };
       } catch (error) {
         if (error instanceof SidecarDroppedError) throw error;
-        this.disabled = true;
-        this.backend = 'browser';
+        // DAViD maskesi isteğe bağlı bir ek: hatası DA3/BiRefNet yardımcısını kapatmamalı (davidDepth kendini kapatır).
+        if (model !== 'david-mask') {
+          this.disabled = true;
+          this.backend = 'browser';
+        }
         console.warn('Local inference unavailable; switching to browser.', error);
       }
     }
@@ -113,9 +118,14 @@ function acilisDurumu(): { acik: boolean; acikca: boolean } {
   return durum;
 }
 const durum = acilisDurumu();
-export const localInference = durum.acik ? new SidecarClient('http://127.0.0.1:8765') : null;
+// VITE_SIDECAR_URL: ölçümde ikinci bir yardımcıyı (başka port) denemek için; varsayılan 8765.
+const YARDIMCI_URL = (import.meta as { env?: { VITE_SIDECAR_URL?: string } }).env?.VITE_SIDECAR_URL || 'http://127.0.0.1:8765';
+export const localInference = durum.acik ? new SidecarClient(YARDIMCI_URL) : null;
 /** Canlı video için: yalnız kullanıcı açıkça seçtiyse (bkz. sidecarAcikMi). */
 export const localInferenceAvailableCanli = () =>
   durum.acikca ? localInferenceAvailable() : Promise.resolve(false);
 export const localInferenceAvailable = () => localInference?.available() ?? Promise.resolve(false);
+/** Yardımcı açık VE /health bu isteğe bağlı modeli listeliyor (listelenmeyen model hiç istenmez). */
+export const localModelAvailable = async (model: SidecarModel) =>
+  (await localInferenceAvailable()) && !!localInference?.models.includes(model);
 export const inferenceBackend = () => localInference?.backend ?? 'browser';

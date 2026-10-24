@@ -1,8 +1,11 @@
-// DAViD (Microsoft, ICCV 2025, MIT) insan derinliği + yumuşak ön plan maskesi, tarayıcıda.
-// Yalnız `?derinlik=david` ile çağrılır (depth.ts). Hata → null + uyarı; çağıran sahne
-// derinliğiyle devam eder. Ürün bayrağı burada YOK.
+// DAViD (Microsoft, ICCV 2025, MIT) insan derinliği + yumuşak ön plan maskesi.
+//  - inferDavid: derinlik + maske, tarayıcıda; yalnız `?derinlik=david` (depth.ts).
+//  - inferDavidMaske: yalnız maske; önce yerel yardımcı ('david-mask'), tarayıcı yalnız
+//    çağıran `tarayici: true` verirse (`?maske=david`). Derinlik modeli hiç yüklenmez.
+// Hata → null + uyarı; çağıran eski derinlik/maske ile devam eder. Ürün bayrağı burada YOK.
 import * as ort from 'onnxruntime-web/webgpu';
 import { ilerlemeliGetir } from '../../indirmeIlerleme.ts';
+import { localInference, localModelAvailable } from '../sidecarClient.ts';
 
 /**
  * depth.ts yardımcıları ÇAĞIRANDAN gelir, burada `import` edilmez: depth.ts → (dinamik) bu
@@ -56,6 +59,22 @@ export function bgrTensoru(rgba: Uint8ClampedArray, S: number): Float32Array {
 
 let oturumlar: Record<keyof typeof DAVID_DOSYALARI, () => Promise<ort.InferenceSession>> | null = null;
 let kapali = false;
+let maskeKapali = false;
+let yardimciKapali = false;
+
+/** Oturumlar tembel ve ayrı: maske yolu derinlik modelini (449 MB) hiç indirmez. */
+function oturumlariHazirla({ gpuSirasinaGir, onceRetry }: DavidAraclari) {
+  const oturum = (ad: keyof typeof DAVID_DOSYALARI) => onceRetry(async () => {
+    const bayt = await ilerlemeliGetir(KOK + DAVID_DOSYALARI[ad], `DAViD ${ad}`);
+    return gpuSirasinaGir(() => ort.InferenceSession.create(bayt, { executionProviders: ['webgpu'] }));
+  });
+  return oturumlar ??= { derinlik: oturum('derinlik'), maske: oturum('maske') };
+}
+
+function maskeyiKirp(maske: Float32Array) {
+  for (let i = 0; i < maske.length; i++) maske[i] = Math.min(1, Math.max(0, maske[i]));
+  return maske;
+}
 
 function ilkDuzlem(t: ort.Tensor, S: number): Float32Array | null {
   const d = t.data;
@@ -64,15 +83,67 @@ function ilkDuzlem(t: ort.Tensor, S: number): Float32Array | null {
   return p.every(Number.isFinite) ? p : null;
 }
 
+/** Tek modeli GPU kuyruğunda koşturur; ilk düzlem (S×S) ya da geçersizse null. */
+function modeliKos(s: ort.InferenceSession, x: Float32Array, S: number, gpuSirasinaGir: DavidAraclari['gpuSirasinaGir']) {
+  return gpuSirasinaGir(async () => {
+    const girdi = new ort.Tensor('float32', x, [1, 3, S, S]);
+    let o: Record<string, ort.Tensor> = {};
+    try {
+      o = await s.run({ [s.inputNames[0]]: girdi });
+      return ilkDuzlem(o[s.outputNames[0]], S);
+    } finally {
+      girdi.dispose();
+      for (const t of Object.values(o)) t.dispose?.();
+    }
+  });
+}
+
+export interface DavidMaskeHam {
+  /** [S×S] yumuşak ön plan, 0..1'e kırpılmış. */
+  maske: Float32Array;
+  boyut: number;
+  sureMs: number;
+  arkaUc: 'sidecar' | 'webgpu';
+}
+
+/** Girdi: S×S letterbox RGBA. Yardımcı 'david-mask' listeliyorsa orada; yoksa yalnız `tarayici` ile WebGPU. */
+export async function inferDavidMaske(
+  rgba: Uint8ClampedArray, araclar: DavidAraclari, { tarayici }: { tarayici: boolean },
+): Promise<DavidMaskeHam | null> {
+  const S = DAVID_BOYUT, n = S * S, t0 = performance.now();
+  if (!yardimciKapali && await localModelAvailable('david-mask')) {
+    try {
+      const raw = await localInference!.infer('david-mask', { data: bgrTensoru(rgba, S), dims: [1, 3, S, S] },
+        async () => { throw new Error('DAViD maskesi yardımcıda başarısız'); });
+      return { maske: maskeyiKirp(raw.data.slice(0, n)), boyut: S, sureMs: performance.now() - t0, arkaUc: 'sidecar' };
+    } catch (err) {
+      yardimciKapali = true; // isteğe bağlı ek: her fotoğrafta yeniden denenmez, DA3 yardımcısı açık kalır
+      console.warn('DAViD maskesi yardımcıda başarısız; sayfa yenilenene kadar denenmeyecek.', err);
+    }
+  }
+  if (!tarayici || maskeKapali) return null;
+  if (!await araclar.webgpuKullanilabilir()) {
+    maskeKapali = true;
+    console.warn('DAViD maskesi: WebGPU yok; eski özne maskesiyle devam.');
+    return null;
+  }
+  try {
+    const maske = await modeliKos(await oturumlariHazirla(araclar).maske(), bgrTensoru(rgba, S), S, araclar.gpuSirasinaGir);
+    if (!maske) throw new Error('DAViD maske çıktısı geçersiz (şekil/NaN)');
+    return { maske: maskeyiKirp(maske), boyut: S, sureMs: performance.now() - t0, arkaUc: 'webgpu' };
+  } catch (err) {
+    maskeKapali = true;
+    console.warn('DAViD maskesi başarısız; sayfa yenilenene kadar eski özne maskesiyle devam.', err);
+    return null;
+  }
+}
+
 /** Girdi: S×S letterbox RGBA. İki model sırayla (aynı GPU kuyruğu). */
-export async function inferDavid(rgba: Uint8ClampedArray, { gpuSirasinaGir, onceRetry, webgpuKullanilabilir }: DavidAraclari): Promise<DavidHam | null> {
+export async function inferDavid(rgba: Uint8ClampedArray, araclar: DavidAraclari): Promise<DavidHam | null> {
   const S = DAVID_BOYUT;
   if (kapali) return null;
-  const oturum = (ad: keyof typeof DAVID_DOSYALARI) => onceRetry(async () => {
-    const bayt = await ilerlemeliGetir(KOK + DAVID_DOSYALARI[ad], `DAViD ${ad}`);
-    return gpuSirasinaGir(() => ort.InferenceSession.create(bayt, { executionProviders: ['webgpu'] }));
-  });
-  oturumlar ??= { derinlik: oturum('derinlik'), maske: oturum('maske') };
+  const { gpuSirasinaGir, webgpuKullanilabilir } = araclar;
+  oturumlariHazirla(araclar);
   if (!await webgpuKullanilabilir()) {
     kapali = true;
     console.warn('DAViD: WebGPU yok; sahne derinliğiyle devam.');
@@ -80,25 +151,13 @@ export async function inferDavid(rgba: Uint8ClampedArray, { gpuSirasinaGir, once
   }
   try {
     const t0 = performance.now();
-    const [sd, sm] = [await oturumlar.derinlik(), await oturumlar.maske()];
+    const [sd, sm] = [await oturumlar!.derinlik(), await oturumlar!.maske()];
     const t1 = performance.now();
     const x = bgrTensoru(rgba, S);
-    const kos = (s: ort.InferenceSession) => gpuSirasinaGir(async () => {
-      const girdi = new ort.Tensor('float32', x, [1, 3, S, S]);
-      let o: Record<string, ort.Tensor> = {};
-      try {
-        o = await s.run({ [s.inputNames[0]]: girdi });
-        return ilkDuzlem(o[s.outputNames[0]], S);
-      } finally {
-        girdi.dispose();
-        for (const t of Object.values(o)) t.dispose?.();
-      }
-    });
-    const derinlik = await kos(sd);
-    const maske = await kos(sm);
+    const derinlik = await modeliKos(sd, x, S, gpuSirasinaGir);
+    const maske = await modeliKos(sm, x, S, gpuSirasinaGir);
     if (!derinlik || !maske) throw new Error('DAViD çıktısı geçersiz (şekil/NaN)');
-    for (let i = 0; i < maske.length; i++) maske[i] = Math.min(1, Math.max(0, maske[i]));
-    return { derinlik, maske, boyut: S, sureMs: { yukleme: t1 - t0, cikarim: performance.now() - t1 } };
+    return { derinlik, maske: maskeyiKirp(maske), boyut: S, sureMs: { yukleme: t1 - t0, cikarim: performance.now() - t1 } };
   } catch (err) {
     kapali = true;
     console.warn('DAViD başarısız; sayfa yenilenene kadar sahne derinliğiyle devam.', err);

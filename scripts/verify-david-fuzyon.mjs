@@ -67,5 +67,6 @@ const { davidIstendi, mogeIstendi, FOTO_KALITE } = await import('../src/depth.ts
 assert.equal(davidIstendi('?derinlik=david'), true);
 for (const q of ['', '?derinlik=David', '?derinlik=moge', '?david=1', '?yuz=0']) assert.equal(davidIstendi(q), false, q);
 assert.equal(mogeIstendi('?derinlik=david'), false);
-assert.deepEqual(FOTO_KALITE, { tileDetay: true, kenarHizalama: 0.5, model: 'da3-mono' }, 'varsayılan seçenekler değişmedi');
+// insanMaskesi 'otomatik' yalnız yardımcı DAViD maskesini listeliyorsa koşar (verify-david-sidecar); derinlik füzyonu yok.
+assert.deepEqual(FOTO_KALITE, { tileDetay: true, kenarHizalama: 0.5, model: 'da3-mono', insanMaskesi: 'otomatik' }, 'varsayılan seçenekler');
 console.log('OK DAViD füzyonu: sağlam ölçek/kayma, maske içi şekil, tüy, kapılar, bayrak');
