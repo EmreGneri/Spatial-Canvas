@@ -55,14 +55,37 @@ export const SUNUM_ICI = {
 } as const;
 
 /**
+ * Adres yerel geliştirme sunucusu mu? `arDurum.ts` ile aynı ölçüt.
+ */
+export function yerelHostMu(hostname: string): boolean {
+  return hostname === 'localhost'
+    || hostname === '127.0.0.1'
+    || hostname === '[::1]'
+    || hostname === '::1'
+    || hostname.endsWith('.localhost');
+}
+
+/**
  * URL sorgusundan okur. `?sunum`, `?sunum=1`, `?sunum=true` açar;
  * `?sunum=0` ve `?sunum=false` KAPATIR (yanlışlıkla açık kalmasın diye açık
  * bir kapatma yolu var).
  *
+ * ── AÇIK SEÇİM YOKSA: ADRES KARAR VERİR ──────────────────────────────────
+ * Yayındaki sitede VARSAYILAN AÇIK, localhost'ta KAPALI.
+ *
+ * Sebep ölçüldü: çıplak adres açıldığında ekranda 52 düğme ve boş siyah
+ * tuval vardı — yani bağlantıyı tıklayan kişi geliştirici enstrümanını
+ * görüyordu. Bağlantıyı paylaşan kişinin `?sunum=1` eklemeyi hatırlamasına
+ * güvenmek, unutulduğu anda ziyaretçiyi kaybetmek demek.
+ *
+ * Bu, `sidecarAcikMi`'nin deseninin aynısı: açık istek varsa o, yoksa adres.
+ * Geliştiricinin akışı DEĞİŞMEZ — localhost'ta her şey eskisi gibi; yayında
+ * tam arayüz gerekirse `?sunum=0`.
+ *
  * `URLSearchParams` burada kullanılmaz: bu modül DOM'suz test edilebilsin
  * diye düz dize alır ve Node'da da aynı sonucu verir.
  */
-export function sunumAcikMi(search: string): boolean {
+export function sunumAcikMi(search: string, yerel = false): boolean {
   const q = search.startsWith('?') ? search.slice(1) : search;
   for (const parca of q.split('&')) {
     if (!parca) continue;
@@ -73,23 +96,28 @@ export function sunumAcikMi(search: string): boolean {
     const deger = decodeURIComponent(parca.slice(esit + 1)).toLowerCase();
     return deger !== '0' && deger !== 'false' && deger !== 'kapali';
   }
-  return false;
+  return !yerel;
 }
 
 /**
- * SOĞUK AÇILIŞ — sunum modunda sahne KENDİLİĞİNDEN yüklenir.
+ * SOĞUK AÇILIŞ — örnek sahne HER İKİ MODDA kendiliğinden yüklenir.
  *
- * Normal modda açılış boş siyah tuval: geliştirici ne yapacağını bilir.
- * Sunumda ise ilk iki saniye en pahalı saniyelerdir; izleyici bir şey
- * dönerken dinlemeye başlar, boş ekrana bakarken "bozuk mu?" diye düşünür.
+ * Eskiden yalnız sunum modundaydı; gerekçe "normal modda boş tuval olur,
+ * geliştirici ne yapacağını bilir" idi. İkİ ŞEY DEĞİŞTİ:
+ *
+ *  1. Boş tuval kimseye yaramıyordu. Çıplak adreste ekran siyahtı ve üstünde
+ *     52 düğme duruyordu — geliştirici için de "önce bir şey yükle" adımı.
+ *  2. Sahne artık BEDAVA. Derinliği analitik (`acilisSahnesi.ts`), model
+ *     indirmiyor: ölçüldü, açılışta 131,4 MB → 0. Eskiden otomatik yükleme
+ *     geliştirici moduna da 131 MB maliyet bindirirdi; şimdi bindirmiyor.
  *
  * Yalnız BİR KEZ ve yalnız motor hazırken tetiklenir; kullanıcı o sırada
  * kendi dosyasını seçtiyse (`kaynakVar`) sahne EZİLMEZ.
  */
 export function soganAcilisGerekliMi(
-  sunum: boolean, motorHazir: boolean, zatenTetiklendi: boolean, kaynakVar: boolean,
+  motorHazir: boolean, zatenTetiklendi: boolean, kaynakVar: boolean,
 ): boolean {
-  return sunum && motorHazir && !zatenTetiklendi && !kaynakVar;
+  return motorHazir && !zatenTetiklendi && !kaynakVar;
 }
 
 /**

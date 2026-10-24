@@ -20,7 +20,7 @@ import { ExportBar } from './ui/ExportBar';
 import { TransportSerit } from './ui/TransportSerit';
 import { KutuphanePaneli } from './ui/KutuphanePaneli';
 import { kaynakBelirle } from './ui/presetOnizleme';
-import { soganAcilisGerekliMi, sunumAcikMi } from './ui/sunumModu';
+import { soganAcilisGerekliMi, sunumAcikMi, yerelHostMu } from './ui/sunumModu';
 import { serializeRenderState } from './shaders/renderPreset';
 import { maskeKarari } from './ui/maskeKarari';
 import { useDarEkran } from './ui/useDarEkran';
@@ -280,7 +280,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
    * `useState`'in başlangıç değeri olarak okunur, böylece bir kez hesaplanır
    * ve hiçbir effect'e bağımlılık eklemez.
    */
-  const [sunum] = useState(() => sunumAcikMi(window.location.search));
+  const [sunum] = useState(() => sunumAcikMi(window.location.search, yerelHostMu(window.location.hostname)));
   /** Soğuk açılış yalnız BİR KEZ tetiklenir. */
   const soganTetiklendi = useRef(false);
   // CapturePanel (hızlı 3B harita) kendi Depth Anything çıkarımını koşar —
@@ -1292,7 +1292,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
   useEffect(() => {
     const e = engineRef.current;
     const kaynakVar = !!videoDosya || cameraOn || !!egitimDosya;
-    if (!soganAcilisGerekliMi(sunum, !!engine && !!e, soganTetiklendi.current, kaynakVar)) return;
+    if (!soganAcilisGerekliMi(!!engine && !!e, soganTetiklendi.current, kaynakVar)) return;
     soganTetiklendi.current = true;
     e!.mediaType = 'synthetic';
     kaynakBelirle('sentetik');
