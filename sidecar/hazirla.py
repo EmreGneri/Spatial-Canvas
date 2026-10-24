@@ -10,6 +10,9 @@ Yaptıkları:
      - depth-anything-v2-small fp16 (Apache-2.0)        canlı video
      - DA3Mono-Large (Apache-2.0, ~1,3 GB)               fotoğraf derinliği
      - BiRefNet_lite fp16 (MIT)                          fotoğraf nesne ayırma
+     - DAViD ViT-B ön plan maskesi (MIT, 449 MB)         fotoğraf özne maskesi (varsayılan açık)
+       Kaynak Microsoft'un Azure statik deposu; dosya adı sürüm taşımaz, boyut + MD5
+       (sunucunun Content-MD5 başlığı, 2026-10-24) sabitleme görevi görür.
   3. BiRefNet'in çok çıkışlı Split / çok girişli Concat düğümlerini anlamca birebir
      aynı küçük ağaçlara böler (DirectML'de ~%30 hızlı; çıktı bit-bit aynı, ölçüldü).
 
@@ -21,6 +24,7 @@ resmi ağırlıklardan kendi dışa aktarımınızı yapın.
 
 from __future__ import annotations
 
+import hashlib
 import subprocess
 import argparse
 import sys
@@ -31,13 +35,16 @@ HERE = Path(__file__).resolve().parent
 VENV = HERE / '.venv'
 MODELS = HERE / 'models'
 HF = 'https://huggingface.co'
+DAVID = 'https://facesyntheticspubwedata.z6.web.core.windows.net/iccv-2025/models'
 
 DOSYALAR = [
-    # (hedef ad, kaynak URL, beklenen bayt)
+    # (hedef ad, kaynak URL, beklenen bayt[, beklenen MD5])
     ('da2_small_fp16.onnx', f'{HF}/onnx-community/depth-anything-v2-small/resolve/main/onnx/model_fp16.onnx', None),
     ('da3mono_large.onnx', f'{HF}/SpatialHub/depth-anything-3-onnx/resolve/main/da3mono_large.onnx', 2712303),
     ('da3mono_large.onnx.data', f'{HF}/SpatialHub/depth-anything-3-onnx/resolve/main/da3mono_large.onnx.data', 1336737792),
     ('birefnet_lite_fp16.onnx', f'{HF}/onnx-community/BiRefNet_lite-ONNX/resolve/main/onnx/model_fp16.onnx', 114538221),
+    ('foreground-segmentation-model-vitb16_384.onnx', f'{DAVID}/foreground-segmentation-model-vitb16_384.onnx',
+     449231719, 'f28be34c9594895277a3603b025c2fbc'),
 ]
 
 
@@ -53,7 +60,15 @@ def kur_ortam():
     subprocess.check_call([str(venv_python()), '-m', 'pip', 'install', '--quiet', ort_pkg, 'numpy', 'pillow', 'onnx'])
 
 
-def indir(ad: str, url: str, boyut: int | None):
+def md5(yol: Path) -> str:
+    h = hashlib.md5()
+    with open(yol, 'rb') as f:
+        for parca in iter(lambda: f.read(1 << 22), b''):
+            h.update(parca)
+    return h.hexdigest()
+
+
+def indir(ad: str, url: str, boyut: int | None, ozet: str | None = None):
     hedef = MODELS / ad
     if hedef.exists() and (boyut is None or hedef.stat().st_size == boyut):
         print(f'var: {ad}')
@@ -63,6 +78,8 @@ def indir(ad: str, url: str, boyut: int | None):
     urllib.request.urlretrieve(url, gecici)
     if boyut is not None and gecici.stat().st_size != boyut:
         raise SystemExit(f'{ad}: beklenen {boyut} bayt, gelen {gecici.stat().st_size}')
+    if ozet is not None and md5(gecici) != ozet:
+        raise SystemExit(f'{ad}: MD5 uyuşmuyor (beklenen {ozet}); dosya {gecici} olarak bırakıldı')
     gecici.replace(hedef)
 
 
@@ -82,8 +99,8 @@ def main():
     args = parser.parse_args()
     kur_ortam()
     MODELS.mkdir(exist_ok=True)
-    for ad, url, boyut in DOSYALAR:
-        indir(ad, url, boyut)
+    for dosya in DOSYALAR:
+        indir(*dosya)
     agacla()
     if args.moge:
         indir('moge-2-vitl-normal.onnx',

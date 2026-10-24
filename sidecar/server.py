@@ -9,6 +9,8 @@ Protokol (ham float32, JSON/base64 yok):
   POST /infer/depth?model=small   girdi [1,3,H,W] (V2 işlemcisi)  -> [1,H,W] disparite
   POST /infer/depth?model=da3     girdi [1,3,H,W] (V2 işlemcisi)  -> [1,2,H,W] derinlik+gökyüzü
   POST /infer/mask                girdi [1,3,1024,1024] ImageNet   -> [1,1,1024,1024] olasılık
+  POST /infer/depth?model=moge    girdi [1,3,518,518] RGB [0,1]    -> [1,5,518,518] nokta+maske+ölçek
+  POST /infer/depth?model=david-mask girdi [1,3,512,512] BGR [0,1] -> [1,1,512,512] DAViD ön plan
   Başlıklar: X-Dims (virgüllü boyutlar), X-Frame-Id (yanıtta aynen döner).
   409: daha yeni bir 'small' karesi geldiği için bu kare atıldı.
 
@@ -55,6 +57,11 @@ MODEL_FILES = {
 }
 # İsteğe bağlı (hazirla.py --moge); yoksa /health listelemez, sunucu yine açılır.
 MOGE_FILE = 'moge-2-vitl-normal.onnx'
+# İsteğe bağlı DAViD (Microsoft, MIT) yumuşak ön plan maskesi, ViT-B FP32. Giriş 512x512 BGR [0,1]
+# (model kartı). Yalnız maske: kullanıcı kararı (2026-10-24) DAViD maskesi daha iyi, DAViD derinliği
+# değil (`?derinlik=david` tarayıcıda kalır). Dosya yoksa ya da oturum kurulamazsa listelenmez.
+DAVID_SIZE = 512
+DAVID_MASK_FILE = 'foreground-segmentation-model-vitb16_384.onnx'
 
 # Varsayılan izinli origin'ler: yalnız yerel geliştirme (her port — yerelde çalışan
 # başka bir geliştirme sunucusunun sayfası da GPU uç noktalarını kullanabilir; yalnız
@@ -161,8 +168,9 @@ def resize_plane(plane: np.ndarray, w: int, h: int) -> np.ndarray:
 class Models:
     moge = None  # İsteğe bağlı büyük model ilk MoGe fotoğrafında kurulur.
     moge_hata: str | None = None  # Oturum kurulamazsa bir kez yazılır; /health artık 'moge' listelemez.
+    david = None  # DAViD maske oturumu; yalnız kurulup ısındıysa /health 'david-mask' listeler.
 
-    def __init__(self, model_dir: Path, providers: list[str]):
+    def __init__(self, model_dir: Path, providers: list[str], david: bool = True):
         self.model_dir = model_dir
         self.providers = providers
         missing = [f for f in MODEL_FILES.values() if not (model_dir / f).exists()]
@@ -180,6 +188,8 @@ class Models:
         self.run_small(np.zeros((1, 3, DA3_SIZE, DA3_SIZE), np.float32))
         self.run_da3(np.zeros((1, 3, DA3_SIZE, DA3_SIZE), np.float32))
         self.run_mask(np.zeros((1, 3, MASK_SIZE, MASK_SIZE), np.float32))
+        if david:
+            self.david_kur()
         print(f'modeller yüklendi ve ısındı ({time.perf_counter() - t:.1f} sn) · {providers[0]}', flush=True)
         self.small_seq = 0
         self.debug = False
@@ -206,7 +216,38 @@ class Models:
         return (1 / (1 + np.exp(-logits))).astype(np.float32).reshape(1, 1, MASK_SIZE, MASK_SIZE)
 
     def available(self) -> list[str]:
-        return list(MODEL_FILES) + (['moge'] if (self.model_dir / MOGE_FILE).exists() and not self.moge_hata else [])
+        return (list(MODEL_FILES) + (['moge'] if (self.model_dir / MOGE_FILE).exists() and not self.moge_hata else [])
+                + (['david-mask'] if self.david else []))
+
+    def david_kur(self):
+        """DAViD maske oturumu açılışta (GPU thread'inde) kurulur ve ısıtılır; hata yardımcıyı düşürmez.
+
+        Tembel değil: istemci fotoğraf maskesini /health listesine bakarak varsayılan açar, liste
+        "gerçekten koşuyor" demeli. Ölçüldü (2026-10-24, RTX 5070 Laptop 8 GB, tek ViT-B model):
+        ~1,1 GB adanmış + ~0,45 GB paylaşılan GPU belleği, ~40 ms sıcak (DML çıktısı CPU ile 2e-4
+        içinde). Çekirdek (small+DA3) ~2,8 GB adanmış → toplam ~3,9 GB. GPU başka işle doluyken
+        DirectML paylaşılan belleğe taşar ve süre saniyelere çıkar; dar VRAM'de --davidsiz.
+        """
+        if not (self.model_dir / DAVID_MASK_FILE).exists():
+            return
+        try:
+            oturum = session(self.model_dir / DAVID_MASK_FILE, self.providers, {'batch_size': 1})
+            oturum.run(None, {'input': np.zeros((1, 3, DAVID_SIZE, DAVID_SIZE), np.float32)})
+            self.david = oturum
+        except Exception as e:
+            self.david = None
+            print(f'DAViD maske oturumu kurulamadı, devre dışı: {str(e)[:300] or type(e).__name__}', flush=True)
+
+    def run_david_mask(self, x: np.ndarray) -> np.ndarray:
+        """[1,3,512,512] BGR [0,1] -> [1,1,512,512] ön plan olasılığı (0..1)."""
+        if x.shape != (1, 3, DAVID_SIZE, DAVID_SIZE) or not np.isfinite(x).all() or x.min() < 0 or x.max() > 1:
+            raise ValueError('DAViD expects BGR [1,3,512,512] in [0,1]')
+        if not self.david:
+            raise RuntimeError('DAViD kullanılamıyor')
+        maske = self.david.run(None, {'input': x})[0]
+        if maske.shape != (1, 1, DAVID_SIZE, DAVID_SIZE):
+            raise ValueError('Unexpected DAViD mask shape')
+        return np.clip(maske, 0, 1).astype(np.float32)
 
     def run_moge(self, x: np.ndarray) -> np.ndarray:
         if x.shape != (1, 3, DA3_SIZE, DA3_SIZE) or not np.isfinite(x).all() or x.min() < 0 or x.max() > 1:
@@ -335,6 +376,8 @@ def make_handler(models: Models, gpu: ThreadPoolExecutor, extra_origins: set[str
                     raise ValueError('mask girdisi 1024x1024 olmalı')
                 if model == 'moge' and dims[2:] != [DA3_SIZE, DA3_SIZE]:
                     raise ValueError('MoGe girdisi 518x518 olmalı')
+                if model == 'david-mask' and dims[2:] != [DAVID_SIZE, DAVID_SIZE]:
+                    raise ValueError('DAViD girdisi 512x512 olmalı')
                 x = np.frombuffer(body, dtype=np.float32).reshape(dims)
             except ValueError as e:
                 return self.reply(400, json.dumps({'ok': False, 'hata': str(e)}).encode())
@@ -351,7 +394,7 @@ def make_handler(models: Models, gpu: ThreadPoolExecutor, extra_origins: set[str
                     return None
                 t = time.perf_counter()
                 out = {'small': models.run_small, 'da3': models.run_da3, 'mask': models.run_mask,
-                       'moge': models.run_moge}[model](x)
+                       'moge': models.run_moge, 'david-mask': models.run_david_mask}[model](x)
                 if models.debug:
                     print(f'{model} {x.shape[2]}x{x.shape[3]} {1000 * (time.perf_counter() - t):.0f} ms '
                           f'thread={threading.current_thread().name}', flush=True)
@@ -380,6 +423,8 @@ def main(argv=None):
     ap.add_argument('--origin', action='append', default=[], help='izinli ek origin (yayındaki site), tekrarlanabilir')
     ap.add_argument('--debug', action='store_true', help='istek başına model süresini yazdır')
     ap.add_argument('--ebeveyn', type=int, default=0, help='bu PID biterse kapan (Vite eklentisi verir)')
+    ap.add_argument('--davidsiz', action='store_true',
+                    help='DAViD maskesi yüklenmez (~1,1 GB VRAM); istemci fotoğrafta eski maskeye döner')
     args = ap.parse_args(argv)
     guc_kisitlamasini_kapat()
     if args.ebeveyn:
@@ -392,7 +437,7 @@ def main(argv=None):
         print(f'port {args.port} kullanımda, başka bir yardımcı çalışıyor olabilir: {e}', flush=True)
         return 3
     gpu = ThreadPoolExecutor(max_workers=1, thread_name_prefix='gpu')
-    models = gpu.submit(Models, args.models, pick_providers()).result()
+    models = gpu.submit(Models, args.models, pick_providers(), not args.davidsiz).result()
     models.debug = args.debug
     srv.RequestHandlerClass = make_handler(models, gpu, set(args.origin))
     print(f'dinleniyor: http://{args.host}:{srv.server_port}', flush=True)

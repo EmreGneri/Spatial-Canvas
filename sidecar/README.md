@@ -7,6 +7,7 @@ ağır modeller senin GPU'nda koşar, çalışmıyorsa her şey tarayıcı yolun
 |---|---|---|
 | Fotoğraf derinliği | DA3Mono-Large (~0,3 sn) | Depth Anything V2-small |
 | Fotoğraf nesne ayırma | BiRefNet_lite (CPU, ~7 sn) | IS-Net |
+| Fotoğraf özne maskesi inceltme | DAViD ViT-B ön plan ∩ özne maskesi (varsayılan) | yok (`?maske=david` ile tarayıcıda, 449 MB) |
 | Canlı video derinliği | V2-small (GPU, ~30 ms) | V2-small (WebGPU) |
 | Video nesne ayırma | IS-Net (değişmez) | IS-Net |
 
@@ -25,7 +26,8 @@ Kurulum yoksa dev normal başlar ve tek satır ipucu yazar.
 python sidecar/hazirla.py
 ```
 
-Sanal ortamı kurar, ~1,5 GB modeli `sidecar/models/` altına indirir.
+Sanal ortamı kurar, ~2 GB modeli `sidecar/models/` altına indirir (DAViD maskesi 449 MB dahil).
+DAViD maskesini kapatmak için `?maske=isnet`; sunucu tarafında `server.py --davidsiz`.
 
 ## Elle çalıştırma (gerekirse)
 

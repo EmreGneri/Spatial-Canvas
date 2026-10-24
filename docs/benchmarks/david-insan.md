@@ -78,3 +78,40 @@ App/Engine/embed değişmedi; DAViD kodu dinamik `import()` ile yalnız bayrakla
   bunu yakalamadı (0.75).
 - Normal haritası ile yüksek frekans detayı denenmedi (opsiyoneldi; 3. 449 MB model).
 - ViT-L (1.38 GB/model) yardımcı yolu denenmedi: bağlantı ≈0.6 MB/s, 2.7 GB indirme ≈75 dk.
+
+## Varsayılan: yardımcıda DAViD MASKESİ (2026-10-24, `david-sidecar` dalı)
+
+Kullanıcı görsel kararı: DAViD **maskesi** daha iyi (int8 kopyada da); **derinlikte** mevcut
+varsayılan daha iyi (yüz sınırları; d93ef'te gövde parçalarını daha iyi ayırıyor). Bu yüzden:
+
+| Durum | Derinlik | Özne maskesi (Engine/ayırma) |
+|---|---|---|
+| Yardımcı `/health` → `david-mask` (localhost, `npm run dev`) | birebir eskisi | DAViD ön plan ∩ özne maskesi (min, yumuşak kenar) |
+| Yardımcı yok / `david-mask` yok (Vercel) | birebir eskisi | birebir eskisi (indirme yok) |
+| `?maske=david` (`&david=int8`) | birebir eskisi | DAViD ∩ özne; yardımcı yoksa tarayıcı WebGPU (yalnız maske modeli, 449/180 MB) |
+| `?maske=isnet` (ya da `varsayilan`) | birebir eskisi | eski maske (A/B) |
+| `?derinlik=david` | DAViD füzyonu (değişmedi, tarayıcı) | + yukarıdaki maske kuralı |
+
+- Özne maskesi yoksa (embed, ayırma başarısız) DAViD maskesi uygulanmaz: tek başına sandalye/duvara sızıyordu.
+- Maske `DepthResult.subjectMask` olarak döner; App zaten onu Engine'e verir. Tanı: `davidMaske {arkaUc, sureMs}`,
+  günlükte `çıkarım … · DAViD maskesi (sidecar, N ms)`.
+- Yardımcı yalnız `foreground-segmentation-model-vitb16_384.onnx` yükler (derinlik modeli yok), açılışta ısıtır;
+  kurulamazsa listelemez. `--davidsiz` kapatır. Hatası DA3/BiRefNet yardımcısını kapatmaz, sayfa boyu yeniden denenmez.
+- `hazirla.py` maske dosyasını indirir (pinned URL, 449 231 719 B, MD5 `f28be34c…5c2fbc` = sunucu `Content-MD5`).
+- Kaba "baş gövdenin arkasında" denetimi EKLENMEDİ: o kare (d93ef) kullanıcının onayladığı fotoğraflardan biri;
+  ayrıca artık DAViD derinliği varsayılan değil.
+
+Ölçüm (RTX 5070 Laptop 8 GB, DirectML, ORT 1.24.4; makine BAŞKA bir GPU ölçümüyle meşgulken — sayılar kirli):
+- DML çıktısı CPU ile aynı: maske max fark 1.7e-4, derinlik 9e-8 (özüm, 512²).
+- Tek ViT-B oturumu, GPU boşken: ~1,1 GB adanmış + ~0,45 GB paylaşılan bellek, ~40 ms sıcak, kurulum+ısınma 3–10 sn.
+- Çekirdek (small+DA3, BiRefNet CPU): ~2,8 GB adanmış → maskeyle ~3,9 GB. (İlk tasarımdaki iki model + MoGe
+  toplam ayrılan 9,5 GB'a çıkıyordu; o yüzden derinlik modeli yardımcıya konmadı.)
+- GPU başka süreçlerce doluyken (5–7 GB) DirectML belleği paylaşılana taşıyor: DAViD maskesi ~2,1 sn/çağrı,
+  DA3 9–18 sn ölçüldü (aynı anda). Temiz koşu bu oturumda yapılamadı; `test_server.py`'nin DA3 < 3 sn eşiği bu
+  yüzden düştü (DAViD'den bağımsız, DA3 adımında).
+- Üç portrede (özüm, 66fe, d93ef) maske kıyası `olcum-out/david-sidecar/*-maske.png` (foto | BiRefNet | DAViD |
+  kesişim; commit'lenmez). Kesişim ön plan oranı BiRefNet'e çok yakın (%25.0/%29.4/%65.7 vs %25.3/%31.6/%65.9);
+  66fe'de uzun tırnak uçlarının bir kısmı DAViD'de düşüyor (BiRefNet içinde DAViD<0.5: %6.8). d93ef'te DAViD tek
+  başına %85 (sandalye) — kesişim bunu atıyor.
+- Bayraksız, yardımcısız varsayılan: `estimateDepth` SHA-256 3/3 foto değişiklikten önceki dal ile aynı
+  (özüm `36023f31…`, 66fe `33a37f45…`, d93ef `967f8b35…`).

@@ -17,7 +17,7 @@ import { delikleriDoldur, type DelikOlcum } from './engine/reconstruction/maskeD
 import { da3Plausible, da3Preprocess, da3ToDisparity, SHIFT_K } from './engine/vision/da3Mono.ts';
 import { kenarHizala, mergeTileDetail, tileGrid, type TileResult } from './engine/reconstruction/derinlikDetay.ts';
 import { POINTS_DEPTH_RANGE } from './engine/buffers.ts';
-import { localInference, localInferenceAvailable, type RawTensor } from './engine/sidecarClient.ts';
+import { localInference, localInferenceAvailable, localModelAvailable, type RawTensor } from './engine/sidecarClient.ts';
 import type { MetricPhotoGeometry } from './engine/reconstruction/metricPhotoGeometry.ts';
 import { davidCiktisiniCoz, davidFuzyon } from './engine/vision/davidFuzyon.ts';
 
@@ -187,13 +187,42 @@ export const mogeIstendi = (search: string) => new URLSearchParams(search).get('
 /** Deneysel DAViD insan derinliği füzyonu YALNIZ `?derinlik=david` ile; sahne modeli varsayılan zincirde kalır. */
 export const davidIstendi = (search: string) => new URLSearchParams(search).get('derinlik') === 'david';
 
+/**
+ * DAViD ön plan maskesi seçimi (kullanıcı kararı 2026-10-24: DAViD MASKESİ daha iyi, varsayılan
+ * DERİNLİK daha iyi — yüz sınırları, yüksek açı selfie'de gövde ayrımı):
+ *  - bayraksız 'otomatik': yalnız yerel yardımcı 'david-mask' listeliyorsa (localhost, DirectML);
+ *    yardımcısız ziyaretçide (Vercel) yol birebir eskisi, 449 MB tarayıcı indirmesi YOK.
+ *  - `?maske=david`: tarayıcıda da (A/B; `&david=int8` küçük kopya). `?maske=isnet` kapatır.
+ * Derinlik her durumda eskisi; maske yalnız çıktıdaki subjectMask'i (Engine/ayırma) değiştirir.
+ */
+export function insanMaskesiSecimi(search: string): DepthEstimateOptions['insanMaskesi'] {
+  const m = new URLSearchParams(search).get('maske');
+  return m === 'david' ? 'david' : m === 'isnet' || m === 'varsayilan' ? undefined : 'otomatik';
+}
+
+/** DAViD koşacak mı, koşarsa tarayıcıya düşebilir mi? null → hiçbir şey değişmez. */
+export function davidPlani(secim: 'david' | 'otomatik' | undefined, ozneVar: boolean, yardimciVar: boolean) {
+  // Özne maskesi şart: DAViD maskesi tek başına sandalye/duvar desenine sızdı (d93ef…, çekirdek %83).
+  if (!ozneVar) return null;
+  if (secim === 'david') return { tarayici: true };
+  if (secim === 'otomatik' && yardimciVar) return { tarayici: false };
+  return null;
+}
+
+/** DAViD ∩ özne: piksel başına min — özne dışı (sandalye/duvar) ve DAViD'in dışladığı yer düşer, kenar yumuşak. */
+export function davidMaskeKesisimi(ozne: Float32Array, david: Float32Array): Float32Array {
+  return Float32Array.from(ozne, (v, i) => Math.min(v, david[i]));
+}
+
 /** Fotoğraf yolu için önerilen kalite seçenekleri (App/embed). */
-export const FOTO_KALITE: Pick<DepthEstimateOptions, 'tileDetay' | 'kenarHizalama' | 'model' | 'insanDerinligi'> = {
+const insanSecimi = insanMaskesiSecimi(typeof location !== 'undefined' ? location.search : '');
+export const FOTO_KALITE: Pick<DepthEstimateOptions, 'tileDetay' | 'kenarHizalama' | 'model' | 'insanDerinligi' | 'insanMaskesi'> = {
   tileDetay: true,
   kenarHizalama: 0.5,
   // DA3 yardımcı ya da VITE_DA3_MONO_URL varsa devreye girer; yoksa/başarısızsa V2-small.
   model: typeof location !== 'undefined' && mogeIstendi(location.search) ? 'moge-2' : 'da3-mono',
-  // Anahtar bayraksız hiç eklenmez: varsayılan nesne birebir eskisi.
+  ...(insanSecimi ? { insanMaskesi: insanSecimi } : {}),
+  // Derinlik füzyonu yalnız açık istekle (anahtar bayraksız hiç eklenmez).
   ...(typeof location !== 'undefined' && davidIstendi(location.search) ? { insanDerinligi: 'david' as const } : {}),
 };
 
@@ -226,6 +255,8 @@ export type DepthResult = {
   headDetail?: HeadDetailDiagnostics;
   /** Yalnız DAViD füzyonu GERÇEKTEN uygulandıysa (tanı/ölçüm). */
   david?: { olcek: number; kayma: number; korelasyon: number; cekirdekOrani: number; yuklemeMs: number; cikarimMs: number };
+  /** Yalnız DAViD maskesi GERÇEKTEN uygulandıysa (subjectMask = DAViD ∩ özne). */
+  davidMaske?: { arkaUc: 'sidecar' | 'webgpu'; sureMs: number };
   /** Delikleri kapatılmış özne maskesi (depth ızgarasında, width×height). Yalnız `delikDoldur: true` ve maske verildiyse. */
   subjectMask?: Float32Array;
   /** Maskedeki kapalı deliklerin ölçümü (alan, derinlik farkı, doldu mu). */
@@ -253,6 +284,11 @@ export type DepthEstimateOptions = {
    * hata → uyarı + füzyonsuz sonuç. Verilmezse yol birebir eskisi.
    */
   insanDerinligi?: 'david';
+  /**
+   * DAViD ön plan maskesi ∩ özne maskesi → çıktı subjectMask (derinlik DEĞİŞMEZ). 'otomatik': yalnız
+   * yardımcı listeliyorsa; 'david': yoksa tarayıcıda. Özne maskesi yoksa ya da hata → eski maske.
+   */
+  insanMaskesi?: 'david' | 'otomatik';
   /** DA3 disparite kayması (yalnız yardımcı yolunda); varsayılan SHIFT_K=0.5. SfM'e afin hizalanan yollar 0 verir. */
   da3Kayma?: number;
   /**
@@ -744,11 +780,38 @@ export async function estimateDepth(
   const headDetail = subject
     ? await mergeHeadDetail(limited, subject, outWidth, outHeight, source, model, RawImageCtor, opts.yuz ?? null)
     : undefined;
+  let cikti = limited, david: DepthResult['david'];
   if (opts.insanDerinligi === 'david') {
     const f = await davidUygula(limited, outWidth, outHeight, source, subject);
-    if (f) return { data: f.data, width: outWidth, height: outHeight, headDetail, subjectMask: doldurulmusMaske, delikTani, david: f.tani };
+    if (f) ({ data: cikti, tani: david } = f);
   }
-  return { data: limited, width: outWidth, height: outHeight, headDetail, subjectMask: doldurulmusMaske, delikTani };
+  // subject, delikDoldur'da zaten deliği kapatılmış maske (doldurulmusMaske).
+  const dm = await davidMaskeUygula(opts.insanMaskesi, source, subject, outWidth, outHeight);
+  return {
+    data: cikti, width: outWidth, height: outHeight, headDetail, subjectMask: dm?.maske ?? doldurulmusMaske, delikTani,
+    ...(david ? { david } : {}), ...(dm ? { davidMaske: dm.tani } : {}),
+  };
+}
+
+/** DAViD ön plan maskesi (davidPlani izin verdiyse) → depth ızgarasında DAViD ∩ özne. Hata → null. */
+async function davidMaskeUygula(
+  secim: DepthEstimateOptions['insanMaskesi'], source: HTMLCanvasElement | HTMLImageElement,
+  ozne: Float32Array | null, w: number, h: number,
+) {
+  const plan = davidPlani(secim, ozne !== null, secim === 'otomatik' && ozne !== null && await localModelAvailable('david-mask'));
+  if (!plan || !ozne) return null;
+  try {
+    const { inferDavidMaske, DAVID_BOYUT } = await import('./engine/vision/davidDepth.ts');
+    const lb = letterboxCanvas(source, DAVID_BOYUT);
+    const rgba = lb.canvas.getContext('2d', { willReadFrequently: true })!.getImageData(0, 0, DAVID_BOYUT, DAVID_BOYUT).data;
+    const ham = await inferDavidMaske(rgba, { gpuSirasinaGir, onceRetry, webgpuKullanilabilir }, plan);
+    if (!ham) return null;
+    const maske = davidMaskeKesisimi(ozne,davidCiktisiniCoz(ham.maske, ham.boyut, lb, w, h));
+    return { maske, tani: { arkaUc: ham.arkaUc, sureMs: ham.sureMs } };
+  } catch (err) {
+    console.warn('DAViD maskesi atlandı; eski özne maskesi kullanılıyor.', err);
+    return null;
+  }
 }
 
 /**

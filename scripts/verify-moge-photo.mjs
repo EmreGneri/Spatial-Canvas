@@ -45,5 +45,5 @@ assert.ok(MOGE_LIMITS.maxProjectionRmse > 0.002, 'limit is above the measured sy
 const { mogeIstendi, FOTO_KALITE } = await import('../src/depth.ts');
 assert.equal(mogeIstendi('?derinlik=moge'), true);
 for (const q of ['', '?derinlik=MoGe', '?derinlik=da3', '?moge=1', '?yuz=0']) assert.equal(mogeIstendi(q), false, q);
-assert.deepEqual(FOTO_KALITE, { tileDetay: true, kenarHizalama: 0.5, model: 'da3-mono' }, 'default photo options unchanged');
+assert.deepEqual(FOTO_KALITE, { tileDetay: true, kenarHizalama: 0.5, model: 'da3-mono', insanMaskesi: 'otomatik' }, 'default photo options');
 console.log('OK MoGe photo: metric crop, camera K, near/far display and diagnostics');

@@ -1,11 +1,13 @@
 """Sidecar uçtan uca testi: sunucuyu boş bir portta başlatır, gerçek fotoğrafla
-her modeli çağırır. Çalıştırma:  sidecar\\.venv\\Scripts\\python sidecar\\test_server.py
+her modeli çağırır. Çalıştırma:  sidecar\\.venv\\Scripts\\python sidecar\\test_server.py [--models DİZİN]
+(ek argümanlar sunucuya aynen geçer; ör. worktree'de ana checkout'un model dizini)
 """
 
 import json
 import subprocess
 import sys
 import threading
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -42,7 +44,7 @@ def post(base, path, x, frame='1', origin=None):
 
 def main():
     proc = subprocess.Popen([sys.executable, str(Path(__file__).parent / 'server.py'), '--port', '0',
-                             '--origin', 'https://ornek.app'],
+                             '--origin', 'https://ornek.app', *sys.argv[1:]],
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8')
     try:
         base = None
@@ -75,7 +77,6 @@ def main():
 
         # Hız: istek başına süre. Tek GPU thread'i olmadan DirectML her yeni thread'de
         # ~10 sn ekliyordu (bağlantı başına thread) — bu eşik o hatayı yakalar.
-        import time
         t = time.perf_counter()
         for _ in range(3):
             assert post(base, '/infer/depth?model=da3', tensor(518, 518))[0] == 200
@@ -98,6 +99,21 @@ def main():
         fg = float((y > .5).mean())
         assert 0.02 < fg < 0.95, fg
         print(f'OK mask (ön plan %{fg * 100:.1f})')
+
+        # david-mask (isteğe bağlı, listeleniyorsa): BGR [0,1] 512² -> ön plan olasılığı
+        if 'david-mask' in h['modeller']:
+            a = np.asarray(Image.open(PHOTO).convert('RGB').resize((512, 512), Image.BICUBIC), np.float32) / 255
+            x = np.ascontiguousarray(a[..., ::-1].transpose(2, 0, 1)[None], np.float32)
+            s, y, _ = post(base, '/infer/depth?model=david-mask', x)
+            assert s == 200 and y.shape == (1, 1, 512, 512), (s, None if y is None else y.shape)
+            fg = float((y > .5).mean())
+            assert 0 <= y.min() and y.max() <= 1 and 0.02 < fg < 0.95, fg
+            assert post(base, '/infer/depth?model=david-mask', tensor(518, 518))[0] == 400
+            t = time.perf_counter()
+            for _ in range(3):
+                assert post(base, '/infer/depth?model=david-mask', x)[0] == 200
+            print(f'OK david-mask (ön plan %{fg * 100:.1f}, '
+                  f'{(time.perf_counter() - t) / 3 * 1000:.0f} ms/istek)')
 
         # geçersiz istekler
         assert post(base, '/infer/mask', tensor(512, 512))[0] == 400
@@ -124,7 +140,7 @@ def main():
         # GPU'yu uzun bir mask isteğiyle meşgul et, bu sırada small'lar sıraya girsin
         blocker = threading.Thread(target=lambda: post(base, '/infer/mask', tensor(1024, 1024)))
         blocker.start()
-        import time; time.sleep(0.3)
+        time.sleep(0.3)
         ts = [threading.Thread(target=one, args=(i,)) for i in range(4)]
         for t in ts:
             t.start(); time.sleep(0.05)
