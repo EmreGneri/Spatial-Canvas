@@ -65,6 +65,7 @@ assert.ok(fp.scale>.5*p.scale,'flying pixels ignored for framing');
   updateMetricPhotoSplatGeometry(steep,32,sn);
   for(let y=1;y<31;y++)for(let x=1;x<31;x++){const o=(y*32+x)*4;const iz=.5*Math.max(...[[1,0],[-1,0],[0,1],[0,-1]].map(([dx,dy])=>{const j=((y+dy)*32+x+dx)*4;return Math.hypot(steep[j]-steep[o],steep[j+1]-steep[o+1]);}));assert.ok(sn[o+3]<=3*iz+1e-6,'radius capped');}
 }
+let metricFaceRelief;
 // Face relief on metric depth: nose (centre) comes toward the camera, far outside untouched.
 { const { metrikYuzRolyefi }=await import('../src/engine/reconstruction/metricPhotoGeometry.ts');
   const { yuzRolyefHaritasi, YUZ_OVAL }=await import('../src/engine/reconstruction/yuzRolyef.ts');
@@ -73,11 +74,15 @@ assert.ok(fp.scale>.5*p.scale,'flying pixels ignored for framing');
   let sd=1;const rnd=()=>((sd=(sd*16807)%2147483647)/2147483647);
   for(let i=0;i<478;i++){if(ov.has(i))continue;const r=.19*Math.sqrt(rnd()),a=rnd()*Math.PI*2,x=.5+r*Math.cos(a),y=.5+r*Math.sin(a);pts[i]={x,y,z:-.1*(1-((x-.5)**2+(y-.5)**2)/.04)};}
   const rol=yuzRolyefHaritasi(pts,W,H);
+  metricFaceRelief=rol;
   const g=fixture(), out=metrikYuzRolyefi(g,rol);
   const c=(H>>1)*W+(W>>1);
   assert.ok(out.depth[c]<g.depth[c],`face centre nearer (${out.depth[c].toFixed(3)} < 2)`);
   assert.equal(out.depth[0],g.depth[0],'far corner unchanged');
   assert.ok(out.depth.every(z=>z>0&&Number.isFinite(z)),'metric depth stays positive');
+  assert.notEqual(out.depth,g.depth,'relief must not mutate the cached model depth');
+  assert.ok(g.depth.every(z=>z===2),'cached metric depth remains unchanged');
+  assert.deepEqual(metrikYuzRolyefi(g,rol).depth,out.depth,'rebuilding applies relief once');
 }
 const grid=sampleMetricPhotoPositions(p,16);assert.equal(grid.length,16*16*4);
 assert.equal(typeof updateMetricPhotoSplatGeometry,'function','metric splats use measured XYZ neighbors');
@@ -112,7 +117,18 @@ engine.setDepth(display,W,H,mask,W,H);assert.deepEqual(engine.homeTexture.image.
 engine.dynamicHome=true;engine.homeTexture.image.data.fill(0);
 engine.setDepth(display,W,H,mask,W,H);assert.ok(Buffer.from(engine.homeTexture.image.data.buffer).equals(Buffer.from(before.buffer)),'calibrated home must align with its shell even after a dynamic source');
 engine.yuzRolyefi={rel:new Float32Array(W*H).fill(1),agirlik:new Float32Array(W*H).fill(1)};
-engine.setDepth(display,W,H,mask,W,H);assert.deepEqual(engine.homeTexture.image.data,before,'artistic relief cannot warp calibrated photo');
+engine.setDepth(display,W,H,mask,W,H);assert.deepEqual(engine.homeTexture.image.data,before,'constant relief does not change calibrated shape');
+engine.yuzRolyefi=metricFaceRelief;
+engine.setDepth(display,W,H,mask,W,H);
+const faceHome=engine.homeTexture.image.data.slice(), faceShell=engine.shellData.positions.slice();
+assert.notDeepEqual(faceHome,before,'engine applies metric face relief to splats');
+assert.ok(faceHome.every(Number.isFinite)&&faceShell.every(Number.isFinite),'relief geometry remains finite');
+engine.setDepth(display,W,H,mask,W,H);
+assert.deepEqual(engine.homeTexture.image.data,faceHome,'rebuild does not accumulate face relief');
+assert.deepEqual(engine.shellData.positions,faceShell,'solid and splat rebuilds share the same relief');
+engine.yuzRolyefi=null;
+engine.setDepth(display,W,H,mask,W,H);
+assert.deepEqual(engine.homeTexture.image.data,before,'disabling relief restores calibrated geometry');
 const partialMask=new Float32Array(W*H);
 for(let y=8;y<24;y++)for(let x=10;x<22;x++)partialMask[y*W+x]=1;
 engine.setDepth(display,W,H,partialMask,W,H);
