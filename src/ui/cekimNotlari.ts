@@ -90,6 +90,12 @@ export function uzunKenar(o: Pick<CekimOlcusu, 'genislik' | 'yukseklik'>): numbe
 export const EN_AZ_SURE_SN = 3;
 
 /**
+ * Yumuşak eşik: bu repoda süre→kalite eğrisi ÖLÇÜLMEDİ;
+ * 20 sn bir kapsama hatırlatmasıdır, kalite garantisi değildir.
+ */
+export const ONERILEN_SURE_SN = 20;
+
+/**
  * Bunun altında ara kare kalmıyor: bulanıklık çukuruna düşen bir kareyi
  * kurtaracak komşu aday yok (`markOutliers` komşuya bakar).
  */
@@ -125,6 +131,15 @@ export function cekimNotlari(o: CekimOlcusu): CekimNotu[] {
     });
   }
 
+  if (Number.isFinite(o.sureSn) && o.sureSn >= EN_AZ_SURE_SN && o.sureSn < ONERILEN_SURE_SN) {
+    notlar.push({
+      baslik: 'Klip kısa',
+      sebep: `Klip ${o.sureSn.toFixed(1)} sn. ${ONERILEN_SURE_SN} sn altındaki bir çekim sahneyi yeterince `
+        + 'farklı açıdan göstermeyebilir.',
+      eylem: 'Sonuç yamalı ya da yan bakışta bozuk çıkarsa sahnenin etrafında 20-60 sn yavaşça yürüyerek yeniden çek.',
+    });
+  }
+
   if (o.fps !== null && Number.isFinite(o.fps) && o.fps > 0 && o.fps < EN_AZ_FPS) {
     notlar.push({
       baslik: 'Kare hızı düşük',
@@ -133,5 +148,53 @@ export function cekimNotlari(o: CekimOlcusu): CekimNotu[] {
     });
   }
 
+  return notlar;
+}
+
+// ── EĞİTİM SIRASINDA: SfM SONRASI ÖLÇÜLER ──────────────────────────────────
+//
+// Bunlar videonun başlığından değil, kare taraması ve kamera çözümünden gelir;
+// eğitim başladıktan sonra bilinir. Aynı kurallar: sorun yoksa boş dizi,
+// bilinmeyen (NaN) not üretmez, hiçbir not eğitimi durdurmaz.
+
+export interface CekimKalitesi {
+  /** Taranan karelerin komşularına GÖRE bulanık işaretlenen oranı (vendor
+   *  `markOutliers`: kare, ±7 komşusunun medyan netliğinin %70'inin altında).
+   *  Göreli ölçü — mutlak netlik eşiği değil (yukarıdaki ölçüm notuna bkz.). */
+  bulanikOran: number;
+  /** En uzak iki kamera merkezi arası / medyan sahne derinliği. */
+  tabanOrani: number;
+  /** Kamera bakış yönleri arasındaki en büyük açı (derece). */
+  donmeDerece: number;
+}
+
+/** Bu oranın altında kamera konumu sahne derinliğine göre neredeyse sabit.
+ *  Gezinme güveni 0,02'de "çeşitlilik yetersiz" diyor; not daha erken uyarır. */
+export const EN_AZ_TABAN_ORANI = 0.05;
+/** Taban küçükken bakış yönü bundan fazla dönmüşse "yerinde dönme". */
+export const YERINDE_DONME_DERECE = 20;
+/** Taranan karelerin bundan fazlası bulanık işaretliyse. */
+export const COK_BULANIK_ORAN = 0.25;
+
+export function cekimKaliteNotlari(k: CekimKalitesi): CekimNotu[] {
+  const notlar: CekimNotu[] = [];
+  if (Number.isFinite(k.tabanOrani) && Number.isFinite(k.donmeDerece)
+    && k.tabanOrani < EN_AZ_TABAN_ORANI && k.donmeDerece >= YERINDE_DONME_DERECE) {
+    notlar.push({
+      baslik: 'Kamera çoğunlukla yerinde dönüyor',
+      sebep: `Kamera bakışı ${k.donmeDerece.toFixed(0)}° dönmüş ama konumu sahne derinliğinin yalnız `
+        + `${k.tabanOrani.toFixed(2)} katı kadar yer değiştirmiş. Derinlik yer değiştirmeden (paralaks) çözülür; `
+        + 'yan bakışlarda bozulma ve yüzen lekeler beklenir.',
+      eylem: 'Telefonu çevirmek yerine sahnenin etrafında ya da boyunca yürüyerek çek.',
+    });
+  }
+  if (Number.isFinite(k.bulanikOran) && k.bulanikOran > COK_BULANIK_ORAN) {
+    notlar.push({
+      baslik: 'Bulanık kare oranı yüksek',
+      sebep: `Taranan karelerin %${Math.round(k.bulanikOran * 100)}'i komşularından belirgin bulanık. `
+        + 'Seçici en net kareleri alıyor ama aday azaldıkça bulanık kare eğitime girebilir.',
+      eylem: 'Daha yavaş hareket et, iyi ışıkta çek; mümkünse sabitleme (OIS/gimbal) aç.',
+    });
+  }
   return notlar;
 }

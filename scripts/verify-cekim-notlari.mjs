@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
-  cekimNotlari, EN_AZ_FPS, EN_AZ_SURE_SN, EN_AZ_UZUN_KENAR, uzunKenar,
+  cekimKaliteNotlari, cekimNotlari, COK_BULANIK_ORAN, EN_AZ_FPS, EN_AZ_SURE_SN, EN_AZ_TABAN_ORANI, EN_AZ_UZUN_KENAR,
+  ONERILEN_SURE_SN, uzunKenar, YERINDE_DONME_DERECE,
 } from '../src/ui/cekimNotlari.ts';
+import { cekimGeometrisi } from '../src/engine/reconstruction/egitim3dgs.ts';
 
 const iyi = { genislik: 3840, yukseklik: 2160, sureSn: 20.9, fps: 30 };
 
@@ -25,9 +27,12 @@ const OLCULEN = {
 // tam durum bu. Diğer üçü sessiz kalmalı.
 assert.equal(cekimNotlari(OLCULEN.nyuYuruyus).length, 1, 'NYU klibi (854×480) not almıyor');
 assert.match(cekimNotlari(OLCULEN.nyuYuruyus)[0].sebep, /854×480/, 'not gerçek çözünürlüğü söylemiyor');
-for (const ad of ['uhd', 'stgeorge', 'mariatheresa']) {
+for (const ad of ['uhd', 'mariatheresa']) {
   assert.deepEqual(cekimNotlari(OLCULEN[ad]), [], `${ad}: meşru klip haksız not alıyor`);
 }
+// stgeorge 12,2 sn: yumuşak "kısa klip" notu (yaygın öneri ≥ 20 sn). Bilinçli
+// değişiklik (2026-10-24): kalite tahmini değil, kapsama hatırlatması.
+assert.deepEqual(cekimNotlari(OLCULEN.stgeorge).map((n) => n.baslik), ['Klip kısa']);
 
 // ── UZUN KENAR, KISA KENAR DEĞİL ───────────────────────────────────────────
 // Dikey telefon videosu kısa kenara bakan bir kuralda HAKSIZ düşer; eğitim
@@ -50,7 +55,12 @@ assert.equal(cekimNotlari({ ...iyi, genislik: EN_AZ_UZUN_KENAR - 1, yukseklik: 7
   // ölçülmüş bulgusu (sfm.js "need more parallax/overlap").
   assert.match(n[0].eylem, /etrafında|ETRAFINDA/i, 'eylem somut değil');
 }
-assert.equal(cekimNotlari({ ...iyi, sureSn: EN_AZ_SURE_SN }).length, 0);
+// 3–20 sn: yumuşak not; tam 20 sn ve üstü sessiz.
+assert.deepEqual(cekimNotlari({ ...iyi, sureSn: EN_AZ_SURE_SN }).map((n) => n.baslik), ['Klip kısa']);
+assert.match(cekimNotlari({ ...iyi, sureSn: 8.4 })[0].sebep, /8\.4 sn/);
+assert.equal(cekimNotlari({ ...iyi, sureSn: ONERILEN_SURE_SN }).length, 0);
+assert.equal(cekimNotlari({ ...iyi, sureSn: 2.9 }).filter((n) => n.baslik === 'Klip kısa').length, 0,
+  '3 sn altı yalnız "çok kısa" almalı, iki süre notu birden değil');
 
 // ── FPS ────────────────────────────────────────────────────────────────────
 assert.equal(cekimNotlari({ ...iyi, fps: 15 }).length, 1);
@@ -75,7 +85,7 @@ for (const [ad, o] of Object.entries({
 // Çözünürlük bir TAVAN'dır (sonradan düzeltilemez), süre/fps yeniden çekimle
 // düzelir — en çok kısıtlayan önce.
 {
-  const n = cekimNotlari({ genislik: 640, yukseklik: 480, sureSn: 1.5, fps: 12 });
+  const n = cekimNotlari({ genislik: 640, yukseklik: 480, sureSn: 1.5, fps: 12 });  // 3 sn altı: tek süre notu
   assert.equal(n.length, 3);
   assert.deepEqual(n.map((x) => x.baslik), ['Çözünürlük düşük', 'Klip çok kısa', 'Kare hızı düşük']);
 }
@@ -88,6 +98,46 @@ for (const o of [OLCULEN.nyuYuruyus, { ...iyi, sureSn: 1 }, { ...iyi, fps: 10 }]
     assert.ok(n.eylem.length > 15, 'eylem boş — not ne yapılacağını söylemiyor');
     assert.ok(/\d/.test(n.sebep), 'sebep gerçek bir sayı içermiyor');
   }
+}
+
+// ── EĞİTİM SIRASINDA: KAMERA GEOMETRİSİ VE BULANIKLIK ─────────────────────
+// SfM çözüldükten SONRA bilinen ölçüler. Kural aynı: sessizlik, bilinmeyen≠kötü,
+// sebep gerçek sayı içerir, eğitimi durdurmaz.
+{
+  const I = [1, 0, 0, 0, 1, 0, 0, 0, 1];
+  const yaw = (d) => { const a = d * Math.PI / 180, c = Math.cos(a), s = Math.sin(a); return [c, 0, -s, 0, 1, 0, s, 0, c]; };
+  const t = (R, C) => [0, 1, 2].map((i) => -(R[i * 3] * C[0] + R[i * 3 + 1] * C[1] + R[i * 3 + 2] * C[2]));
+  const noktalar = Array.from({ length: 50 }, (_, i) => [(i % 10) - 5, (i % 5) - 2, 10]);
+  // Yürüyüş: x ekseninde 2 birim taban, sahne 10 birim önde → oran ≈ 0,2; dönme 0.
+  const yuru = [0, 1, 2].map((x) => ({ R: I, t: t(I, [x, 0, 0]) }));
+  const g1 = cekimGeometrisi(yuru, noktalar);
+  assert.ok(Math.abs(g1.tabanOrani - 0.2) < 1e-6, `taban oranı ${g1.tabanOrani}`);
+  assert.ok(g1.donmeDerece < 1e-6);
+  // Yerinde dönme: merkez sabit, 0..60° sapma.
+  const don = [0, 20, 40, 60].map((d) => ({ R: yaw(d), t: [0, 0, 0] }));
+  const g2 = cekimGeometrisi(don, noktalar);
+  assert.ok(g2.tabanOrani < 1e-9 && Math.abs(g2.donmeDerece - 60) < 1e-6, JSON.stringify(g2));
+  // Nokta yok → bilinmiyor (NaN), not üretmez.
+  assert.ok(Number.isNaN(cekimGeometrisi(yuru, []).tabanOrani));
+
+  const temiz = { bulanikOran: 0.05, tabanOrani: 0.2, donmeDerece: 40 };
+  assert.deepEqual(cekimKaliteNotlari(temiz), [], 'sorunsuz çekimde not üretiliyor');
+  const donNot = cekimKaliteNotlari({ ...temiz, tabanOrani: 0.01 });
+  assert.deepEqual(donNot.map((n) => n.baslik), ['Kamera çoğunlukla yerinde dönüyor']);
+  assert.match(donNot[0].sebep, /0[.,]01/, 'sebep ölçülen oranı söylemiyor');
+  assert.match(donNot[0].sebep, /40°/, 'sebep ölçülen dönmeyi söylemiyor');
+  // Düşük taban ama dönme de az (ör. sabit tripod, kısa kaydırma): yerinde
+  // DÖNME değil; bu not haksız olur.
+  assert.deepEqual(cekimKaliteNotlari({ ...temiz, tabanOrani: 0.01, donmeDerece: YERINDE_DONME_DERECE - 1 }), []);
+  assert.deepEqual(cekimKaliteNotlari({ ...temiz, tabanOrani: EN_AZ_TABAN_ORANI }), []);
+  const bul = cekimKaliteNotlari({ ...temiz, bulanikOran: 0.4 });
+  assert.deepEqual(bul.map((n) => n.baslik), ['Bulanık kare oranı yüksek']);
+  assert.match(bul[0].sebep, /%40/);
+  assert.deepEqual(cekimKaliteNotlari({ ...temiz, bulanikOran: COK_BULANIK_ORAN }), []);
+  for (const o of [{ bulanikOran: NaN, tabanOrani: NaN, donmeDerece: NaN }, { ...temiz, tabanOrani: Infinity }]) {
+    assert.deepEqual(cekimKaliteNotlari(o), [], 'bilinmeyen ölçü not üretiyor');
+  }
+  for (const n of [...donNot, ...bul]) assert.ok(n.eylem.length > 15 && /\d/.test(n.sebep));
 }
 
 // ── SÖZLEŞME DENETİMİ ──────────────────────────────────────────────────────
@@ -105,6 +155,7 @@ assert.ok(!/engel|calisir|disabled/i.test(kod), 'çekim notu engelleme kararı v
 // CİHAZ yetmiyorsa kapanmalı.
 const ui = readFileSync(new URL('../src/ui/Egitim3D.tsx', import.meta.url), 'utf8');
 assert.match(ui, /cekimNot\.map\(/, 'notlar ön ayar ekranında çizilmiyor');
+assert.match(ui, /cekimKaliteNotlari\(/, 'eğitim sırasındaki çekim notları arayüze bağlı değil');
 assert.match(ui, /disabled=\{onKontrol\?\.calisir === false\}/,
   'başlat düğmesinin kapanma koşulu değişmiş — çekim notu eğitimi engellememeli');
 assert.ok(!/cekimNot\.length[^)]*disabled|disabled[^)]*cekimNot/.test(ui),

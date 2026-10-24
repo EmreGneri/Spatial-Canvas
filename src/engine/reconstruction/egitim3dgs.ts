@@ -13,7 +13,8 @@
 
 import { segmentForeground } from './segmentation.ts';
 import { prepareSubjectFrames } from './subjectTrainingMasks.ts';
-import { yenilikIncelemesi } from './kareSecimi.ts';
+import { netlikKutusuIncelemesi, yenilikIncelemesi } from './kareSecimi.ts';
+import { gozlemleriTopla, kazancUygula, pozlamaKazanclari } from './pozlamaDengeleme.ts';
 import { siraliCiftler } from './ciftGrafigi.ts';
 import { gezinmeDerinligiHazirla, type GezinmeDerinlikKaynagi, type GezinmeGuveni } from './gezinmeDerinligi.ts';
 import { durum, type BosAlan } from './bosAlan.ts';
@@ -191,7 +192,8 @@ export interface EgitimOlaylari {
 }
 
 export interface KameraCozSecenekleri {
-  secim?: 'yenilik';
+  /** 'yenilik': optik akış paralaksı; 'netlik': zaman kutusu başına en net kare. */
+  secim?: 'yenilik' | 'netlik';
   eslestirme?: 'sirali';
   odakAlt?: number;
 }
@@ -205,7 +207,8 @@ export interface DerinlikKisitiSecenekleri {
 export function kameraCozAyarlari(kamera?: KameraCozSecenekleri) {
   const inceleme = kamera?.secim === 'yenilik' ? yenilikIncelemesi() : null;
   return {
-    kare: inceleme ? { review: inceleme.review, thumbs: inceleme.thumbs } : {},
+    kare: inceleme ? { review: inceleme.review, thumbs: inceleme.thumbs }
+      : kamera?.secim === 'netlik' ? { review: netlikKutusuIncelemesi().review } : {},
     sfm: {
       ...(kamera?.eslestirme === 'sirali' ? { pairs: siraliCiftler } : {}),
       ...(kamera?.odakAlt != null ? { searchSubsetAbove: kamera.odakAlt } : {}),
@@ -607,6 +610,9 @@ export interface Egitim {
   derinlikOzeti?: { hizaliKare: number; gecerliPiksel: number };
   gezinmeGuveni?: GezinmeGuveni;
   gezinmeHazirlikHatasi?: string;
+  /** SfM sonrası çekim ölçüleri (`cekimKaliteNotlari` girdisi) ve, açıksa,
+   *  pozlama dengeleme özeti. */
+  cekimKalitesi: CekimKalitesiOlcusu;
   /** Training camera poses in capture order, at canvas scale (`kamera`'s). */
   pozlar: GsKamera[];
   /** Kameraların baskın yukarı ekseni (dünya). */
@@ -652,6 +658,30 @@ export const YUZEN_VOKSEL_ORANI = 0.015;
  *  PSNR'ı ±0,006 dB (gürültü), GT sonda PSNR'ı −0,01 dB; fayda ölçülmedi
  *  (docs/benchmarks/gezinme-entegrasyon.md, 2026-10-23). */
 export const YUZEN_TEMIZLEME_VARSAYILAN = false;
+/** Pozlama/beyaz dengesi ön geçişi (`pozlamaDengeleme.ts`) varsayılan mı.
+ *  Ölçüm: docs/benchmarks/gezinme-entegrasyon.md (2026-10-24). */
+export const POZLAMA_DENGELEME_VARSAYILAN = false;
+
+export interface CekimKalitesiOlcusu {
+  bulanikOran: number;
+  tabanOrani: number;
+  donmeDerece: number;
+  /** Taranan / bulanık işaretli kare sayısı (kullanılan çekim içinde). */
+  taranan: number;
+  bulanik: number;
+  /** Pozlama dengeleme uygulandıysa kare başına kazanç (eğitim kareleri). */
+  pozlama?: { kare: number; olculen: number; enBuyukSapma: number; kazanclar: number[][] };
+}
+
+/** Kullanılan çekim (vendor en uzun kesintisiz çekimi tutar) içinde
+ *  `markOutliers`'ın bulanık işaretlediği kare oranı. */
+export function bulanikOrani(ex: { analysis?: { blur?: boolean }[]; shot?: { start: number; end: number } | null }):
+  { taranan: number; bulanik: number; oran: number } {
+  const a = ex.analysis ?? [];
+  const dilim = ex.shot ? a.slice(ex.shot.start, ex.shot.end + 1) : a;
+  const bulanik = dilim.filter((f) => f.blur === true).length;
+  return { taranan: dilim.length, bulanik, oran: dilim.length ? bulanik / dilim.length : NaN };
+}
 
 /**
  * Videodan eğitimi başlatır. `canvas` hazırlanınca canlı görüntü oraya
@@ -673,6 +703,10 @@ export async function egitimBaslat(
     /** Run `yuzenleriTemizle` once training completes, before `olay.bitti`.
      *  Default `YUZEN_TEMIZLEME_VARSAYILAN`. */
     yuzenTemizle?: boolean;
+    /** SfM sonrası, eğitimden önce kare başına pozlama/beyaz dengesi kazancı.
+     *  Default `POZLAMA_DENGELEME_VARSAYILAN`. Ayrılan (ölçüm) karelerine
+     *  UYGULANMAZ: hedefleri ham kalır. */
+    pozlamaDengele?: boolean;
   },
 ): Promise<Egitim> {
   signal?.throwIfAborted();
@@ -692,6 +726,7 @@ export async function egitimBaslat(
   let derinlikOzeti: Egitim['derinlikOzeti'];
   let gezinmeGuveni: GezinmeGuveni | undefined;
   let gezinmeHazirlikHatasi: string | undefined;
+  let cekimKalitesi: CekimKalitesiOlcusu = { bulanikOran: NaN, tabanOrani: NaN, donmeDerece: NaN, taranan: 0, bulanik: 0 };
   const growRegion = kisit?.bolgesel
     ? (x: number, y: number, z: number) => bosAlan != null && durum(bosAlan, [x, y, z]) === 'dolu'
     : undefined;
@@ -703,7 +738,7 @@ export async function egitimBaslat(
     frames: { source: Blob; name: string; t: number }[];
     shots?: { start: number; end: number }[];
     shot?: { start: number; end: number } | null;
-    analysis?: { t: number }[];
+    analysis?: { t: number; blur?: boolean }[];
   }>(sj.extractSharpFrames(video, {
     maxFrames: secilen.maxFrames,
     ...cozAyarlari.kare,
@@ -844,6 +879,28 @@ export async function egitimBaslat(
     releaseMasks?.();
     releaseMasks = null;
     await bekcili(s.solve({ signal }), () => son, BEKCI_MS, 'kamera pozu (SfM)', signal);
+    const ayrilanIdx = new Set<number>((s.frames as { name: string }[]).flatMap((f, i) =>
+      ayrilanKareler?.some((k) => k.name === f.name) ? [i] : []));
+    const egitimCamlari = (s.recon.cams as { imgIdx: number; R: number[]; t: number[] }[])
+      .filter((c) => !ayrilanIdx.has(c.imgIdx));
+    const sfmNoktalari: Vec3[] = s.recon.points.map((p: { X: Vec3 }) => p.X);
+    const bul = bulanikOrani(ex);
+    cekimKalitesi = { ...cekimGeometrisi(egitimCamlari, sfmNoktalari), bulanikOran: bul.oran, taranan: bul.taranan, bulanik: bul.bulanik };
+    olay.asama(`çekim: ${bul.bulanik}/${bul.taranan} kare bulanık işaretli · taban/derinlik ${cekimKalitesi.tabanOrani.toFixed(3)} · dönme ${cekimKalitesi.donmeDerece.toFixed(0)}°`);
+    if (options?.pozlamaDengele ?? POZLAMA_DENGELEME_VARSAYILAN) {
+      // Hedef görüntüler (frame.rgb) seed() GPU'ya yüklemeden önce düzeltilir.
+      const kareler = s.frames as { rgb: Float32Array | null; fw: number; fh: number; sampleColor(x: number, y: number): number[] }[];
+      const d = pozlamaKazanclari(gozlemleriTopla(kareler, s.recon.cams, sfmNoktalari, ayrilanIdx), kareler.length);
+      let olculen = 0, enBuyukSapma = 0;
+      d.kazanc.forEach((g, i) => {
+        if (!d.olculen[i] || ayrilanIdx.has(i) || !kareler[i].rgb) return;
+        kazancUygula(kareler[i].rgb!, g);
+        olculen++;
+        for (const v of g) enBuyukSapma = Math.max(enBuyukSapma, Math.abs(Math.log(v)));
+      });
+      cekimKalitesi.pozlama = { kare: kareler.length - ayrilanIdx.size, olculen, enBuyukSapma: Math.expm1(enBuyukSapma), kazanclar: d.kazanc };
+      olay.asama(`pozlama dengeleme: ${olculen} kare · en büyük düzeltme %${(Math.expm1(enBuyukSapma) * 100).toFixed(1)}`);
+    }
     const kaynak = kisit?.kaynak ?? options?.geometri?.kaynak;
     if (kaynak) {
       olay.asama('derinlik ve boş alan hazırlanıyor');
@@ -951,6 +1008,7 @@ export async function egitimBaslat(
       ...(derinlikOzeti ? { derinlikOzeti } : {}),
       ...(gezinmeGuveni ? { gezinmeGuveni } : {}),
       ...(gezinmeHazirlikHatasi ? { gezinmeHazirlikHatasi } : {}),
+      cekimKalitesi,
       pozlar: [...s.trainer.camMeta as (GsKamera & { imgIdx: number })[]].filter((m) => !ayrilanMi(m.imgIdx))
         .sort((a, b) => a.imgIdx - b.imgIdx)
         .map((m) => kameraOlcekle(m, olcek)),
@@ -1072,6 +1130,37 @@ const uygula = (A: number[], v: Vec3): Vec3 => [
 export function kameraMerkezi(k: GsKamera): Vec3 {
   const c = uygula(devrik(k.R), k.t as Vec3);
   return [-c[0], -c[1], -c[2]];
+}
+
+/**
+ * Çekim geometrisi (saf): taban oranı = en uzak iki kamera merkezi /
+ * medyan sahne derinliği (gezinmeDerinligi ile aynı tanım, ama derinlik
+ * modeli GEREKMEZ — yalnız SfM), dönme = bakış eksenleri (R'nin 2. satırı)
+ * arasındaki en büyük açı. Nokta yoksa taban oranı NaN (bilinmiyor).
+ */
+export function cekimGeometrisi(
+  kameralar: readonly { R: ArrayLike<number>; t: ArrayLike<number> }[], noktalar: readonly Vec3[],
+): { tabanOrani: number; donmeDerece: number } {
+  const merkez = kameralar.map((k) => kameraMerkezi({ R: Array.from(k.R), t: Array.from(k.t) } as GsKamera));
+  let taban = 0, enKucukCos = 1;
+  for (let i = 0; i < kameralar.length; i++) for (let j = i + 1; j < kameralar.length; j++) {
+    taban = Math.max(taban, Math.hypot(merkez[i][0] - merkez[j][0], merkez[i][1] - merkez[j][1], merkez[i][2] - merkez[j][2]));
+    const a = kameralar[i].R, b = kameralar[j].R;
+    enKucukCos = Math.min(enKucukCos, a[6] * b[6] + a[7] * b[7] + a[8] * b[8]);
+  }
+  const derinlik: number[] = [];
+  const adim = Math.max(1, Math.ceil(noktalar.length / 1000));
+  for (const { R, t } of kameralar) for (let i = 0; i < noktalar.length; i += adim) {
+    const p = noktalar[i];
+    const z = R[6] * p[0] + R[7] * p[1] + R[8] * p[2] + t[2];
+    if (Number.isFinite(z) && z > 0) derinlik.push(z);
+  }
+  derinlik.sort((x, y) => x - y);
+  const med = derinlik.length ? derinlik[derinlik.length >> 1] : NaN;
+  return {
+    tabanOrani: med > 0 ? taban / med : NaN,
+    donmeDerece: Math.acos(Math.max(-1, Math.min(1, enKucukCos))) * 180 / Math.PI,
+  };
 }
 
 /**

@@ -3,7 +3,7 @@
 // burada KAPSAM DIŞI — bu betik yalnız Node'da çalışan saf çekirdeği sınar.
 //   node scripts/verify-kare-secimi.mjs
 import assert from 'node:assert/strict';
-import { yenilikSec } from '../src/engine/reconstruction/kareSecimi.ts';
+import { netlikKutusuSec, yenilikSec } from '../src/engine/reconstruction/kareSecimi.ts';
 
 const ESIK = 0.06;
 
@@ -151,6 +151,37 @@ function sabitHizliHareket(adaylar, hiz) {
   console.log(`[6] toplam hareket() çağrısı: ${cagrilar.length}, benzersiz çift: ${benzersiz.size} (seçim: ${secim.length}, ≤${enCok})`);
   assert.ok(cagrilar.length > 0, 'test anlamlı olsun diye en az bir çağrı olmalı');
   assert.equal(cagrilar.length, benzersiz.size, `AYNI (a,b) çifti birden fazla kez ÇAĞRILMAMALI (önbellek) → ${cagrilar.length} çağrı, ${benzersiz.size} benzersiz`);
+}
+
+// =====================================================================
+// [7] netlikKutusuSec: zaman kutularında en net, bulanık olmayan aday
+// =====================================================================
+{
+  // 30 aday, t=0..29; 3 kutu → [0,10) [10,20) [20,29]. Her kutuda tek tepe.
+  const adaylar = Array.from({ length: 30 }, (_, i) => ({ t: i, netlik: 1 }));
+  adaylar[4].netlik = 9; adaylar[13].netlik = 9; adaylar[27].netlik = 9;
+  assert.deepEqual(netlikKutusuSec(adaylar, 3), [4, 13, 27], 'her kutuda en net aday seçilmeli');
+
+  // Bulanık işaretli aday, netliği en yüksek olsa da atlanır.
+  const b = adaylar.map((a) => ({ ...a }));
+  b[4] = { t: 4, netlik: 50, bulanik: true }; b[6].netlik = 7;
+  assert.deepEqual(netlikKutusuSec(b, 3), [6, 13, 27], 'bulanık aday seçilmemeli');
+
+  // Kutudaki HER aday bulanıksa en az kötü olan alınır (kutu boş kalmasın).
+  const c = Array.from({ length: 6 }, (_, i) => ({ t: i, netlik: i === 1 ? 5 : 1, bulanik: i < 3 }));
+  assert.deepEqual(netlikKutusuSec(c, 2), [1, 3], 'tamamı bulanık kutuda en net yine seçilmeli');
+
+  // Zamanda boşluk: boş kutu atlanır, uydurma seçim yapılmaz.
+  const d = [{ t: 0, netlik: 1 }, { t: 1, netlik: 2 }, { t: 9, netlik: 1 }, { t: 10, netlik: 3 }];
+  assert.deepEqual(netlikKutusuSec(d, 3), [1, 3], 'boş kutu seçim üretmemeli');
+
+  // n ≥ aday: hepsi, tekrarsız ve artan.
+  assert.deepEqual(netlikKutusuSec(d, 10), [0, 1, 2, 3]);
+  assert.deepEqual(netlikKutusuSec([], 5), []);
+  assert.deepEqual(netlikKutusuSec(d, 0), []);
+  // Tek zaman noktası (sıfır süre) çökmemeli.
+  assert.deepEqual(netlikKutusuSec([{ t: 2, netlik: 1 }, { t: 2, netlik: 4 }], 1), [1]);
+  console.log('[7] netlikKutusuSec OK');
 }
 
 console.log('OK kare-secimi (Görev 2 — saf çekirdek yenilikSec)');

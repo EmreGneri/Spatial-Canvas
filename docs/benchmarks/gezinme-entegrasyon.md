@@ -238,3 +238,11 @@ donör havuzu, cap + growRegion + absGrad), `verify-grow-region.mjs`
 ```powershell
 node scripts/olc-gezinme.mjs assets/test-clips/sentetik-orman-yolu.webm --gt assets/test-clips/sentetik-orman-yolu.gt.json --etiket sr --katman quick --kare 24 --iter 3000 --trainer-seed 7 --chrome --geometri model --scale-reg 0.1
 ```
+
+## Çekim kalitesi devamı (2026-10-24)
+
+7. maddenin kurtarılan kodu ve yeni eşleşmiş koşuları
+[cekim-kalitesi.md](cekim-kalitesi.md) içinde. Kısa çekim, yerinde dönme ve
+göreli bulanıklık uyarıları bağlıdır. Pozlama ve yeni netlik seçimi kalite
+kazancı göstermediği için varsayılan kapalıdır. Aynı belgede per-image
+sonuçların SHA256 kaynak kayıtlarını içeren JSON'a bağlantı bulunur.

@@ -118,6 +118,14 @@ lines.push('  file, You can obtain one at https://mozilla.org/MPL/2.0/.');
 lines.push('  Note: MPL-2.0 requires sharing source only for files that are modified;');
 lines.push('  this file is vendored unmodified.');
 lines.push('');
+lines.push('nerfstudio-project/gsplat (training regularizers and AbsGS reference)');
+lines.push('  License: Apache-2.0. Source: https://github.com/nerfstudio-project/gsplat');
+lines.push('  Copyright 2024-2025 the Regents of the University of California, Nerfstudio Team and contributors.');
+lines.push('  Adapted: relative-median absolute-gradient donor selection in splat.js/gs/trainer.js.');
+lines.push('  Scale/opacity losses use the existing WebGPU optimizer; weights are not numerically equivalent to gsplat.');
+lines.push('  AbsGS stays disabled by default; see docs/benchmarks/gezinme-entegrasyon.md.');
+lines.push('  Full upstream license: /licenses/gsplat-LICENSE.txt');
+lines.push('');
 
 lines.push('='.repeat(80));
 lines.push('3. MODEL WEIGHTS (served from /models, fetched at build time)');

@@ -9,7 +9,7 @@ import {
 import { aciklikAt, durum, vokselIndeksi } from '../engine/reconstruction/bosAlan';
 import { egitimGpuHint } from './egitimGpuHint';
 import { ayarOzeti, egitimOnKontrol, type OnKontrol } from './egitimOnKontrol';
-import { cekimNotlari, type CekimNotu } from './cekimNotlari';
+import { cekimKaliteNotlari, cekimNotlari, type CekimNotu } from './cekimNotlari';
 import { kunyeMetni, PAYLASIM_KLIP_SN } from './paylasim';
 import { deformAyari, deformGostergesi, klipRenderEt, type DeformChoice, type KlipOrani } from './klipRender';
 import { SplatTemizleme } from './SplatTemizleme';
@@ -83,6 +83,8 @@ export function Egitim3D({ dosya, onKapat, say, onIlerleme }: {
   const [onAyar, setOnAyar] = useState<EgitimAyari | null>(null);
   /** Klibin kendisi hakkında notlar (boş = sorun yok, hiçbir şey çizilmez). */
   const [cekimNot, setCekimNot] = useState<CekimNotu[]>([]);
+  /** SfM sonrası çekim notları (yerinde dönme, bulanıklık); eğitimi durdurmaz. */
+  const [kaliteNot, setKaliteNot] = useState<CekimNotu[]>([]);
   // App'in `say`'ı her render'da yeni fonksiyon: effect bağımlılığı olursa
   // her render eğitimi baştan başlatır. Ref üzerinden çağrılır.
   const sayRef = useRef(say);
@@ -182,6 +184,7 @@ export function Egitim3D({ dosya, onKapat, say, onIlerleme }: {
       // An abort may win just as setup resolves; do not attach a closed session.
       if (iptal) { e.kapat(); return; }
       egitimRef.current = e;
+      setKaliteNot(cekimKaliteNotlari(e.cekimKalitesi));
       // A forward walk opens mid-path on the camera that filmed it and walks
       // (WASD) instead of orbiting a far background pivot; orbits unchanged.
       cekimTuruRef.current = cekimTuru(e.pozlar, e.pivot);
@@ -233,6 +236,7 @@ export function Egitim3D({ dosya, onKapat, say, onIlerleme }: {
       egitimRef.current = null;
       bosSiniriRef.current = null;
       setGezinmeNotu(null);
+      setKaliteNot([]);
       // Oturum kapanınca temizleme jetonları geçersizleşir (Emre'nin kaydı:
       // eğitici ölü splat'ları taşıyabiliyor). Araç açık kalırsa geri alma
       // düğmesi çalışmayan bir jetonu vaat ederdi.
@@ -556,6 +560,11 @@ export function Egitim3D({ dosya, onKapat, say, onIlerleme }: {
                 : asama}
         </span>
         {gezinmeNotu && <span role="status" style={{ color: '#9ab', maxWidth: 420 }}>{gezinmeNotu}</span>}
+        {kaliteNot.map((n) => (
+          <span key={n.baslik} role="status" title={`${n.sebep} ${n.eylem}`} style={{ color: '#d9b36c', maxWidth: 420 }}>
+            {n.baslik}: {n.eylem}
+          </span>
+        ))}
         <button
           style={dugme}
           aria-pressed={ucus}
