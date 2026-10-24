@@ -55,53 +55,24 @@ export const SUNUM_ICI = {
 } as const;
 
 /**
- * Adres yerel geliştirme sunucusu mu?
- *
- * ÖZEL AĞ ADRESLERİ DE YEREL SAYILIR. Başlangıçta yalnız localhost/127.0.0.1
- * vardı ve `vite --host` ile LAN üzerinden (örn. 192.168.1.5:5173) açan
- * geliştirici kendini SUNUM modunda buluyordu — tanı düğmeleri (nesne
- * ayırma, maske, tracker) kaybolmuş görünüyordu (Emre'nin bildirimi,
- * 2026-10-24). Telefondan yerel sunucuyu denemek de aynı duruma düşüyordu.
- *
- * Sınır dar tutulur: yalnız RFC1918 özel aralıkları ve mDNS `.local`.
- * `localhost.evil.com` gibi adresler yerel SAYILMAZ — verify bunu denetler.
- */
-export function yerelHostMu(hostname: string): boolean {
-  const h = hostname.replace(/^\[|\]$/g, '');
-  if (h === 'localhost' || h === '127.0.0.1' || h === '::1') return true;
-  if (h.endsWith('.localhost') || h.endsWith('.local')) return true;
-  // RFC1918: 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16
-  const m = /^(\d{1,3})\.(\d{1,3})\.\d{1,3}\.\d{1,3}$/.exec(h);
-  if (!m) return false;
-  const a = Number(m[1]);
-  const b = Number(m[2]);
-  if (a === 10) return true;
-  if (a === 192 && b === 168) return true;
-  if (a === 172 && b >= 16 && b <= 31) return true;
-  return false;
-}
-
-/**
  * URL sorgusundan okur. `?sunum`, `?sunum=1`, `?sunum=true` açar;
  * `?sunum=0` ve `?sunum=false` KAPATIR (yanlışlıkla açık kalmasın diye açık
  * bir kapatma yolu var).
  *
- * ── AÇIK SEÇİM YOKSA: ADRES KARAR VERİR ──────────────────────────────────
- * Yayındaki sitede VARSAYILAN AÇIK, localhost'ta KAPALI.
+ * ── VARSAYILAN KAPALI ────────────────────────────────────────────────────
+ * Bir ara "açık seçim yoksa adres karar versin, yayında sunum varsayılan
+ * olsun" diye değiştirildi ve GERİ ALINDI: o karar arayüzün yarısını
+ * (kamera, video → 3B, nesne ayırma, maske, tracker, orijinal renkler)
+ * yayındaki siteden kaldırıyordu. Mod gizlemeyi SEÇEREK açılır; varsayılan
+ * hiçbir şeyi gizlemez.
  *
- * Sebep ölçüldü: çıplak adres açıldığında ekranda 52 düğme ve boş siyah
- * tuval vardı — yani bağlantıyı tıklayan kişi geliştirici enstrümanını
- * görüyordu. Bağlantıyı paylaşan kişinin `?sunum=1` eklemeyi hatırlamasına
- * güvenmek, unutulduğu anda ziyaretçiyi kaybetmek demek.
- *
- * Bu, `sidecarAcikMi`'nin deseninin aynısı: açık istek varsa o, yoksa adres.
- * Geliştiricinin akışı DEĞİŞMEZ — localhost'ta her şey eskisi gibi; yayında
- * tam arayüz gerekirse `?sunum=0`.
+ * Açılışta boş tuval sorunu bununla DEĞİL, soğuk açılışın her iki modda
+ * çalışmasıyla çözülür (`soganAcilisGerekliMi`).
  *
  * `URLSearchParams` burada kullanılmaz: bu modül DOM'suz test edilebilsin
  * diye düz dize alır ve Node'da da aynı sonucu verir.
  */
-export function sunumAcikMi(search: string, yerel = false): boolean {
+export function sunumAcikMi(search: string): boolean {
   const q = search.startsWith('?') ? search.slice(1) : search;
   for (const parca of q.split('&')) {
     if (!parca) continue;
@@ -112,7 +83,7 @@ export function sunumAcikMi(search: string, yerel = false): boolean {
     const deger = decodeURIComponent(parca.slice(esit + 1)).toLowerCase();
     return deger !== '0' && deger !== 'false' && deger !== 'kapali';
   }
-  return !yerel;
+  return false;
 }
 
 /**
