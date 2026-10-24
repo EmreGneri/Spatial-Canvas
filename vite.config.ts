@@ -19,6 +19,9 @@ export default defineConfig({
     __APP_VERSION__: JSON.stringify(pkg.version),
   },
   plugins: [react(), yardimciEklentisi()],
+  // Ajan çalışma kopyaları (.claude/worktrees) ve ölçüm çıktıları izlenmez: içlerindeki
+  // dev model dosyaları/dist klasörleri izleyiciyi EBUSY ile çökertiyordu.
+  server: { watch: { ignored: ['**/.claude/**', '**/olcum-out/**', '**/dist/**'] } },
   build: {
     rollupOptions: {
       input: {
