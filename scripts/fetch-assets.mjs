@@ -103,6 +103,16 @@ const MOGE = {
 };
 MOGE.dest = join('public/models', MOGE.repo, MOGE.file);
 const EXTRA_MODELS = [BIREFNET, ...(process.env.VITE_MOGE2_PHOTO === '1' ? [MOGE] : [])];
+// DAViD insan derinliği (?derinlik=david açar; varsayılan kapalı). LİSANS: MIT (microsoft/DAViD
+// README + model kartları). HF değil, Microsoft'un Azure statik deposu; dosya adları sürüm
+// taşımadığı için boyut kontrolü sabitleme görevi görür (2026-10-24 HEAD: Content-Length).
+// Yalnız VITE_DAVID_PHOTO=1 ile iner: 2 × ~428 MB, temiz build'e varsayılan olarak girmez.
+const DAVID_URL = 'https://facesyntheticspubwedata.z6.web.core.windows.net/iccv-2025/models/';
+const DAVID = [
+  { file: 'depth-model-vitb16_384.onnx', size: 449231953 },
+  { file: 'foreground-segmentation-model-vitb16_384.onnx', size: 449231719 },
+].map((m) => ({ ...m, url: DAVID_URL + m.file, dest: join('public/models/microsoft-david', m.file) }));
+const URL_MODELS = process.env.VITE_DAVID_PHOTO === '1' ? DAVID : [];
 // VDA resmî ağırlıktan yerelde üretilir (scripts/export-video-depth-anything.py).
 // Build Python/Torch kurmaz ve ölçümde çöken eski topluluk aktarımını dağıtmaz.
 // Bu aktarım HİÇBİR YERDE barındırılmıyor (açık karar): temiz Vercel build'inde
@@ -201,6 +211,18 @@ for (const model of EXTRA_MODELS) {
   console.log(`${mb(buf.length)}  ${model.file}`);
 }
 
+for (const model of URL_MODELS) {
+  console.log(`\nmicrosoft-david/${model.file}`);
+  if ((await stat(model.dest).catch(() => null))?.size === model.size) { console.log(`     skip  ${model.file}`); continue; }
+  await mkdir(dirname(model.dest), { recursive: true });
+  const res = await fetch(model.url);
+  if (!res.ok) throw new Error(`${model.file}: ${res.status} ${res.statusText}`);
+  const buf = Buffer.from(await res.arrayBuffer());
+  if (buf.length !== model.size) throw new Error(`${model.file}: beklenen ${model.size} bayt, gelen ${buf.length}`);
+  await writeFile(model.dest, buf);
+  console.log(`${mb(buf.length)}  ${model.file}`);
+}
+
 // Optional and local-only: never fails the build. Ships only if present.
 console.log(`\n${VDA_DIR} (local export, optional)`);
 const vdaPath = (file) => join('public/models', VDA_DIR, file);
@@ -231,6 +253,7 @@ await mirror('public/models', new Set([
   'mediapipe/face_landmarker.task',
   `${BIREFNET.repo}/${BIREFNET.file}`,
   `${MOGE.repo}/${MOGE.file}`,
+  ...DAVID.map((m) => `microsoft-david/${m.file}`),
   ...VDA_FILES.map(file => `${VDA_DIR}/${file}`),
 ]));
 await mirror('public/ort', new Set(ORT_FILES));

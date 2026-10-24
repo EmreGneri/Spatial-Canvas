@@ -1,0 +1,8 @@
+<!doctype html>
+<html lang="tr"><meta charset="utf-8"><title>DAViD insan derinliği kıyası</title>
+<body><pre id="status">Ready</pre><script type="module">
+import * as b from '/src/bench/davidRealPhotos.ts';
+const say = m => { document.querySelector('#status').textContent = m; console.log(m); };
+window.varsayilanHash = urls => b.varsayilanHash(urls);
+window.runDavidRealPhotos = urls => b.runDavidRealPhotos?.(urls, say);
+</script></body></html>

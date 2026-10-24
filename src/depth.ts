@@ -19,6 +19,7 @@ import { kenarHizala, mergeTileDetail, tileGrid, type TileResult } from './engin
 import { POINTS_DEPTH_RANGE } from './engine/buffers.ts';
 import { localInference, localInferenceAvailable, type RawTensor } from './engine/sidecarClient.ts';
 import type { MetricPhotoGeometry } from './engine/reconstruction/metricPhotoGeometry.ts';
+import { davidCiktisiniCoz, davidFuzyon } from './engine/vision/davidFuzyon.ts';
 
 /**
  * GÜN D/1 (M6 düzeltmesi) — transformers TEMBEL yüklenir.
@@ -183,12 +184,17 @@ export const TILE_MIN_LONG_SIDE = 800;
 /** Deneysel MoGe-2 fotoğraf geometrisi YALNIZ `?derinlik=moge` ile açılır; başka her değer varsayılan yol. */
 export const mogeIstendi = (search: string) => new URLSearchParams(search).get('derinlik') === 'moge';
 
+/** Deneysel DAViD insan derinliği füzyonu YALNIZ `?derinlik=david` ile; sahne modeli varsayılan zincirde kalır. */
+export const davidIstendi = (search: string) => new URLSearchParams(search).get('derinlik') === 'david';
+
 /** Fotoğraf yolu için önerilen kalite seçenekleri (App/embed). */
-export const FOTO_KALITE: Pick<DepthEstimateOptions, 'tileDetay' | 'kenarHizalama' | 'model'> = {
+export const FOTO_KALITE: Pick<DepthEstimateOptions, 'tileDetay' | 'kenarHizalama' | 'model' | 'insanDerinligi'> = {
   tileDetay: true,
   kenarHizalama: 0.5,
   // DA3 yardımcı ya da VITE_DA3_MONO_URL varsa devreye girer; yoksa/başarısızsa V2-small.
   model: typeof location !== 'undefined' && mogeIstendi(location.search) ? 'moge-2' : 'da3-mono',
+  // Anahtar bayraksız hiç eklenmez: varsayılan nesne birebir eskisi.
+  ...(typeof location !== 'undefined' && davidIstendi(location.search) ? { insanDerinligi: 'david' as const } : {}),
 };
 
 export type HeadDetailDiagnostics = {
@@ -218,6 +224,8 @@ export type DepthResult = {
   height: number;
   /** Present only when a refined foreground mask enabled the head detail pass. */
   headDetail?: HeadDetailDiagnostics;
+  /** Yalnız DAViD füzyonu GERÇEKTEN uygulandıysa (tanı/ölçüm). */
+  david?: { olcek: number; kayma: number; korelasyon: number; cekirdekOrani: number; yuklemeMs: number; cikarimMs: number };
   /** Delikleri kapatılmış özne maskesi (depth ızgarasında, width×height). Yalnız `delikDoldur: true` ve maske verildiyse. */
   subjectMask?: Float32Array;
   /** Maskedeki kapalı deliklerin ölçümü (alan, derinlik farkı, doldu mu). */
@@ -239,6 +247,12 @@ export type DepthEstimateOptions = {
    * aksi hâlde sessizce V2-small. Varsayılan 'v2-small'.
    */
   model?: 'v2-small' | 'da3-mono' | 'moge-2';
+  /**
+   * 'david': sahne derinliği bittikten sonra kişi maskesi içini DAViD insan derinliğiyle
+   * değiştirir (davidFuzyon.ts; konum/genlik sahneden, şekil DAViD'den). Herhangi bir
+   * hata → uyarı + füzyonsuz sonuç. Verilmezse yol birebir eskisi.
+   */
+  insanDerinligi?: 'david';
   /** DA3 disparite kayması (yalnız yardımcı yolunda); varsayılan SHIFT_K=0.5. SfM'e afin hizalanan yollar 0 verir. */
   da3Kayma?: number;
   /**
@@ -730,7 +744,44 @@ export async function estimateDepth(
   const headDetail = subject
     ? await mergeHeadDetail(limited, subject, outWidth, outHeight, source, model, RawImageCtor, opts.yuz ?? null)
     : undefined;
+  if (opts.insanDerinligi === 'david') {
+    const f = await davidUygula(limited, outWidth, outHeight, source, subject);
+    if (f) return { data: f.data, width: outWidth, height: outHeight, headDetail, subjectMask: doldurulmusMaske, delikTani, david: f.tani };
+  }
   return { data: limited, width: outWidth, height: outHeight, headDetail, subjectMask: doldurulmusMaske, delikTani };
+}
+
+/**
+ * DAViD füzyonu (yalnız `insanDerinligi: 'david'`): kaynak 512² letterbox → DAViD derinlik +
+ * yumuşak maske (∩ özne maskesi) → depth ızgarasına kırp/örnekle → davidFuzyon. Her hata null döner (uyarıyla).
+ */
+async function davidUygula(
+  sahne: Float32Array, w: number, h: number, source: HTMLCanvasElement | HTMLImageElement, ozne: Float32Array | null,
+) {
+  try {
+    const { inferDavid, DAVID_BOYUT } = await import('./engine/vision/davidDepth.ts');
+    const lb = letterboxCanvas(source, DAVID_BOYUT);
+    const rgba = lb.canvas.getContext('2d', { willReadFrequently: true })!.getImageData(0, 0, DAVID_BOYUT, DAVID_BOYUT).data;
+    const ham = await inferDavid(rgba, { gpuSirasinaGir, onceRetry, webgpuKullanilabilir });
+    if (!ham) return null;
+    const derinlik = davidCiktisiniCoz(ham.derinlik, ham.boyut, lb, w, h);
+    const maske = davidCiktisiniCoz(ham.maske, ham.boyut, lb, w, h);
+    // Uygulamanın özne maskesi (BiRefNet/IS-Net) varsa kesişim: DAViD maskesi gerçek fotoğrafta
+    // sandalye/duvar desenini de içine alabildi (ölçüldü, d93ef… karesi: çekirdek %83).
+    if (ozne) for (let i = 0; i < maske.length; i++) maske[i] = Math.min(maske[i], ozne[i]);
+    const r = davidFuzyon(sahne, derinlik, maske, w, h);
+    if (!r) {
+      console.warn('DAViD füzyonu reddedildi (kişi yok / ters kutup / geçersiz çıktı); sahne derinliği kullanılıyor.');
+      return null;
+    }
+    return { data: r.data, tani: {
+      olcek: r.olcek, kayma: r.kayma, korelasyon: r.korelasyon, cekirdekOrani: r.cekirdekOrani,
+      yuklemeMs: ham.sureMs.yukleme, cikarimMs: ham.sureMs.cikarim,
+    } };
+  } catch (err) {
+    console.warn('DAViD füzyonu atlandı; sahne derinliği kullanılıyor.', err);
+    return null;
+  }
 }
 
 /**
