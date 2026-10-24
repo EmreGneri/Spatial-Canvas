@@ -84,8 +84,9 @@ node scripts/fetch-assets.mjs` downloads it). Every failure logs a warning and
 falls back to the default chain: no WebGPU, session/inference error, invalid
 output shape/NaN/mask, focal outside 0.36..11.4 (half-diagonal units, 140..10
 degree diagonal FOV), calibration residual above 0.02, or fewer than 1% valid
-pixels in the photo crop. With metric geometry the artistic face relief and
-stretch are skipped; on the default path face relief (x1.5) is unchanged.
+pixels in the photo crop. Metric geometry skips the artistic depth stretch.
+Face relief (x1.5, disabled with `?yuz=0`) also runs on metric geometry after
+the 2026-10-24 visual correction described below.
 
 Default-path evidence (2026-10-24): `fillPositionsFromDepth` with default photo
 options (mask/blend 1, blend 0.8, no mask) and `buildShellMesh` produce SHA-256
@@ -138,6 +139,27 @@ photos, all inside the gates. First implementation framed the scene by the full
 foreground Z range, so those edge pixels shrank the subject to a sliver; framing
 now uses a Tukey far fence on foreground Z (test in
 `verify-metric-photo-geometry`). Still opt-in: no quality gain is established.
+
+## Continuation: metric face relief and edge filtering (2026-10-24)
+
+The follow-up commits `58a56b7` and `d4a892a` address the reported large discs
+in side views: cap background distance and splat radii, cut stretched shell
+triangles, then reject pixels crossing a 3x3 relative depth edge of 4%.
+These are display corrections, not newly inferred geometry for unseen surfaces.
+The original synthetic model accuracy table above still applies.
+
+Face relief now maps metric Z into the relief function's linear near-is-larger
+contract and back, using recovered focal length and median face distance for
+the pixel/metre conversion. The cached model depth stays unchanged. Both splat
+home positions and the solid shell consume this same corrected metric surface.
+`?yuz=0` disables the relief; `?derinlik=moge` remains opt-in.
+
+Fresh CPU checks in `verify-metric-photo-geometry.mjs` cover a shaped face,
+finite splat/shell output, unchanged source depth, identical repeated rebuilds,
+and restoring the original geometry when relief is disabled. The legacy
+`verify-splat-yan` check remains front coverage 99.79%, side coverage 97.22%,
+curtain 0%. That coverage test does not establish quality on unseen real faces;
+the metric-face checks establish integration and numerical behavior only.
 
 ## Upstream references
 
