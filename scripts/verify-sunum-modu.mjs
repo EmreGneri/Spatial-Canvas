@@ -169,7 +169,7 @@ assert.match(app, /soganTetiklendi\.current = true/, 'soğuk açılış bir kez 
 assert.match(app, /soganAcilisGerekliMi\(!!engine/, 'soğuk açılış kararı saf fonksiyondan gelmiyor');
 // Soğuk açılış sahneyi MODELSİZ yoldan yükler (bkz. verify-acilis-sahnesi):
 // ölçüldü, açılışta inen model baytı 131,4 MB → 0.
-assert.match(app, /acilisSahnesiniCalistir\(syntheticImage\(\)\)/, 'soğuk açılış sahneyi yüklemiyor');
+assert.match(app, /void acilisSahne\(\)/, 'soğuk açılış sahneyi yüklemiyor');
 
 // Mod bir KEZ okunmalı: her render'da okunursa effect bağımlılıkları oynar.
 assert.match(app, /useState\(\(\) => sunumAcikMi\(window\.location\.search, yerelHostMu\(window\.location\.hostname\)\)\)/,
