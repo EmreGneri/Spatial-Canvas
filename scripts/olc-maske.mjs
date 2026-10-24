@@ -17,21 +17,7 @@ const ILERLEME_ARALIGI_MS = 15_000;
 // --birefnet: C = TARAYICI BiRefNet (WebGPU, yardımcı kapalı: ?inference=browser).
 // --yardimci: C = yerel yardımcıdaki BiRefNet (?inference=sidecar).
 const BAYRAKLAR = new Set(['--chrome', '--yazilim-gpu', '--basli', '--yardimci', '--birefnet', '--delik-kaydi', '--sade']);
-const DEGERLI = new Set(['--davis', '--dizi', '--adim', '--en-fazla-dizi', '--etiket', '--bolum', '--sam']);
-// --sam a,b,c: SAM 2.1 yayılım varyantları (maskeSayfasi.ts SamVaryant). Görüntü kodu paylaşılır.
-// `kural` = uygulamanın `?videoMaske=sam` varsayılanı (samVideoMaske.ts).
-const SAM_ONAYARLAR = {
-  ilk: {},
-  her15: { her: 15 },
-  her30: { her: 30 },
-  kontrol15: { kontrol: 15 },
-  sicrama: { sicrama: true },
-  kural: { kontrol: 15, sicrama: true },
-  'kural-k5': { kontrol: 5, sicrama: true },
-  'kontrol15-gevsek': { kontrol: 15, iouEsigi: 0.25 },
-  'kural-gevsek': { kontrol: 15, sicrama: true, iouEsigi: 0.25 },
-  'kural-foto': { capa: 'foto', kontrol: 15, sicrama: true },
-};
+const DEGERLI = new Set(['--davis', '--dizi', '--adim', '--en-fazla-dizi', '--etiket', '--bolum']);
 
 function kullanim(mesaj) {
   if (mesaj) console.error(`olc-maske: ${mesaj}`);
@@ -89,8 +75,7 @@ async function manifestKur(kok, secenek) {
 
 function ozetMd(r, etiket) {
   const g = r.global;
-  const samAdlar = (r.sam?.varyantlar ?? []).map((v) => [`S-${v.ad}`, `S-${v.ad}: SAM 2.1 yayılım (${JSON.stringify({ ...v, ad: undefined })})`]);
-  const yontemler = [['A', 'A: IS-Net'], ['B', 'B: IS-Net + delik doldurma'], ...(r.yardimci ? [['C', `C: BiRefNet ${r.cKaynagi ?? ''}${r.cKullanilamayanKare ? ' + IS-Net yedek' : ''}`]] : []), ['D', 'D: A + 3 kare zamansal ortalama'], ...samAdlar];
+  const yontemler = [['A', 'A: IS-Net'], ['B', 'B: IS-Net + delik doldurma'], ...(r.yardimci ? [['C', `C: BiRefNet ${r.cKaynagi ?? ''}${r.cKullanilamayanKare ? ' + IS-Net yedek' : ''}`]] : []), ['D', 'D: A + 3 kare zamansal ortalama']];
   const jf = (v) => (v ? (v.J + v.F) / 2 : null);
   const gec = (g) => (g ? `ilk ${f1(g.ilk)}, sonra medyan ${f1(g.medyan)} / ort. ${f1(g.ort)}` : '-');
   const ad = (a) => (a ? `${a.vendor} / ${a.architecture}${a.description ? ` (${a.description})` : ''}` : '-');
@@ -108,29 +93,6 @@ function ozetMd(r, etiket) {
     '|---|---|---|---|---|---|---|---|---|---|',
     ...satirlar,
     '',
-    ...(r.sam ? [
-      '## SAM 2.1 yayılım',
-      '',
-      `Görüntü kodlayıcı (ms/kare, ön işleme + aktarım dahil): ${gec(r.sam.kodMs)}; SAM hata/IS-Net yedek: ${r.sam.hata}`,
-      r.sam.asamaMs ? `Grafik başına (ms): ${Object.entries(r.sam.asamaMs).map(([a, g]) => `${a} ${gec(g)}`).join('; ')}` : '',
-      '',
-      '| Varyant | Kare başı toplam ms (ilk / medyan / ort.) | ≈ fps (ort.) | Çapa sebepleri |',
-      '|---|---|---|---|',
-      ...r.sam.varyantlar.map((v) => {
-        const k = r.sam.kareMs[v.ad];
-        return `| S-${v.ad} | ${f1(k.ilk)} / ${f1(k.medyan)} / ${f1(k.ort)} | ${f1(1000 / k.ort)} | ${Object.entries(r.sam.capa[v.ad]).map(([s, n]) => `${s} ${n}`).join(', ')} |`;
-      }),
-      '',
-      '## Dizi başına: A ve SAM varyantları (J&F, eksik bölge, ardışık IoU, alan dalgalanması)',
-      '',
-      `| Dizi | ${['A', ...samAdlar.map(([k]) => k)].map((k) => `${k} J&F | ${k} eksik | ${k} ard. IoU | ${k} alan dalg.`).join(' | ')} |`,
-      `|---|${['A', ...samAdlar].map(() => '---|---|---|---|').join('')}`,
-      ...r.diziler.map((s) => `| ${s.ad} | ${['A', ...samAdlar.map(([k]) => k)].map((k) => {
-        const v = s[k];
-        return v ? `${f3(v.JF)} | ${yuzde(v.eksik)} | ${f3(v.ardisik)} | ${(v.alanDalgalanma * 100).toFixed(2)}%` : '- | - | - | -';
-      }).join(' | ')} |`),
-      '',
-    ] : []),
     '## Delik doldurma (B)',
     '',
     `- Doldurulan piksel: ${d.doldurulanPiksel} (doğru, GT içi: ${d.dogru}; yanlış, GT dışı: ${d.yanlis})`,
@@ -192,10 +154,6 @@ async function main() {
   const sorgu = tarayiciC ? '?inference=browser' : yardimci ? '?inference=sidecar' : '';
   const delikKaydi = secenek.bayrak.has('--delik-kaydi');
   const sade = secenek.bayrak.has('--sade');
-  const sam = d.sam ? d.sam.split(',').map((ad) => {
-    if (!SAM_ONAYARLAR[ad]) kullanim(`bilinmeyen --sam varyantı: ${ad} (${Object.keys(SAM_ONAYARLAR).join(', ')})`);
-    return { ad, ...SAM_ONAYARLAR[ad] };
-  }) : undefined;
   if (d.bolum != null && !['train', 'val'].includes(d.bolum)) kullanim(`--bolum train|val olmalı: ${d.bolum}`);
 
   const diziler = await manifestKur(kok, d);
@@ -250,7 +208,7 @@ async function main() {
     });
     await oturum.page.goto(oturum.url(`/bench/maske.html${sorgu}`), { waitUntil: 'load' });
     await oturum.page.waitForFunction(() => typeof window.__maskeBaslat === 'function', undefined, { timeout: 60_000 });
-    await oturum.page.evaluate((m) => { window.__maskeBaslat(m); }, { diziler, yardimci, delikKaydi, sade, sam });
+    await oturum.page.evaluate((m) => { window.__maskeBaslat(m); }, { diziler, yardimci, delikKaydi, sade });
     // Delik kayıtları sayfa belleğini şişirmesin: bitene dek periyodik boşalt, jsonl'e ekle.
     const delikDosya = join(cikis, 'delikler.jsonl');
     let delikSayisi = 0;

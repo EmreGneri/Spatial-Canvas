@@ -4,7 +4,6 @@
 //   npm run fetch:assets
 import { mkdir, writeFile, copyFile, stat, readdir, readFile, rm, rmdir } from 'node:fs/promises';
 import { dirname, extname, join, relative, sep } from 'node:path';
-import { SAM21_EKLER, sam21Ekleri } from './sam21-ekler.mjs';
 
 // Her tüketici kendi modelini ister; ikisi de aynı dtype eşlemesini kullanır:
 // wasm → q8 (model_quantized.onnx), webgpu → fp16 (model_fp16.onnx).
@@ -103,6 +102,7 @@ const MOGE = {
   file: 'model.onnx', size: 140852051,
 };
 MOGE.dest = join('public/models', MOGE.repo, MOGE.file);
+const EXTRA_MODELS = [BIREFNET, ...(process.env.VITE_MOGE2_PHOTO === '1' ? [MOGE] : [])];
 // DAViD insan derinliği (?derinlik=david açar; varsayılan kapalı). LİSANS: MIT (microsoft/DAViD
 // README + model kartları). HF değil, Microsoft'un Azure statik deposu; dosya adları sürüm
 // taşımadığı için boyut kontrolü sabitleme görevi görür (2026-10-24 HEAD: Content-Length).
@@ -113,21 +113,6 @@ const DAVID = [
   { file: 'foreground-segmentation-model-vitb16_384.onnx', size: 449231719 },
 ].map((m) => ({ ...m, url: DAVID_URL + m.file, dest: join('public/models/microsoft-david', m.file) }));
 const URL_MODELS = process.env.VITE_DAVID_PHOTO === '1' ? DAVID : [];
-
-// src/engine/reconstruction/samVideo.ts — `?videoMaske=sam` deneyi (varsayılan kapalı).
-// Temiz build yalnız VITE_SAM_VIDEO_MASK=1 ile indirir (~158 MB); yoksa bayrak loglayıp
-// IS-Net'e düşer. LİSANS: Apache-2.0 (model kartı; facebook/sam2.1-hiera-tiny'den).
-// Revizyon SABİT; sha256 değerleri HF LFS kaydından, yerel dosyalarla doğrulandı.
-const SAM_REPO = 'jax-image-tools/sam21-tiny-video-onnx';
-const SAM_REV = '3cb090d9d0b4c897281fdcac7765c0f3a888c49f';
-const SAM_FILES = [
-  { file: 'vision_encoder.onnx', size: 109497134 }, // sha256 98311f41…fb830e3
-  { file: 'mask_decoder.onnx', size: 17800545 }, // sha256 6e75023b…effa
-  { file: 'memory_attention.onnx', size: 32364264 }, // sha256 afd5045a…3737
-  { file: 'memory_encoder.onnx', size: 5586836 }, // sha256 3a97e8ba…b9ee3
-].map((m) => ({ repo: SAM_REPO, rev: SAM_REV, ...m, dest: join('public/models', SAM_REPO, m.file) }));
-const SAM_ISTENDI = process.env.VITE_SAM_VIDEO_MASK === '1';
-const EXTRA_MODELS = [BIREFNET, ...(process.env.VITE_MOGE2_PHOTO === '1' ? [MOGE] : []), ...(SAM_ISTENDI ? SAM_FILES : [])];
 // VDA resmî ağırlıktan yerelde üretilir (scripts/export-video-depth-anything.py).
 // Build Python/Torch kurmaz ve ölçümde çöken eski topluluk aktarımını dağıtmaz.
 // Bu aktarım HİÇBİR YERDE barındırılmıyor (açık karar): temiz Vercel build'inde
@@ -237,17 +222,6 @@ for (const model of URL_MODELS) {
   await writeFile(model.dest, buf);
   console.log(`${mb(buf.length)}  ${model.file}`);
 }
-// SAM'in grafik dışı küçük ağırlıkları (68.608 bayt), sabit facebook revizyonundan Range ile.
-if (SAM_ISTENDI) {
-  console.log(`\n${SAM21_EKLER.repo} (sam21-ekler.bin)`);
-  if ((await stat(SAM21_EKLER.dest).catch(() => null))?.size === SAM21_EKLER.boyut) console.log('     skip  sam21-ekler.bin');
-  else {
-    const { buf } = await sam21Ekleri();
-    await mkdir(dirname(SAM21_EKLER.dest), { recursive: true });
-    await writeFile(SAM21_EKLER.dest, buf);
-    console.log(`${mb(buf.length)}  sam21-ekler.bin`);
-  }
-}
 
 // Optional and local-only: never fails the build. Ships only if present.
 console.log(`\n${VDA_DIR} (local export, optional)`);
@@ -280,8 +254,6 @@ await mirror('public/models', new Set([
   `${BIREFNET.repo}/${BIREFNET.file}`,
   `${MOGE.repo}/${MOGE.file}`,
   ...DAVID.map((m) => `microsoft-david/${m.file}`),
-  ...SAM_FILES.map((m) => `${m.repo}/${m.file}`),
-  SAM21_EKLER.dest.replace('public/models/', ''),
   ...VDA_FILES.map(file => `${VDA_DIR}/${file}`),
 ]));
 await mirror('public/ort', new Set(ORT_FILES));

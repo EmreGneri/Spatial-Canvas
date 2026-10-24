@@ -3,8 +3,6 @@ import { yuzNoktalari } from './engine/vision/yuzTespit';
 import { yuzRolyefHaritasi, type YuzRolyefi } from './engine/reconstruction/yuzRolyef';
 import { estimateDepth, FOTO_KALITE, loadDepthModel, luminanceHeightMap, resetLuminanceState } from './depth';
 import { segmentForeground } from './engine/reconstruction/segmentation';
-import { SamVideoIzleyici, samIzgarasina, samMaskesi, type SamKod } from './engine/reconstruction/samVideo';
-import { SamVideoMaskesi, samVideoIstendi } from './engine/reconstruction/samVideoMaske';
 import { Engine } from './engine';
 import { ControlPanel } from './ui/ControlPanel';
 import { createPointCloudMaterial, POINTS_PARAMS } from './shaders/pointCloudMaterial';
@@ -807,73 +805,10 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
       engineRef.current?.setDepth(d.data, d.width, d.height,
         mask?.data, mask?.width, mask?.height, d.colorFrame);
     };
-    // ?videoMaske=sam (opt-in): IS-Net çapası + SAM 2.1 kare kare yayılım
-    // (samVideoMaske.ts). Maske, derinliğin ÇİZİLEN renk karesinden (d.colorFrame)
-    // üretilir; gecikmesi SAM süresi kadardır (IS-Net yolunda saniyeler). Her
-    // hata loglanır ve oturum boyunca IS-Net yoluna (captureMask) dönülür.
-    let sam: SamVideoMaskesi<HTMLCanvasElement, SamKod> | null = label === 'video' && samVideoIstendi(location.search)
-      ? new SamVideoMaskesi<HTMLCanvasElement, SamKod>({
-        segment: (c) => segmentForeground(c),
-        izleyici: () => SamVideoIzleyici.kur(),
-        izgaraya: samIzgarasina,
-        maskeye: samMaskesi,
-      })
-      : null;
-    let samBusy = false;
-    let samMaskMediaTime = NaN;
-    let samKare = 0;
-    const samMaskAges: number[] = [];
-    if (sam) say('video maskesi: SAM 2.1 yayılımı (?videoMaske=sam)');
-    const samAdim = (d: LiveDepthResult) => {
-      if (!sam || samBusy || iptal || videoRef.current !== video) return;
-      samBusy = true;
-      const revision = maskRevision;
-      const kaynak = document.createElement('canvas');
-      const ctx = kaynak.getContext('2d');
-      if (d.colorFrame && ctx) {
-        kaynak.width = d.colorFrame.width;
-        kaynak.height = d.colorFrame.height;
-        ctx.putImageData(d.colorFrame, 0, 0);
-      } else if (ctx) {
-        const scale = Math.min(1, 640 / Math.max(video.videoWidth, video.videoHeight));
-        kaynak.width = Math.max(1, Math.round(video.videoWidth * scale));
-        kaynak.height = Math.max(1, Math.round(video.videoHeight * scale));
-        ctx.drawImage(video, 0, 0, kaynak.width, kaynak.height);
-      }
-      const t0 = performance.now();
-      const etkin = sam;
-      void etkin.adim(kaynak, kaynak.width, kaynak.height)
-        .then((r) => {
-          if (iptal || videoRef.current !== video) return;
-          // Seek / ayırma değişti: bu karenin belleğe yazdığı artık başka sahnenin.
-          if (revision !== maskRevision) { etkin.sifirla(); return; }
-          samKare++;
-          if (!r) {
-            videoMask = null;
-            return;
-          }
-          videoMask = { data: r.mask, width: r.width, height: r.height };
-          samMaskMediaTime = d.mediaTime;
-          if (r.sebep) say(`SAM video maskesi: çapa (${r.sebep}) · ${Math.round(performance.now() - t0)} ms`);
-          if (lastDepth) applyDepth(lastDepth);
-        })
-        .catch((err) => {
-          if (iptal || revision !== maskRevision) { etkin.sifirla(); return; }
-          const mesaj = err instanceof Error ? err.message : String(err);
-          console.warn('[videoMaske] SAM kullanılamıyor, IS-Net yoluna dönüldü:', err);
-          say(`SAM video maskesi kullanılamıyor (${mesaj}); IS-Net yoluna dönüldü`);
-          sam = null;
-          videoMask = null;
-          maskBaseline = null;
-          captureMask();
-        })
-        .finally(() => { samBusy = false; });
-    };
     const syncMaskRequest = () => {
       if (requestedRevision === segmentRevisionRef.current) return;
       requestedRevision = segmentRevisionRef.current;
       maskRevision++;
-      sam?.sifirla();
       videoMask = null;
       maskBaseline = null;
       maskUnavailable = false;
@@ -970,12 +905,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
           lastDepth = d;
           applyDepth(d);
           const mask = segmentRef.current ? videoMask : null;
-          if (sam && segmentRef.current) {
-            samAdim(d);
-            // SAM ilk kez yüklenirken (~158 MB + 4 oturum) IS-Net ara maskesi; sonra SAM devralır.
-            if (!mask) captureMask();
-            if (mask && Number.isFinite(samMaskMediaTime)) samMaskAges.push((d.mediaTime - samMaskMediaTime) * 1000);
-          } else if (!mask && segmentRef.current) {
+          if (!mask && segmentRef.current) {
             captureMask();
           } else if (mask && !maskBusy &&
             (maskBaseline === null || performance.now() - lastMaskAttempt >= VIDEO_MASK_MIN_REFRESH_MS)) {
@@ -992,10 +922,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
           flowCoverageTotal += d.flowCoverage ?? 0;
           const simdi = performance.now();
           if (simdi - sonLog > 3000) {
-            say(`canlı derinlik · ${(sayac / ((simdi - sonLog) / 1000)).toFixed(1)} Hz · ${d.width}x${d.height} · kare yaşı p50/p95 ${Math.round(percentile(ageSamples, 0.5))}/${Math.round(percentile(ageSamples, 0.95))} ms · akış kapsaması ${Math.round(100 * flowCoverageTotal / Math.max(1, sayac))}% · eski kare atlandı ${staleDrops}`
-              + (sam ? ` · SAM maske ${(samKare / ((simdi - sonLog) / 1000)).toFixed(1)} Hz, maske yaşı p50/p95 ${Math.round(percentile(samMaskAges, 0.5))}/${Math.round(percentile(samMaskAges, 0.95))} ms` : ''));
-            samKare = 0;
-            samMaskAges.length = 0;
+            say(`canlı derinlik · ${(sayac / ((simdi - sonLog) / 1000)).toFixed(1)} Hz · ${d.width}x${d.height} · kare yaşı p50/p95 ${Math.round(percentile(ageSamples, 0.5))}/${Math.round(percentile(ageSamples, 0.95))} ms · akış kapsaması ${Math.round(100 * flowCoverageTotal / Math.max(1, sayac))}% · eski kare atlandı ${staleDrops}`);
             sayac = 0;
             ageSamples.length = 0;
             flowCoverageTotal = 0;
@@ -1008,17 +935,8 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
           // arrival would move the geometry. The driver keeps looped masks;
           // only a user seek shows a different subject.
           onDiscontinuity: (reason) => {
-            if (reason === 'loop' && sam) {
-              // Sarma = sahne kesimi (son kare → ilk kare). Eski maske yeni çapaya dek kalır;
-              // revizyon, uçuştaki SAM adımının sonucunu sıfırlanmış belleğe yazdırmaz.
-              maskRevision++;
-              sam.sifirla();
-              samMaskMediaTime = NaN;
-            }
             if (reason === 'seek') {
               maskRevision++;
-              sam?.sifirla(); // seek = sahne kesimi: SAM belleği atılır, sonraki kare IS-Net çapası
-              samMaskMediaTime = NaN;
               videoMask = null;
               maskBaseline = null;
               maskUnavailable = false;
