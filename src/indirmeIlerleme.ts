@@ -111,11 +111,23 @@ export function indirmeSifirla(): void {
  * toplar. `ort.InferenceSession.create` bir ArrayBuffer kabul ettiği için
  * dosyayı önce buradan geçirip sonra ona vermek, tek ilerleme yolu.
  */
+const MODEL_ONBELLEGI = 'spatial-canvas-modeller-v1';
+
 export async function ilerlemeliGetir(
   url: string,
   ad: string,
   getir: typeof fetch = fetch,
 ): Promise<ArrayBuffer> {
+  // Sabit revizyonlu uzak modeller (Hugging Face) Cache Storage'da tutulur: ikinci ziyarette
+  // yeniden inmez. HTTP önbelleği yüzlerce MB'lık dosyaları güvenilir tutmuyor. Önbellek yoksa
+  // (gizli pencere, kota, eski tarayıcı) sessizce normal indirmeye düşülür.
+  const onbellekli = /^https:\/\//.test(url) && typeof caches !== 'undefined';
+  if (onbellekli) {
+    try {
+      const kayit = await (await caches.open(MODEL_ONBELLEGI)).match(url);
+      if (kayit) return await kayit.arrayBuffer();
+    } catch { /* önbellek erişilemez: indirmeye devam */ }
+  }
   const yanit = await getir(url);
   if (!yanit.ok) throw new Error(`${ad}: ${yanit.status} ${yanit.statusText}`);
   const uzunluk = Number(yanit.headers.get('content-length') ?? 0);
@@ -144,6 +156,9 @@ export async function ilerlemeliGetir(
   for (const p of parcalar) {
     hepsi.set(p, konum);
     konum += p.byteLength;
+  }
+  if (onbellekli) {
+    try { await (await caches.open(MODEL_ONBELLEGI)).put(url, new Response(hepsi.slice())); } catch { /* kota dolu: sorun değil */ }
   }
   return hepsi.buffer;
 }

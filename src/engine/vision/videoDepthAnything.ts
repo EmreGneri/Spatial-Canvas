@@ -3,7 +3,11 @@ export const VDA_INPUT_WIDTH = 266;
 export const VDA_INPUT_HEIGHT = 154;
 /** Opt-in only (`?videoDerinlik=vda`); see docs/benchmarks/video-depth-anything.md. */
 export const VDA_DEFAULT_ENABLED = false;
-const VDA_BASE = '/models/DepthAnything/video-depth-anything-small-stream-154x266/';
+// Dışa aktarım bizim üretimimiz: geliştirmede yerel klasörden, yayında Hugging Face'ten
+// (Apache-2.0, sabit revizyon; https://huggingface.co/EmreGneri/video-depth-anything-small-stream).
+const VDA_BASE = (import.meta as { env?: { DEV?: boolean } }).env?.DEV === true
+  ? '/models/DepthAnything/video-depth-anything-small-stream-154x266/'
+  : 'https://huggingface.co/EmreGneri/video-depth-anything-small-stream/resolve/56ff0a88aaf2262d50d5d82d69b47e9d40e1c991/';
 const VDA_PIXELS = VDA_INPUT_WIDTH * VDA_INPUT_HEIGHT;
 const VDA_PATCHES = (VDA_INPUT_WIDTH / 14) * (VDA_INPUT_HEIGHT / 14);
 /** Fixed-shape export: a larger squash than 16:10 → 16:9 distorts geometry; V2 keeps aspect. */

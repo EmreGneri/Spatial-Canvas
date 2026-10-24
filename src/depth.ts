@@ -190,8 +190,9 @@ export const davidIstendi = (search: string) => new URLSearchParams(search).get(
 /**
  * DAViD ön plan maskesi seçimi (kullanıcı kararı 2026-10-24: DAViD MASKESİ daha iyi, varsayılan
  * DERİNLİK daha iyi — yüz sınırları, yüksek açı selfie'de gövde ayrımı):
- *  - bayraksız 'otomatik': yalnız yerel yardımcı 'david-mask' listeliyorsa (localhost, DirectML);
- *    yardımcısız ziyaretçide (Vercel) yol birebir eskisi, 449 MB tarayıcı indirmesi YOK.
+ *  - bayraksız 'otomatik': yerel yardımcı 'david-mask' listeliyorsa orada (localhost, DirectML);
+ *    yoksa (Vercel) tarayıcıda, Hugging Face'teki 180 MB int8 kopyayla (kullanıcı kararı
+ *    2026-10-24: "vercelde olsun"). WebGPU yoksa ya da hata → eski maske.
  *  - `?maske=david`: tarayıcıda da (A/B; `&david=int8` küçük kopya). `?maske=isnet` kapatır.
  * Derinlik her durumda eskisi; maske yalnız çıktıdaki subjectMask'i (Engine/ayırma) değiştirir.
  */
@@ -205,7 +206,7 @@ export function davidPlani(secim: 'david' | 'otomatik' | undefined, ozneVar: boo
   // Özne maskesi şart: DAViD maskesi tek başına sandalye/duvar desenine sızdı (d93ef…, çekirdek %83).
   if (!ozneVar) return null;
   if (secim === 'david') return { tarayici: true };
-  if (secim === 'otomatik' && yardimciVar) return { tarayici: false };
+  if (secim === 'otomatik') return { tarayici: !yardimciVar };
   return null;
 }
 
