@@ -373,8 +373,14 @@ export function SplatTemizleme({
       />
 
       <div style={serit}>
+        {/* BAŞLIK NE YAPILDIĞINI SÖYLER. Eskiden yalnız "temizle" yazıyordu:
+            aracı açan kişi fırça/lasso/küre düğmelerini görüyor ama NEYİ
+            seçeceğini hiçbir yerden okuyamıyordu. */}
         <span style={{ fontSize: yazi.kucuk, color: renk.metinSolgun, fontWeight: 600 }}>
-          temizle · {kaynak.ad}
+          artıkları sil · {kaynak.ad}
+        </span>
+        <span style={{ fontSize: yazi.kucuk, color: renk.metinSilik }}>
+          boşlukta kalan parçacıkları seç, sonra sil
         </span>
         <span style={ayrac} />
         {(['gez', 'firca', 'lasso', 'kure'] as const).map((a) => (
@@ -438,7 +444,11 @@ export function SplatTemizleme({
         <span style={ayrac} />
         {/* Zeigarnik: yapılan iş sayı olarak görünür kalsın. */}
         <span style={{ fontFamily: MONO, fontSize: yazi.kucuk, color: renk.metinSilik, fontVariantNumeric: 'tabular-nums' }}>
-          {kalan ? `${kalan.gorunur.toLocaleString('tr-TR')} / ${kalan.toplam.toLocaleString('tr-TR')}` : '—'}
+          {/* Sayı ETİKETSİZDİ: "147.456 / 147.456" neyin neye oranı olduğunu
+              söylemiyordu. Kalan / toplam nokta. */}
+          {kalan
+            ? `kalan ${kalan.gorunur.toLocaleString('tr-TR')} / ${kalan.toplam.toLocaleString('tr-TR')} nokta`
+            : '—'}
         </span>
         <button type="button" style={{ ...dugme(), minHeight: 32, padding: '8px 8px' }} onClick={onKapat}>kapat</button>
         {/* Hata sessizce yutulmaz: jetonun süresi dolduysa kullanıcı bilmeli. */}

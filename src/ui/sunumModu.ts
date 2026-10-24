@@ -59,6 +59,16 @@ export const SUNUM_ICI = {
  * `?sunum=0` ve `?sunum=false` KAPATIR (yanlışlıkla açık kalmasın diye açık
  * bir kapatma yolu var).
  *
+ * ── VARSAYILAN KAPALI ────────────────────────────────────────────────────
+ * Bir ara "açık seçim yoksa adres karar versin, yayında sunum varsayılan
+ * olsun" diye değiştirildi ve GERİ ALINDI: o karar arayüzün yarısını
+ * (kamera, video → 3B, nesne ayırma, maske, tracker, orijinal renkler)
+ * yayındaki siteden kaldırıyordu. Mod gizlemeyi SEÇEREK açılır; varsayılan
+ * hiçbir şeyi gizlemez.
+ *
+ * Açılışta boş tuval sorunu bununla DEĞİL, soğuk açılışın her iki modda
+ * çalışmasıyla çözülür (`soganAcilisGerekliMi`).
+ *
  * `URLSearchParams` burada kullanılmaz: bu modül DOM'suz test edilebilsin
  * diye düz dize alır ve Node'da da aynı sonucu verir.
  */
@@ -77,19 +87,24 @@ export function sunumAcikMi(search: string): boolean {
 }
 
 /**
- * SOĞUK AÇILIŞ — sunum modunda sahne KENDİLİĞİNDEN yüklenir.
+ * SOĞUK AÇILIŞ — örnek sahne HER İKİ MODDA kendiliğinden yüklenir.
  *
- * Normal modda açılış boş siyah tuval: geliştirici ne yapacağını bilir.
- * Sunumda ise ilk iki saniye en pahalı saniyelerdir; izleyici bir şey
- * dönerken dinlemeye başlar, boş ekrana bakarken "bozuk mu?" diye düşünür.
+ * Eskiden yalnız sunum modundaydı; gerekçe "normal modda boş tuval olur,
+ * geliştirici ne yapacağını bilir" idi. İkİ ŞEY DEĞİŞTİ:
+ *
+ *  1. Boş tuval kimseye yaramıyordu. Çıplak adreste ekran siyahtı ve üstünde
+ *     52 düğme duruyordu — geliştirici için de "önce bir şey yükle" adımı.
+ *  2. Sahne artık BEDAVA. Derinliği analitik (`acilisSahnesi.ts`), model
+ *     indirmiyor: ölçüldü, açılışta 131,4 MB → 0. Eskiden otomatik yükleme
+ *     geliştirici moduna da 131 MB maliyet bindirirdi; şimdi bindirmiyor.
  *
  * Yalnız BİR KEZ ve yalnız motor hazırken tetiklenir; kullanıcı o sırada
  * kendi dosyasını seçtiyse (`kaynakVar`) sahne EZİLMEZ.
  */
 export function soganAcilisGerekliMi(
-  sunum: boolean, motorHazir: boolean, zatenTetiklendi: boolean, kaynakVar: boolean,
+  motorHazir: boolean, zatenTetiklendi: boolean, kaynakVar: boolean,
 ): boolean {
-  return sunum && motorHazir && !zatenTetiklendi && !kaynakVar;
+  return motorHazir && !zatenTetiklendi && !kaynakVar;
 }
 
 /**

@@ -13,23 +13,31 @@ for (const q of ['?sunum', '?sunum=1', '?sunum=true', '?sunum=TRUE', '?a=1&sunum
 for (const q of ['?sunum=0', '?sunum=false', '?sunum=kapali']) {
   assert.equal(sunumAcikMi(q), false, `${q}: kapatmıyor`);
 }
+// VARSAYILAN KAPALI. Bir ara adres-tabanli varsayilan denendi (yayinda
+// sunum acik) ve GERI ALINDI: arayuzun yarisini (kamera, video → 3B, nesne
+// ayirma, maske, tracker, orijinal renkler) yayindaki siteden kaldiriyordu.
+// Mod gizlemeyi SECEREK acilir.
 for (const q of ['', '?', '?a=1', '?sunumlu=1', '?xsunum=1', '?a=sunum']) {
-  assert.equal(sunumAcikMi(q), false, `${q}: yanlışlıkla açıyor`);
+  assert.equal(sunumAcikMi(q), false, `${q}: varsayilan olarak aciyor — arayuzun yarisi gizlenir`);
 }
+assert.equal(sunumAcikMi('?sunum=1'), true, '?sunum=1 acmiyor');
+assert.equal(sunumAcikMi('?sunum=0'), false, '?sunum=0 kapatmiyor');
+
 // `?` olsun olmasın aynı sonuç (çağrıcı `location.search` de verebilir, düz dize de).
 assert.equal(sunumAcikMi('sunum=1'), sunumAcikMi('?sunum=1'));
 // Benzer adlı başka bir parametre karıştırmamalı.
 assert.equal(sunumAcikMi('?sunumModu=1'), false);
 
 // ── SOĞUK AÇILIŞ ───────────────────────────────────────────────────────────
-// sunum · motorHazir · zatenTetiklendi · kaynakVar
-assert.equal(soganAcilisGerekliMi(true, true, false, false), true, 'sunumda soğuk açılış tetiklenmiyor');
-assert.equal(soganAcilisGerekliMi(false, true, false, false), false, 'NORMAL modda sahne zorla yükleniyor');
-assert.equal(soganAcilisGerekliMi(true, false, false, false), false, 'motor hazır olmadan yükleniyor');
-assert.equal(soganAcilisGerekliMi(true, true, true, false), false, 'ikinci kez tetikleniyor — döngü riski');
-// KULLANICININ KAYNAĞI EZİLMEZ: sunumda bile kendi dosyasını açtıysa
-// sentetik sahne onun üstüne yazılmamalı.
-assert.equal(soganAcilisGerekliMi(true, true, false, true), false, 'kullanıcının kaynağı eziliyor');
+// motorHazir · zatenTetiklendi · kaynakVar
+// Örnek sahne HER İKİ MODDA yüklenir: boş siyah tuval kimseye yaramıyordu
+// ve sahne artık model indirmiyor (acilisSahnesi.ts — 131,4 MB → 0).
+assert.equal(soganAcilisGerekliMi(true, false, false), true, 'soğuk açılış tetiklenmiyor — ziyaretçi boş ekran görür');
+assert.equal(soganAcilisGerekliMi(false, false, false), false, 'motor hazır olmadan yükleniyor');
+assert.equal(soganAcilisGerekliMi(true, true, false), false, 'ikinci kez tetikleniyor — döngü riski');
+// KULLANICININ KAYNAĞI EZİLMEZ: kendi dosyasını açtıysa örnek sahne onun
+// üstüne yazılmamalı.
+assert.equal(soganAcilisGerekliMi(true, false, true), false, 'kullanıcının kaynağı eziliyor');
 
 // ── ÖLÇÜM SATIRI ───────────────────────────────────────────────────────────
 // Eval duvarının (AbsRel/RMSE/IoU tablosu) yerine geçen TEK cümle.
@@ -150,10 +158,10 @@ for (const etiket of [
 
 // SOĞUK AÇILIŞ kablosu: bir kez bayrağı, saf karar fonksiyonu, sentetik yükleme.
 assert.match(app, /soganTetiklendi\.current = true/, 'soğuk açılış bir kez bayrağı yok — döngü riski');
-assert.match(app, /soganAcilisGerekliMi\(sunum, /, 'soğuk açılış kararı saf fonksiyondan gelmiyor');
+assert.match(app, /soganAcilisGerekliMi\(!!engine/, 'soğuk açılış kararı saf fonksiyondan gelmiyor');
 // Soğuk açılış sahneyi MODELSİZ yoldan yükler (bkz. verify-acilis-sahnesi):
 // ölçüldü, açılışta inen model baytı 131,4 MB → 0.
-assert.match(app, /acilisSahnesiniCalistir\(syntheticImage\(\)\)/, 'soğuk açılış sahneyi yüklemiyor');
+assert.match(app, /void acilisSahne\(\)/, 'soğuk açılış sahneyi yüklemiyor');
 
 // Mod bir KEZ okunmalı: her render'da okunursa effect bağımlılıkları oynar.
 assert.match(app, /useState\(\(\) => sunumAcikMi\(window\.location\.search\)\)/,
