@@ -99,6 +99,8 @@ export type SegmentationResult = {
   height: number;
   /** Maskeyi gerçekte üreten model (yardımcı düşerse 'isnet'). */
   model: 'birefnet' | 'isnet';
+  /** Genişletme/tüy ÖNCESİ olasılık (aynı ızgara): SAM video çapası bunu izler, genişletilmiş kenarı değil. */
+  ham: Float32Array;
 };
 
 let segSession: ort.InferenceSession | null = null;
@@ -231,8 +233,9 @@ export async function segmentForeground(
   // güven marjıyla kapanır; perde koruması (AND eşiği) değişmez.
   // GÜN E (bulgu 12): önce kopuk parçaları düşür (özneye bitişik OLMAYAN model
   // hataları — kapı kasası, zemin), sonra dilate + tüy.
-  const mask = dilateAndFeatherMask(keepMainComponents(raw, lb.w, lb.h), lb.w, lb.h);
-  return { mask, width: lb.w, height: lb.h, model };
+  const ham = keepMainComponents(raw, lb.w, lb.h);
+  const mask = dilateAndFeatherMask(ham, lb.w, lb.h);
+  return { mask, width: lb.w, height: lb.h, model, ham };
 }
 
 /** Kadraj bandını at: 1024² çıktının letterbox iç dikdörtgeni (0..1 olasılık). */

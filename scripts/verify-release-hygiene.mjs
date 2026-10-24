@@ -93,6 +93,8 @@ const readJson = (path) => JSON.parse(readFileSync(path, 'utf8'));
     'DIS5K',
     'Ruicheng/moge-2-vits-normal-onnx',
     'Video-Depth-Anything-Small',
+    'jax-image-tools/sam21-tiny-video-onnx',
+    'facebook/sam2.1-hiera-tiny',
     'MediaPipe Face Landmarker (face_landmarker.task)',
     'huggingface.co',
   ]) {

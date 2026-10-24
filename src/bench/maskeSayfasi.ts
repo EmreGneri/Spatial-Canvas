@@ -11,6 +11,9 @@ import { resampleBilinear } from '../engine/reconstruction/silhouette.ts';
 import { delikleriDoldur } from '../engine/reconstruction/maskeDelik.ts';
 import { createMaskSmoother } from '../engine/reconstruction/maskeZamansal.ts';
 import { alan, ardisikIoU, davisTolPx, delikKayitlari, eksikBolge, gtIzgaraya, icDelikOrani, ikili, jaccard, sinirF } from './maskeOlcut.ts';
+import type { SamKod, SamVideoIzleyici } from '../engine/reconstruction/samVideo.ts';
+import { SamVideoMaskesi } from '../engine/reconstruction/samVideoMaske.ts';
+import type { SegmentationResult } from '../engine/reconstruction/segmentation.ts';
 
 export interface MaskeManifesti {
   diziler: { ad: string; kareler: { jpgUrl: string; gtUrl: string }[] }[];
@@ -18,9 +21,18 @@ export interface MaskeManifesti {
   delikKaydi?: boolean;
   /** Derinlik/delik doldurma (B) atlanır; yalnız A ve D (zamansal) ölçülür. */
   sade?: boolean;
+  /** SAM 2.1 yayılım varyantları (`S-<ad>`); verilirse D atlanır. Görüntü kodu varyantlar arasında paylaşılır. */
+  sam?: SamVaryant[];
 }
 
-type Yontem = 'A' | 'B' | 'C' | 'D';
+/**
+ * `her`: her N karede zorunlu çapa. `kontrol`: her N karede taze IS-Net ile IoU
+ * (düşükse yeniden çapa). `sicrama`: nesne kaybı / alan / merkez sıçramasında
+ * yeniden çapa (samBellek.yenidenCapaMi). Hiçbiri yoksa yalnız ilk kare çapa.
+ */
+export interface SamVaryant { ad: string; capa?: 'isnet' | 'foto'; her?: number; kontrol?: number; sicrama?: boolean; iouEsigi?: number }
+
+type Yontem = string;
 const MAX_PNG = 40;
 const PNG_GENISLIK = 640;
 
@@ -88,21 +100,52 @@ function bindirme(im: HTMLImageElement, A: Uint8Array, delta: Uint8Array, gt: Ui
 }
 
 export async function maskeCalistir(man: MaskeManifesti) {
-  const yontemler: Yontem[] = [...(man.sade ? ['A'] : ['A', 'B']), ...(man.yardimci ? ['C'] : []), 'D'] as Yontem[];
+  const samV = man.sam ?? [];
+  const yontemler: Yontem[] = [...(man.sade ? ['A'] : ['A', 'B']), ...(man.yardimci ? ['C'] : []),
+    ...(samV.length ? samV.map((v) => `S-${v.ad}`) : ['D'])];
+  const kutu = <T>() => Object.fromEntries(yontemler.map((y) => [y, [] as T[]])) as Record<Yontem, T[]>;
   const hatalar: { dizi: string; kare: number; mesaj: string }[] = [];
   const pngAdaylari: { ad: string; yanlis: number; url: string }[] = [];
   const dizilerRapor: Record<string, unknown>[] = [];
-  const tum: Record<Yontem, KareSonucu[]> = { A: [], B: [], C: [], D: [] };
-  const diziOrt: Record<Yontem, { J: number; F: number }[]> = { A: [], B: [], C: [], D: [] };
+  const tum = kutu<KareSonucu>();
+  const diziOrt = kutu<{ J: number; F: number }>();
   const sure = { seg: [] as number[], derinlik: [] as number[], doldur: [] as number[], yardimci: [] as number[] };
   const dolgu = { px: 0, dogru: 0, yanlis: 0, kareSayisi: 0, kare: 0 };
   let cModel = '';
   let cKullanilamayan = 0;
+  // SAM: kare başına toplam süre (kod + varyant adımı + o kare kullandığı IS-Net/BiRefNet), çapa sebepleri.
+  const samKodMs: number[] = [];
+  const samKareMs: Record<string, number[]> = Object.fromEntries(samV.map((v) => [v.ad, []]));
+  const samCapa: Record<string, Record<string, number>> = Object.fromEntries(samV.map((v) => [v.ad, {}]));
+  let samHata = 0;
+  // Tembel içe aktarma: SAM'siz ölçümler (ve Node testleri) ORT/WebGPU modülünü yüklemesin.
+  const samMod = samV.length ? await import('../engine/reconstruction/samVideo.ts') : null;
+  const izleyiciler: SamVideoIzleyici[] = samMod ? await Promise.all(samV.map(() => samMod.SamVideoIzleyici.kur())) : [];
+  // Kare başına paylaşılan girdiler: görüntü kodu bir kez, IS-Net (A) bir kez, BiRefNet gerekirse bir kez.
+  // Denetleyici uygulamadakiyle aynı (samVideoMaske.ts); kullandığı modelin süresi o varyantın karesine yazılır.
+  let pay: { im: HTMLImageElement; kod: SamKod; seg: SegmentationResult; isnetMs: number; foto?: SegmentationResult; fotoMs: number } | null = null;
+  const samKullanim = samV.map(() => ({ isnet: false, foto: false }));
+  const denetleyiciler = samV.map((V, vi) => new SamVideoMaskesi<HTMLImageElement, SamKod>({
+    segment: async () => { samKullanim[vi].isnet = true; return pay!.seg; },
+    capaSegment: V.capa === 'foto' ? async (im) => {
+      samKullanim[vi].foto = true;
+      if (!pay!.foto) { const tf = performance.now(); pay!.foto = await segmentForeground(im, 'webgpu', 'foto'); pay!.fotoMs = performance.now() - tf; }
+      return pay!.foto;
+    } : undefined,
+    izleyici: async () => {
+      const z = izleyiciler[vi];
+      return { capaGerekli: () => z.capaGerekli(), sifirla: () => z.sifirla(), kodla: async () => pay!.kod,
+        capa: (k, m, y) => z.capa(k, m, y), izle: (k) => z.izle(k) };
+    },
+    izgaraya: (h, w, hh) => samMod!.samIzgarasina(h, w, hh),
+    maskeye: (o, w, h) => samMod!.samMaskesi(o, w, h),
+  }, { her: V.her ?? 0, kontrol: V.kontrol ?? 0, sicrama: V.sicrama ?? false, iouEsigi: V.iouEsigi }));
 
   for (const dizi of man.diziler) {
     const oncekiBin: Partial<Record<Yontem, Uint8Array>> = {};
     const yumusat = createMaskSmoother(); // dizi başına sıfırlanır (kaynak değişimi)
-    const topla: Record<Yontem, KareSonucu[]> = { A: [], B: [], C: [], D: [] };
+    const topla = kutu<KareSonucu>();
+    for (const c of denetleyiciler) c.sifirla(); // yeni dizi = sahne kesimi
     const diziDolgu = { px: 0, dogru: 0, yanlis: 0, kareSayisi: 0 };
     for (let k = 0; k < dizi.kareler.length; k++) {
       try {
@@ -116,8 +159,51 @@ export async function maskeCalistir(man: MaskeManifesti) {
         let t = performance.now();
         const seg = await segmentForeground(im, 'webgpu', 'video');
         sure.seg.push(performance.now() - t);
+        const isnetMs = sure.seg[sure.seg.length - 1];
         const A = yukariOrnekle(seg.mask, seg.width, seg.height, W, H);
-        const D = yukariOrnekle(yumusat.push(seg.mask, seg.width, seg.height), seg.width, seg.height, W, H);
+        const D = samV.length ? undefined : yukariOrnekle(yumusat.push(seg.mask, seg.width, seg.height), seg.width, seg.height, W, H);
+        const samBins: Record<string, Uint8Array> = {};
+        if (samV.length) {
+          let kodMs = 0;
+          try {
+            t = performance.now();
+            pay = { im, kod: await izleyiciler[0].kodla(im), seg, isnetMs, fotoMs: 0 };
+            kodMs = performance.now() - t;
+            samKodMs.push(kodMs);
+          } catch (e) {
+            pay = null;
+            samHata++;
+            log(`HATA SAM kod ${dizi.ad} kare ${k}: ${e instanceof Error ? e.message : String(e)}`);
+          }
+          for (let vi = 0; vi < samV.length; vi++) {
+            const V = samV[vi];
+            samKullanim[vi] = { isnet: false, foto: false };
+            let sebep: string | null = null;
+            const fotoOnceden = !!pay?.foto;
+            const t0 = performance.now();
+            try {
+              if (!pay) throw new Error('görüntü kodu yok');
+              const r = await denetleyiciler[vi].adim(im, im.naturalWidth, im.naturalHeight);
+              // null: geçerli çapa yok → uygulama maskeyi kaldırır (tüm kare ön plan değil, boş).
+              sebep = r ? r.sebep : 'gecersiz-capa';
+              samBins[`S-${V.ad}`] = r ? yukariOrnekle(r.mask, r.width, r.height, W, H) : new Uint8Array(W * H);
+            } catch (e) {
+              // Uygulamanın davranışı: SAM hata verirse IS-Net maskesi (A); izleyici sıfırlanır.
+              samHata++;
+              sebep = 'hata-isnet';
+              denetleyiciler[vi].sifirla();
+              samBins[`S-${V.ad}`] = A;
+              samKullanim[vi].isnet = true;
+              log(`HATA SAM ${V.ad} ${dizi.ad} kare ${k}: ${e instanceof Error ? e.message : String(e)}`);
+            }
+            // Adım süresi önceden hesaplanmış IS-Net'i / başka varyantın hesapladığı BiRefNet'i içermez; kullandıysa eklenir.
+            const adimMs = performance.now() - t0;
+            const fotoEk = samKullanim[vi].foto && fotoOnceden && pay ? pay.fotoMs : 0;
+            samKareMs[V.ad].push(kodMs + adimMs + (samKullanim[vi].isnet ? isnetMs : 0) + fotoEk);
+            if (sebep) samCapa[V.ad][sebep] = (samCapa[V.ad][sebep] ?? 0) + 1;
+          }
+          if (pay) izleyiciler[0].birak(pay.kod); // paylaşılan kodun GPU tamponları
+        }
 
         let B: Uint8Array | undefined, delta: Uint8Array = new Uint8Array(0), filledPx = 0, dogru = 0;
         if (!man.sade) {
@@ -145,7 +231,7 @@ export async function maskeCalistir(man: MaskeManifesti) {
           sure.doldur.push(performance.now() - t);
         }
 
-        const bins: Partial<Record<Yontem, Uint8Array>> = { A, B, D };
+        const bins: Partial<Record<Yontem, Uint8Array>> = { A, B, D, ...samBins };
         if (man.yardimci) {
           const tc = performance.now();
           const c = await segmentForeground(im, 'webgpu', 'foto');
@@ -209,7 +295,7 @@ export async function maskeCalistir(man: MaskeManifesti) {
 
   const global = (y: Yontem) => {
     const kk = tum[y];
-    if (!kk.length) return null;
+    if (!kk?.length) return null;
     const J = ort(kk.map((s) => s.J)), F = ort(kk.map((s) => s.F));
     const dz = diziOrt[y];
     const jd = ort(dz.map((s) => s.J)), fd = ort(dz.map((s) => s.F));
@@ -233,7 +319,17 @@ export async function maskeCalistir(man: MaskeManifesti) {
     cKullanilamayanKare: cKullanilamayan,
     kareSayisi: dolgu.kare,
     diziSayisi: man.diziler.length,
-    global: { A: gA, B: gB, C: man.yardimci ? global('C') : null, D: global('D') },
+    global: Object.fromEntries(yontemler.map((y) => [y, global(y)])),
+    yontemler,
+    sam: samV.length ? {
+      varyantlar: samV,
+      kodMs: sureOzet(samKodMs),
+      kareMs: Object.fromEntries(samV.map((v) => [v.ad, sureOzet(samKareMs[v.ad])])),
+      // Grafik başına (tüm varyantların izleyicileri birlikte; ilk çağrılar ısınma).
+      asamaMs: Object.fromEntries(['vision', 'memory_attention', 'decoder', 'memory_encoder'].map((a) => [a, sureOzet(izleyiciler.flatMap((z) => z.asamaMs[a] ?? []))])),
+      capa: samCapa,
+      hata: samHata,
+    } : null,
     farkBA: gA && gB ? {
       J: gB.J - gA.J, F: gB.F - gA.F, JF: gB.JF - gA.JF,
       diziOrtJF: gB.diziOrtalamasi.JF - gA.diziOrtalamasi.JF, bKotuDiziSayisi: bKotu,
