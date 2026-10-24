@@ -25,10 +25,20 @@ assert.equal(sunumAcikMi('?sunum=0', false), false, 'yayında ?sunum=0 kapatmıy
 assert.equal(sunumAcikMi('?sunum=1', true), true, 'localhost’ta ?sunum=1 açmıyor — prova yapılamaz');
 
 // Yerel host ölçütü (arDurum.ts ile aynı aile).
-for (const h of ['localhost', '127.0.0.1', '::1', 'app.localhost']) {
+// `vite --host` ile LAN'dan açan geliştirici de YEREL sayılır: aksi hâlde
+// kendini sunum modunda bulup tanı düğmelerini kayıp sanıyor.
+for (const h of [
+  'localhost', '127.0.0.1', '::1', '[::1]', 'app.localhost', 'macbook.local',
+  '192.168.1.5', '10.0.0.7', '172.16.3.2', '172.31.255.254',
+]) {
   assert.equal(yerelHostMu(h), true, `${h}: yerel sayılmıyor`);
 }
-for (const h of ['spatial-canvas.vercel.app', 'example.com', 'localhost.evil.com', '127.0.0.1.evil.com']) {
+// Sınır dar: benzeyen ama YEREL OLMAYAN adresler geçmemeli.
+for (const h of [
+  'spatial-canvas.vercel.app', 'example.com', 'localhost.evil.com',
+  '127.0.0.1.evil.com', '172.15.0.1', '172.32.0.1', '11.0.0.1', '192.169.1.1',
+  '8.8.8.8', 'notlocal', 'local',
+]) {
   assert.equal(yerelHostMu(h), false, `${h}: YANLIŞLIKLA yerel sayılıyor`);
 }
 // `?` olsun olmasın aynı sonuç (çağrıcı `location.search` de verebilir, düz dize de).

@@ -605,6 +605,10 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
       if (depth.subjectMask) engineRef.current!.setDepth(depth.data, depth.width, depth.height, depth.subjectMask, depth.width, depth.height);
       else engineRef.current!.setDepth(depth.data, depth.width, depth.height, mask, maskW, maskH);
       if (maskOverlayOnRef.current) drawMaskOverlay();
+      // KAYNAK DEĞİŞTİ: parçacıklar yeni sahneye OTURTULUR. Yumuşak geçiş
+      // yolu (setHome + yay) hedefe varmıyordu; ölçüm ve gerekçe
+      // Engine.yenidenTohumla'da.
+      engineRef.current!.yenidenTohumla();
       say('depth → engine · point cloud konumları positionTexture\'dan okunur');
     } catch (err) {
       if (isCurrent()) say(`HATA: ${err instanceof Error ? err.message : String(err)}`);

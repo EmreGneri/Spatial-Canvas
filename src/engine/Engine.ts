@@ -1228,21 +1228,28 @@ setPointsMaterial(material: THREE.Material) {
   }
 
   /**
-   * BİR SONRAKİ `setDepth` parçacıkları YENİDEN TOHUMLASIN.
+   * PARÇACIKLARI HEMEN EV KONUMLARINA OTURT.
    *
-   * `setDepth` oturumun İLK çağrısında `seedFrom` ile parçacıkları sahneye
-   * yerleştirir; sonraki çağrılar `setHome` ile yalnız hedefi değiştirir
-   * (kaynaklar arası yumuşak geçiş). Bu doğru davranış, ama ÖRNEK SAHNE
-   * oturumun tohumunu harcamamalı: açılıştaki analitik sahne (ui/acilisSahnesi)
-   * parçacıkları 512×512 kare düzene göre dağıtıyordu ve kullanıcının kendi
-   * fotoğrafı o düzenin üzerine biniyordu — point cloud, ASCII ve neon'da
-   * özne yatayda ezilmiş görünüyordu (Emre'nin bildirimi, 2026-10-24).
+   * `setDepth` yeni bir sahneyi şöyle yazıyor: oturumun İLK çağrısında
+   * `seedFrom` (parçacıklar anında yerine), sonrakilerde `setHome` (yay
+   * simülasyonu taşısın, yumuşak geçiş).
    *
-   * Fotoğraf→fotoğraf geçişi ETKİLENMEZ: bu yalnız örnek sahnenin
-   * sonunda çağrılır, yumuşak geçiş diğer durumlarda aynen sürer.
+   * Ölçüldü (2026-10-24): İKİNCİ YOL HEDEFE VARMIYOR. Örnek sahneden sonra
+   * fotoğraf yüklenince ev konumları DOĞRU hesaplanıyor (bbox 0.817×1.995×1.704,
+   * boş tuvalden yüklemeyle birebir aynı) ama parçacıklar sentetik sahnenin
+   * kare yayılımında (1.995×1.995) kalıyor — 18 saniye sonra bile. Ekranda
+   * özne yatayda ezilmiş görünüyor (Emre'nin bildirimi).
+   *
+   * Konsoldan `simulation.seedFrom(homeTexture)` çağırınca render ANİNDA
+   * düzeliyor; doğrulama bu. Yay yolunun neden yakınsamadığı ayrı bir soru
+   * (simülasyon tarafi) — bu metot semptomu kapatır, sebebi değil.
+   *
+   * `run()` yalnız KAYNAK DEĞİŞTİĞİNDE çağrılır (video kareleri ayrı yoldan
+   * gider), yani bu çağrı canlı akışı etkilemez.
    */
-  tohumuGecersizKil(): void {
-    this.seeded = false;
+  yenidenTohumla(): void {
+    this.simulation.seedFrom(this.homeTexture);
+    this.seeded = true;
   }
 
   /** Splat modu çizilebilir mi (GaussianBuffer dolu)? UI bunu söyler. */
