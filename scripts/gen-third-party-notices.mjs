@@ -172,6 +172,18 @@ lines.push('  ViT-S revision: e50ffda41565591092adea54c6ac83d6212e1e23 (14085205
 lines.push('  ViT-L ONNX metadata declares MIT; revision 1c02388b024dd34da413e1a934d7a941785f1460.');
 lines.push('  Full upstream license: /licenses/moge-LICENSE.txt');
 lines.push('');
+lines.push('Optional DAViD human depth + soft foreground (microsoft/DAViD, ViT-B/16)');
+lines.push('  License: MIT ("DAViD models and runtime code are licensed under the MIT License";');
+lines.push('  model cards list MIT; verified 2026-10-24). Copyright (c) Microsoft Corporation.');
+lines.push('  Photo experiment, disabled by default (?derinlik=david enables it; VITE_DAVID_PHOTO=1 fetches the models at build).');
+lines.push('  Files: depth-model-vitb16_384.onnx (449231953 bytes),');
+lines.push('  foreground-segmentation-model-vitb16_384.onnx (449231719 bytes), unmodified.');
+lines.push('  Source: https://github.com/microsoft/DAViD');
+lines.push('  Weights: https://facesyntheticspubwedata.z6.web.core.windows.net/iccv-2025/models/');
+lines.push('  Preprocessing (BGR, [0,1], 512x512) follows the upstream runtime/ code, reimplemented in TypeScript.');
+lines.push('  The SynthHuman training dataset is CDLA-2.0; it is not shipped.');
+lines.push('  Full upstream license: /licenses/david-LICENSE.txt');
+lines.push('');
 lines.push('Optional Video-Depth-Anything-Small streaming export');
 lines.push('  License: Apache-2.0 (official Small weights and code; not Base/Large).');
 lines.push('  Source: https://github.com/DepthAnything/Video-Depth-Anything');

@@ -351,6 +351,18 @@ Optional MoGe-2 geometry: Ruicheng/moge-2-vits-normal-onnx and moge-2-vitl-norma
   ViT-L ONNX metadata declares MIT; revision 1c02388b024dd34da413e1a934d7a941785f1460.
   Full upstream license: /licenses/moge-LICENSE.txt
 
+Optional DAViD human depth + soft foreground (microsoft/DAViD, ViT-B/16)
+  License: MIT ("DAViD models and runtime code are licensed under the MIT License";
+  model cards list MIT; verified 2026-10-24). Copyright (c) Microsoft Corporation.
+  Photo experiment, disabled by default (?derinlik=david enables it; VITE_DAVID_PHOTO=1 fetches the models at build).
+  Files: depth-model-vitb16_384.onnx (449231953 bytes),
+  foreground-segmentation-model-vitb16_384.onnx (449231719 bytes), unmodified.
+  Source: https://github.com/microsoft/DAViD
+  Weights: https://facesyntheticspubwedata.z6.web.core.windows.net/iccv-2025/models/
+  Preprocessing (BGR, [0,1], 512x512) follows the upstream runtime/ code, reimplemented in TypeScript.
+  The SynthHuman training dataset is CDLA-2.0; it is not shipped.
+  Full upstream license: /licenses/david-LICENSE.txt
+
 Optional Video-Depth-Anything-Small streaming export
   License: Apache-2.0 (official Small weights and code; not Base/Large).
   Source: https://github.com/DepthAnything/Video-Depth-Anything
