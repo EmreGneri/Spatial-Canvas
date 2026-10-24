@@ -362,20 +362,6 @@ Optional DAViD human depth + soft foreground (microsoft/DAViD, ViT-B/16)
   Preprocessing (BGR, [0,1], 512x512) follows the upstream runtime/ code, reimplemented in TypeScript.
   The SynthHuman training dataset is CDLA-2.0; it is not shipped.
   Full upstream license: /licenses/david-LICENSE.txt
-Optional SAM 2.1-tiny video propagation: jax-image-tools/sam21-tiny-video-onnx
-  License: Apache-2.0 (Hugging Face model card metadata and "License" section, verified
-  2026-10-24; inherited from facebook/sam2.1-hiera-tiny). ONNX export of SAM 2.1
-  (Meta AI, "SAM 2: Segment Anything in Images and Videos").
-  Source: https://huggingface.co/jax-image-tools/sam21-tiny-video-onnx
-  Revision: 3cb090d9d0b4c897281fdcac7765c0f3a888c49f (vision_encoder, mask_decoder,
-  memory_attention, memory_encoder; 165248779 bytes total).
-  sam21-ekler.bin: four small tensors (memory temporal encoding, no-memory embedding,
-  object-pointer temporal projection; 68608 bytes) read unmodified from
-  facebook/sam2.1-hiera-tiny model.safetensors, revision de431c4043854a71d8101e17995dfe596bf101a5.
-  Base model: https://huggingface.co/facebook/sam2.1-hiera-tiny (Apache-2.0)
-  Code: https://github.com/facebookresearch/sam2 (memory-bank logic re-implemented in TypeScript)
-  Video mask experiment, disabled by default (?videoMaske=sam enables it; VITE_SAM_VIDEO_MASK=1 fetches the model at build).
-  Full upstream license: /licenses/sam2-LICENSE.txt
 
 Optional Video-Depth-Anything-Small streaming export
   License: Apache-2.0 (official Small weights and code; not Base/Large).
