@@ -10,6 +10,7 @@ import { estimatePreparationSeconds, prepareVideoDepth, videoPreparationPolicy, 
 import { startBufferedVideoPlayback } from './engine/vision/bufferedVideoPlayback';
 import { videoStats } from './engine/vision/videoStats';
 import { Engine } from './engine';
+import { VIDEO_EDGE_CLEANUP_DEFAULT } from './engine/Engine';
 import { ControlPanel } from './ui/ControlPanel';
 import { createPointCloudMaterial, POINTS_PARAMS } from './shaders/pointCloudMaterial';
 import { createAsciiMaterial, ASCII_PARAMS } from './shaders/asciiMaterial';
@@ -273,7 +274,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
   const [log, setLog] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [cameraOn, setCameraOn] = useState(false);
-  const [videoEdgeCleanup, setVideoEdgeCleanup] = useState(0);
+  const [videoEdgeCleanup, setVideoEdgeCleanup] = useState(VIDEO_EDGE_CLEANUP_DEFAULT);
   const [liveRates, setLiveRates] = useState({ model: 0, flow: 0 });
   const [videoPreparation, setVideoPreparation] = useState<VideoDepthProgress | null>(null);
   /** Hazır videonun maske izi ilerlemesi (0..1); null = istenmedi. */
