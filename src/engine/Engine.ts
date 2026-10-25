@@ -53,6 +53,7 @@ import { buildSilhouette, resampleBilinear } from './reconstruction/silhouette.t
 import { buildShellMesh, type ShellMeshData } from './reconstruction/mesh.ts';
 import { applySeparationCrop, computeMaskCropRect, cropChannels } from './reconstruction/crop.ts';
 import { buildMetricPhotoShell, createMetricPhotoProjection, cropMetricPhotoGeometry, metrikYuzRolyefi, updateMetricPhotoSplatGeometry, type MetricPhotoGeometry } from './reconstruction/metricPhotoGeometry.ts';
+import { photoReferenceCamera } from './reconstruction/photoPerspective.ts';
 import { subjectZSpan } from './reconstruction/sampler.ts';
 import { yuzRolyefiUygula, type YuzRolyefi } from './reconstruction/yuzRolyef.ts';
 import { inpaintMaskedPhoto } from './reconstruction/photo-inpaint.ts';
@@ -109,6 +110,7 @@ export class Engine {
    *  Ã¶rneklemesi iÃ§in saklanÄ±r; GPU tarafÄ± imageColorTexture'tÄ±r. */
   private photoData: Float32Array | null = null;
   private metricPhotoGeometry: MetricPhotoGeometry | null = null;
+  private photoCapture: { projection: ReturnType<typeof createMetricPhotoProjection>; geometry: MetricPhotoGeometry } | null = null;
   private photoWidth = 0;
   private photoHeight = 0;
   private photoBackdrop: THREE.Mesh | null = null;
@@ -967,6 +969,7 @@ setPointsMaterial(material: THREE.Material) {
    * edilir, yoksa uHasImage = 0 â†’ shader'lar derinlik rampasÄ±na dÃ¼ÅŸer.
    */
   setVideoSource(video: HTMLVideoElement | null) {
+    if (video) this.configurePhotoCamera(null);
     if (video) this.metricPhotoGeometry = null;
     if (video === this.videoElement) return;
     this.gaussianSource = 'point-cloud';
@@ -1629,6 +1632,7 @@ if (entry && entry.material !== this.pointsMaterial) {
 
   /** Photo calibration survives internal resampling and mask toggles, until source replacement. */
   setMetricPhotoGeometry(geometry: MetricPhotoGeometry | null) {
+    if (!geometry?.captureCamera) this.configurePhotoCamera(null);
     this.metricPhotoGeometry = this.videoTexture ? null : geometry;
   }
 
@@ -1742,6 +1746,8 @@ if (entry && entry.material !== this.pointsMaterial) {
     const metricProjection = metric && metric.width === width && metric.height === height
       ? createMetricPhotoProjection(metricCropRect ? cropMetricPhotoGeometry(metric, metricCropRect) : metric, crop.depth, crop.mask)
       : null;
+    this.configurePhotoCamera(metricProjection && metric?.captureCamera && !this.videoTexture
+      ? { projection: metricProjection, geometry: metricCropRect ? cropMetricPhotoGeometry(metric, metricCropRect) : metric } : null);
     // YÜZ RÖLYEFİ (yalnız fotoğraf): kırpmadan SONRA, örneklemeden ÖNCE derinliğe işlenir —
     // konum, renk ve kabuk aynı derinliği görür. Ölçek motorun kendi dünya eşlemesinden:
     // 1 derinlik birimi = zSpan dünya = zSpan·kırpımYüksekliği/(2·halfH) piksel.
@@ -2145,11 +2151,43 @@ depth,
     this.controls.target.copy(this.swayBaseTarget);
   }
 
+  private configurePhotoCamera(capture: Engine['photoCapture']) {
+    if (!capture && !this.photoCapture) return;
+    this.photoCapture = capture;
+    this.camera.clearViewOffset();
+    this.camera.fov = 60;
+    this.camera.near = capture ? .001 : .1;
+    this.cameraHome.pos.set(0,0,DEFAULT_CAMERA_DISTANCE);
+    this.cameraHome.target.set(0,0,0);
+    if (capture) {
+      const cfg = photoReferenceCamera(capture.projection,capture.geometry,this.camera.aspect);
+      this.cameraHome.pos.set(...cfg.position);
+      this.cameraHome.target.set(...cfg.target);
+    }
+    this.camera.position.copy(this.cameraHome.pos);
+    this.controls.target.copy(this.cameraHome.target);
+    const distanceRatio = capture ? this.cameraHome.pos.distanceTo(this.cameraHome.target)/DEFAULT_CAMERA_DISTANCE : 1;
+    this.controls.minDistance = distanceRatio;
+    this.controls.maxDistance = 15*distanceRatio;
+    this.camera.lookAt(this.controls.target);
+    this.updatePhotoCameraLens();
+    this.rebaseSway();
+  }
+
+  private updatePhotoCameraLens() {
+    if (this.photoCapture) {
+      const cfg = photoReferenceCamera(this.photoCapture.projection,this.photoCapture.geometry,this.camera.aspect);
+      this.camera.fov = cfg.fov;
+      this.camera.setViewOffset(this.camera.aspect*1000,1000,cfg.offsetX*this.camera.aspect*1000,cfg.offsetY*1000,this.camera.aspect*1000,1000);
+    }
+    this.camera.updateProjectionMatrix();
+  }
+
   private resize() {
     const width = this.renderer.domElement.parentElement?.clientWidth || 1;
     const height = this.renderer.domElement.parentElement?.clientHeight || 1;
     this.camera.aspect = width / height;
-    this.camera.updateProjectionMatrix();
+    this.updatePhotoCameraLens();
     // updateStyle aÃ§Ä±k: DPR > 1'de canvas'Ä±n CSS boyutu yazÄ±lmazsa Ã§izim tamponu
     // kadar (Ã¶r. 1280Ã—840) yer kaplar ve konteynerden taÅŸar.
     this.renderer.setSize(width, height);

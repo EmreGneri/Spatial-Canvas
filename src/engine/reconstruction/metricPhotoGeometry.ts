@@ -19,6 +19,8 @@ export const KENAR_RTOL = 0.04;
 
 /** Camera Z in metres; row-major K uses normalized image coordinates. */
 export interface MetricPhotoGeometry {
+  /** Göreli fotoğraf deneyinde başlangıç kamerası da kalibre edilir; eski MoGe görünüşü değişmez. */
+  captureCamera?: boolean;
   depth: Float32Array;
   width: number;
   height: number;
@@ -36,7 +38,7 @@ export function cropMetricPhotoGeometry(g: MetricPhotoGeometry, rect: CropRect):
   }
   k[2] -= rect.x0 / d.width;
   k[5] -= rect.y0 / d.height;
-  return { depth: d.data, width: d.width, height: d.height, intrinsics: k, validMask: Uint8Array.from(validity.data) };
+  return { ...g, depth: d.data, width: d.width, height: d.height, intrinsics: k, validMask: Uint8Array.from(validity.data) };
 }
 
 /**

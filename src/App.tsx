@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { yuzNoktalari } from './engine/vision/yuzTespit';
 import { yuzRolyefHaritasi, type YuzRolyefi } from './engine/reconstruction/yuzRolyef';
+import { photoPerspectiveEnabled } from './engine/reconstruction/photoPerspective';
+import { readExifFocal } from './vendor/splat.js/io/exif.js';
 import { estimateDepth, FOTO_KALITE, loadDepthModel, luminanceHeightMap, resetLuminanceState } from './depth';
 import { segmentForeground } from './engine/reconstruction/segmentation';
 import { resampleBilinear } from './engine/reconstruction/silhouette';
@@ -358,6 +360,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
   /** Son yüklenen fotoğraf kaynağı — nesne ayırma sonradan açılırsa RMBG'yi
    *  yeniden çalıştırmak için saklanır (Tur 12: buton canlı shader'a bağlı). */
   const lastPhotoRef = useRef<HTMLCanvasElement | HTMLImageElement | null>(null);
+  const lastPhotoCameraRef = useRef<{ focal35?: number } | undefined>(undefined);
   const lastDepthRef = useRef<{ data: Float32Array; width: number; height: number } | null>(null);
   /** Bu kaynak için maske zaten üretildi mi? (video/kamera yollarında sıfırlanır) */
   const maskLoadedRef = useRef(false);
@@ -556,6 +559,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
   async function run(
     source: HTMLCanvasElement | HTMLImageElement,
     analitikDerinlik?: Float32Array,
+    photoFile?: Blob,
   ) {
     setBusy(true);
     // Captured after the caller's teardownSource. A stale result must not
@@ -586,6 +590,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
       let maskW = 0;
       let maskH = 0;
       lastPhotoRef.current = source;
+      lastPhotoCameraRef.current = undefined;
       maskLoadedRef.current = false;
       if (analitikDerinlik) {
         // Analitik sahnede ayırma YOK: maske zaten anlamsız, IS-Net de inmez.
@@ -639,9 +644,15 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
         say(ACILIS_NOTU);
       } else {
         const t1 = performance.now();
+        const focal35 = photoFile ? (await readExifFocal(photoFile))?.f35 : undefined;
+        if (!isCurrent()) return;
+        const photoCamera = photoPerspectiveEnabled(location.search) ? { focal35 } : undefined;
+        lastPhotoCameraRef.current = photoCamera;
         depth = await estimateDepth(
           source,
-          mask ? { ...FOTO_KALITE, subjectMask: { data: mask, width: maskW, height: maskH } } : FOTO_KALITE,
+          { ...FOTO_KALITE,
+            ...(photoCamera ? { photoCamera } : {}),
+            ...(mask ? { subjectMask: { data: mask, width: maskW, height: maskH } } : {}) },
         );
         if (!isCurrent()) return;
         say(
@@ -1318,6 +1329,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
       // yolda stretch/eğim aşamaları düzeltmeden yararlanamazdı.
       const d = await estimateDepth(lastPhotoRef.current, {
         ...FOTO_KALITE,
+        ...(lastPhotoCameraRef.current ? { photoCamera: lastPhotoCameraRef.current } : {}),
         subjectMask: { data: seg.mask, width: seg.width, height: seg.height },
       });
       lastDepthRef.current = { data: d.data, width: d.width, height: d.height };
@@ -1530,7 +1542,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
       } else {
         const image = await loadImage(url);
         if (!isCurrent()) return;
-        await run(image); // tek kare depth; run kendi hatasını raporlar
+        await run(image, undefined, file); // EXIF yalnız bu fotoğrafın dosyasından okunur.
       }
     } catch (err) {
       // Stale: the newer source's teardown aborted this one; it owns the UI now.

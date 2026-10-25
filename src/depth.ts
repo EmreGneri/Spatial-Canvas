@@ -19,6 +19,7 @@ import { kenarHizala, mergeTileDetail, tileGrid, type TileResult } from './engin
 import { POINTS_DEPTH_RANGE } from './engine/buffers.ts';
 import { localInference, localInferenceAvailable, localModelAvailable, type RawTensor } from './engine/sidecarClient.ts';
 import type { MetricPhotoGeometry } from './engine/reconstruction/metricPhotoGeometry.ts';
+import { relativePhotoGeometry, type PhotoCameraInput } from './engine/reconstruction/photoPerspective.ts';
 import { davidCiktisiniCoz, davidFuzyon } from './engine/vision/davidFuzyon.ts';
 
 /**
@@ -265,6 +266,8 @@ export type DepthResult = {
 };
 
 export type DepthEstimateOptions = {
+  /** Yalnız açık fotoğraf deneyi: normalize edilmemiş dispariteden perspektif geometri. */
+  photoCamera?: PhotoCameraInput;
   /**
    * Özne maskesindeki derinlik-tutarlı kapalı delikleri doldur. Varsayılan KAPALI.
    * DAVIS 2017'de ölçüldü (2026-10-10, IS-Net maskeleri): kapalı deliklerin piksel
@@ -621,6 +624,7 @@ export async function estimateDepth(
       const raw = await inferMoge({ data: rgb, dims: [1,3,MODEL_INPUT_SIZE,MODEL_INPUT_SIZE] });
       if (raw) {
         const result = mogePhotoResult(raw, lb);
+        if (opts.photoCamera && result.metricGeometry) result.metricGeometry.captureCamera = true;
         depthDevice = raw.backend;
         return result;
       }
@@ -702,6 +706,7 @@ export async function estimateDepth(
         )
     : null;
 
+  const photoDisparity = opts.photoCamera ? Float32Array.from(data) : null;
   const normalized = normalizeDepth(data, opts.percentile ?? 1);
   if (opts.tileDetay && rect) {
     // Parça aşaması isteğe bağlı bir iyileştirme: hata (GPU belleği, kayıp cihaz,
@@ -789,6 +794,7 @@ export async function estimateDepth(
   const dm = await applyDavidMask(opts.insanMaskesi, source, subject, outWidth, outHeight);
   return {
     data: cikti, width: outWidth, height: outHeight, headDetail, subjectMask: dm?.maske ?? doldurulmusMaske, delikTani,
+    ...(photoDisparity ? { metricGeometry: relativePhotoGeometry(photoDisparity, outWidth, outHeight, opts.photoCamera!) } : {}),
     ...(david ? { david } : {}), ...(dm ? { davidMaske: dm.tani } : {}),
   };
 }
