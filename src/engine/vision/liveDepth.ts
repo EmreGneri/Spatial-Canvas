@@ -1,17 +1,16 @@
 import {
   applyDetail,
   applyForegroundStretch,
+  fillSoftMaskInterior,
   yeniStretchAraligi,
   applySobelRelief,
   DETAIL_STRENGTH_DEFAULT,
-  fillSoftMaskInterior,
   gpuSirasinaGir,
   limitDepthSlope,
   loadTransformers,
   onceRetry,
   smoothDepthSteps,
   SOBEL_RELIEF_DEFAULT,
-  STRETCH_RANGE_ALPHA,
   trimmedRange,
   webgpuKullanilabilir,
   type DepthResult,
@@ -88,11 +87,14 @@ export const LIVE_INPUT_SIZE = 154;
  * baglamina tasiniyor.
  */
 export const LIVE_PLAYBACK_MAX_INPUT = 252;
-// 252px can cost ~2.7x as much as 154px. Probe only when even that estimate
-// remains under the 300ms live-frame budget; a failed trial runs just once.
-const LIVE_QUALITY_PROBE_MS = 80;
-const LIVE_QUALITY_DOWNGRADE_MS = 300;
-const LIVE_QUALITY_FAST_FRAMES = 4;
+/**
+ * Referans yoldaki seçicinin "Detaylı · 378 (duraklatınca)" ayarı VARSAYILAN:
+ * oynarken `canliGirdiBoyutu` 252'ye keser, duraklatınca 378. Oynarken saniyede
+ * birden az güncelleme ölçülürse (yukarıdaki ilke) "Hızlı · 154"e düşülür.
+ */
+export const LIVE_DETAILED_INPUT = 378;
+const LIVE_QUALITY_MIN_HZ_MS = 1000;
+const LIVE_QUALITY_SLOW_FRAMES = 3;
 
 /**
  * Secilen kalitenin O ANDA kullanilacak hali.
@@ -106,43 +108,37 @@ export function canliGirdiBoyutu(secilen: number, duraklatildi: boolean): number
 }
 
 export interface LiveQualityState {
+  /** Seçili kalite (referans yoldaki seçicinin değeri). */
   size: number;
-  fastFrames: number;
-  highFrames: number;
-  triedHigher: boolean;
+  /** Seçili boyutta görülen kare sayısı (ilki shader derlemesi içerebilir). */
+  frames: number;
+  slowFrames: number;
 }
 
 export function createLiveQualityState(): LiveQualityState {
-  return { size: LIVE_INPUT_SIZE, fastFrames: 0, highFrames: 0, triedHigher: false };
+  return { size: LIVE_DETAILED_INPUT, frames: 0, slowFrames: 0 };
 }
 
 /**
- * DURAKLATILMIŞ KARE = DETAYLI. Referans yoldaki "Detaylı · 378 (duraklatınca)"
- * ayarının karşılığı, seçici olmadan: tek kare için bekleme kabul edilebilir
+ * DURAKLATILMIŞ KARE = DETAYLI (378): tek kare için bekleme kabul edilebilir
  * (378: duraklatmadan detaylı kareye 94-117 ms, RTX 5070, 2026-10-25; iGPU için
- * yukarıdaki 1877 ms ölçümü). Hazır video da
- * duraklatınca bu kareyi gösterir (App · shouldInfer).
+ * yukarıdaki 1877 ms ölçümü). Hazır video da duraklatınca bu kareyi gösterir
+ * (App · shouldInfer). Oynatma 154'e düşse bile duraklatılmış kare 378 kalır.
  */
-export const LIVE_PAUSED_INPUT = 378;
+export const LIVE_PAUSED_INPUT = LIVE_DETAILED_INPUT;
 
-/** A paused frame has no playback lag, so use the detailed input once. */
 export function liveQualityInputSize(state: LiveQualityState, paused: boolean): number {
-  return paused ? LIVE_PAUSED_INPUT : state.size;
+  return paused ? LIVE_PAUSED_INPUT : canliGirdiBoyutu(state.size, false);
 }
 
-/** Probe better detail only when inference plus depth upload has spare time. */
+/** Oynarken art arda `LIVE_QUALITY_SLOW_FRAMES` kare 1 Hz'in altındaysa 154'e düş (tek yön). */
 export function advanceLiveQuality(state: LiveQualityState, frameMs: number): LiveQualityState {
-  if (!Number.isFinite(frameMs) || frameMs < 0) return state;
-  if (state.size === LIVE_INPUT_SIZE) {
-    if (state.triedHigher) return state;
-    const fastFrames = frameMs <= LIVE_QUALITY_PROBE_MS ? state.fastFrames + 1 : 0;
-    if (fastFrames < LIVE_QUALITY_FAST_FRAMES) return { ...state, fastFrames };
-    return { size: LIVE_PLAYBACK_MAX_INPUT, fastFrames: 0, highFrames: 0, triedHigher: true };
-  }
-  // The first 252px inference may compile a new WebGPU shader shape.
-  if (state.highFrames === 0) return { ...state, highFrames: 1 };
-  if (frameMs > LIVE_QUALITY_DOWNGRADE_MS) return { ...state, size: LIVE_INPUT_SIZE };
-  return { ...state, highFrames: state.highFrames + 1 };
+  if (!Number.isFinite(frameMs) || frameMs < 0 || state.size === LIVE_INPUT_SIZE) return state;
+  // The first inference at a size may compile a new WebGPU shader shape.
+  if (state.frames === 0) return { ...state, frames: 1 };
+  const slowFrames = frameMs > LIVE_QUALITY_MIN_HZ_MS ? state.slowFrames + 1 : 0;
+  if (slowFrames >= LIVE_QUALITY_SLOW_FRAMES) return { size: LIVE_INPUT_SIZE, frames: 0, slowFrames: 0 };
+  return { ...state, frames: state.frames + 1, slowFrames };
 }
 
 /**
@@ -426,21 +422,12 @@ export function kirpmaIzgarasi(
  * kaynak değişiminde `resetLiveDepthState()` ile sıfırlanır.
  */
 const LIVE_RANGE_ALPHA = 0.15;
-const LIVE_RANGE_HALF_LIFE_MS = 450;
+/** Hazır (önceden hesaplanmış) video yolunun stretch yarı ömrü — videoPrecompute. */
 export const LIVE_STRETCH_HALF_LIFE_MS = 500;
 const LIVE_SCENE_CUT_LUMA_THRESHOLD = 0.25;
 let liveLo: number | null = null;
 let liveHi: number | null = null;
 let liveLastMediaTime: number | null = null;
-
-/** A physical half-life keeps the range response independent of inference Hz. */
-function timedRangeAlpha(elapsedMs: number | null, halfLifeMs: number, fallback: number): number {
-  if (elapsedMs === null) return fallback;
-  // A repeated paused frame can still be reprocessed after a mask or quality
-  // change. It must not silently freeze the old range at alpha = 0.
-  const effectiveMs = elapsedMs > 0 ? elapsedMs : 250;
-  return 1 - Math.pow(0.5, effectiveMs / halfLifeMs);
-}
 
 function isSceneCut(previous: Float32Array | null | undefined, current: Float32Array | null): boolean {
   if (!previous || !current || previous.length !== current.length) return false;
@@ -500,10 +487,10 @@ export function resetLiveDepthState() {
  * normalize edilmiş kare zaten 0..1'dir, EMA sabit uçları görür ve hiçbir şey
  * yapmaz. İlk sürümde tam bu hata yapıldı; `verify-live-depth [15]` yakaladı.
  */
-function kararliNormalize(data: Float32Array, alpha = LIVE_RANGE_ALPHA): Float32Array {
+function kararliNormalize(data: Float32Array): Float32Array {
   const { lo, hi } = trimmedRange(data, 1);
-  liveLo = liveLo === null ? lo : liveLo + alpha * (lo - liveLo);
-  liveHi = liveHi === null ? hi : liveHi + alpha * (hi - liveHi);
+  liveLo = liveLo === null ? lo : liveLo + LIVE_RANGE_ALPHA * (lo - liveLo);
+  liveHi = liveHi === null ? hi : liveHi + LIVE_RANGE_ALPHA * (hi - liveHi);
   const span = liveHi - liveLo || 1;
   const out = new Float32Array(data.length);
   for (let i = 0; i < data.length; i++) {
@@ -787,6 +774,9 @@ export function postProcessLiveDepth(
   // Same blend weight as the photo path: a soft segmentation interior must not
   // be stamped onto depth as a bowl (see fillSoftMaskInterior). The limiter
   // below keeps the raw mask; the fill never changes its >= 0.5 regions.
+  // Referans yolda yok. IS-Net maskeli gerçek klipte (forest-3679072) referans
+  // yola fark p99 0.0025 → 0.0052, rölyef +%1.4 (docs/benchmarks/video-depth-reference.md);
+  // yumuşak iç bölgeli maskede yüzün çökmesini önlüyor (verify-depth-mask [11]).
   const agirlik = fillSoftMaskInterior(mask, width, height);
   // Aralık KARELER ARASI taşınır (`canliStretchAralik`) — foto yolu bu
   // argümanı geçirmez ve orada davranış birebir eskisidir.
@@ -1089,12 +1079,9 @@ export function depthResultFromTensor(
   const elapsedMs = validTime !== null && liveLastMediaTime !== null
     ? (validTime - liveLastMediaTime) * 1000 : null;
   if (elapsedMs !== null && (elapsedMs < -1 || elapsedMs > 1500)) resetLiveDepthState();
-  const rangeElapsedMs = validTime !== null && liveLastMediaTime !== null
-    ? (validTime - liveLastMediaTime) * 1000 : null;
-  const rangeAlpha = timedRangeAlpha(rangeElapsedMs, LIVE_RANGE_HALF_LIFE_MS, LIVE_RANGE_ALPHA);
-  canliStretchAralik.alpha = timedRangeAlpha(rangeElapsedMs, LIVE_STRETCH_HALF_LIFE_MS,
-    STRETCH_RANGE_ALPHA);
-  const kararli = kararliNormalize(data, rangeAlpha);
+  // Aralık α'ları KARE başına sabit (referans yol: 0.15 / STRETCH_RANGE_ALPHA).
+  // Zaman tabanlı yarı ömür referans yoldaki görünümden ayrışıyordu.
+  const kararli = kararliNormalize(data);
   // ZAMANSAL FİLTRE ZİNCİRİN BAŞINDA — ölçümle seçilen yer. Titreşimin
   // %87'si (varyans payı) piksel bazlı, yani model çıktısının KENDİSİNDEN
   // geliyor; kaynağında bastırılırsa sonraki aşamalar temiz alan üzerinde
@@ -1107,17 +1094,6 @@ export function depthResultFromTensor(
   const processed = postProcessLiveDepth(kararli, width, height, mask, lum);
   if (validTime !== null) liveLastMediaTime = validTime;
   return { data: processed, width, height };
-}
-
-/** A live video needs a depth estimate for the entire visible frame. */
-export function chooseLiveCrop(
-  mask: Float32Array | null,
-  width: number,
-  height: number,
-  previous: KirpmaKutusu | null,
-  isVideo: boolean,
-): KirpmaKutusu | null {
-  return mask && !isVideo ? canliKirpmaKutusu(mask, width, height, previous) : null;
 }
 
 /** Sürücünün ihtiyaç duyduğu her şey — çıkarım ENJEKTE edilir (model olmadan
@@ -1448,12 +1424,10 @@ export async function estimateDepthLive(
   const started = performance.now();
   const mediaTime = source instanceof HTMLVideoElement ? source.currentTime : 0;
 
-  // Live video uses a full-frame model prediction. Extending a cropped
-  // subject prediction across the unseen scene fabricated background depth.
-  // Canvas callers can still use the subject crop for single-frame quality.
+  // ÖZNE KIRPMA — modelin özneyi yakından görmesi için (bkz. canliKirpmaKutusu).
+  // Maske yoksa kutu da yoktur: kırpacak bilgi yok, tam kare çizilir.
   const sm = opts.subjectMask;
-  const kutu = chooseLiveCrop(sm?.data ?? null, sm?.width ?? 0, sm?.height ?? 0,
-    sonKirpmaKutusu, source instanceof HTMLVideoElement);
+  const kutu = sm ? canliKirpmaKutusu(sm.data, sm.width, sm.height, sonKirpmaKutusu) : null;
   sonKirpmaKutusu = kutu;
   const kx = kutu ? kutu.x * vw : 0;
   const ky = kutu ? kutu.y * vh : 0;
@@ -1775,7 +1749,8 @@ export function startLiveDepth(
         processedTime = Number.NaN;
         previousAccepted = null;
         flowClient?.reset();
-        resetLiveDepthState();
+        // Referans yol gibi durum SIFIRLANMAZ: kırpma kutusu değişirse zamansal
+        // filtre kendi `frameKey`'iyle sıfırlanır, aralıklar taşınır.
         // A mask arriving while a model call is in flight changes the
         // post-processing contract. Invalidate that call instead of allowing
         // its maskless result to publish (or surface as a real GPU error).
@@ -1820,13 +1795,16 @@ export function startLiveDepth(
     },
     onDepth: (result) => {
       const raw = result as LiveDepthResult;
-      if (isLiveDepthResultStale(raw.mediaTime, video.currentTime)) {
+      // Referans yol her sonucu gösterir: eski kare atma ve akışla hizalama yalnız
+      // ara kare deneyinde (`?araKare=1`). iGPU'da 252 kare ~0.7 s sürer; atılsaydı
+      // geometri hiç güncellenmezdi.
+      if (flowClient && isLiveDepthResultStale(raw.mediaTime, video.currentTime)) {
         opts.onStaleDrop?.((video.currentTime - raw.mediaTime) * 1000);
         return;
       }
       let depth = raw;
       const previous = previousAccepted;
-      if (previous && raw.mediaTime > previous.mediaTime && raw.mediaTime - previous.mediaTime <= 1.5
+      if (flowClient && previous && raw.mediaTime > previous.mediaTime && raw.mediaTime - previous.mediaTime <= 1.5
         && previous.width === raw.width && previous.height === raw.height) {
         const aligned = stabilizeLiveDepthPair(
           previous.data, raw.data, previous.colorFrame, raw.colorFrame, raw.width, raw.height,

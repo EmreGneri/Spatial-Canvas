@@ -5,7 +5,7 @@ import { estimateDepth, FOTO_KALITE, loadDepthModel, luminanceHeightMap, resetLu
 import { segmentForeground } from './engine/reconstruction/segmentation';
 import { resampleBilinear } from './engine/reconstruction/silhouette';
 import { captureLiveMask } from './engine/vision/liveMask';
-import { isLiveFrameUnchanged, shouldPresentLiveDepth } from './engine/vision/liveDepthFlow';
+import { shouldPresentLiveDepth } from './engine/vision/liveDepthFlow';
 import { estimatePreparationSeconds, prepareVideoDepth, videoPreparationPolicy, type VideoDepthHandle, type VideoDepthProgress, type VideoMaskCapture } from './engine/vision/videoPrecompute';
 import { startBufferedVideoPlayback } from './engine/vision/bufferedVideoPlayback';
 import { videoStats } from './engine/vision/videoStats';
@@ -53,8 +53,8 @@ import * as THREE from 'three';
 import { type TrackedTarget, type TrackerModu } from './engine/vision/tracker';
 import { TrackerClient } from './engine/vision/trackerClient';
 import {
-  isitLiveModel, liveDepthKullanilabilir, liveGrabSize, maskeKacirmaOrani,
-  maskeYenilenmeliMi, startLiveDepth, ustPercentilEsigi, type LiveDepthResult,
+  isitLiveModel, kutleMerkezi, liveDepthKullanilabilir, liveGrabSize, maskeBayatMi, maskeKacirmaOrani,
+  maskeKaydir, maskeYenilenmeliMi, startLiveDepth, ustPercentilEsigi, type KutleMerkezi, type LiveDepthResult,
 } from './engine/vision/liveDepth';
 import { yetenekRaporu } from './engine/vision/yetenek';
 import {
@@ -88,6 +88,12 @@ const LUMINANCE_SMOOTHING_ALPHA = 0.12;
 const LUMINANCE_MOTION_GAIN = 6;
 /** A new segmentation pass blocks the shared GPU queue, so refresh only on drift. */
 const VIDEO_MASK_MIN_REFRESH_MS = 15_000;
+/**
+ * Gerçek tazelemeler ARASINDA maskenin kaydırılabileceği toplam yol (kadraj
+ * oranı) — referans yoldaki `MASKE_MAX_KAYMA`. Öteleme dışı değişimler birikir;
+ * sınırdan sonra kaydırma durur, kaçırma oranı tazelemeyi tetikler.
+ */
+const VIDEO_MASK_MAX_SHIFT = 0.25;
 /** Video hazırlanırken canlı V2 çıkarımları arası en az süre (GPU kuyruğu paylaşılır). */
 const PREPARING_LIVE_INFER_MS = 500;
 const VIDEO_PROCESSING_KEY = 'arkaPlanVideoIsleme';
@@ -287,6 +293,8 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
   const [videoPreparationAsk, setVideoPreparationAsk] = useState<{ file: File; video: HTMLVideoElement; estimate: number } | null>(null);
   const [segment, setSegment] = useState(false);
   const segmentRef = useRef(false);
+  /** Kullanıcı nesne ayırmayı bu kaynakta KAPATTI: video maskesi kendiliğinden üretilmez (referans yol). */
+  const segmentKapaliRef = useRef(false);
   const segmentRevisionRef = useRef(0);
   const updateSegment = (next: boolean) => {
     segmentRef.current = next;
@@ -857,6 +865,9 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
     let invalidMasks = 0;
     let maskNextRetryAt = 0;
     let maskBaseline: number | null = null;
+    // Kaydırma kolu (referans yol · maskeBayatsaTazele): temel merkez ve birikmiş yol.
+    let shiftBase: KutleMerkezi | null = null;
+    let shiftTotal = 0;
     let lastMaskAttempt = -Infinity;
     let maskRevision = 0;
     let requestedRevision = segmentRevisionRef.current;
@@ -870,10 +881,8 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
     const applyDepth = (d: LiveDepthResult, fromCache = false) => {
       // Duraklatılmış karede canlı 378 sonucu hazır kareyi bilerek geçer (aynı medya zamanı).
       if (!fromCache && !video.paused && preparedVideoUsableRef.current && preparedFrameTimeRef.current >= d.mediaTime) return;
-      const capturedMask = videoMask && (Math.abs(d.mediaTime - videoMask.mediaTime) <= 0.2
-        || isLiveFrameUnchanged(videoMask.colorFrame, d.colorFrame))
-        ? videoMask : null;
-      const mask = segmentRef.current ? (d.flowMask ?? capturedMask ?? pausedPreparedMask(d.mediaTime)) : null;
+      // Referans yol gibi kurulu maske her karede (kaydırma koluyla izlenerek) kullanılır.
+      const mask = segmentRef.current ? (d.flowMask ?? videoMask ?? pausedPreparedMask(d.mediaTime)) : null;
       engineRef.current?.setDepth(d.data, d.width, d.height,
         mask?.data, mask?.width, mask?.height, d.colorFrame, d.flowConfidence);
     };
@@ -908,9 +917,11 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
       maskNextRetryAt = 0;
       lastMaskAttempt = -Infinity;
     };
+    // Referans yol: maske ilk derinlikten sonra KENDİLİĞİNDEN üretilir; yalnız
+    // kullanıcı nesne ayırmayı kapattıysa üretilmez.
     const captureMask = () => {
       syncMaskRequest();
-      if (!segmentRef.current || iptal || maskBusy || maskUnavailable ||
+      if (segmentKapaliRef.current || iptal || maskBusy || maskUnavailable ||
         performance.now() < maskNextRetryAt || videoRef.current !== video) return;
       if (video.readyState < 2 || video.videoWidth === 0 || video.videoHeight === 0) return;
       maskBusy = true;
@@ -943,7 +954,8 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
           let foreground = 0;
           for (const value of result.data) if (value >= 0.5) foreground++;
           const coverage = foreground / result.data.length;
-          if (coverage < 0.08 || coverage >= 0.92) {
+          // Referans yoldaki kapı (`maskeGecerliMi`): boş ya da %92'den dolu maske kullanılmaz.
+          if (foreground === 0 || coverage > 0.92) {
             videoMask = null;
             maskBaseline = null;
             invalidMasks++;
@@ -954,10 +966,18 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
           videoMask = { data: result.data, width: result.width, height: result.height,
             mediaTime: maskMediaTime, colorFrame: maskColorFrame };
           maskBaseline = null;
+          shiftBase = null;
+          shiftTotal = 0;
           invalidMasks = 0;
           maskErrors = 0;
           maskNextRetryAt = 0;
-          say(`video özne maskesi hazır · ${result.model} · %${(coverage * 100).toFixed(0)} ön plan`);
+          // Referans yol: maske gelince nesne ayırma açılır (kullanıcı kapatmadıysa).
+          if (!segmentRef.current && !segmentKapaliRef.current) {
+            updateSegment(true);
+            requestedRevision = segmentRevisionRef.current;
+            engineRef.current?.setObjectSeparation(true);
+          }
+          say(`video özne maskesi hazır · ${result.model} · %${(coverage * 100).toFixed(0)} ön plan · nesne ayırma açık`);
           if (lastDepth) applyDepth(lastDepth);
         })
         .catch((err) => {
@@ -1016,15 +1036,28 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
             applyDepth(d);
           }
           const mask = segmentRef.current ? videoMask : null;
-          if (!mask && segmentRef.current && !pausedPreparedMask(d.mediaTime)) {
+          if (!videoMask && !segmentKapaliRef.current && !pausedPreparedMask(d.mediaTime)) {
             captureMask();
-          } else if (mask && !maskBusy &&
-            (maskBaseline === null || performance.now() - lastMaskAttempt >= VIDEO_MASK_MIN_REFRESH_MS)) {
+          } else if (mask && !maskBusy) {
             const threshold = ustPercentilEsigi(d.data, 25);
             const miss = maskeKacirmaOrani(d.data, d.width, d.height,
               mask.data, mask.width, mask.height, threshold);
             if (maskBaseline === null) maskBaseline = miss;
-            else if (maskeYenilenmeliMi(miss, maskBaseline)) captureMask();
+            else if (maskeYenilenmeliMi(miss, maskBaseline)
+              && performance.now() - lastMaskAttempt >= VIDEO_MASK_MIN_REFRESH_MS) captureMask();
+            // KAYDIRMA KOLU (~1 ms, referans yol): yakın kütlenin merkezi maske
+            // kurulduğundan beri kaydıysa maske o kadar ötelenir; RMBG/IS-Net koşmaz.
+            const now = kutleMerkezi(d.data, d.width, d.height, threshold);
+            if (now && !shiftBase) shiftBase = now;
+            if (now && shiftBase && maskeBayatMi(now, shiftBase)) {
+              const dx = now.x - shiftBase.x, dy = now.y - shiftBase.y, path = Math.hypot(dx, dy);
+              if (shiftTotal + path <= VIDEO_MASK_MAX_SHIFT) {
+                // Aynı nesne yerinde güncellenir: sürücü maskeyi yeni sanıp tur iptal etmesin.
+                mask.data = maskeKaydir(mask.data, mask.width, mask.height, dx * mask.width, dy * mask.height);
+                shiftBase = now;
+                shiftTotal += path;
+              }
+            }
           }
           sayac++;
           if (video.currentTime >= d.mediaTime) {
@@ -1061,12 +1094,8 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
           },
           // V2 only while the offline cache is still being built (F11).
           forceV2: () => videoPreparingRef.current || video.paused,
-          // Mask-aware post-process (stretch + sobel) only for the paused detailed frame:
-          // during playback a mask arrival must not move the geometry (see below).
-          maskeAl: () => {
-            if (!video.paused || !segmentRef.current) return null;
-            return videoMask ?? pausedPreparedMask(video.currentTime);
-          },
+          // Referans yol: maske oynarken de son işlemeye (kırpma + stretch + sobel) girer.
+          maskeAl: () => segmentRef.current ? (videoMask ?? pausedPreparedMask(video.currentTime)) : null,
           flowMaskAl: () => segmentRef.current ? videoMask : null,
           onInterpolatedDepth: (d) => {
             if (iptal || !isCurrent() || videoRef.current !== video) return;
@@ -1077,9 +1106,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
             flowCount++;
             videoStats.interpolatedApplied++;
           },
-          // `maskeAl` is paused-only: a mask must not alter live video depth, or mask
-          // arrival would move the geometry. The driver keeps looped masks;
-          // only a user seek shows a different subject.
+          // The driver keeps looped masks; only a user seek shows a different subject.
           onDiscontinuity: (reason) => {
             lastDepth = null;
             // Flaş/hızlı pan kesme sanılabilir; maske yeniden yakalama (saniyelerce
@@ -1090,6 +1117,8 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
               maskRevision++;
               videoMask = null;
               maskBaseline = null;
+              shiftBase = null;
+              shiftTotal = 0;
               maskUnavailable = false;
               maskErrors = 0;
               invalidMasks = 0;
@@ -1258,6 +1287,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
 
   async function toggleSegment() {
     const next = !segment;
+    segmentKapaliRef.current = !next;
     if (next) preparedVideoUsableRef.current = false;
     if (next && !liveDepthStopRef.current && !luminanceActiveRef.current && videoRef.current) startLuminanceLoop(videoRef.current, 'video');
     updateSegment(next);
@@ -1430,6 +1460,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
       // Gün 8: fotoğraf maskesi bu kaynakta geçersiz — nesne ayırma canlı
       // shader bayrağıyla birlikte kapatılır (UI "AÇIK" yalanı söylemesin).
       updateSegment(false);
+      segmentKapaliRef.current = false;
       engineRef.current!.setObjectSeparation(false);
       engineRef.current!.setVideoSource(video);
       startVideoDepth(video, 'kamera');
@@ -1482,6 +1513,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
         // Gün 8: fotoğraf maskesi bu kaynakta geçersiz — nesne ayırma canlı
         // shader bayrağıyla birlikte kapatılır (UI "AÇIK" yalanı söylemesin).
         updateSegment(false);
+        segmentKapaliRef.current = false;
         engineRef.current!.setObjectSeparation(false);
         engineRef.current!.setVideoSource(video);
         say(`video yüklendi · ${file.name} · model gelene kadar geçici parlaklık önizlemesi`);

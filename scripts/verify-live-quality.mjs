@@ -5,33 +5,28 @@ import {
   liveQualityInputSize,
 } from '../src/engine/vision/liveDepth.ts';
 
+// Default = reference pipeline "Detaylı · 378 (duraklatınca)": 252 while playing, 378 paused
+// (was: 154 with a 252 probe; changed 2026-10-25, user decision to match reference pipeline).
 let state = createLiveQualityState();
-assert.equal(liveQualityInputSize(state, false), 154);
+assert.equal(liveQualityInputSize(state, false), 252, 'playback uses the Detaylı playback cap');
 assert.equal(liveQualityInputSize(state, true), 378, 'a paused frame uses the detailed 378 input');
 
-// A faster GPU earns one bounded quality trial after sustained fast frames.
-for (const ms of [60, 62, 59]) state = advanceLiveQuality(state, ms);
-assert.equal(liveQualityInputSize(state, false), 154);
-state = advanceLiveQuality(state, 61);
-assert.equal(liveQualityInputSize(state, false), 252);
-
-// The first high-resolution frame can include shader compilation. Only
-// sustained slow inference should undo the trial.
-state = advanceLiveQuality(state, 1800);
-assert.equal(liveQualityInputSize(state, false), 252);
-state = advanceLiveQuality(state, 330);
-assert.equal(liveQualityInputSize(state, false), 154);
+// The first frame at a size may compile shaders; only SUSTAINED <1 Hz falls back.
+state = advanceLiveQuality(state, 4000);
+assert.equal(liveQualityInputSize(state, false), 252, 'first (compile) frame is ignored');
+for (const ms of [700, 680, 690, 720]) state = advanceLiveQuality(state, ms);
+assert.equal(liveQualityInputSize(state, false), 252, 'Intel-class 252 timings (~1.5 Hz) keep Detaylı');
+for (const ms of [1200, 1100]) state = advanceLiveQuality(state, ms);
+state = advanceLiveQuality(state, 500);
+assert.equal(liveQualityInputSize(state, false), 252, 'non-consecutive slow frames do not fall back');
+for (const ms of [1200, 1300, 1250]) state = advanceLiveQuality(state, ms);
+assert.equal(liveQualityInputSize(state, false), 154, 'three frames below 1 Hz fall back to Hızlı 154');
+assert.equal(liveQualityInputSize(state, true), 378, 'paused frame stays detailed after the fallback');
 for (let i = 0; i < 6; i++) state = advanceLiveQuality(state, 60);
-assert.equal(liveQualityInputSize(state, false), 154, 'failed trial must not oscillate');
-
-state = createLiveQualityState();
-for (const ms of [60, 200, 60, 200, 60, 200]) state = advanceLiveQuality(state, ms);
-assert.equal(liveQualityInputSize(state, false), 154, 'mixed speeds should stay responsive');
-for (let i = 0; i < 5; i++) state = advanceLiveQuality(state, 100);
-assert.equal(liveQualityInputSize(state, false), 154, 'Intel-class timings must never request 252px');
+assert.equal(liveQualityInputSize(state, false), 154, 'fallback is one-way: no oscillation');
 assert.equal(advanceLiveQuality(state, Number.NaN), state, 'invalid timings are ignored');
 
-console.log('OK live quality adaptation');
+console.log('OK live quality: Detaylı default, <1 Hz fallback');
 
 // Paused = detailed, also over prepared depth (App wiring; behaviour measured in docs/benchmarks/video-precompute.md).
 {
