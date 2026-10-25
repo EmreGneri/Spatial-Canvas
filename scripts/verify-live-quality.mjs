@@ -32,3 +32,13 @@ assert.equal(liveQualityInputSize(state, false), 154, 'Intel-class timings must 
 assert.equal(advanceLiveQuality(state, Number.NaN), state, 'invalid timings are ignored');
 
 console.log('OK live quality adaptation');
+
+// Paused = detailed, also over prepared depth (App wiring; behaviour measured in docs/benchmarks/video-precompute.md).
+{
+  const { readFileSync } = await import('node:fs');
+  const app = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  assert.match(app, /shouldInfer: \(\) => \{\s*\/\/[^\n]*\n\s*if \(video\.paused\) return true;/, 'paused frame must infer even with prepared depth');
+  assert.match(app, /forceV2: \(\) => videoPreparingRef\.current \|\| video\.paused/, 'paused frame uses V2 at 378, not VDA');
+  assert.match(app, /if \(!fromCache && !video\.paused && preparedVideoUsableRef\.current/, 'paused live result may replace the prepared frame');
+  console.log('OK paused detailed frame wiring');
+}
