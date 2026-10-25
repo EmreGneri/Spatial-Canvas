@@ -184,6 +184,7 @@ class Models:
     david = None  # DAViD maske oturumu; yalnız kurulup ısındıysa /health 'david-mask' listeler.
 
     def __init__(self, model_dir: Path, providers: list[str], david: bool = True):
+        self.worker_native_thread = threading.get_native_id()
         self.model_dir = model_dir
         self.providers = providers
         missing = [f for f in MODEL_FILES.values() if not (model_dir / f).exists()]
@@ -207,6 +208,14 @@ class Models:
         self.small_seq = 0
         self.debug = False
         self.seq_lock = threading.Lock()
+
+    def debug_info(self) -> dict:
+        """Seçilen EP yerine gerçek oturum EP'lerini göster; ORT CPU'ya düşebilir."""
+        sessions = {'small': self.small, 'da3': self.da3, 'mask': self.mask}
+        if self.david is not None:
+            sessions['david-mask'] = self.david
+        return {'ortVersion': ort.__version__, 'workerNativeThread': self.worker_native_thread,
+                'actualProviders': {name: value.get_providers() for name, value in sessions.items()}}
 
     def run_small(self, x: np.ndarray) -> np.ndarray:
         out = self.small.run(None, {'pixel_values': x})[0]
@@ -410,7 +419,8 @@ def make_handler(models: Models, gpu: ThreadPoolExecutor, extra_origins: set[str
                        'moge': models.run_moge, 'david-mask': models.run_david_mask}[model](x)
                 if models.debug:
                     print(f'{model} {x.shape[2]}x{x.shape[3]} {1000 * (time.perf_counter() - t):.0f} ms '
-                          f'thread={threading.current_thread().name}', flush=True)
+                          f'thread={threading.current_thread().name} native={threading.get_native_id()} '
+                          f'createdNative={models.worker_native_thread}', flush=True)
                 return out
 
             try:
@@ -459,6 +469,8 @@ def main(argv=None):
     gpu = ThreadPoolExecutor(max_workers=1, thread_name_prefix='gpu')
     models = gpu.submit(Models, args.models, pick_providers(), not args.davidsiz).result()
     models.debug = args.debug
+    if args.debug:
+        print(f'debug {json.dumps(models.debug_info())}', flush=True)
     srv.RequestHandlerClass = make_handler(models, gpu, set(args.origin))
     print(f'dinleniyor: http://{args.host}:{srv.server_port}', flush=True)
     try:

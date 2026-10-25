@@ -65,3 +65,12 @@ with ThreadPoolExecutor(max_workers=1) as gpu:
 `], { encoding: 'utf8' });
 assert.equal(result.status, 0, result.stderr || result.error?.message);
 console.log('verify-sidecar-errors OK');
+
+// Sidecar bağımlılıkları isteğe bağlıdır; mevcutsa gerçek sınıfı sahte oturumlarla sınar.
+if (spawnSync(python, ['-c', 'import numpy, onnxruntime, PIL'], { timeout: 10000 }).status === 0) {
+  const diagnostics = spawnSync(python, ['sidecar/test_diagnostics.py'], { encoding: 'utf8' });
+  assert.equal(diagnostics.status, 0, diagnostics.stderr || diagnostics.error?.message);
+  console.log('verify-sidecar-diagnostics OK');
+} else {
+  console.log('verify-sidecar-diagnostics SKIP (optional sidecar dependencies are not installed)');
+}
