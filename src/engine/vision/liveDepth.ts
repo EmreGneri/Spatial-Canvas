@@ -474,6 +474,8 @@ export function resetLiveDepthState() {
   // yeniden ayrılacaktı, aynı ise tutmanın da zararı yok — ama kaynak
   // kapandığında megabaytları asılı bırakmamak daha temiz.
   lumHavuz = null;
+  canliStabil.zamansal = zamansalDurumAc();
+  canliStabil.pencere = null;
   // Every reason the 2D filters forget (new clip, seek, loop, cut, mask or
   // size change) also invalidates VDA's 31-frame hidden-state context.
   vdaSifirla();
@@ -792,6 +794,105 @@ export function postProcessLiveDepth(
   for (let i = 0; i < mask.length; i++) disarisi[i] = mask[i] >= 0.5 ? 0 : 1;
   return limitDepthSlope(icerisi, width, height, disarisi);
 }
+
+// ---------------------------------------------------------------------------
+// KARE STABİLİZASYONU — referans yol çıktısının ÜSTÜNE titreme filtresi.
+//
+// Referans yoldaki zincir (yukarıda, değişmeden) detaylı ama titrer: başlangıçtaki
+// zamansal filtre 0.06'dan büyük model gürültüsünü hareket sayıp geçiriyor, sonra
+// stretch o farkı özne bandına yayıyor. Bu aşama zincirin SONUNDA, sürücüde koşar:
+//   1. Küresel ölçek/kayma: luma'sı değişmeyen piksellerde a·d + b ≈ önceki
+//      (kırpılmış en küçük kareler); `KARE_HIZALAMA_PAYI` kadarı uygulanır ki
+//      gerçek ölçek değişimi (özne yaklaşır) birkaç karede izlensin, kilitlenmesin.
+//   2. Hareket duyarlı EMA: `zamansalYumusat` (pozlama telafili luma hareketi);
+//      luma'sı değişen piksel yeni değeri alır, iz bırakmaz.
+// Sıfırlama `resetLiveDepthState` ile (seek, döngü, kesme, boyut, yeni kaynak);
+// kırpma penceresi değişirse hizalama atlanır, EMA kendini sıfırlar.
+// Ölçüm ve parametre süpürmesi: docs/benchmarks/video-depth-reference.md.
+// ---------------------------------------------------------------------------
+
+export interface KareStabilAyar {
+  /** Küresel ölçek/kayma düzeltmesinin uygulanan payı (0 = kapalı). */
+  hizalama: number;
+  /** Hareketsiz pikselde yeni karenin ağırlığı. */
+  taban: number;
+  /** Bu kadar derinlik farkı hareket sayılır (son-işleme sonrası birim). */
+  esik: number;
+}
+
+export const KARE_STABIL_VARSAYILAN: KareStabilAyar = { hizalama: 0.5, taban: 0.35, esik: 0.15 };
+
+export interface KareStabilDurumu {
+  zamansal: ZamansalDurum;
+  pencere: string | null;
+}
+
+export function kareStabilDurumu(): KareStabilDurumu {
+  return { zamansal: zamansalDurumAc(), pencere: null };
+}
+
+/** Önceki çıktıya kırpılmış en küçük kareler ölçek/kayma (durgun luma pikselleri). */
+function kureselHizalama(
+  d: Float32Array, onceki: Float32Array, lum: Float32Array | null, oncekiLum: Float32Array | null | undefined,
+): { a: number; b: number } | null {
+  const adim = Math.max(1, Math.floor(d.length / 4000));
+  const xs: number[] = [], ys: number[] = [];
+  for (let i = 0; i < d.length; i += adim) {
+    if (lum && oncekiLum && Math.abs(lum[i] - oncekiLum[i]) > 0.02) continue;
+    xs.push(d[i]); ys.push(onceki[i]);
+  }
+  if (xs.length < 64) return null;
+  let a = 1, b = 0, kirp = Infinity;
+  for (let gecis = 0; gecis < 3; gecis++) {
+    let n = 0, sx = 0, sy = 0, sxx = 0, sxy = 0;
+    const artik: number[] = [];
+    for (let k = 0; k < xs.length; k++) {
+      const r = Math.abs(ys[k] - (a * xs[k] + b));
+      if (r > kirp) continue;
+      n++; sx += xs[k]; sy += ys[k]; sxx += xs[k] * xs[k]; sxy += xs[k] * ys[k];
+    }
+    const varyans = n ? sxx / n - (sx / n) ** 2 : 0;
+    if (n < 32 || varyans < 1e-5) return null;
+    a = (sxy / n - (sx / n) * (sy / n)) / varyans;
+    b = (sy - a * sx) / n;
+    for (let k = 0; k < xs.length; k++) artik.push(Math.abs(ys[k] - (a * xs[k] + b)));
+    artik.sort((p, q) => p - q);
+    kirp = Math.max(1e-3, 2.5 * artik[artik.length >> 1]);
+  }
+  return Number.isFinite(a + b) && a > 0.7 && a < 1.4 && Math.abs(b) < 0.3 ? { a, b } : null;
+}
+
+/** Referans yol çıktısını kareler arası stabilize eder (yeni dizi döner, girdi değişmez). */
+export function kareStabilize(
+  depth: Float32Array,
+  width: number,
+  height: number,
+  lum: Float32Array | null,
+  durum: KareStabilDurumu,
+  sourceWindow: KirpmaKutusu | null = null,
+  ayar: KareStabilAyar = KARE_STABIL_VARSAYILAN,
+): Float32Array {
+  const out = Float32Array.from(depth);
+  const pencere = `${width}x${height}:${sourceWindow ? [sourceWindow.x, sourceWindow.y, sourceWindow.w, sourceWindow.h].join(',') : 'full'}`;
+  const onceki = durum.zamansal.onceki;
+  if (ayar.hizalama > 0 && onceki?.length === out.length && durum.pencere === pencere) {
+    const fit = kureselHizalama(out, onceki, lum, durum.zamansal.previousLuminance);
+    if (fit) {
+      const a = 1 + ayar.hizalama * (fit.a - 1), b = ayar.hizalama * fit.b;
+      for (let i = 0; i < out.length; i++) out[i] = Math.min(1, Math.max(0, a * out[i] + b));
+    }
+  }
+  durum.pencere = pencere;
+  return zamansalYumusat(out, durum.zamansal, ayar.taban, ayar.esik, { luminance: lum, width, height, sourceWindow });
+}
+
+/** `?titremeFiltresi=0` referans yoldaki ham görünümü (filtresiz) geri getirir. */
+export function kareStabilAcik(search: string = globalThis.location?.search ?? ''): boolean {
+  return new URLSearchParams(search).get('titremeFiltresi') !== '0';
+}
+
+/** Canlı sürücünün stabilizasyon hafızası — `resetLiveDepthState` temizler. */
+const canliStabil = kareStabilDurumu();
 
 // ---------------------------------------------------------------------------
 // MASKE BAYATLIĞI. Özne maskesi klip başına BİR KEZ üretiliyor (RMBG canlı yük
@@ -1322,6 +1423,9 @@ export interface LiveDepthResult extends DepthResult {
   depthModel: 'vda' | 'v2';
   /** Raw network disparity before the live filters (benchmarks read it). */
   modelOutput: DepthResult;
+  /** Capture luminance on the depth grid and the crop window (frame stabilizer input). */
+  luminance?: Float32Array | null;
+  sourceWindow?: KirpmaKutusu | null;
 }
 
 /** Keep shader warmup and live inference from mutating one shared model state concurrently. */
@@ -1546,6 +1650,8 @@ export async function estimateDepthLive(
     colorFrame,
     depthModel,
     modelOutput: { data: predicted.data, width: dw, height: dh },
+    luminance: lum,
+    sourceWindow: kutu,
   };
 }
 
@@ -1584,6 +1690,7 @@ export function startLiveDepth(
 ): () => void {
   const maxErrors = 3;
   resetLiveDepthState();
+  const stabilAcik = kareStabilAcik();
   activeLiveDrivers++;
   let active = true;
   let qualityState = createLiveQualityState();
@@ -1815,6 +1922,11 @@ export function startLiveDepth(
         depth = { ...raw, data: aligned.depth, flowCoverage: aligned.coverage };
       } else {
         depth = { ...raw, flowCoverage: 0 };
+      }
+      // Titreme filtresi referans yol çıktısının üstünde (bkz. kareStabilize).
+      if (stabilAcik && raw.depthModel === 'v2') {
+        depth = { ...depth, data: kareStabilize(depth.data, depth.width, depth.height,
+          raw.luminance ?? null, canliStabil, raw.sourceWindow ?? null) };
       }
       previousAccepted = depth;
       const uploadStart = performance.now();
