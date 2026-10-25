@@ -98,3 +98,42 @@ Item 9 (full verification): `npx tsc --noEmit -p .` clean, `npm run verify` pass
 | pixabay-forest-29721.mp4, 1920x1080, 30 fps, 24 s | 46.4 s | 364 ms | 158.4 FPS, worst frame 24 ms, setDepth 11.4 ms at 30/s, 0 live inferences, 0 fallbacks |
 
 Against the user's baseline on the 4K clip (1.4 FPS, frames over 1 s, setDepth 55 ms; measured on the Intel iGPU, not reproduced here), the per-frame 4K readback (~22 ms CPU canvas, worse on the iGPU) and the prepared/live ping-pong paths are gone. The Intel iGPU was not measured in this session.
+
+## Detail: prepared frames and paused frames (2026-10-25)
+
+Complaint: video depth "still not detailed" next to the reference pipeline's "Detaylı · 378 (duraklatınca)". the reference pipeline's Detaylı is V2-small with a 378 long side (378x210 for 16:9) on the paused frame, plus the live post-process. Here prepared playback showed raw normalized VDA at 266x154 with no post-process, and a paused frame kept showing it.
+
+Changes:
+
+- **A.** Preparation runs the live post-process on every frame once, from the stored 266x154 RGB, and stores the result next to the raw VDA track: smooth, slope limit, RGB detail; with the mask track also stretch (range carried through the scene with the live 500 ms half-life), two-region limit and sobel. Playback cost is unchanged. The slope limit runs before the detail term. In the live order it combed thin VDA trunks back to the background: on the pixabay frame at 2.5 s, 247 of 40964 pixels were pulled more than 0.1 below the smoothed VDA, against 21 with this order.
+- **B.** A paused frame gets one V2-small inference at 378 with the full post-process, also over prepared depth (paused live input was 252). With object separation on, the mask track (or the live mask) is the stretch mask for that frame. Play resumes prepared depth.
+- **C.** Not adopted. Guided upsampling of the 266x154 VDA map to 378x210 with the frame's luminance (radius 4, eps 1e-3, 18-23 ms per frame in Node) gave no real gain: gradient energy about the same (nyc 7.15 -> 7.13, pixabay 9.36 -> 9.76, forest 5.15 -> 4.88), and correlation of its high frequencies with the V2-378 map rose by only 0.002-0.05. The engine samples at most a 384 wide position grid, so a bigger map can gain at most 1.44x linear. Still open: fusing VDA low frequencies with per-frame V2-378 high frequencies while preparing. That costs one V2 378 inference per frame and brings V2's frame-to-frame flicker. Not measured.
+- **D.** No detail selector: B already makes the paused frame detailed, and a selector would only change the live (unprepared) playback path.
+
+Setup: Playwright Chrome, visible window, NVIDIA Blackwell adapter (RTX 5070 laptop). The Intel iGPU of the user's normal Chrome was not measured. One run at a time. Clips are 5 s cuts: forest-3679072 0-5 s (4K, 24 fps), pixabay-forest-29721 0-5 s (1080p, 29.97 fps), nyc.mp4 18-23 s (854x480, 30 fps, people). `test-canli.mp4` exists in neither repo, so nyc.mp4 stands in as the clip with people. reference pipeline ran with its defaults (subject mask on, which turns on its subject crop) and Detaylı 378.
+
+Metrics come from the depth passed to `Engine.setDepth` on the frame paused at 2.5 s, resampled to a 384 wide grid. "grad" is the mean |∇d| x1000. "relief" is the mean |d - box7(d)| x1000. Flicker is the mean |d_t - d_(t-1)| over prepared playback (4 s, 128 wide grid). It includes real motion, so only before/after on the same clip compare.
+
+| Clip | reference pipeline Detaylı paused | v2 before, paused (prepared 266x154) | v2 after A, prepared frame | v2 after A+B, paused (378x210) |
+| --- | --- | --- | --- | --- |
+| pixabay 1080p | 10.13 / 8.99 | 9.04 / 6.40 | 10.88 / 9.53 | 10.13 / 8.99 |
+| forest 4K | 7.39 / 4.21 | 4.95 / 3.78 | 5.11 / 3.93 | 7.18 / 5.10 |
+| nyc (people) | 10.26 / 10.72 | 6.92 / 5.78 | 7.06 / 6.01 | 9.48 / 9.86 |
+
+Each cell is grad / relief.
+
+Inside the reference pipeline's subject mask (its crop and stretch): forest 22.7 / 17.9, nyc 26.7 / 29.5. v2 has no subject crop for video (removed earlier because it fabricated background depth), so with separation off the person relief stays below the reference pipeline's. On pixabay, A+B matches reference pipeline exactly: same model, input and post-process, no valid mask.
+
+| Clip | Preparation before -> after | Prepared playback FPS before -> after | setDepth p50 | Flicker before -> after A |
+| --- | --- | --- | --- | --- |
+| pixabay 1080p | 17.1 s -> 16.5-19.0 s | 144 -> 152-155 | 12.9 -> 10.7-12.3 ms | 0.00357 -> 0.00429 (+20%) |
+| forest 4K | 17.4 s -> 14.5-16.8 s | 153 -> 158-163 | 12.7 -> 10.8-12.0 ms | 0.00629 -> 0.00627 |
+| nyc | 12.6 s -> 13.8-14.5 s | 160 -> 156-157 | 11.9 -> 10.6-10.7 ms | 0.01093 -> 0.01104-0.01113 (+1-2%) |
+
+The detail pass costs about 11 ms per frame while preparing (Node, 266x154), about +1.7 s on a 5 s cut, which is within the run-to-run spread above. One run that yielded to playback every 8 frames took 41 s, because each yield waits up to 1 s while playback stutters. The loop therefore no longer yields. Each frame's OPFS read already returns control to the event loop, so no long task is added. A paused detailed frame arrives 94-117 ms after the seek on the RTX GPU.
+
+Screenshots and depth maps are in `output/video-detail/`. `cmp-<clip>-depth.png` shows reference pipeline Detaylı, v2 before, v2 after A (prepared) and v2 after A+B (paused). `cmp-<clip>-front.png` and `cmp-<clip>-side.png` show the point cloud in the same order without the A column. The two apps use different default cameras, so the depth maps are the like-for-like comparison.
+
+Open:
+- The masked prepared variant was not checked visually: on the nyc cut every key frame mask was rejected for coverage, so the mask track fell back to all ones.
+- After pause, seek and play on the pixabay cut, `requestVideoFrameCallback` stopped firing in the Playwright window and prepared depth froze. This also happens without these changes (checked by stashing them). Forest and nyc resumed normally.
