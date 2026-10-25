@@ -116,9 +116,18 @@ export function createLiveQualityState(): LiveQualityState {
   return { size: LIVE_INPUT_SIZE, fastFrames: 0, highFrames: 0, triedHigher: false };
 }
 
-/** A paused frame has no playback lag, so use the higher input once. */
+/**
+ * DURAKLATILMIŞ KARE = DETAYLI. Referans yoldaki "Detaylı · 378 (duraklatınca)"
+ * ayarının karşılığı, seçici olmadan: tek kare için bekleme kabul edilebilir
+ * (378: duraklatmadan detaylı kareye 94-117 ms, RTX 5070, 2026-10-25; iGPU için
+ * yukarıdaki 1877 ms ölçümü). Hazır video da
+ * duraklatınca bu kareyi gösterir (App · shouldInfer).
+ */
+export const LIVE_PAUSED_INPUT = 378;
+
+/** A paused frame has no playback lag, so use the detailed input once. */
 export function liveQualityInputSize(state: LiveQualityState, paused: boolean): number {
-  return paused ? LIVE_PLAYBACK_MAX_INPUT : state.size;
+  return paused ? LIVE_PAUSED_INPUT : state.size;
 }
 
 /** Probe better detail only when inference plus depth upload has spare time. */

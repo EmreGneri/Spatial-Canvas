@@ -7,7 +7,7 @@ import {
 
 let state = createLiveQualityState();
 assert.equal(liveQualityInputSize(state, false), 154);
-assert.equal(liveQualityInputSize(state, true), 252, 'a paused frame can use higher detail');
+assert.equal(liveQualityInputSize(state, true), 378, 'a paused frame uses the detailed 378 input');
 
 // A faster GPU earns one bounded quality trial after sustained fast frames.
 for (const ms of [60, 62, 59]) state = advanceLiveQuality(state, ms);

@@ -861,14 +861,19 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
     let maskRevision = 0;
     let requestedRevision = segmentRevisionRef.current;
     let lastDepth: LiveDepthResult | null = null;
+    // Mask track of the last prepared frame: the paused detailed (V2) frame reuses it.
+    let preparedMask: { data: Float32Array; width: number; height: number; mediaTime: number } | null = null;
+    const pausedPreparedMask = (time: number) =>
+      video.paused && preparedMask && Math.abs(preparedMask.mediaTime - time) <= 0.2 ? preparedMask : null;
     // The mask only sets particle opacity. Re-applying the last depth lets a
     // mask that arrives while the video is paused take effect immediately.
     const applyDepth = (d: LiveDepthResult, fromCache = false) => {
-      if (!fromCache && preparedVideoUsableRef.current && preparedFrameTimeRef.current >= d.mediaTime) return;
+      // Duraklatılmış karede canlı 378 sonucu hazır kareyi bilerek geçer (aynı medya zamanı).
+      if (!fromCache && !video.paused && preparedVideoUsableRef.current && preparedFrameTimeRef.current >= d.mediaTime) return;
       const capturedMask = videoMask && (Math.abs(d.mediaTime - videoMask.mediaTime) <= 0.2
         || isLiveFrameUnchanged(videoMask.colorFrame, d.colorFrame))
         ? videoMask : null;
-      const mask = segmentRef.current ? (d.flowMask ?? capturedMask) : null;
+      const mask = segmentRef.current ? (d.flowMask ?? capturedMask ?? pausedPreparedMask(d.mediaTime)) : null;
       engineRef.current?.setDepth(d.data, d.width, d.height,
         mask?.data, mask?.width, mask?.height, d.colorFrame, d.flowConfidence);
     };
@@ -877,11 +882,15 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
     };
     preparedFramePresenterRef.current = (frame) => {
       if (iptal || !isCurrent() || videoRef.current !== video) return;
+      // Duraklatılmış karenin detaylı canlı sonucu (V2 378) aynı kare için hazır derinliği geçer.
+      if (video.paused && lastDepth?.depthModel === 'v2' && !lastDepth.interpolated
+        && Math.abs(lastDepth.mediaTime - frame.mediaTime) < 1e-3) return;
       stopLuminanceLoop();
       if (preparedFrameTimeRef.current === -Infinity) setLiveRates({ model: 0, flow: 0 });
       // Hazır derinlik o anki kareyle hizalı: renk doğrudan video dokusundan (canlı
       // karelerin yakalanmış renk ızgarası bırakılır; zaten boşsa çağrı bedava).
       engineRef.current?.clearVideoFrameColor();
+      preparedMask = frame.flowMask ? { ...frame.flowMask, mediaTime: frame.mediaTime } : null;
       lastDepth = frame;
       preparedFrameTimeRef.current = frame.mediaTime;
       applyDepth(frame, true);
@@ -1007,7 +1016,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
             applyDepth(d);
           }
           const mask = segmentRef.current ? videoMask : null;
-          if (!mask && segmentRef.current) {
+          if (!mask && segmentRef.current && !pausedPreparedMask(d.mediaTime)) {
             captureMask();
           } else if (mask && !maskBusy &&
             (maskBaseline === null || performance.now() - lastMaskAttempt >= VIDEO_MASK_MIN_REFRESH_MS)) {
@@ -1037,6 +1046,8 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
         },
         {
           shouldInfer: () => {
+            // Duraklatınca tek detaylı kare (V2 378 + tam son işleme), hazır derinlik olsa da.
+            if (video.paused) return true;
             const prepared = preparedVideoRef.current;
             if ((!segmentRef.current || prepared?.hasMask(video.currentTime)) && preparedVideoUsableRef.current
               && prepared?.hasFrame(video.currentTime)) return false;
@@ -1049,7 +1060,13 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
             return true;
           },
           // V2 only while the offline cache is still being built (F11).
-          forceV2: () => videoPreparingRef.current,
+          forceV2: () => videoPreparingRef.current || video.paused,
+          // Mask-aware post-process (stretch + sobel) only for the paused detailed frame:
+          // during playback a mask arrival must not move the geometry (see below).
+          maskeAl: () => {
+            if (!video.paused || !segmentRef.current) return null;
+            return videoMask ?? pausedPreparedMask(video.currentTime);
+          },
           flowMaskAl: () => segmentRef.current ? videoMask : null,
           onInterpolatedDepth: (d) => {
             if (iptal || !isCurrent() || videoRef.current !== video) return;
@@ -1060,7 +1077,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
             flowCount++;
             videoStats.interpolatedApplied++;
           },
-          // No `maskeAl`: a mask must not alter live video depth, or mask
+          // `maskeAl` is paused-only: a mask must not alter live video depth, or mask
           // arrival would move the geometry. The driver keeps looped masks;
           // only a user seek shows a different subject.
           onDiscontinuity: (reason) => {
