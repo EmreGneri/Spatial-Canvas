@@ -285,9 +285,14 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
   const [videoPreparation, setVideoPreparation] = useState<VideoDepthProgress | null>(null);
   /** Hazır videonun maske izi ilerlemesi (0..1); null = istenmedi. */
   const [videoMaskProgress, setVideoMaskProgress] = useState<number | null>(null);
-  /** Ayar: yüklenen videonun derinliği arka planda hazırlansın mı (varsayılan açık, tarayıcıda saklanır). */
+  /**
+   * Ayar: yüklenen videonun derinliği arka planda hazırlansın mı. VARSAYILAN KAPALI:
+   * hazır (VDA) derinlik referans yoldaki canlı görünümü geçiyordu (kullanıcı kararı
+   * 2026-10-25). Ayar tarayıcıda saklanır; `?videoHazirla=1` bu oturumda açar.
+   */
   const [videoProcessing, setVideoProcessing] = useState(() => {
-    try { return localStorage.getItem(VIDEO_PROCESSING_KEY) !== '0'; } catch { return true; }
+    if (new URLSearchParams(location.search).get('videoHazirla') === '1') return true;
+    try { return localStorage.getItem(VIDEO_PROCESSING_KEY) === '1'; } catch { return false; }
   });
   /** Uzun video: hazırlık için onay bekleniyor (tahmini süreyle). */
   const [videoPreparationAsk, setVideoPreparationAsk] = useState<{ file: File; video: HTMLVideoElement; estimate: number } | null>(null);

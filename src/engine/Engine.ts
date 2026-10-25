@@ -76,11 +76,11 @@ export interface TickablePass {
  * her karede konumlarÄ± shader'da hesaplar; render katmanÄ± aynÄ± ÅŸekilde
  * Ã¶rnekler (texture2D(uPositions, aUv)).
  */
-/** Video kenar temizliği varsayılan gücü (0 kapalı … 4). */
-export const VIDEO_EDGE_CLEANUP_DEFAULT = 2;
+/** Video kenar temizliği varsayılan gücü (0 kapalı … 4). 0: referans yoldaki video görünümü (2026-10-25); kaydırıcı açar. */
+export const VIDEO_EDGE_CLEANUP_DEFAULT = 0;
 
 export class Engine {
-  // Varsayılan 2: ucuzlatılmış CPU çekirdeği setDepth başına ~4-5 ms ekliyor (eskiden 11-13 ms);
+  // Güç 2: ucuzlatılmış CPU çekirdeği setDepth başına ~4-5 ms ekliyor (eskiden 11-13 ms);
   // görünür Chrome'da (RTX 5070) canlı 4K ~56-58 FPS ve hazır 1080p ~159 FPS değişmedi (2026-10-25).
   private videoEdgeCleanupStrength = VIDEO_EDGE_CLEANUP_DEFAULT;
 
