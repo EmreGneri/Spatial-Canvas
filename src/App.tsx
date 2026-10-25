@@ -976,13 +976,16 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
           invalidMasks = 0;
           maskErrors = 0;
           maskNextRetryAt = 0;
-          // Referans yol: maske gelince nesne ayırma açılır (kullanıcı kapatmadıysa).
-          if (!segmentRef.current && !segmentKapaliRef.current) {
+          // Referans yol: maske gelince nesne ayırma açılır (kullanıcı kapatmadıysa). Fark:
+          // %8'den küçük maskede açılmaz — IS-Net uzak kişili sokak/orman karesinde %3-13
+          // veriyordu ve ekranda tek bir leke kalıyordu. Maske yine saklanır; elle açılınca kullanılır.
+          const otomatikAc = coverage >= 0.08 && !segmentRef.current && !segmentKapaliRef.current;
+          if (otomatikAc) {
             updateSegment(true);
             requestedRevision = segmentRevisionRef.current;
             engineRef.current?.setObjectSeparation(true);
           }
-          say(`video özne maskesi hazır · ${result.model} · %${(coverage * 100).toFixed(0)} ön plan · nesne ayırma açık`);
+          say(`video özne maskesi hazır · ${result.model} · %${(coverage * 100).toFixed(0)} ön plan · nesne ayırma ${segmentRef.current ? 'açık' : 'kapalı (maske küçük)'}`);
           if (lastDepth) applyDepth(lastDepth);
         })
         .catch((err) => {
