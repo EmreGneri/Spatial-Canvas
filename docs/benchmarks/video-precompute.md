@@ -89,3 +89,12 @@ Item 5 (prepared video with object separation), `pexels-lighthouse-orbit-2074439
 - Playback with separation on and the mask track ready: 133-153 FPS, 0 live inferences/s, 0 fallbacks/s (before: separation forced the full live pipeline).
 
 Item 8 (video edge cleanup): the CPU kernel got row/column lookup tables and a separable max filter for the maskless case. The output is bit-identical to the old kernel (432 random cases checked, including masks, guide masks and non-finite input). Node microbenchmark, 384x384 output grid, strength 2: 384x216 input 11.0 -> 3.1 ms, with mask 13.7 -> 5.2 ms, 266x154 input 8.5 -> 4.3 ms. In the app (visible Chrome, RTX), setDepth grows by ~4-5 ms with strength 2, but frame rate does not change: live 4K 55.8 / 57.5 FPS (strength 0: 58.2 / 55.3), prepared 1080p 158.9 FPS (strength 0: 162.1). Default strength is now 2.
+
+Item 9 (full verification): `npx tsc --noEmit -p .` clean, `npm run verify` passes, `npx vite build --outDir <temp>` succeeds (the point count benchmark link is not in the production bundle). Full clips, visible Chrome on the RTX GPU, default settings (edge cleanup 2):
+
+| Clip | Preparation | Worst frame while preparing | Prepared playback (5 s) |
+| --- | --- | --- | --- |
+| forest-3679072.mp4, 3840x2160, 24 fps, 16 s | 34.3 s | 406 ms | 156.4 FPS, worst frame 24 ms, setDepth 12.9 ms at 24/s, 0 live inferences, 0 fallbacks |
+| pixabay-forest-29721.mp4, 1920x1080, 30 fps, 24 s | 46.4 s | 364 ms | 158.4 FPS, worst frame 24 ms, setDepth 11.4 ms at 30/s, 0 live inferences, 0 fallbacks |
+
+Against the user's baseline on the 4K clip (1.4 FPS, frames over 1 s, setDepth 55 ms; measured on the Intel iGPU, not reproduced here), the per-frame 4K readback (~22 ms CPU canvas, worse on the iGPU) and the prepared/live ping-pong paths are gone. The Intel iGPU was not measured in this session.
