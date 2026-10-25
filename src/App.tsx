@@ -566,7 +566,8 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
     // write depth, mask, photo or segmentation settings over a newer source.
     const isCurrent = captureGeneration(sourceGenRef);
     try {
-      if (!analitikDerinlik) {
+      // DA3/MoGe seçimini estimateDepth yönetir; burada ek V2 oturumu ayırma.
+      if (!analitikDerinlik && FOTO_KALITE.model === 'v2-small') {
         const t0 = performance.now();
         await loadDepthModel();
         if (!isCurrent()) return;
@@ -663,6 +664,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
         if (!isCurrent()) return;
         say(
           `çıkarım                  ${Math.round(performance.now() - t1)} ms  (${depth.width}x${depth.height})` +
+            (depth.sourceModel ? ` · ${depth.sourceModel}` : '') +
             (mask ? ' · özne maskesi kullanıldı' : ' · maskesiz') +
             (depth.davidMaske ? ` · DAViD maskesi (${depth.davidMaske.arkaUc}, ${Math.round(depth.davidMaske.sureMs)} ms)` : ''),
         );

@@ -246,6 +246,8 @@ export type HeadDetailDiagnostics = {
 };
 
 export type DepthResult = {
+  /** İstenen değil, gerçekten çıktı üreten fotoğraf modeli. */
+  sourceModel?: 'da3-mono' | 'v2-small' | 'moge-2';
   /** MoGe camera geometry bypasses artistic normalization in the renderer. */
   metricGeometry?: MetricPhotoGeometry;
   moge?: { backend: 'webgpu' | 'sidecar'; focal: number; shift: number; projectionRmse: number; metricScale: number };
@@ -447,7 +449,8 @@ let photoModelQueue: Promise<void> = Promise.resolve();
 function runPhotoModel(model: Awaited<ReturnType<typeof loadDepthModel>>, input: RawImage) {
   const run = async () => {
     const result = await model(input);
-    return { ...result, photoShift: photoDisparityShifts.get(model) ?? 0 };
+    return { ...result, photoShift: photoDisparityShifts.get(model) ?? 0,
+      photoModel: photoDisparityShifts.has(model) ? 'da3-mono' as const : 'v2-small' as const };
   };
   if (!sidecarEstimators.has(model)) return gpuSirasinaGir(run);
   // Kaynak değişirken iki fotoğraf aynı kabuğu kullanabilir; kayma başka kareye ait olmasın.
@@ -642,6 +645,7 @@ export async function estimateDepth(
       const raw = await inferMoge({ data: rgb, dims: [1,3,MODEL_INPUT_SIZE,MODEL_INPUT_SIZE] });
       if (raw) {
         const result = mogePhotoResult(raw, lb);
+        result.sourceModel = 'moge-2';
         if (opts.photoCamera && result.metricGeometry) result.metricGeometry.captureCamera = true;
         depthDevice = raw.backend;
         return result;
@@ -691,7 +695,8 @@ export async function estimateDepth(
 
   // GPU sırası: canlı derinlik döngüsü koşarken fotoğraf yüklenirse iki
   // WebGPU oturumu çakışır (bkz. gpuSirasinaGir).
-  const { predicted_depth, photoShift } = await runPhotoModel(model, input);
+  const { predicted_depth, photoShift, photoModel } = await runPhotoModel(model, input);
+  if (yardimciMi && photoModel === 'v2-small') depthDevice = tarayiciCihazi;
 
   const [height, width] = predicted_depth.dims.slice(-2) as [number, number];
   let data = predicted_depth.data as Float32Array;
@@ -811,7 +816,7 @@ export async function estimateDepth(
   // subject, delikDoldur'da zaten deliği kapatılmış maske (doldurulmusMaske).
   const dm = await applyDavidMask(opts.insanMaskesi, source, subject, outWidth, outHeight);
   return {
-    data: cikti, width: outWidth, height: outHeight, headDetail, subjectMask: dm?.maske ?? doldurulmusMaske, delikTani,
+    data: cikti, width: outWidth, height: outHeight, sourceModel: photoModel, headDetail, subjectMask: dm?.maske ?? doldurulmusMaske, delikTani,
     ...(photoDisparity ? { metricGeometry: relativePhotoGeometry(photoDisparity, outWidth, outHeight, opts.photoCamera!, { shift: photoShift, mask: subject ?? undefined }) } : {}),
     ...(david ? { david } : {}), ...(dm ? { davidMaske: dm.tani } : {}),
   };
