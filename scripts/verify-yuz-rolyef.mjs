@@ -73,8 +73,36 @@ assert.equal(yuzRolyefiUygula(arkada, w, h, r, birim)[sacPx], arkada[sacPx], 'ar
 // Güç çarpanı: ×2'de rölyef iki kat (ağ ve elipsoid birlikte ölçeklenir).
 const r2 = yuzRolyefHaritasi(noktalar, w, h, 2);
 assert.ok(Math.abs(at(r2.rel, 50, 50) - 2 * at(r.rel, 50, 50)) < 1e-3, 'güç rölyefi ölçekler');
+const scalp = yuzRolyefHaritasi(noktalar, w, h, 1.5);
+const baseZ = noktalar.slice(0, 468).map(p => p.z).sort((a, b) => a - b)[234];
+const foreheadIds = [10, 109, 67, 338, 297, 151, 108, 337];
+const foreheadMax = Math.max(...foreheadIds.map(k => -(noktalar[k].z - baseZ) * w * 1.5));
+for (let i = 0; i < w * h; i++) {
+  if (scalp.ustAgirlik[i] > 0) assert.ok(scalp.ust[i] <= foreheadMax + 0.06 * 40 + 1e-5, 'saç tavanı alın + fiziksel saç payını aşmaz');
+}
 
 // Eksik nokta → null; geçersiz birim → kopya.
 assert.equal(yuzRolyefHaritasi(noktalar.slice(0, 100), w, h), null);
+const flatAxis = noktalar.map(p => ({ ...p }));
+flatAxis[152] = { ...flatAxis[10] };
+assert.equal(yuzRolyefHaritasi(flatAxis, w, h), null, 'dejenere yüz ekseni reddedilir');
 assert.deepEqual(yuzRolyefiUygula(depth, w, h, r, 0), depth);
+
+// Çene ucunda ve boyunda rölyef sıfır; döndürülmüş yüzde de eksen yüzü izler.
+for (const angle of [0, Math.PI / 6, -Math.PI / 6]) {
+  const cs = Math.cos(angle), sn = Math.sin(angle);
+  const pts = noktalar.map(p => ({ ...p, x: 0.5 + (p.x - 0.5) * cs - (p.y - 0.5) * sn, y: 0.5 + (p.x - 0.5) * sn + (p.y - 0.5) * cs }));
+  const relief = yuzRolyefHaritasi(pts, w, h, 1.5);
+  const forehead = pts[10], chin = pts[152];
+  const atAxis = t => {
+    const x = Math.floor((forehead.x + t * (chin.x - forehead.x)) * w);
+    const y = Math.floor((forehead.y + t * (chin.y - forehead.y)) * h);
+    return y * w + x;
+  };
+  assert.ok(relief.agirlik[atAxis(0.97)] < 0.1, 'çene ucunda rölyef söner');
+  assert.equal(relief.agirlik[atAxis(1.08)], 0, 'boyun rölyef almaz');
+  const changed = yuzRolyefiUygula(depth, w, h, relief, birim);
+  assert.equal(changed[atAxis(1.08)], depth[atAxis(1.08)], 'boyun üst sınırdan da etkilenmez');
+  assert.ok(relief.agirlik[atAxis(0.5)] > 0.999, 'orta yüz detayı korunur');
+}
 console.log('verify-yuz-rolyef OK');

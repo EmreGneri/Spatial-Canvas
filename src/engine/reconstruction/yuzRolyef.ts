@@ -105,6 +105,18 @@ export function yuzRolyefHaritasi(
   // modele devredilir. İçeride sönümleyip modelin eğimine çapalamak baş eğimini ezip alını
   // burnun önüne koyuyordu (ölçüldü 2026-10-12: alın 0,90 > burun 0,73).
   const gecis = Math.max(1, KENAR_SONUM_ORANI * genislik);
+  // Yatay satır yerine yüz ekseni: eğik başta da çene-boyun sınırını izle.
+  const alin = pts[10], cene = pts[152];
+  const dx = cene.x - alin.x, dy = cene.y - alin.y;
+  const axis2 = dx * dx + dy * dy;
+  if (!(axis2 > 4)) return null;
+  const axisT = (x: number, y: number) => ((x - alin.x) * dx + (y - alin.y) * dy) / axis2;
+  const jawStart = Math.max(0.55, Math.min(0.85,
+    (axisT(pts[172].x, pts[172].y) + axisT(pts[397].x, pts[397].y)) / 2));
+  const jawWeight = (x: number, y: number) => {
+    const t = Math.max(0, Math.min(1, (1 - axisT(x, y)) / (1 - jawStart)));
+    return t * t * (3 - 2 * t);
+  };
 
   const rel = new Float32Array(w * h);
   const agirlik = new Float32Array(w * h);
@@ -136,29 +148,32 @@ export function yuzRolyefHaritasi(
       // z: küçük = yakın → rölyef + kameraya doğru, piksel cinsinden (z, x ile aynı ölçekte).
       rel[i] = -(sz / sw - zMed) * w;
       const t = 1 - uzak / gecis;
-      agirlik[i] = t * t * (3 - 2 * t);
+      agirlik[i] = t * t * (3 - 2 * t) * jawWeight(px, py);
     }
   }
 
   // KAFA ELİPSOİDİ: model oval dışındaki alın/saçı sık sık yüzün ÖNÜNE koyuyor (yakın plan
   // portrede saç tepesi en yakın bölge çıktı; kullanıcı: "alın çok ilerde, anatomik değil").
-  const sol = pts[234], sag = pts[454], alin = pts[10], cene = pts[152];
+  const sol = pts[234], sag = pts[454];
   const yuzY = cene.y - alin.y;
   const ax = (KAFA_GENISLIK_ORANI * Math.abs(sag.x - sol.x)) / 2;
   const tepe = alin.y - SAC_PAYI * yuzY;
   const cx = (sol.x + sag.x) / 2, cy = (tepe + cene.y) / 2, by = (cene.y - tepe) / 2;
   const cz = KAFA_DERINLIK_ORANI * ax * guc;
   const q = (x: number, y: number) => 1 - ((x - cx) / ax) ** 2 - ((y - cy) / by) ** 2;
-  let off = 0, n = 0;
+  let off = 0, alinRel = 0, n = 0;
   for (const k of ALIN_NOKTALARI) {
     const p = pts[k], qq = q(p.x, p.y);
     if (qq <= 0) continue;
     off += -(p.z - zMed) * w - cz * Math.sqrt(qq);
+    alinRel += -(p.z - zMed) * w;
     n++;
   }
   if (!(ax > 2) || !(by > 2) || !(yuzY > 2) || n === 0) return { rel, agirlik };
   off /= n;
-  const pad = SAC_KALINLIK_ORANI * genislik * guc;
+  alinRel /= n;
+  // Saç payı fiziksel kalır; yüz gücü 1.5 olunca kafatası sınırı gevşemez.
+  const pad = SAC_KALINLIK_ORANI * genislik;
   const ust = new Float32Array(w * h);
   const ustAgirlik = new Float32Array(w * h);
   for (let y = Math.max(0, Math.floor(cy - by)); y <= Math.min(h - 1, Math.ceil(cy + by)); y++) {
@@ -167,8 +182,8 @@ export function yuzRolyefHaritasi(
       if (qq <= 0) continue;
       const i = y * w + x;
       const t = Math.min(1, qq / 0.3); // elipsoid kenarında yumuşak sönüm
-      ust[i] = cz * Math.sqrt(qq) + off + pad;
-      ustAgirlik[i] = t * t * (3 - 2 * t) * (1 - agirlik[i]);
+      ust[i] = Math.min(cz * Math.sqrt(qq) + off + pad, alinRel + pad);
+      ustAgirlik[i] = t * t * (3 - 2 * t) * (1 - agirlik[i]) * jawWeight(x + 0.5, y + 0.5);
     }
   }
   return { rel, agirlik, ust, ustAgirlik };
