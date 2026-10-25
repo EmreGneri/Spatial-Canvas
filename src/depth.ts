@@ -14,7 +14,7 @@ import {
 } from './engine/reconstruction/headDetail.ts';
 import type { YuzReferansi } from './engine/vision/yuzReferansi.ts';
 import { delikleriDoldur, type DelikOlcum } from './engine/reconstruction/maskeDelik.ts';
-import { da3Plausible, da3Preprocess, da3ToDisparity, SHIFT_K } from './engine/vision/da3Mono.ts';
+import { da3Plausible, da3Preprocess, da3ToDisparity, da3DisparityShift, SHIFT_K } from './engine/vision/da3Mono.ts';
 import { kenarHizala, mergeTileDetail, tileGrid, type TileResult } from './engine/reconstruction/derinlikDetay.ts';
 import { POINTS_DEPTH_RANGE } from './engine/buffers.ts';
 import { localInference, localInferenceAvailable, localModelAvailable, type RawTensor } from './engine/sidecarClient.ts';
@@ -385,6 +385,7 @@ export let depthDevice: 'wasm' | 'webgpu' | 'sidecar' | null = null;
 /** Tarayıcı V2 kabuğunun kurulduğu cihaz; `depthDevice` her çıkarımda buna ya da 'sidecar'a ayarlanır. */
 let tarayiciCihazi: 'wasm' | 'webgpu' | null = null;
 const sidecarEstimators = new WeakSet<object>();
+const photoDisparityShifts = new WeakMap<object, number>();
 /**
  * Yerel yardımcıda (sidecar/server.py) DA3Mono-Large. V2'nin kendi işlemcisi
  * kullanılır (aynı ImageNet normalizasyonu; fotoğraf yolu zaten 518² letterbox),
@@ -416,15 +417,20 @@ const sidecarKabugu = async (shiftK: number) => {
       yardimci = false;
       return v2(inputs);
     });
-    if (!yardimci) return { predicted_depth: new tf.Tensor('float32', raw.data, raw.dims) };
+    if (!yardimci) {
+      photoDisparityShifts.delete(estimator);
+      return { predicted_depth: new tf.Tensor('float32', raw.data, raw.dims) };
+    }
     const [, , h, w] = raw.dims;
     const depth = raw.data.subarray(0, h * w);
     const sky = raw.data.subarray(h * w);
     if (!da3Plausible(depth, sky)) {
+      photoDisparityShifts.delete(estimator);
       console.warn('Yardımcı DA3 çıktısı makul değil; bu kare tarayıcı V2 ile.');
       const f = await v2(inputs);
       return { predicted_depth: new tf.Tensor('float32', f.data, f.dims) };
     }
+    photoDisparityShifts.set(estimator, da3DisparityShift(depth, shiftK));
     return { predicted_depth: new tf.Tensor('float32', da3ToDisparity(depth, sky, shiftK), [1, h, w]) };
   };
   // Reuse the actual Transformers pipeline, including its output interpolation.
@@ -437,8 +443,17 @@ const sidecarKabugu = async (shiftK: number) => {
   return estimator;
 };
 
+let photoModelQueue: Promise<void> = Promise.resolve();
 function runPhotoModel(model: Awaited<ReturnType<typeof loadDepthModel>>, input: RawImage) {
-  return sidecarEstimators.has(model) ? model(input) : gpuSirasinaGir(() => model(input));
+  const run = async () => {
+    const result = await model(input);
+    return { ...result, photoShift: photoDisparityShifts.get(model) ?? 0 };
+  };
+  if (!sidecarEstimators.has(model)) return gpuSirasinaGir(run);
+  // Kaynak değişirken iki fotoğraf aynı kabuğu kullanabilir; kayma başka kareye ait olmasın.
+  const result = photoModelQueue.then(run,run);
+  photoModelQueue = result.then(()=>undefined,()=>undefined);
+  return result;
 }
 
 /**
@@ -542,7 +557,7 @@ export async function loadDepthModel(device?: 'wasm' | 'webgpu') {
   return estimator;
 }
 
-type Da3Model = (input: RawImage) => Promise<{ predicted_depth: { data: Float32Array; dims: number[] } }>;
+type Da3Model = (input: RawImage) => Promise<{ predicted_depth: { data: Float32Array; dims: number[] }; disparityShift: number }>;
 let da3Yukle: (() => Promise<Da3Model | null>) | null = null;
 
 /**
@@ -580,7 +595,7 @@ async function loadDa3Model(): Promise<Awaited<ReturnType<typeof loadDepthModel>
         const depth = o.depth.data as Float32Array;
         const sky = o.sky.data as Float32Array;
         if (!da3Plausible(depth, sky)) throw new Error('DA3 çıktısı makul değil');
-        return { predicted_depth: { data: da3ToDisparity(depth, sky, SHIFT_K), dims: [1, H, W] } };
+        return { predicted_depth: { data: da3ToDisparity(depth, sky, SHIFT_K), dims: [1, H, W] }, disparityShift: da3DisparityShift(depth) };
       };
       return run;
     } catch (err) {
@@ -594,8 +609,11 @@ async function loadDa3Model(): Promise<Awaited<ReturnType<typeof loadDepthModel>
   const v2 = await loadDepthModel();
   const guvenli = (async (input: RawImage) => {
     try {
-      return await da3(input);
+      const result = await da3(input);
+      photoDisparityShifts.set(guvenli, result.disparityShift);
+      return result;
     } catch (err) {
+      photoDisparityShifts.delete(guvenli);
       console.warn('DA3 çıkarımı başarısız; V2-small ile devam.', err);
       return v2(input);
     }
@@ -673,7 +691,7 @@ export async function estimateDepth(
 
   // GPU sırası: canlı derinlik döngüsü koşarken fotoğraf yüklenirse iki
   // WebGPU oturumu çakışır (bkz. gpuSirasinaGir).
-  const { predicted_depth } = await runPhotoModel(model, input);
+  const { predicted_depth, photoShift } = await runPhotoModel(model, input);
 
   const [height, width] = predicted_depth.dims.slice(-2) as [number, number];
   let data = predicted_depth.data as Float32Array;
@@ -794,7 +812,7 @@ export async function estimateDepth(
   const dm = await applyDavidMask(opts.insanMaskesi, source, subject, outWidth, outHeight);
   return {
     data: cikti, width: outWidth, height: outHeight, headDetail, subjectMask: dm?.maske ?? doldurulmusMaske, delikTani,
-    ...(photoDisparity ? { metricGeometry: relativePhotoGeometry(photoDisparity, outWidth, outHeight, opts.photoCamera!) } : {}),
+    ...(photoDisparity ? { metricGeometry: relativePhotoGeometry(photoDisparity, outWidth, outHeight, opts.photoCamera!, { shift: photoShift, mask: subject ?? undefined }) } : {}),
     ...(david ? { david } : {}), ...(dm ? { davidMaske: dm.tani } : {}),
   };
 }

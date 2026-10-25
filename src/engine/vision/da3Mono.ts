@@ -36,6 +36,11 @@ function percentile(a: Float32Array, p: number): number {
   return s[Math.min(s.length - 1, Math.max(0, Math.floor((p / 100) * s.length)))];
 }
 
+/** Kayma tam model karesinde hesaplanır; letterbox kırpımından sonra medyan değişir. */
+export function da3DisparityShift(depth: Float32Array, shiftK = SHIFT_K): number {
+  return shiftK > 0 ? shiftK * percentile(depth, 50) : 0;
+}
+
 /**
  * DA3 derinliği (+ gökyüzü olasılığı) -> V2 benzeri göreli disparite.
  * Yakın = büyük. Çıktının ölçeği keyfidir; çağıran `normalizeDepth` uygular.
@@ -47,7 +52,7 @@ function percentile(a: Float32Array, p: number): number {
 export function da3ToDisparity(depth: Float32Array, sky?: Float32Array | null, shiftK = SHIFT_K): Float32Array {
   // Yakın uçta 1/d patlamasın: %0,5'lik yüzdeliğin altı sabitlenir.
   const floor = Math.max(1e-3, percentile(depth, 0.5));
-  const shift = shiftK > 0 ? shiftK * percentile(depth, 50) : 0;
+  const shift = da3DisparityShift(depth, shiftK);
   const out = new Float32Array(depth.length);
   let minNonSky = Infinity;
   for (let i = 0; i < depth.length; i++) {

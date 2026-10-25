@@ -1,0 +1,23 @@
+import assert from 'node:assert/strict';
+const { relativePhotoGeometry }=await import('../src/engine/reconstruction/photoPerspective.ts');
+const { da3ToDisparity, da3DisparityShift }=await import('../src/engine/vision/da3Mono.ts');
+const W=24,H=16,K=Float64Array.from([1,0,.5,0,1.5,.5,0,0,1]);
+const raw=Float32Array.from({length:W*H},(_,i)=>1+2*i/(W*H));
+const d=da3ToDisparity(raw), shift=da3DisparityShift(raw);
+const g=relativePhotoGeometry(d,W,H,{intrinsics:K},{shift});
+for(let i=2;i<raw.length;i++) assert.ok(Math.abs(g.depth[i]-raw[i])<1e-5,'DA3 kayması normalizasyon öncesinden tam kaldırılır (modelin %0.5 yakın uç koruması dışında)');
+// Kayma tam letterbox dizisinden gelir; kırpımın medyanıyla yeniden tahmin edilmez.
+const cropped=relativePhotoGeometry(d.slice(0,W*4),W,4,{intrinsics:K},{shift});
+assert.ok(Math.abs(cropped.depth[20]-raw[20])<1e-5);
+const face=[{x:.25,y:.5},{x:.75,y:.5}];
+const plane=new Float32Array(W*H).fill(.5);
+const physical=relativePhotoGeometry(plane,W,H,{intrinsics:K,face});
+assert.ok(Math.abs(physical.depth[W*8]*.5-.145)<1e-5,'yüz genişliği tahmini 14.5 cm');
+const scaled=relativePhotoGeometry(Float32Array.from(plane,v=>v/13),W,H,{intrinsics:K,face});
+assert.deepEqual(scaled.depth,physical.depth,'keyfi model ölçeği yüz kalibrasyonuyla kaybolur');
+const bad=Float32Array.from(plane);bad[0]=1e-20;bad[1]=NaN;
+const bounded=relativePhotoGeometry(bad,W,H,{},{});
+assert.ok(Math.max(...bounded.depth)<=16.001,'tek uzak piksel sınırsız derinlik üretmez');
+assert.equal(bounded.validMask[1],0);
+assert.deepEqual(raw,Float32Array.from({length:W*H},(_,i)=>1+2*i/(W*H)),'kaynak değişmez');
+console.log('verify-photo-depth-budget OK: exact shift, letterbox, physical face scale, outlier limits');

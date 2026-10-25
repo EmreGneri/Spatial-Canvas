@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { yuzNoktalari } from './engine/vision/yuzTespit';
 import { yuzRolyefHaritasi, type YuzRolyefi } from './engine/reconstruction/yuzRolyef';
-import { photoPerspectiveEnabled } from './engine/reconstruction/photoPerspective';
+import { photoPerspectiveEnabled, type PhotoCameraInput } from './engine/reconstruction/photoPerspective';
 import { readExifFocal } from './vendor/splat.js/io/exif.js';
 import { estimateDepth, FOTO_KALITE, loadDepthModel, luminanceHeightMap, resetLuminanceState } from './depth';
 import { segmentForeground } from './engine/reconstruction/segmentation';
@@ -360,7 +360,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
   /** Son yüklenen fotoğraf kaynağı — nesne ayırma sonradan açılırsa RMBG'yi
    *  yeniden çalıştırmak için saklanır (Tur 12: buton canlı shader'a bağlı). */
   const lastPhotoRef = useRef<HTMLCanvasElement | HTMLImageElement | null>(null);
-  const lastPhotoCameraRef = useRef<{ focal35?: number } | undefined>(undefined);
+  const lastPhotoCameraRef = useRef<PhotoCameraInput | undefined>(undefined);
   const lastDepthRef = useRef<{ data: Float32Array; width: number; height: number } | null>(null);
   /** Bu kaynak için maske zaten üretildi mi? (video/kamera yollarında sıfırlanır) */
   const maskLoadedRef = useRef(false);
@@ -639,6 +639,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
 
       // Depth ARTIK maskeyi görüyor (GÜN E, bulgu 1).
       let depth: Partial<Awaited<ReturnType<typeof estimateDepth>>> & { data: Float32Array; width: number; height: number };
+      let photoFace: Awaited<ReturnType<typeof yuzNoktalari>> | undefined;
       if (analitikDerinlik) {
         depth = { data: analitikDerinlik, width: source.width, height: source.height };
         say(ACILIS_NOTU);
@@ -646,7 +647,12 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
         const t1 = performance.now();
         const focal35 = photoFile ? (await readExifFocal(photoFile))?.f35 : undefined;
         if (!isCurrent()) return;
-        const photoCamera = photoPerspectiveEnabled(location.search) ? { focal35 } : undefined;
+        const photoCamera: PhotoCameraInput | undefined = photoPerspectiveEnabled(location.search) ? { focal35 } : undefined;
+        if (photoCamera) {
+          photoFace = await yuzNoktalari(source);
+          if (!isCurrent()) return;
+          if (photoFace) photoCamera.face = [photoFace.noktalar[234],photoFace.noktalar[454]];
+        }
         lastPhotoCameraRef.current = photoCamera;
         depth = await estimateDepth(
           source,
@@ -673,7 +679,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
       let rolyef: YuzRolyefi | null = null;
       if (YUZ_GUCU > 0 && !analitikDerinlik) {
         const t3 = performance.now();
-        const yuz = await yuzNoktalari(source);
+        const yuz = photoFace === undefined ? await yuzNoktalari(source) : photoFace;
         if (!isCurrent()) return;
         rolyef = yuz ? yuzRolyefHaritasi(yuz.noktalar, depth.width, depth.height, YUZ_GUCU) : null;
         say(rolyef
