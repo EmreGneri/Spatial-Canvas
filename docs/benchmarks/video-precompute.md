@@ -53,8 +53,11 @@ Measurement (a), `drawImage(4K video) + getImageData` at 384x216, 40 frames: `wi
 | 4K 5 s, prepared playback per-frame color capture | 18.0 ms (23/s) | none |
 | 4K 5 s, prepared playback setDepth | 10.7 ms avg | 8.8 ms avg |
 | 4K 5 s, (b) fallbacks/s, (c) live infers/s during "ready" | 0 / 0 | 0 / 0 |
-| 1080p 6 s, prepared playback FPS | 150.0 (color capture 6.5 ms/frame) | |
+| 1080p 6 s, preparation time | 74.6 s | 19.4 s |
+| 1080p 6 s, prepared playback FPS | 150.0 (color capture 6.5 ms/frame, setDepth 12.4 ms) | 160.1 (no capture, setDepth 5.9 ms, item 2) |
 | 4K live path (preparation cancelled), FPS | 46.1, 44.1 (pre-110abf4 4f72066: 54.9, 59.5) | 56.1, 55.8 (4f72066 in the same session: 55.3, 56.4) |
 | 4K live path, setDepth | 13.4-15.4 ms, plus ~17 interpolation readbacks/s | 10.2-11.0 ms, no interpolation |
 
 On the RTX run no prepared/live ping-pong occurred (b = 0, c = 0), so F1 was not the cause there; the hysteresis guards slower machines. Live flow interpolation stays opt-in (`?araKare=1`): even capped at 12 Hz it measured ~42 FPS and 6 model Hz against ~53 FPS and 9 model Hz without it.
+
+Item 2 check: during "ready" playback the counters show 0 live inferences, 0 interpolations and 0 fallbacks per second on both clips, so no live pipeline runs beside prepared playback. Prepared playback renders far above video fps on the RTX GPU (157 FPS 4K, 160 FPS 1080p). A screenshot confirmed particle colors come from the video texture.

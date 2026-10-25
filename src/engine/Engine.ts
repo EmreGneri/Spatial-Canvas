@@ -122,6 +122,8 @@ export class Engine {
   private videoTexture: THREE.VideoTexture | null = null;
   private videoWorldHeight = POINTS_WORLD_HEIGHT;
   private videoAspect = 1;
+  /** Canlı renk karesi için yeniden kullanılan RGB tamponu (her setDepth'te ~1 MB çöp olmasın). */
+  private videoRgbScratch = new Float32Array(0);
 
   /**
    * Nesne ayÄ±rma (Tur 12 â€” ÅŸikayet 4): AÃ‡IK iken shader'lar arka plan
@@ -1807,7 +1809,10 @@ if (this.photoData) {
     }
     if (this.videoTexture && videoFrame) {
       const { data: rgba, width: frameWidth, height: frameHeight } = videoFrame;
-      const rgb = new Float32Array(frameWidth * frameHeight * 3);
+      if (this.videoRgbScratch?.length !== frameWidth * frameHeight * 3) {
+        this.videoRgbScratch = new Float32Array(frameWidth * frameHeight * 3);
+      }
+      const rgb = this.videoRgbScratch;
       for (let i = 0, j = 0; i < rgba.length; i += 4, j += 3) {
         rgb[j] = rgba[i] / 255;
         rgb[j + 1] = rgba[i + 1] / 255;
