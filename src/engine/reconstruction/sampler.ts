@@ -185,7 +185,8 @@ export interface VolumeSampleOptions {
    */
   importanceSampling?: boolean;
   /** A video is a complete scene; its mask affects opacity but never geometry. */
-  fullFrame?: { cameraDistance: number };
+  /** `aspect`: kaynak video en-boyu (derinlik ızgarasınınki değil). */
+  fullFrame?: { cameraDistance: number; aspect?: number };
   /** Video-only edge cleanup strength (0 = off, 1..4 = 1..2 source pixels). */
   videoEdgeCleanup?: number;
   /** Confidence in propagated video depth, at the input depth resolution. */
@@ -221,12 +222,19 @@ export function sampleVolumePositions(
   const out = new Float32Array(n * 4);
   if (opts.fullFrame) {
     const cameraDistance = opts.fullFrame.cameraDistance;
+    const frameHalfW = (opts.fullFrame.aspect ?? depthWidth / depthHeight) * halfH;
     const videoMask = opts.foregroundMask?.length === depthWidth * depthHeight
       ? opts.foregroundMask : null;
-    const flowConfidence = opts.videoFlowConfidence?.length === depth.length
-      ? Float32Array.from(opts.videoFlowConfidence, value =>
-        Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : 0)
-      : null;
+    // Döngü: geri çağrılı Float32Array.from her ara karede belirgin pahalıydı (F14).
+    let flowConfidence: Float32Array | null = null;
+    if (opts.videoFlowConfidence?.length === depth.length) {
+      const source = opts.videoFlowConfidence;
+      flowConfidence = new Float32Array(source.length);
+      for (let k = 0; k < source.length; k++) {
+        const value = source[k];
+        flowConfidence[k] = value > 0 ? (value < 1 ? value : 1) : 0; // NaN -> 0
+      }
+    }
     if (!(cameraDistance > range / 2)) {
       throw new Error('Full-frame camera distance must exceed the depth range');
     }
@@ -251,7 +259,7 @@ export function sampleVolumePositions(
         // Perspective division uses cameraDistance - z. Undo it here so the
         // original video frame stays aligned from the reference camera.
         const xyScale = (cameraDistance - z) / cameraDistance;
-        out[offset] = (u - 0.5) * 2 * halfW * xyScale;
+        out[offset] = (u - 0.5) * 2 * frameHalfW * xyScale;
         out[offset + 1] = (v - 0.5) * 2 * halfH * xyScale;
         out[offset + 2] = z;
         out[offset + 3] = videoMask

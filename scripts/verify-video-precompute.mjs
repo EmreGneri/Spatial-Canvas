@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { videoWindowIndices, alignVideoWindow, blendVideoSeam, quantizeVideoDepth } from '../src/engine/vision/videoPrecomputeWindow.ts';
-import { prepareVideoDepth } from '../src/engine/vision/videoPrecompute.ts';
+import { prepareVideoDepth, videoDepthRange } from '../src/engine/vision/videoPrecompute.ts';
 
 const first = videoWindowIndices(0, 70);
 const second = videoWindowIndices(22, 70, first);
@@ -20,6 +20,12 @@ assert.deepEqual(Array.from(packed), [0, 32768, 65535]);
 // Same scene range, distinct frames retain their relative position (no per-frame renormalization).
 assert.equal(quantizeVideoDepth(new Float32Array([15]), 10, 20)[0], packed[1]);
 assert.deepEqual(Array.from(quantizeVideoDepth(new Float32Array([7]), 7, 7)), [0]);
+// F8: one hot pixel cannot stretch the scene range (percentiles, not min/max).
+const sceneSamples = Array.from({ length: 1000 }, (_, i) => i / 999);
+sceneSamples[500] = 1e6;
+const [lo, hi] = videoDepthRange(sceneSamples);
+assert.ok(lo < 0.02 && hi > 0.97 && hi < 1, `robust range ${lo}..${hi}`);
+assert.deepEqual(videoDepthRange([]), [0, 0]);
 let dispose = 0;
 const stages = [];
 const handle = await prepareVideoDepth(new Blob(), {

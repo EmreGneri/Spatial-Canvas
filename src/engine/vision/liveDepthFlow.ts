@@ -17,6 +17,24 @@ export interface LiveDepthFlowResult {
 const MAX_FLOW_EDGE = 112;
 const SCENE_CUT_MEAN_DELTA = 0.24;
 export const LIVE_DEPTH_MAX_AGE_SECONDS = 0.75;
+/**
+ * Ara kare (akış) en fazla ~12 Hz: her ara kare tam bir `setDepth` (~10 ms ana
+ * iş parçacığı) + geri okuma demek. Her video karesinde yapılınca varsayılan
+ * canlı yol 110abf4 öncesinden yavaştı (inceleme F5).
+ */
+export const LIVE_INTERPOLATION_MIN_INTERVAL_SECONDS = 1 / 12;
+/**
+ * Ara kare VARSAYILAN KAPALI (`?araKare=1` ile açılır). 4K klipte görünür
+ * Chrome ölçümü (RTX 5070, 2026-10-25): kapalı ~53 FPS / 9 model Hz, açık (12 Hz
+ * tavanla bile) ~42 FPS / 6 model Hz; 110abf4 öncesi ~58 FPS. Ara karenin
+ * setDepth'i (~16 ms) model karelerinden pahalı ve model hızını da düşürüyor.
+ */
+export function liveInterpolationEnabled(search: string = globalThis.location?.search ?? ''): boolean {
+  return new URLSearchParams(search).get('araKare') === '1';
+}
+export function isLiveInterpolationDue(mediaTime: number, lastShownTime: number): boolean {
+  return mediaTime - lastShownTime >= LIVE_INTERPOLATION_MIN_INTERVAL_SECONDS - 0.005;
+}
 export function shouldPresentLiveDepth(mediaTime: number, displayedTime: number): boolean {
   return Number.isFinite(mediaTime) && mediaTime >= displayedTime;
 }

@@ -107,7 +107,7 @@ export interface PositionFillOptions {
    */
   importanceSampling?: boolean;
   /** Preserve video UVs and depth regardless of segmentation mask. */
-  fullFrame?: { cameraDistance: number };
+  fullFrame?: { cameraDistance: number; aspect?: number };
   /** Video-only disparity edge cleanup, 0 (off) through 4. */
   videoEdgeCleanup?: number;
   videoFlowConfidence?: Float32Array;

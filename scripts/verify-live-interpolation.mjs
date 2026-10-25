@@ -77,6 +77,22 @@ client.dispose();
 worker.finish();
 assert.deepEqual(results, [1], 'dispose prevents late publication');
 assert.equal(worker.terminated, true);
+// F12: a failed worker restarts with backoff instead of disabling interpolation forever.
+{
+  let clock = 0; const workers = []; const got = [];
+  const restarting = new LiveDepthFlowClient((r, input) => got.push(input.mediaTime), () => { const w = new FakeWorker(); workers.push(w); return w; }, () => clock);
+  const send = t => restarting.submit({ depth: oldDepth, previousFrame: toFrame(luminance), currentFrame: nextFrame, width, height, mediaTime: t });
+  send(1); workers[0].onerror();
+  assert.equal(workers[0].terminated, true);
+  send(2); assert.equal(workers.length, 1, 'no restart before the backoff');
+  clock = 1001; send(3); assert.equal(workers.length, 2, 'worker restarts after backoff');
+  workers[1].finish(); assert.deepEqual(got, [3]);
+  for (let k = 0; k < 3; k++) { workers.at(-1).onerror(); clock += 10_000; send(10 + k); }
+  assert.equal(workers.length, 4, 'restart budget is bounded');
+  workers.at(-1).onerror(); clock += 10_000; send(20);
+  assert.equal(workers.length, 4, 'interpolation stays off after repeated failures');
+  restarting.dispose();
+}
 
 let response;
 globalThis.self = { postMessage(value) { response = value; } };
@@ -96,4 +112,15 @@ assert.ok(second.mask?.some(v => v > 0.5 && v < 0.75), 'fresh and historical mas
 const cutMask = request(3, toFrame(luminance.map(v => 1 - v)), freshMask);
 assert.equal(cutMask.mask, undefined, 'scene cuts clear historical mask flow');
 delete globalThis.self;
+// F5: interpolation is capped (~12 Hz), never at every presented video frame.
+const due24 = [], due30 = [];
+for (const [fps, out] of [[24, due24], [30, due30]]) {
+  let shown = 0;
+  for (let k = 1; k <= fps; k++) if (flow.isLiveInterpolationDue(k / fps, shown)) { shown = k / fps; out.push(k); }
+}
+assert.ok(due24.length >= 10 && due24.length <= 12, `24 fps -> ${due24.length} interpolations/s`);
+assert.ok(due30.length >= 9 && due30.length <= 12, `30 fps -> ${due30.length} interpolations/s`);
+assert.equal(flow.liveInterpolationEnabled(''), false, 'interpolation is opt-in (default live path stays as fast as before)');
+assert.equal(flow.liveInterpolationEnabled('?araKare=1'), true);
+assert.equal(flow.isLiveInterpolationDue(1 + 1 / 24, 1), false, 'the frame right after a model frame is skipped');
 console.log('OK live interpolation: motion, occlusion, scene cuts, affine alignment, single flight, resets');

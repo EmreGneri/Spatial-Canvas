@@ -18,9 +18,10 @@ import {
 } from '../../depth.ts';
 import { resampleBilinear } from '../reconstruction/silhouette.ts';
 import { localInference, localInferenceAvailableCanli, type RawTensor } from '../sidecarClient.ts';
-import { isLiveDepthResultStale, stabilizeLiveDepthPair, LIVE_DEPTH_MAX_AGE_SECONDS } from './liveDepthFlow.ts';
+import { isLiveDepthResultStale, isLiveInterpolationDue, liveInterpolationEnabled, stabilizeLiveDepthPair, LIVE_DEPTH_MAX_AGE_SECONDS } from './liveDepthFlow.ts';
 import type { LiveDepthFlowInput, LiveDepthFrame } from './liveDepthFlow.ts';
 import { LiveDepthFlowClient } from './liveDepthFlowClient.ts';
+import { videoStats } from './videoStats.ts';
 import {
   VDA_INPUT_HEIGHT, VDA_INPUT_WIDTH, vdaDus, vdaHazirla, vdaIsit, vdaIstendi, vdaKare,
   vdaKullanilsinMi, vdaSifirla,
@@ -1455,7 +1456,8 @@ export async function estimateDepthLive(
   const { w, h } = liveGrabSize(kw, kh);
   if (!grabCanvas) {
     grabCanvas = document.createElement('canvas');
-    grabCtx = grabCanvas.getContext('2d', { willReadFrequently: true });
+    // GPU tuvali: 4K kaynak küçültülürken ana belleğe kopyalanmaz (bkz. interpolate).
+    grabCtx = grabCanvas.getContext('2d');
   }
   const canvas = grabCanvas;
   if (canvas.width !== w || canvas.height !== h) {
@@ -1467,7 +1469,7 @@ export async function estimateDepthLive(
   if (source instanceof HTMLVideoElement) {
     if (!colorFrameCanvas) {
       colorFrameCanvas = document.createElement('canvas');
-      colorFrameCtx = colorFrameCanvas.getContext('2d', { willReadFrequently: true });
+      colorFrameCtx = colorFrameCanvas.getContext('2d');
     }
     if (colorFrameCtx) {
       const size = liveGrabSize(vw, vh);
@@ -1487,7 +1489,7 @@ export async function estimateDepthLive(
       const c = document.createElement('canvas');
       c.width = VDA_INPUT_WIDTH;
       c.height = VDA_INPUT_HEIGHT;
-      vdaCtx = c.getContext('2d', { willReadFrequently: true });
+      vdaCtx = c.getContext('2d');
     }
     vdaCtx!.drawImage(source, 0, 0, vw, vh, 0, 0, VDA_INPUT_WIDTH, VDA_INPUT_HEIGHT);
     vdaFrame = vdaCtx!.getImageData(0, 0, VDA_INPUT_WIDTH, VDA_INPUT_HEIGHT);
@@ -1618,7 +1620,8 @@ export function startLiveDepth(
   let interpolationCanvas: HTMLCanvasElement | null = null;
   let interpolationContext: CanvasRenderingContext2D | null = null;
   let lastInterpolatedTime = -Infinity;
-  const flowClient = opts.onInterpolatedDepth ? new LiveDepthFlowClient((result, input) => {
+  let lastInterpolationSubmit = -Infinity;
+  const flowClient = opts.onInterpolatedDepth && liveInterpolationEnabled() ? new LiveDepthFlowClient((result, input) => {
     const model = previousAccepted;
     if (!active || video.paused || video.seeking || !model || input.modelMediaTime !== model.mediaTime
       || input.mediaTime <= lastInterpolatedTime || input.mediaTime < model.mediaTime
@@ -1638,9 +1641,14 @@ export function startLiveDepth(
     const model = previousAccepted;
     if (!flowClient || !model?.colorFrame || video.paused || video.seeking || video.readyState < 2
       || mediaTime <= model.mediaTime || mediaTime - model.mediaTime > LIVE_DEPTH_MAX_AGE_SECONDS) return;
+    if (!isLiveInterpolationDue(mediaTime, Math.max(model.mediaTime,
+      lastInterpolationSubmit <= mediaTime ? lastInterpolationSubmit : -Infinity))) return;
+    lastInterpolationSubmit = mediaTime;
     if (!interpolationCanvas) {
       interpolationCanvas = document.createElement('canvas');
-      interpolationContext = interpolationCanvas.getContext('2d', { willReadFrequently: true });
+      // willReadFrequently YOK: CPU tuvali 4K kareyi küçültmeden önce ana belleğe
+      // kopyalar (ölçüldü: 22 ms p50, GPU tuvalinde 2 ms).
+      interpolationContext = interpolationCanvas.getContext('2d');
     }
     if (!interpolationContext) return;
     const { width, height } = model.colorFrame;
@@ -1649,6 +1657,7 @@ export function startLiveDepth(
     }
     interpolationContext.drawImage(video, 0, 0, width, height);
     const colorFrame: LiveDepthFrame = interpolationContext.getImageData(0, 0, width, height);
+    videoStats.interpolations++;
     flowClient.submit({ depth: model.data, previousFrame: model.colorFrame, currentFrame: colorFrame,
       width: model.width, height: model.height, mediaTime, modelMediaTime: model.mediaTime,
       mask: opts.flowMaskAl?.() ?? undefined });
@@ -1659,6 +1668,7 @@ export function startLiveDepth(
     previousAccepted = null;
     flowClient?.reset();
     lastInterpolatedTime = -Infinity;
+    lastInterpolationSubmit = -Infinity;
     resetLiveDepthState();
     opts.onDiscontinuity?.(reason);
   };
@@ -1784,6 +1794,7 @@ export function startLiveDepth(
       const isCurrent = () => active && capturedRevision === revision
         && size === inputSize()
         && mask === (opts.maskeAl?.() ?? null);
+      videoStats.liveInfers++;
       try {
         return await estimateDepthLive(video, {
           forceV2: opts.forceV2?.(),
@@ -1811,7 +1822,9 @@ export function startLiveDepth(
         const aligned = stabilizeLiveDepthPair(
           previous.data, raw.data, previous.colorFrame, raw.colorFrame, raw.width, raw.height,
         );
-        if (aligned.sceneCut) invalidate('scene-cut');
+        // Kesmeden sonraki kare eski sahnenin aralığıyla normalize edildi:
+        // gösterme, temiz durumla bir sonraki çıkarımı bekle (F13).
+        if (aligned.sceneCut) { invalidate('scene-cut'); return; }
         depth = { ...raw, data: aligned.depth, flowCoverage: aligned.coverage };
       } else {
         depth = { ...raw, flowCoverage: 0 };

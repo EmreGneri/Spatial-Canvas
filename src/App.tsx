@@ -7,6 +7,7 @@ import { captureLiveMask } from './engine/vision/liveMask';
 import { isLiveFrameUnchanged, shouldPresentLiveDepth } from './engine/vision/liveDepthFlow';
 import { prepareVideoDepth, type VideoDepthHandle, type VideoDepthProgress } from './engine/vision/videoPrecompute';
 import { startBufferedVideoPlayback } from './engine/vision/bufferedVideoPlayback';
+import { videoStats } from './engine/vision/videoStats';
 import { Engine } from './engine';
 import { ControlPanel } from './ui/ControlPanel';
 import { createPointCloudMaterial, POINTS_PARAMS } from './shaders/pointCloudMaterial';
@@ -85,6 +86,8 @@ const LUMINANCE_SMOOTHING_ALPHA = 0.12;
 const LUMINANCE_MOTION_GAIN = 6;
 /** A new segmentation pass blocks the shared GPU queue, so refresh only on drift. */
 const VIDEO_MASK_MIN_REFRESH_MS = 15_000;
+/** Video hazırlanırken canlı V2 çıkarımları arası en az süre (GPU kuyruğu paylaşılır). */
+const PREPARING_LIVE_INFER_MS = 500;
 const LOG_LIMIT = 200;
 
 /**
@@ -230,6 +233,8 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
   const preparedVideoAbortRef = useRef<AbortController | null>(null);
   const preparedVideoStopRef = useRef<(() => void) | null>(null);
   const preparedVideoUsableRef = useRef(false);
+  /** Hazırlık sürüyor: canlı çıkarım kısılır (F4), V2 zorlanır (F11). */
+  const videoPreparingRef = useRef(false);
   const preparedFrameTimeRef = useRef(-Infinity);
   const preparedFramePresenterRef = useRef<((frame: LiveDepthResult) => void) | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -342,7 +347,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
     setEngine(engine);
     // Yalnızca dev: tarayıcı konsolundan motor durumunu ölçmek için
     // (dev-smoke.ts ve elle tanı). Üretim bundle'ında yok.
-    if (import.meta.env.DEV) (window as unknown as { __engine?: Engine }).__engine = engine;    // Render katmanının shader'ı yer tutucunun yerine geçer (başlangıç modu).
+    if (import.meta.env.DEV) Object.assign(window, { __engine: engine, __videoStats: videoStats });    // Render katmanının shader'ı yer tutucunun yerine geçer (başlangıç modu).
     // Engine yer tutucuyu dispose eder; uPositions'ı her karede o yazar.
     // Modların parametre tanımları da kaydedilir — preset serileştirmesi bunları okur.
     engine.registerRenderMode('points', materials.points, POINTS_PARAMS);
@@ -447,6 +452,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
     sourceGenRef.current++;
     preparedVideoAbortRef.current?.abort();
     preparedVideoAbortRef.current = null;
+    videoPreparingRef.current = false;
     preparedVideoStopRef.current?.();
     preparedVideoStopRef.current = null;
     void preparedVideoRef.current?.dispose().catch(() => {});
@@ -851,6 +857,9 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
       if (iptal || !isCurrent() || videoRef.current !== video) return;
       stopLuminanceLoop();
       if (preparedFrameTimeRef.current === -Infinity) setLiveRates({ model: 0, flow: 0 });
+      // Hazır derinlik o anki kareyle hizalı: renk doğrudan video dokusundan (canlı
+      // karelerin yakalanmış renk ızgarası bırakılır; zaten boşsa çağrı bedava).
+      engineRef.current?.clearVideoFrameColor();
       lastDepth = frame;
       preparedFrameTimeRef.current = frame.mediaTime;
       applyDepth(frame, true);
@@ -957,6 +966,8 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
         return sorted[Math.min(sorted.length - 1, Math.ceil(q * sorted.length) - 1)];
       };
       let sonLog = performance.now();
+      let lastPreparingInfer = -Infinity;
+      let lastCutMaskReset = -Infinity;
       const stopDriver = startLiveDepth(
         video,
         (d) => {
@@ -1003,9 +1014,19 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
           }
         },
         {
-          shouldInfer: () => segmentRef.current || !preparedVideoUsableRef.current
-            || !preparedVideoRef.current?.hasFrame(video.currentTime),
-          forceV2: () => preparedVideoAbortRef.current !== null,
+          shouldInfer: () => {
+            if (!segmentRef.current && preparedVideoUsableRef.current
+              && preparedVideoRef.current?.hasFrame(video.currentTime)) return false;
+            // Hazırlık aynı GPU kuyruğunu kullanır: canlı çıkarım 2 Hz'e kısılır (F4).
+            if (videoPreparingRef.current) {
+              const now = performance.now();
+              if (now - lastPreparingInfer < PREPARING_LIVE_INFER_MS) return false;
+              lastPreparingInfer = now;
+            }
+            return true;
+          },
+          // V2 only while the offline cache is still being built (F11).
+          forceV2: () => videoPreparingRef.current,
           flowMaskAl: () => segmentRef.current ? videoMask : null,
           onInterpolatedDepth: (d) => {
             if (iptal || !isCurrent() || videoRef.current !== video) return;
@@ -1014,13 +1035,18 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
             lastDepth = d;
             applyDepth(d);
             flowCount++;
+            videoStats.interpolatedApplied++;
           },
           // No `maskeAl`: a mask must not alter live video depth, or mask
           // arrival would move the geometry. The driver keeps looped masks;
           // only a user seek shows a different subject.
           onDiscontinuity: (reason) => {
             lastDepth = null;
-            if (reason !== 'loop') {
+            // Flaş/hızlı pan kesme sanılabilir; maske yeniden yakalama (saniyelerce
+            // GPU) kesme kaynaklıysa 10 sn'de en fazla bir kez (F13).
+            const cutTooSoon = reason === 'scene-cut' && performance.now() - lastCutMaskReset < 10_000;
+            if (reason === 'scene-cut' && !cutTooSoon) lastCutMaskReset = performance.now();
+            if (reason !== 'loop' && !cutTooSoon) {
               maskRevision++;
               videoMask = null;
               maskBaseline = null;
@@ -1060,12 +1086,15 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
     const isCurrent = captureGeneration(sourceGenRef);
     const controller = new AbortController();
     preparedVideoAbortRef.current = controller;
+    videoPreparingRef.current = true;
     const fallback = () => {
       if (!isCurrent() || controller.signal.aborted) return;
+      videoStats.fallbacks++;
       preparedVideoUsableRef.current = false;
       preparedFrameTimeRef.current = -Infinity;
       if (!liveDepthStopRef.current && !luminanceActiveRef.current) startLuminanceLoop(video, 'video');
     };
+    let lastReadError = -Infinity;
     void prepareVideoDepth(file, {
       signal: controller.signal,
       onProgress: (progress) => {
@@ -1077,23 +1106,29 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
       if (!isCurrent() || controller.signal.aborted) { await handle.dispose(); return; }
       preparedVideoRef.current = handle;
       const beginPlayback = () => startBufferedVideoPlayback(video, handle, {
+        // Prepared files contain depth only; separation keeps the live mask pipeline (F6).
+        enabled: () => !segmentRef.current,
         onFrame: (frame) => {
           if (!isCurrent() || controller.signal.aborted) return;
-          if (Math.abs(video.currentTime - frame.mediaTime) > 0.25) { fallback(); return; }
-          // Prepared files contain depth only; preserve the live mask pipeline when separation is enabled.
-          if (segmentRef.current) { fallback(); return; }
           preparedVideoUsableRef.current = true;
+          videoStats.preparedFrames++;
           preparedFramePresenterRef.current?.({ ...frame, inferenceMs: 0, depthModel: 'vda',
             modelOutput: { data: frame.data, width: frame.width, height: frame.height } });
         },
         onFallback: fallback,
         onError: (error) => {
-          if (isCurrent()) say(`Depth cache read failed; using live depth: ${String(error)}`);
+          // Okuma hataları kare kare tekrarlanabilir; günlük ve React yenilemesi 10 sn'de bir.
+          if (!isCurrent() || performance.now() - lastReadError < 10_000) return;
+          lastReadError = performance.now();
+          say(`Depth cache read failed; using live depth: ${String(error)}`);
         },
       });
       preparedVideoStopRef.current = beginPlayback();
       await handle.done;
-      if (!isCurrent() || controller.signal.aborted || !handle.hasFrame(video.currentTime)) return;
+      if (!isCurrent() || controller.signal.aborted) return;
+      videoPreparingRef.current = false;
+      // Fallback/cancel: nothing will ever be readable, so stop the player and drop the store (F16).
+      if (!handle.hasFrame(video.currentTime)) { stopPreparedVideo(); fallback(); return; }
       // Paused videos have no new decoded callback when preparation finishes.
       if (video.paused) {
         preparedVideoStopRef.current?.();
@@ -1101,9 +1136,21 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
       }
     }).catch((error) => {
       if (!isCurrent() || controller.signal.aborted) return;
+      videoPreparingRef.current = false;
       preparedVideoUsableRef.current = false;
       say(`Video preparation failed; using live depth: ${String(error)}`);
     });
+  }
+
+  /** Player and handle are released together; live depth takes over (Cancel, failure). */
+  function stopPreparedVideo() {
+    videoPreparingRef.current = false;
+    preparedVideoStopRef.current?.();
+    preparedVideoStopRef.current = null;
+    void preparedVideoRef.current?.dispose().catch(() => {});
+    preparedVideoRef.current = null;
+    preparedVideoUsableRef.current = false;
+    preparedFrameTimeRef.current = -Infinity;
   }
 
   async function toggleSegment() {
@@ -1706,8 +1753,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
           {videoPreparation.stage !== 'ready' && <span>Processed {(videoPreparation.processedSeconds ?? 0).toFixed(1)} s</span>}
           {!['ready', 'fallback', 'cancelled'].includes(videoPreparation.stage) && <button onClick={() => {
             preparedVideoAbortRef.current?.abort();
-            preparedVideoRef.current?.cancel();
-            preparedVideoUsableRef.current = false;
+            stopPreparedVideo();
             setVideoPreparation({ ...videoPreparation, stage: 'cancelled' });
           }}>Cancel preparation</button>}
           {videoPreparation.error && <span role="status">Live depth fallback</span>}
@@ -1734,8 +1780,8 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
             geliştirici göstergesi. Sunumda mount edilmez. */}
         {!sunum && (
           <>
-            <a href="/bench/points.html" target="_blank" rel="noreferrer"
-              style={{ color: renk.metin, fontSize: 12 }}>Point count benchmark</a>
+            {import.meta.env.DEV && <a href="/bench/points.html" target="_blank" rel="noreferrer"
+              style={{ color: renk.metin, fontSize: 12 }}>Point count benchmark</a>}
             <button style={toggleButton(segment, '#2a3')} disabled={busy} onClick={toggleSegment}>
               nesne ayırma: {segment ? 'AÇIK' : 'kapalı'}
             </button>

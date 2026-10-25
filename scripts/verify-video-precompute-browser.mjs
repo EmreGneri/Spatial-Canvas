@@ -46,7 +46,7 @@ try {
   clearTimeout(timer);
   assert.equal(result.ready, true, JSON.stringify(result));
   assert.equal(result.frame.finite, true);
-  assert.equal(result.decodedFrames, 8);
+  assert.ok(result.decodedFrames <= 2, 'progress is throttled (F3), not one React update per decoded frame');
   result.timestamps.forEach((time, i) => assert.ok(Math.abs(time - i / 10) < 0.001, `source timestamp ${i} preserved`));
   assert.equal(new Set(result.timestamps).size, 8);
   assert.ok(result.mediaTime >= 0.5, 'late playback must read a late source frame');

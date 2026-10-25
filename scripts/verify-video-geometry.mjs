@@ -58,4 +58,17 @@ assert.equal(first[2], expectedZ);
 assert.ok(Math.abs(first[3] - BACKDROP_OPACITY) < 1e-6,
   'mask dims background without changing full-frame video geometry');
 
+// F7: cloud width follows the source video aspect, not the depth grid
+// (prepared 266x154 and live V2 grids must give the same 16:9 cloud).
+{
+  const span = (w, h) => {
+    const p = sampleVolumePositions(new Float32Array(w * h).fill(0.5), w, h,
+      { gridSize: 8, worldHeight: 2, fullFrame: { cameraDistance: 3.5, aspect: 16 / 9 } });
+    let lo = Infinity, hi = -Infinity;
+    for (let i = 0; i < p.length; i += 4) { lo = Math.min(lo, p[i]); hi = Math.max(hi, p[i]); }
+    return hi - lo;
+  };
+  assert.ok(Math.abs(span(266, 154) - span(32, 18)) < 1e-6, 'prepared and live grids share the video width');
+}
+
 console.log('OK · full-frame video geometry stays aligned across masks and world heights');

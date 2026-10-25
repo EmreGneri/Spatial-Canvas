@@ -1691,13 +1691,20 @@ if (entry && entry.material !== this.pointsMaterial) {
     // sÄ±fÄ±rlanÄ±r ve fareyle yapÄ±lan deformasyon sÃ¼rekli silinir.
     // GÃœN 6 (madde 4): video/kamera kaynaÄŸÄ±nda (dynamicHome) home %80 yeni
     // %20 eski ile yazÄ±lÄ±r â€” parÃ§acÄ±k ataleti korunur, titreme sÃ¶ner.
+    // Bulut en-boyu KAYNAK videodan: hazır derinlik 266x154 (1.727), canlı V2
+    // başka bir ızgara; derinlik boyutundan alınınca bulut genişliği her
+    // geçişte "pompalıyordu" (inceleme F7).
+    const source = this.videoTexture?.image as HTMLVideoElement | undefined;
+    const sourceAspect = source?.videoWidth && source.videoHeight
+      ? source.videoWidth / source.videoHeight : width / height;
     const videoWorldHeight = this.videoTexture
       ? 2 * DEFAULT_CAMERA_DISTANCE * Math.tan(THREE.MathUtils.degToRad(this.camera.fov) / 2)
-        * Math.min(1, this.camera.aspect / (width / height)) * VIDEO_VIEWPORT_FILL
+        * Math.min(1, this.camera.aspect / sourceAspect) * VIDEO_VIEWPORT_FILL
       : undefined;
-    if (videoWorldHeight !== undefined) {
+    if (videoWorldHeight !== undefined
+      && (videoWorldHeight !== this.videoWorldHeight || sourceAspect !== this.videoAspect)) {
       this.videoWorldHeight = videoWorldHeight;
-      this.videoAspect = width / height;
+      this.videoAspect = sourceAspect;
       if (this.renderModes) this.pushSharedUniformsAll();
     }
     // NESNE AYIRMA (yoğunluk): grid bütçesi (384×384, sabit) AÇIKKEN bile
@@ -1765,7 +1772,7 @@ if (entry && entry.material !== this.pointsMaterial) {
       // subject in x/y but not z (flat, wide bust). Photo color fills and
       // the shell mesh below use the same off default, so they stay aligned.
       importanceSampling: false,
-      fullFrame: this.videoTexture ? { cameraDistance: DEFAULT_CAMERA_DISTANCE } : undefined,
+      fullFrame: this.videoTexture ? { cameraDistance: DEFAULT_CAMERA_DISTANCE, aspect: sourceAspect } : undefined,
       videoEdgeCleanup: this.videoTexture ? this.videoEdgeCleanupStrength : 0,
       videoFlowConfidence: this.videoTexture ? videoFlowConfidence : undefined,
       videoGuideMask: this.videoTexture && foregroundMask && maskWidth && maskHeight
