@@ -148,15 +148,26 @@ def ebeveyni_izle(pid: int):
     threading.Thread(target=bekci, name='ebeveyn-bekcisi', daemon=True).start()
 
 
-def pick_providers() -> list[str]:
+# DirectML aygıt seçmezse DXGI 0'ı alır; hibrit dizüstünde o Intel iGPU (DXGI sırası
+# Intel=0, NVIDIA=1). DA3 orada ~4–10 sn, RTX'te 0,26 sn (ölçüldü 2026-10-25).
+DML_SECENEKLERI = {'performance_preference': 'high_performance', 'device_filter': 'gpu'}
+
+
+def pick_providers() -> list:
     available = ort.get_available_providers()
-    for ep in ('CUDAExecutionProvider', 'DmlExecutionProvider'):
-        if ep in available:
-            return [ep, 'CPUExecutionProvider']
+    if 'CUDAExecutionProvider' in available:
+        return ['CUDAExecutionProvider', 'CPUExecutionProvider']
+    if 'DmlExecutionProvider' in available:
+        return [('DmlExecutionProvider', DML_SECENEKLERI), 'CPUExecutionProvider']
     return ['CPUExecutionProvider']
 
 
-def session(path: Path, providers: list[str], fixed: dict[str, int] | None = None) -> ort.InferenceSession:
+def provider_adi(providers: list) -> str:
+    p = providers[0]
+    return p if isinstance(p, str) else p[0]
+
+
+def session(path: Path, providers: list, fixed: dict[str, int] | None = None) -> ort.InferenceSession:
     so = ort.SessionOptions()
     so.log_severity_level = 3
     # ORT_ENABLE_ALL, DirectML'de fp16 V2'nin LayerNorm füzyonunu bozuyor
@@ -183,7 +194,7 @@ class Models:
     moge_hata: str | None = None  # Oturum kurulamazsa bir kez yazılır; /health artık 'moge' listelemez.
     david = None  # DAViD maske oturumu; yalnız kurulup ısındıysa /health 'david-mask' listeler.
 
-    def __init__(self, model_dir: Path, providers: list[str], david: bool = True):
+    def __init__(self, model_dir: Path, providers: list, david: bool = True):
         self.worker_native_thread = threading.get_native_id()
         self.model_dir = model_dir
         self.providers = providers
@@ -204,7 +215,7 @@ class Models:
         self.run_mask(np.zeros((1, 3, MASK_SIZE, MASK_SIZE), np.float32))
         if david:
             self.david_kur()
-        print(f'modeller yüklendi ve ısındı ({time.perf_counter() - t:.1f} sn) · {providers[0]}', flush=True)
+        print(f'modeller yüklendi ve ısındı ({time.perf_counter() - t:.1f} sn) · {provider_adi(providers)}', flush=True)
         self.small_seq = 0
         self.debug = False
         self.seq_lock = threading.Lock()
@@ -353,7 +364,7 @@ def make_handler(models: Models, gpu: ThreadPoolExecutor, extra_origins: set[str
             if self.origin_ok() == '':
                 return self.reply(403, b'{"ok":false}')
             if urlparse(self.path).path == '/health':
-                body = json.dumps({'ok': True, 'arkaUc': models.providers[0], 'modeller': models.available()})
+                body = json.dumps({'ok': True, 'arkaUc': provider_adi(models.providers), 'modeller': models.available()})
                 return self.reply(200, body.encode())
             self.reply(404, b'{"ok":false}')
 

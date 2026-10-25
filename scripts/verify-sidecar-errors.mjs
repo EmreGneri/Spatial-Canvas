@@ -62,6 +62,20 @@ with ThreadPoolExecutor(max_workers=1) as gpu:
     finally:
         sys.stdout, sys.stderr = previous
     assert replies[0][0] == 500 and b'E_OUTOFMEMORY' in replies[0][1], replies
+
+# DirectML yüksek performanslı GPU'yu istemeli: aygıt verilmezse DXGI 0 = Intel iGPU (DA3 0,26 → ~10 sn).
+names = {'DML_SECENEKLERI', 'pick_providers', 'provider_adi'}
+nodes = [n for n in tree.body if (isinstance(n, ast.FunctionDef) and n.name in names)
+         or (isinstance(n, ast.Assign) and any(getattr(t, 'id', '') in names for t in n.targets))]
+for available, first in [(['DmlExecutionProvider', 'CPUExecutionProvider'], 'DmlExecutionProvider'),
+                         (['CUDAExecutionProvider', 'DmlExecutionProvider'], 'CUDAExecutionProvider'),
+                         (['CPUExecutionProvider'], 'CPUExecutionProvider')]:
+    s = {'ort': SimpleNamespace(get_available_providers=lambda a=available: a)}
+    exec(compile(ast.Module(body=nodes, type_ignores=[]), '<providers>', 'exec'), s)
+    p = s['pick_providers']()
+    assert s['provider_adi'](p) == first, p
+    if first == 'DmlExecutionProvider':
+        assert p[0][1].get('performance_preference') == 'high_performance', p
 `], { encoding: 'utf8' });
 assert.equal(result.status, 0, result.stderr || result.error?.message);
 console.log('verify-sidecar-errors OK');
