@@ -12,7 +12,7 @@ registerHooks({
 });
 
 const { Engine } = await import('../src/engine/Engine.ts');
-const { createHomeTexture } = await import('../src/engine/buffers.ts');
+const { createHomeTexture, POSITION_TEXTURE_SIZE: N } = await import('../src/engine/buffers.ts');
 const { sampleVolumePositions } = await import('../src/engine/reconstruction/sampler.ts');
 
 const width = 48;
@@ -39,20 +39,20 @@ const actual = engine.homeTexture.image.data;
 const fittedHeight = 2 * 3.5 * Math.tan(Math.PI / 6)
   * Math.min(1, engine.camera.aspect / (width / height)) * 0.94;
 const linear = sampleVolumePositions(depth, width, height, {
-  gridSize: 384,
+  gridSize: N,
   importanceSampling: false,
   fullFrame: { cameraDistance: 3.5 },
   worldHeight: fittedHeight,
 });
-const warped = sampleVolumePositions(depth, width, height, { gridSize: 384 });
+const warped = sampleVolumePositions(depth, width, height, { gridSize: N });
 const near = (a, b) => Math.abs(a - b) < 1e-5;
 let warpedSamples = 0;
-for (const [x, y] of [[80, 80], [192, 80], [300, 192], [192, 300]]) {
-  const z = (y * 384 + x) * 4 + 2;
+for (const [x, y] of [[80, 80], [192, 80], [300, 192], [192, 300]].map((p) => p.map((c) => Math.round((c * N) / 384)))) {
+  const z = (y * N + x) * 4 + 2;
   assert.ok(near(actual[z], linear[z]), `video depth at (${x}, ${y}) must match raw video UV`);
   const offset = z - 2;
-  const u = (x + 0.5) / 384;
-  const v = 1 - (y + 0.5) / 384;
+  const u = (x + 0.5) / N;
+  const v = 1 - (y + 0.5) / N;
   const baseX = (u - 0.5) * fittedHeight * (width / height);
   const baseY = (v - 0.5) * fittedHeight;
   assert.ok(near(actual[offset] / (3.5 - actual[z]), baseX / 3.5),
@@ -65,8 +65,8 @@ assert.ok(warpedSamples > 0, 'fixture must reveal the color/depth UV mismatch');
 
 const emptyScene = new Float32Array(width * height);
 engine.setDepth(emptyScene, width, height);
-for (const [x, y] of [[0, 0], [192, 192], [383, 383]]) {
-  const offset = (y * 384 + x) * 4;
+for (const [x, y] of [[0, 0], [N >> 1, N >> 1], [N - 1, N - 1]]) {
+  const offset = (y * N + x) * 4;
   assert.equal(actual[offset + 3], 1, 'an unmasked video is a full scene, not a portrait cutout');
   assert.equal(actual[offset + 2], -1, 'distant video pixels retain their depth without backdrop pinning');
 }
@@ -90,7 +90,7 @@ assert.ok(engine.imageColorTexture, 'a processed video frame needs a stable colo
 assert.equal(engine.pointsMaterial.uniforms.uImageTexture.value, engine.imageColorTexture,
   'the point renderer must read the color frame paired with this depth result');
 const colors = engine.imageColorTexture.image.data;
-assert.equal(colors[(192 * 384 + 80) * 4], 255, 'left video pixels remain red');
-assert.equal(colors[(192 * 384 + 300) * 4 + 2], 255, 'right video pixels remain blue');
+assert.equal(colors[((N >> 1) * N + Math.round((80 * N) / 384)) * 4], 255, 'left video pixels remain red');
+assert.equal(colors[((N >> 1) * N + Math.round((300 * N) / 384)) * 4 + 2], 255, 'right video pixels remain blue');
 
 console.log('OK · video depth coordinates align with raw video color UVs');

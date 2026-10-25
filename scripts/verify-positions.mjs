@@ -81,8 +81,12 @@ const topInner = xyz(data, N >> 1, N >> 2);
 const bottom = xyz(data, N >> 1, N - 1);
 assert.ok(top.y > 0, 'grid satırı 0 dünyada üstte (y > 0) olmalı');
 assert.ok(bottom.y < 0, 'son grid satırı dünyada altta (y < 0) olmalı');
-assert.ok(Math.abs(top.z - 0.341506285) < 1e-4, `üst kadraj sınırı → düz formül + küçük kavis (z = ${top.z.toFixed(6)}, prizma duvarı yok)`);
-assert.ok(Math.abs(topInner.z - 0.368476843) < 1e-4, `görselin ÜST yarısı → z = 0.36847684 (silüet oranlı uzam, gerçek ${topInner.z.toFixed(6)}) — y-flip ters`);
+// Beklenen z, N'den hesaplanır (yorumdaki 384 değerleri 0.3415063 / 0.3684768).
+const zUst = (a, b) => 0.3390625 * (1 + 0.1 * Math.sqrt(1 - a * a - b * b));
+const zTop = zUst(1 / N, 1 - 1 / N);
+const zInner = 0.5 * 0.678125 + 0.1 * 0.3390625 * Math.sqrt(1 - (1 / N) ** 2 - (0.5 - 1 / N) ** 2);
+assert.ok(Math.abs(top.z - zTop) < 1e-4, `üst kadraj sınırı → düz formül + küçük kavis (z = ${top.z.toFixed(6)}, prizma duvarı yok)`);
+assert.ok(Math.abs(topInner.z - zInner) < 1e-4, `görselin ÜST yarısı → z = 0.36847684 (silüet oranlı uzam, gerçek ${topInner.z.toFixed(6)}) — y-flip ters`);
 assert.ok(
   Math.abs(bottom.z + 1) < 1e-6,
   'görselin ALT yarısı (arka plan) → z = −1 (d = 0 → (0−0.5)·range − PIN → tabana kırpılır)',

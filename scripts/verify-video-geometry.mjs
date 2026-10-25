@@ -10,7 +10,7 @@ registerHooks({
   },
 });
 
-const { createHomeTexture, fillPositionsFromDepth } = await import('../src/engine/buffers.ts');
+const { createHomeTexture, fillPositionsFromDepth, POSITION_TEXTURE_SIZE } = await import('../src/engine/buffers.ts');
 const { BACKDROP_OPACITY, sampleVolumePositions } = await import('../src/engine/reconstruction/sampler.ts');
 
 const width = 4;
@@ -48,8 +48,8 @@ const actual = home.image.data;
 const first = [actual[0], actual[1], actual[2], actual[3]];
 const expectedZ = 0.5;
 const expectedScale = (3.5 - expectedZ) / 3.5;
-const expectedX = ((0.5 / 384) - 0.5) * 2 * (width / height) * 1.6 * expectedScale;
-const expectedY = (0.5 - (0.5 / 384)) * 2 * 1.6 * expectedScale;
+const expectedX = ((0.5 / POSITION_TEXTURE_SIZE) - 0.5) * 2 * (width / height) * 1.6 * expectedScale;
+const expectedY = (0.5 - (0.5 / POSITION_TEXTURE_SIZE)) * 2 * 1.6 * expectedScale;
 assert.ok(Math.abs(first[0] - expectedX) < 1e-6,
   'video worldHeight must reach the position buffer in X');
 assert.ok(Math.abs(first[1] - expectedY) < 1e-6,

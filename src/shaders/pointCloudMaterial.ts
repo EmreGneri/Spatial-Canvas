@@ -170,7 +170,7 @@ const VERTEX = /* glsl */ `
    * yan duvarlar bu yüzden render tarafında doğuyor.
    */
   const float BACK_PLANE_Z = -0.5;
-  const float TEX_STEP = 1.0 / 384.0;
+  const float TEX_STEP = 1.0 / ${POSITION_TEXTURE_SIZE}.0;
 
   void main() {
     vec4 pos = texture2D(uPositions, aUv);

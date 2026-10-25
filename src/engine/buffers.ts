@@ -11,7 +11,8 @@ import type { VideoGuideMask } from './reconstruction/videoDepthEdges.ts';
  * flip yoktur.
  */
 
-export const POSITION_TEXTURE_SIZE = 384; // 384×384 = 147.456 parçacık
+// 512×512 = 262.144 parçacık (eskiden 384² = 147.456; ölçüm: RTX 5070'te çizim 1M'de bile 165 fps tavanında).
+export const POSITION_TEXTURE_SIZE = 512;
 
 /** Depth: R32F, tek kanal, 0 = uzak / 1 = yakın. Satır 0 = görselin üstü. */
 export function createDepthTexture(
