@@ -55,7 +55,7 @@ function chromiumYuruturebiliriBul() {
  * `fsAllow`: sunucunun repo dışında serveceği ek dizinler (ör. klip dosyası).
  * Döner: `url(yol)` (sunucu tabanına göre tam URL), `page`, `kapat()`.
  */
-export async function tarayiciOturumu({ chrome = false, yazilimGpu = false, basli = false, fsAllow = [] } = {}) {
+export async function tarayiciOturumu({ chrome = false, yazilimGpu = false, basli = false, fsAllow = [], vite = {} } = {}) {
   // Ölçüm sunucusu yerel yardımcıyı KENDİLİĞİNDEN başlatmaz (vite.config.ts eklentisi);
   // gerekiyorsa kullanıcı başlatır ve --yardimci verir. Ölçümler tekrarlanabilir kalsın.
   process.env.SIDECAR_OTOMATIK ??= '0';
@@ -67,6 +67,8 @@ export async function tarayiciOturumu({ chrome = false, yazilimGpu = false, basl
     // Export environments contain thousands of unrelated HTML files; scan only the application entry.
     optimizeDeps: { entries: ['index.html'] },
     logLevel: 'error',
+    // Ek Vite ayarı (ör. başka repodan modül servis ederken `resolve.dedupe`).
+    ...vite,
   });
   await server.listen();
   const taban = server.resolvedUrls?.local?.[0] ?? (() => {
@@ -84,7 +86,7 @@ export async function tarayiciOturumu({ chrome = false, yazilimGpu = false, basl
   let browser;
   try {
     browser = chrome
-      ? await chromium.launch({ ...baseOpts, channel: 'chrome' })
+      ? await chromium.launch({ ...baseOpts, channel: process.env.TARAYICI_KANAL ?? 'chrome' }) // ör. msedge (iGPU'lu ikinci tarayıcı)
       : await chromium.launch({ ...baseOpts, executablePath: chromiumYuruturebiliriBul() });
   } catch (e) {
     await server.close();
