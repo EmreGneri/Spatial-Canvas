@@ -140,36 +140,36 @@ export async function prepareVideoDepth(file: Blob, options: PrepareOptions = {}
   const done = (async () => {
     try {
       progress('loading'); aborted(signal);
-      if (!navigator.storage?.getDirectory) throw Error('Local video storage unavailable; using V2.');
+      if (!navigator.storage?.getDirectory) throw Error('Yerel video depolaması yok; canlı derinlik kullanılıyor.');
       root = await navigator.storage.getDirectory();
       staleCleanup ??= removeStaleStores(root);
       await staleCleanup;
       dir = await root.getDirectoryHandle(id, { create: true });
       ({ width, height } = provider ?? OFFLINE_SIZE);
-      if (!Number.isInteger(width) || !Number.isInteger(height) || width <= 0 || height <= 0) throw Error('Invalid offline depth dimensions');
+      if (!Number.isInteger(width) || !Number.isInteger(height) || width <= 0 || height <= 0) throw Error('Offline derinlik boyutu geçersiz');
       const rgbBytes = width * height * 4, floatBytes = width * height * 4;
       const rgbStream = await stream('rgb');
       await decodeVideoDepthSource(file, width, height, signal, async sourceDuration => {
         duration = sourceDuration;
         const estimate = await navigator.storage.estimate();
         // Reserve temporary RGBA/float depth and final Uint16 at a conservative 60 fps.
-        if ((estimate.quota ?? 0) - (estimate.usage ?? 0) < duration * 60 * width * height * 10) throw Error('Insufficient local video storage; using V2.');
+        if ((estimate.quota ?? 0) - (estimate.usage ?? 0) < duration * 60 * width * height * 10) throw Error('Yerel video depolaması yetersiz; canlı derinlik kullanılıyor.');
         // Codec, aspect, duration and quota are accepted: only now pay for ORT and two GPU sessions.
         provider ??= await (await import('./videoPrecomputeProvider.ts')).openVideoWindowProvider();
         aborted(signal);
-        if (provider.width !== width || provider.height !== height) throw Error('Invalid offline depth dimensions');
+        if (provider.width !== width || provider.height !== height) throw Error('Offline derinlik boyutu geçersiz');
         progress('decoding');
       }, async (time, pixels) => {
         const signature = vdaImza(pixels, width, height);
         if (lastSignature && signature.reduce((sum, v, i) => sum + Math.abs(v - lastSignature![i]), 0) / 16 > 0.28) scenes.push(stamps.length);
         lastSignature = signature;
-        if (pixels.length !== rgbBytes) throw Error('Unexpected decoded frame size');
+        if (pixels.length !== rgbBytes) throw Error('Çözülen kare boyutu beklenmedik');
         stamps.push(time); await rgbStream.write(pixels);
         processedSeconds = time; progress('decoding');
         await yieldToPlayback();
       });
       rgbFile = await rgbStream.close();
-      if (!stamps.length || !provider) throw Error('No decoded video frames');
+      if (!stamps.length || !provider) throw Error('Çözülen video karesi yok');
       progress('processing');
       scenes.push(stamps.length);
       for (let scene = 0; scene < scenes.length - 1; scene++) {
@@ -179,7 +179,7 @@ export async function prepareVideoDepth(file: Blob, options: PrepareOptions = {}
         const floatStream = await stream(`float-${scene}`);
         // Frames are committed strictly in order (count++), so the scene file is sequential.
         const commit = async (data: Float32Array, _index: number) => {
-          for (const value of data) if (!Number.isFinite(value)) throw Error('Invalid offline depth');
+          for (const value of data) if (!Number.isFinite(value)) throw Error('Offline derinlik geçersiz');
           const stride = Math.max(1, Math.floor(data.length / RANGE_SAMPLES_PER_FRAME));
           for (let i = 0; i < data.length; i += stride) samples.push(data[i]);
           await floatStream.write(data);
@@ -191,7 +191,7 @@ export async function prepareVideoDepth(file: Blob, options: PrepareOptions = {}
           const ids = videoWindowIndices(start, sceneCount, previous);
           const frames = await Promise.all(ids.map(async i => new Uint8ClampedArray(await slice(rgbFile!, sceneStart + i, rgbBytes))));
           const output = await provider.infer(frames, signal, ids.map(i => sceneStart + i)); aborted(signal);
-          if (output.length !== 32 || output.some(x => x.length !== width * height)) throw Error('Offline window must return 32 depth maps');
+          if (output.length !== 32 || output.some(x => x.length !== width * height)) throw Error('Offline pencere 32 derinlik haritası döndürmeli');
           if (!previous) {
             refs = [output[0], output[12]];
             for (let i = 0; i < 24; i++) { if (count < sceneEnd) await commit(output[i], count++); }
@@ -221,7 +221,7 @@ export async function prepareVideoDepth(file: Blob, options: PrepareOptions = {}
       // RGB stays until dispose: an optional mask track (object separation) reads it.
       aborted(signal); ready = true; progress('ready');
     } catch (error) {
-      ready = false; readySeconds = 0; await remove(); progress(signal.aborted ? 'cancelled' : 'fallback', String(error));
+      ready = false; readySeconds = 0; await remove(); progress(signal.aborted ? 'cancelled' : 'fallback', error instanceof Error ? error.message : String(error));
     } finally { await provider?.dispose().catch(() => {}); options.signal?.removeEventListener('abort', cancel); }
   })();
   return {
@@ -252,7 +252,7 @@ export async function prepareVideoDepth(file: Blob, options: PrepareOptions = {}
     prepareMasks(capture, onProgress) {
       maskJob ??= (async () => {
         await done;
-        if (!ready || !rgbFile) throw Error('Video depth is not prepared');
+        if (!ready || !rgbFile) throw Error('Video derinliği hazır değil');
         const rgbBytes = width * height * 4, n = width * height;
         const frame = async (i: number): Promise<LiveDepthFrame> =>
           ({ width, height, data: new Uint8ClampedArray(await slice(rgbFile!, i, rgbBytes)) });

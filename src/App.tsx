@@ -90,6 +90,10 @@ const VIDEO_MASK_MIN_REFRESH_MS = 15_000;
 /** Video hazırlanırken canlı V2 çıkarımları arası en az süre (GPU kuyruğu paylaşılır). */
 const PREPARING_LIVE_INFER_MS = 500;
 const VIDEO_PROCESSING_KEY = 'arkaPlanVideoIsleme';
+const VIDEO_STAGE_LABEL: Record<VideoDepthProgress['stage'], string> = {
+  loading: 'yükleniyor', decoding: 'kareler çözülüyor', processing: 'işleniyor',
+  ready: 'hazır', fallback: 'canlı derinlik', cancelled: 'iptal edildi',
+};
 const LOG_LIMIT = 200;
 
 /**
@@ -943,7 +947,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
           invalidMasks = 0;
           maskErrors = 0;
           maskNextRetryAt = 0;
-          say(`Foreground mask ready · ${result.model} · ${(coverage * 100).toFixed(0)}% foreground`);
+          say(`video özne maskesi hazır · ${result.model} · %${(coverage * 100).toFixed(0)} ön plan`);
           if (lastDepth) applyDepth(lastDepth);
         })
         .catch((err) => {
@@ -1129,7 +1133,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
       onProgress: (progress) => {
         if (!isCurrent() || controller.signal.aborted) return;
         setVideoPreparation(progress);
-        if (progress.stage === 'fallback') say(`Video preparation unavailable: ${progress.error ?? 'using live depth'}`);
+        if (progress.stage === 'fallback') say(`video derinliği hazırlanamadı: ${progress.error ?? 'canlı derinlik kullanılıyor'}`);
       },
     }).then(async (handle) => {
       if (!isCurrent() || controller.signal.aborted) { await handle.dispose(); return; }
@@ -1150,7 +1154,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
           // Okuma hataları kare kare tekrarlanabilir; günlük ve React yenilemesi 10 sn'de bir.
           if (!isCurrent() || performance.now() - lastReadError < 10_000) return;
           lastReadError = performance.now();
-          say(`Depth cache read failed; using live depth: ${String(error)}`);
+          say(`hazır derinlik okunamadı; canlı derinlik kullanılıyor: ${String(error)}`);
         },
       });
       preparedVideoStopRef.current = beginPlayback();
@@ -1197,7 +1201,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
       if (!isCurrent() || controller.signal.aborted) return;
       videoPreparingRef.current = false;
       preparedVideoUsableRef.current = false;
-      say(`Video preparation failed; using live depth: ${String(error)}`);
+      say(`video hazırlığı başarısız; canlı derinlik kullanılıyor: ${String(error)}`);
     });
   }
 
@@ -1828,33 +1832,33 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
           3D eğit
         </button>}
         {!!videoDosya && videoPreparationAsk && <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
-          <span>Long video ({(videoPreparationAsk.video.duration / 60).toFixed(1)} min): prepare depth in the background? About {Math.ceil(videoPreparationAsk.estimate / 60)} min.</span>
+          <span>uzun video ({(videoPreparationAsk.video.duration / 60).toFixed(1)} dk): derinlik arka planda hazırlansın mı? tahmini ~{Math.ceil(videoPreparationAsk.estimate / 60)} dk</span>
           <button onClick={() => {
             const ask = videoPreparationAsk;
             setVideoPreparationAsk(null);
             if (videoRef.current === ask.video) prepareUploadedVideo(ask.file, ask.video);
-          }}>Prepare</button>
-          <button onClick={() => setVideoPreparationAsk(null)}>Skip</button>
+          }}>hazırla</button>
+          <button onClick={() => setVideoPreparationAsk(null)}>geç</button>
         </div>}
         {!!videoDosya && videoPreparation && <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
-          <span>Video depth: {videoPreparation.stage}</span>
-          <progress aria-label="Prepared video depth" max={Math.max(1, videoPreparation.totalSeconds)}
+          <span>Video derinliği: {VIDEO_STAGE_LABEL[videoPreparation.stage]}</span>
+          <progress aria-label="Hazırlanan video derinliği" max={Math.max(1, videoPreparation.totalSeconds)}
             value={videoPreparation.readySeconds} />
-          <span>{videoPreparation.readySeconds.toFixed(1)} / {videoPreparation.totalSeconds.toFixed(1)} s</span>
-          {videoPreparation.stage !== 'ready' && <span>Processed {(videoPreparation.processedSeconds ?? 0).toFixed(1)} s</span>}
+          <span>{videoPreparation.readySeconds.toFixed(1)} / {videoPreparation.totalSeconds.toFixed(1)} sn</span>
+          {videoPreparation.stage !== 'ready' && <span>işlenen {(videoPreparation.processedSeconds ?? 0).toFixed(1)} sn</span>}
           {!['ready', 'fallback', 'cancelled'].includes(videoPreparation.stage) && <button onClick={() => {
             preparedVideoAbortRef.current?.abort();
             stopPreparedVideo();
             setVideoPreparation({ ...videoPreparation, stage: 'cancelled' });
-          }}>Cancel preparation</button>}
-          {videoPreparation.error && <span role="status">Live depth fallback</span>}
-          {segment && videoMaskProgress !== null && videoMaskProgress < 1 && <span>Live depth for object separation · mask track {Math.round(videoMaskProgress * 100)}%</span>}
+          }}>hazırlığı iptal et</button>}
+          {videoPreparation.error && <span role="status">canlı derinliğe dönüldü</span>}
+          {segment && videoMaskProgress !== null && videoMaskProgress < 1 && <span>nesne ayırma için canlı derinlik · maske izi %{Math.round(videoMaskProgress * 100)}</span>}
         </div>}
         {(cameraOn || !!videoDosya) && <>
           <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 12 }}>
-            Edge cleanup
+            kenar temizliği
             <input type="range" min={0} max={4} step={1} value={videoEdgeCleanup}
-              aria-label="Video edge cleanup"
+              aria-label="Video kenar temizliği"
               onChange={(event) => {
                 const strength = Number(event.target.value);
                 setVideoEdgeCleanup(strength);
@@ -1864,7 +1868,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
             <output>{videoEdgeCleanup}</output>
           </label>
           <span style={{ fontFamily: MONO, fontSize: 11 }} aria-live="polite">
-            Model {liveRates.model.toFixed(1)} Hz · Flow {liveRates.flow.toFixed(1)} Hz
+            model {liveRates.model.toFixed(1)} Hz · akış {liveRates.flow.toFixed(1)} Hz
           </span>
         </>}
         {/* DURUM OKUMALARI — "nesne ayırma: kapalı" bir FİİL değil, bir
@@ -1872,7 +1876,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
         {!sunum && (
           <>
             {import.meta.env.DEV && <a href="/bench/points.html" target="_blank" rel="noreferrer"
-              style={{ color: renk.metin, fontSize: 12 }}>Point count benchmark</a>}
+              style={{ color: renk.metin, fontSize: 12 }}>nokta sayısı ölçümü</a>}
             <button style={toggleButton(segment, '#2a3')} disabled={busy} onClick={toggleSegment}>
               nesne ayırma: {segment ? 'AÇIK' : 'kapalı'}
             </button>
@@ -1900,10 +1904,10 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
               orijinal renkler
             </label>
             <label style={{ display: 'flex', gap: 4, alignItems: 'center', color: '#889', fontSize: 12, cursor: 'pointer' }}
-              title="Background video processing: prepares depth for uploaded videos (short videos automatically, long ones after asking)">
+              title="yüklenen videonun derinliğini arka planda hazırlar (kısa videolar kendiliğinden, uzunlar sorulduktan sonra)">
               <input type="checkbox" checked={videoProcessing}
                 onChange={(e) => setVideoProcessingSetting(e.target.checked)} />
-              background video processing
+              arka planda video işleme
             </label>
             <span style={toolDivider} />
           </>

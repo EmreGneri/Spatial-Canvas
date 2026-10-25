@@ -6,7 +6,7 @@ const BASE = '/models/DepthAnything/video-depth-anything-small-offline-154x266/'
 export async function openVideoWindowProvider(): Promise<VideoWindowProvider> {
   const ort = await import('onnxruntime-web/webgpu');
   const { gpuSirasinaGir, webgpuKullanilabilir } = await import('../../depth.ts');
-  if (!await webgpuKullanilabilir()) throw Error('Offline VDA needs WebGPU; using V2.');
+  if (!await webgpuKullanilabilir()) throw Error('Offline derinlik WebGPU ister; canlı derinlik kullanılıyor.');
   const dev = (import.meta as { env?: { DEV?: boolean } }).env?.DEV === true;
   ort.env.wasm.wasmPaths = dev ? '/node_modules/onnxruntime-web/dist/' : '/ort/';
   ort.env.wasm.numThreads = 1;
@@ -19,7 +19,7 @@ export async function openVideoWindowProvider(): Promise<VideoWindowProvider> {
   return {
     width: 266, height: 154,
     async infer(frames, signal, frameIds) {
-      if (frames.length !== 32) throw Error('Offline VDA needs 32 frames');
+      if (frames.length !== 32) throw Error('Offline derinlik 32 kare ister');
       const feeds: Record<string, InstanceType<typeof ort.Tensor>> = {};
       const packed = encoder.outputNames.map(() => new Float32Array(32 * 209 * 384));
       try {
@@ -39,7 +39,7 @@ export async function openVideoWindowProvider(): Promise<VideoWindowProvider> {
             const stored: Float32Array[] = [];
             encoder.outputNames.forEach((name, j) => {
               const data = output![name].data;
-              if (!(data instanceof Float32Array) || data.length !== 209 * 384) throw Error('Incompatible offline encoder');
+              if (!(data instanceof Float32Array) || data.length !== 209 * 384) throw Error('Offline kodlayıcı uyumsuz');
               packed[j].set(data, i * data.length);
               stored.push(data.slice());
             });
@@ -55,7 +55,7 @@ export async function openVideoWindowProvider(): Promise<VideoWindowProvider> {
         try {
           const depth = output[head.outputNames[0]].data;
           signal?.throwIfAborted();
-          if (!(depth instanceof Float32Array) || depth.length !== 32 * 154 * 266) throw Error('Incompatible offline head output');
+          if (!(depth instanceof Float32Array) || depth.length !== 32 * 154 * 266) throw Error('Offline başlık çıktısı uyumsuz');
           return Array.from({ length: 32 }, (_, i) => depth.slice(i * 154 * 266, (i + 1) * 154 * 266));
         } finally { Object.values(output).forEach(t => t.dispose()); }
       } finally { Object.values(feeds).forEach(t => t.dispose()); }

@@ -3,7 +3,7 @@ export const VIDEO_WINDOW = 32;
 export const VIDEO_STRIDE = 22;
 export const VIDEO_ANCHORS = [0, 12, 24, 25, 26, 27, 28, 29, 30, 31] as const;
 export function videoWindowIndices(start: number, count: number, previous?: readonly number[]): number[] {
-  if (count < 1) throw Error('Empty video');
+  if (count < 1) throw Error('Boş video');
   const ids = Array.from({ length: 32 }, (_, i) => Math.min(start + i, count - 1));
   if (previous) VIDEO_ANCHORS.forEach((id, i) => { ids[i] = previous[id]; });
   return ids;
@@ -13,7 +13,7 @@ export function alignVideoWindow(current: readonly Float32Array[], reference: re
   let n = 0, sx = 0, sy = 0, xx = 0, xy = 0;
   current.forEach((frame, j) => frame.forEach((x, i) => {
     const y = reference[j][i];
-    if (!Number.isFinite(x) || !Number.isFinite(y)) throw Error('Non-finite video depth');
+    if (!Number.isFinite(x) || !Number.isFinite(y)) throw Error('Video derinliğinde sonlu olmayan değer');
     n++; sx += x; sy += y; xx += x * x; xy += x * y;
   }));
   const det = n * xx - sx * sx;

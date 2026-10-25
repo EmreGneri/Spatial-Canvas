@@ -13,21 +13,21 @@ export async function decodeVideoDepthSource(file: Blob, width: number, height: 
   try {
     arm(); signal.throwIfAborted();
     const track = await input.getPrimaryVideoTrack();
-    if (!track || !await track.canDecode()) throw Error('Video codec cannot be decoded locally; using V2.');
+    if (!track || !await track.canDecode()) throw Error('Video kodeki yerelde çözülemiyor; canlı derinlik kullanılıyor.');
     const duration = await track.computeDuration();
-    if (!Number.isFinite(duration) || duration <= 0) throw Error('Video duration unavailable');
+    if (!Number.isFinite(duration) || duration <= 0) throw Error('Video süresi okunamadı');
     const rotation = await track.getRotation();
     const sourceWidth = await track.getSquarePixelWidth(), sourceHeight = await track.getSquarePixelHeight();
     const aspect = rotation % 180 ? sourceHeight / sourceWidth : sourceWidth / sourceHeight;
-    if (Math.abs(aspect / (width / height) - 1) > 0.15) throw Error('Offline VDA export aspect ratio unsupported; using V2.');
+    if (Math.abs(aspect / (width / height) - 1) > 0.15) throw Error('Bu en-boy oranı offline derinlik modelinde desteklenmiyor; canlı derinlik kullanılıyor.');
     await metadata(duration);
     const scratch = new OffscreenCanvas(width, height);
     const context = scratch.getContext('2d', { willReadFrequently: true });
-    if (!context) throw Error('Video canvas unavailable');
+    if (!context) throw Error('Video tuvali kullanılamıyor');
     let last = -Infinity;
     const emit = async (timestamp: number, source: CanvasImageSource) => {
       signal.throwIfAborted(); arm();
-      if (!Number.isFinite(timestamp) || timestamp <= last) throw Error('Non-monotonic source timestamps');
+      if (!Number.isFinite(timestamp) || timestamp <= last) throw Error('Kaynak zaman damgaları sıralı değil');
       context.drawImage(source, 0, 0, width, height);
       await save(timestamp, context.getImageData(0, 0, width, height).data);
       last = timestamp;
