@@ -35,6 +35,7 @@ import os
 import re
 import sys
 import threading
+import traceback
 from concurrent.futures import ThreadPoolExecutor
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -67,6 +68,18 @@ DAVID_MASK_FILE = 'foreground-segmentation-model-vitb16_384.onnx'
 # başka bir geliştirme sunucusunun sayfası da GPU uç noktalarını kullanabilir; yalnız
 # senin makinende çalışan sayfalar). Yayındaki site --origin ile eklenir.
 LOCAL_ORIGIN = re.compile(r'^http://(localhost|127\.0\.0\.1)(:\d+)?$')
+
+
+def error_message(error: Exception) -> str:
+    """ORT yerel kodlamalı hatayı UTF-8 sanırsa asıl hata baytlarını da koru."""
+    if isinstance(error, UnicodeDecodeError):
+        detail = error.object.decode(error.encoding, errors='replace')
+    else:
+        try:
+            detail = str(error)
+        except Exception:
+            detail = repr(error)
+    return f'{type(error).__name__}: {detail}'
 
 
 def guc_kisitlamasini_kapat():
@@ -236,7 +249,7 @@ class Models:
             self.david = oturum
         except Exception as e:
             self.david = None
-            print(f'DAViD maske oturumu kurulamadı, devre dışı: {str(e)[:300] or type(e).__name__}', flush=True)
+            print(f'DAViD maske oturumu kurulamadı, devre dışı: {error_message(e)}', flush=True)
 
     def run_david_mask(self, x: np.ndarray) -> np.ndarray:
         """[1,3,512,512] BGR [0,1] -> [1,1,512,512] ön plan olasılığı (0..1)."""
@@ -261,7 +274,7 @@ class Models:
                 self.moge = session(self.model_dir / MOGE_FILE, self.providers,
                                     {'batch_size': 1, 'height': DA3_SIZE, 'width': DA3_SIZE})
             except Exception as e:
-                self.moge_hata = str(e)[:300] or type(e).__name__
+                self.moge_hata = error_message(e)
                 print(f'MoGe oturumu kurulamadı, devre dışı: {self.moge_hata}', flush=True)
                 raise
         # ViT-S scale, ViT-L metric_scale yayımlar; sabit aktarım token girdisi istemez.
@@ -403,7 +416,14 @@ def make_handler(models: Models, gpu: ThreadPoolExecutor, extra_origins: set[str
             try:
                 out = gpu.submit(job).result()
             except Exception as e:  # GPU/oturum hatası: istemci tarayıcıya düşer
-                return self.reply(500, json.dumps({'ok': False, 'hata': str(e)[:300]}).encode())
+                message = error_message(e)
+                # Yönlendirilmiş Windows konsolunda log kodlaması HTTP yanıtını engellemesin.
+                try:
+                    print(f'{model} inference failed: {ascii(message)}', flush=True)
+                    traceback.print_exc()
+                except (OSError, UnicodeError):
+                    pass
+                return self.reply(500, json.dumps({'ok': False, 'hata': message}).encode('utf-8'))
             if out is None:
                 return self.reply(409, b'{"ok":false}', extra={'X-Frame-Id': frame})
             out = np.ascontiguousarray(out, dtype=np.float32)
