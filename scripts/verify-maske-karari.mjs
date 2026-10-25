@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { MASKE_ALT_ESIK, MASKE_UST_ESIK, maskeKarari } from '../src/ui/maskeKarari.ts';
+import { MASKE_ALT_ESIK, MASKE_UST_ESIK, maskeKarari, maskeTekParcaOrani } from '../src/ui/maskeKarari.ts';
 
 // Ölçülen gerçek oranlar (2026-09-25, IS-Net): bunlar kararın hangi tarafa
 // düşmesi gerektiğinin kaydıdır — eşik değişirse bu satırlar patlar.
@@ -43,5 +43,17 @@ assert.equal(maskeKarari(MASKE_ALT_ESIK).ayirmaAcik, true, 'alt eşiğin kendisi
 assert.equal(maskeKarari(MASKE_ALT_ESIK - 0.001).ayirmaAcik, false);
 assert.equal(maskeKarari(MASKE_UST_ESIK).tip, 'kullan', 'üst eşiğin kendisi kullanılmalı');
 assert.equal(maskeKarari(MASKE_UST_ESIK + 0.001).tip, 'atla');
+
+// Dağınıklık: tek gövde (insan) geçer, kopuk yamalar (manzara) atlanır.
+const W = 256, H = 256;
+const kutu = (m, x0, y0, x1, y1) => { for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) m[y * W + x] = 1; };
+const insan = new Float32Array(W * H); kutu(insan, 90, 40, 170, 230); kutu(insan, 170, 100, 190, 112); // gövde + ince kol
+const yamalar = new Float32Array(W * H); kutu(yamalar, 10, 10, 90, 70); kutu(yamalar, 150, 20, 240, 80); kutu(yamalar, 40, 150, 120, 230); kutu(yamalar, 170, 160, 240, 235);
+assert.ok(maskeTekParcaOrani(insan, W, H) >= 0.9, 'tek gövde dağınık sayıldı');
+assert.ok(maskeTekParcaOrani(yamalar, W, H) < 0.4, 'kopuk yamalar dağınık sayılmadı');
+assert.equal(maskeKarari(0.3, maskeTekParcaOrani(insan, W, H)).ayirmaAcik, true);
+const dag = maskeKarari(0.3, maskeTekParcaOrani(yamalar, W, H));
+assert.equal(dag.tip, 'atla');
+assert.match(dag.sebep ?? '', /dağınık/);
 
 console.log('OK maske kararı: küçük maske ekranı boşaltmıyor, meşru kadrajda eski davranış duruyor');

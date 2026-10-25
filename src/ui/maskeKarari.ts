@@ -38,7 +38,51 @@ export type MaskeKarari =
   /** Maske hiç kullanılmaz (boş ya da tüm kare). */
   | { tip: 'atla'; ayirmaAcik: false; sebep: string };
 
-export function maskeKarari(fgOran: number): MaskeKarari {
+/** Ana parça ön planın bundan azıysa maske "dağınık" sayılır (manzarada rastgele yamalar). */
+export const MASKE_ANA_PARCA_MIN = 0.6;
+/** Bu oranın altındaki parçalar dağınıklığa sayılmaz (el, tüy, benek). */
+const PARCA_MIN_ORAN = 0.01;
+
+/**
+ * Ön planın ne kadarı EN BÜYÜK tek parçada (0..1). İnsan/nesne maskesi tek
+ * gövdedir (~1); manzarada model gökyüzü, köprü, bina gibi kopuk yamaları
+ * seçer (düşük). Parçalar yalnız 4-komşulukla ve küçültülmüş ızgarada sayılır.
+ */
+export function maskeTekParcaOrani(mask: Float32Array, w: number, h: number): number {
+  const s = Math.max(1, Math.floor(Math.max(w, h) / 128));
+  const gw = Math.ceil(w / s);
+  const gh = Math.ceil(h / s);
+  const fg = new Uint8Array(gw * gh);
+  let toplam = 0;
+  for (let y = 0; y < gh; y++) {
+    for (let x = 0; x < gw; x++) {
+      if (mask[y * s * w + x * s] >= 0.5) { fg[y * gw + x] = 1; toplam++; }
+    }
+  }
+  if (!toplam) return 1;
+  const stack: number[] = [];
+  const boyutlar: number[] = [];
+  for (let i = 0; i < fg.length; i++) {
+    if (fg[i] !== 1) continue;
+    let boyut = 0;
+    fg[i] = 2;
+    stack.push(i);
+    while (stack.length) {
+      const p = stack.pop()!;
+      boyut++;
+      const x = p % gw;
+      for (const q of [x > 0 ? p - 1 : -1, x < gw - 1 ? p + 1 : -1, p - gw, p + gw]) {
+        if (q >= 0 && q < fg.length && fg[q] === 1) { fg[q] = 2; stack.push(q); }
+      }
+    }
+    boyutlar.push(boyut);
+  }
+  const sayilan = boyutlar.filter((b) => b >= toplam * PARCA_MIN_ORAN);
+  const say = sayilan.reduce((a, b) => a + b, 0);
+  return say ? Math.max(...sayilan) / say : 1;
+}
+
+export function maskeKarari(fgOran: number, tekParca: number = 1): MaskeKarari {
   if (!(fgOran > 0)) {
     return { tip: 'atla', ayirmaAcik: false, sebep: 'nesne ayırma: boş maske üretildi; maske atlandı (tüm sahne)' };
   }
@@ -48,6 +92,15 @@ export function maskeKarari(fgOran: number): MaskeKarari {
       tip: 'atla',
       ayirmaAcik: false,
       sebep: `nesne ayırma: model kareyi tümüyle ön plan saydı (%${yuzde}); maske atlandı`,
+    };
+  }
+  if (tekParca < MASKE_ANA_PARCA_MIN) {
+    return {
+      tip: 'atla',
+      ayirmaAcik: false,
+      sebep:
+        `nesne ayırma: maske dağınık (ön planın yalnız %${(100 * tekParca).toFixed(0)}'i tek parça); ` +
+        'öznesiz sahne sayıldı, maske atlandı',
     };
   }
   if (fgOran < MASKE_ALT_ESIK) {

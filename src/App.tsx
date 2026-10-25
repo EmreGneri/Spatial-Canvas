@@ -31,7 +31,7 @@ import { KutuphanePaneli } from './ui/KutuphanePaneli';
 import { kaynakBelirle } from './ui/presetOnizleme';
 import { soganAcilisGerekliMi, sunumAcikMi } from './ui/sunumModu';
 import { serializeRenderState } from './shaders/renderPreset';
-import { maskeKarari } from './ui/maskeKarari';
+import { maskeKarari, maskeTekParcaOrani } from './ui/maskeKarari';
 import { useDarEkran } from './ui/useDarEkran';
 import { ACILIS_BOY, ACILIS_EN, ACILIS_NOTU, acilisDerinligi, BINALAR, GOK, KURE, UFUK_Y, ZEMIN } from './ui/acilisSahnesi';
 import { indirmeDinle, indirmeSifirla } from './indirmeIlerleme';
@@ -619,7 +619,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
           // geçince sentetik görselde maske kadrajın %4,7'sini seçip sahnenin
           // gerisini siliyordu — ekran pratikte siyahtı, sebebi de yazmıyordu.
           // Eşiklerin ölçümü: ui/maskeKarari.ts başlığı.
-          const karar = maskeKarari(fgCount / seg.mask.length);
+          const karar = maskeKarari(fgCount / seg.mask.length, maskeTekParcaOrani(seg.mask, seg.width, seg.height));
           if (karar.sebep) say(karar.sebep);
           if (karar.tip === 'kullan') {
             mask = seg.mask;
