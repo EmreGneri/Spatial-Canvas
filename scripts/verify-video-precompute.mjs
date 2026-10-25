@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { videoWindowIndices, alignVideoWindow, blendVideoSeam, quantizeVideoDepth } from '../src/engine/vision/videoPrecomputeWindow.ts';
-import { prepareVideoDepth, videoDepthRange } from '../src/engine/vision/videoPrecompute.ts';
+import { prepareVideoDepth, videoDepthRange, videoPreparationPolicy, estimatePreparationSeconds, AUTO_PREPARE_MAX_SECONDS } from '../src/engine/vision/videoPrecompute.ts';
 
 const first = videoWindowIndices(0, 70);
 const second = videoWindowIndices(22, 70, first);
@@ -26,6 +26,13 @@ sceneSamples[500] = 1e6;
 const [lo, hi] = videoDepthRange(sceneSamples);
 assert.ok(lo < 0.02 && hi > 0.97 && hi < 1, `robust range ${lo}..${hi}`);
 assert.deepEqual(videoDepthRange([]), [0, 0]);
+// Item 6 policy: short videos prepare automatically, long ones ask, the setting can turn it off.
+assert.equal(videoPreparationPolicy(16, true), 'auto');
+assert.equal(videoPreparationPolicy(AUTO_PREPARE_MAX_SECONDS - 1, true), 'auto');
+assert.equal(videoPreparationPolicy(AUTO_PREPARE_MAX_SECONDS, true), 'ask');
+assert.equal(videoPreparationPolicy(16, false), 'off');
+assert.equal(videoPreparationPolicy(Number.NaN, true), 'off');
+assert.ok(estimatePreparationSeconds(300) >= 300, 'estimate is never faster than real time');
 let dispose = 0;
 const stages = [];
 const handle = await prepareVideoDepth(new Blob(), {

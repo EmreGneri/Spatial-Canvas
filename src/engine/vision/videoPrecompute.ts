@@ -62,6 +62,17 @@ export function videoDepthRange(samples: ArrayLike<number>): [number, number] {
   const at = (q: number) => sorted[Math.min(sorted.length - 1, Math.max(0, Math.round(q * (sorted.length - 1))))];
   return [at(0.01), at(0.99)];
 }
+/** Bu süreden kısa videolar sormadan hazırlanır; uzunlar için önce tahminle sorulur. */
+export const AUTO_PREPARE_MAX_SECONDS = 120;
+/** Ölçülen hazırlık hızı (RTX 5070, 4K ve 1080p): video süresinin ~3-4 katı. Kaba tahmin. */
+const PREPARE_SECONDS_PER_VIDEO_SECOND = 4;
+export function videoPreparationPolicy(durationSeconds: number, enabled: boolean): 'auto' | 'ask' | 'off' {
+  if (!enabled || !Number.isFinite(durationSeconds) || durationSeconds <= 0) return 'off';
+  return durationSeconds < AUTO_PREPARE_MAX_SECONDS ? 'auto' : 'ask';
+}
+export function estimatePreparationSeconds(durationSeconds: number): number {
+  return Math.ceil(durationSeconds * PREPARE_SECONDS_PER_VIDEO_SECOND);
+}
 /** Short-lived OPFS cache: cancelled/new clips never retain RGB or depth files. */
 export async function prepareVideoDepth(file: Blob, options: PrepareOptions = {}): Promise<VideoDepthHandle> {
   const controller = new AbortController(), { signal } = controller;

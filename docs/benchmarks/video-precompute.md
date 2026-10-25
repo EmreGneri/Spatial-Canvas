@@ -8,6 +8,10 @@ Assignment row 5 uses a genuine official VDA Small temporal32 head at 154x266. I
 
 Object separation: turning it on after (or during) preparation builds a mask track. Every 48th frame of a scene (plus the scene's first and last frame) goes through the existing live mask chain (BiRefNet + DAViD with the sidecar, else the browser segmenter); the frames in between get the mask by forward and backward optical flow over the stored 266x154 RGB, blended by distance, with untrusted pixels keeping the previous mask. Masks are stored as Uint8 per scene in OPFS. While a region has no mask yet, the live mask/depth path runs (live V2 throttled to 2 Hz); once it has one, prepared depth plays with the stored mask. The RGB file is therefore kept until the source is released. No mask work runs unless separation is turned on. Camera input stays on the live path.
 
+## Policy
+
+Videos shorter than 2 minutes are prepared automatically. For longer ones the app asks first and shows an estimate (4x the video length, from the speed measured on the RTX GPU). The "background video processing" setting (on by default, stored in `localStorage` as `arkaPlanVideoIsleme`) turns preparation off; turning it off cancels a running preparation, turning it on starts one for the loaded video. Cancel stays available while preparing.
+
 ## Model assets
 
 The encoder is the existing pinned VDA Small `encoder_fp16.onnx`; the separate offline head is `public/models/DepthAnything/video-depth-anything-small-offline-154x266/offline32_fp16.onnx`. The local exporter checks the official Small checkpoint SHA256 and upstream revision, verifies the wrapper against the official head, then checks fp32/fp16 ONNX outputs against PyTorch. Assets are ignored local files. A clean deployment needs those assets supplied; absent models fall back explicitly. No model was uploaded to hosting by this change.

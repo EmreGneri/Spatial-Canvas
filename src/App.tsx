@@ -6,7 +6,7 @@ import { segmentForeground } from './engine/reconstruction/segmentation';
 import { resampleBilinear } from './engine/reconstruction/silhouette';
 import { captureLiveMask } from './engine/vision/liveMask';
 import { isLiveFrameUnchanged, shouldPresentLiveDepth } from './engine/vision/liveDepthFlow';
-import { prepareVideoDepth, type VideoDepthHandle, type VideoDepthProgress, type VideoMaskCapture } from './engine/vision/videoPrecompute';
+import { estimatePreparationSeconds, prepareVideoDepth, videoPreparationPolicy, type VideoDepthHandle, type VideoDepthProgress, type VideoMaskCapture } from './engine/vision/videoPrecompute';
 import { startBufferedVideoPlayback } from './engine/vision/bufferedVideoPlayback';
 import { videoStats } from './engine/vision/videoStats';
 import { Engine } from './engine';
@@ -89,6 +89,7 @@ const LUMINANCE_MOTION_GAIN = 6;
 const VIDEO_MASK_MIN_REFRESH_MS = 15_000;
 /** Video hazırlanırken canlı V2 çıkarımları arası en az süre (GPU kuyruğu paylaşılır). */
 const PREPARING_LIVE_INFER_MS = 500;
+const VIDEO_PROCESSING_KEY = 'arkaPlanVideoIsleme';
 const LOG_LIMIT = 200;
 
 /**
@@ -273,6 +274,12 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
   const [videoPreparation, setVideoPreparation] = useState<VideoDepthProgress | null>(null);
   /** Hazır videonun maske izi ilerlemesi (0..1); null = istenmedi. */
   const [videoMaskProgress, setVideoMaskProgress] = useState<number | null>(null);
+  /** Ayar: yüklenen videonun derinliği arka planda hazırlansın mı (varsayılan açık, tarayıcıda saklanır). */
+  const [videoProcessing, setVideoProcessing] = useState(() => {
+    try { return localStorage.getItem(VIDEO_PROCESSING_KEY) !== '0'; } catch { return true; }
+  });
+  /** Uzun video: hazırlık için onay bekleniyor (tahmini süreyle). */
+  const [videoPreparationAsk, setVideoPreparationAsk] = useState<{ file: File; video: HTMLVideoElement; estimate: number } | null>(null);
   const [segment, setSegment] = useState(false);
   const segmentRef = useRef(false);
   const segmentRevisionRef = useRef(0);
@@ -470,6 +477,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
     maskPreparingRef.current = false;
     setVideoPreparation(null);
     setVideoMaskProgress(null);
+    setVideoPreparationAsk(null);
     clearTimer();
     luminanceActiveRef.current = false;
     cancelLuminanceFrame();
@@ -1193,6 +1201,28 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
     });
   }
 
+  /** Kısa video hemen, uzun video onayla, ayar kapalıysa hiç hazırlanmaz (canlı derinlik sürer). */
+  function startVideoPreparationByPolicy(file: File, video: HTMLVideoElement, enabled: boolean) {
+    const policy = videoPreparationPolicy(video.duration, enabled);
+    if (policy === 'auto') prepareUploadedVideo(file, video);
+    else if (policy === 'ask') setVideoPreparationAsk({ file, video, estimate: estimatePreparationSeconds(video.duration) });
+  }
+
+  function setVideoProcessingSetting(on: boolean) {
+    setVideoProcessing(on);
+    try { localStorage.setItem(VIDEO_PROCESSING_KEY, on ? '1' : '0'); } catch { /* yalnız bu oturum */ }
+    if (!on) {
+      setVideoPreparationAsk(null);
+      if (videoPreparingRef.current) {
+        preparedVideoAbortRef.current?.abort();
+        stopPreparedVideo();
+        setVideoPreparation((value) => value && { ...value, stage: 'cancelled' });
+      }
+    } else if (videoDosya && videoRef.current && !preparedVideoRef.current && !videoPreparingRef.current) {
+      startVideoPreparationByPolicy(videoDosya, videoRef.current, true);
+    }
+  }
+
   /** Player and handle are released together; live depth takes over (Cancel, failure). */
   function stopPreparedVideo() {
     videoPreparingRef.current = false;
@@ -1434,7 +1464,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
         engineRef.current!.setVideoSource(video);
         say(`video yüklendi · ${file.name} · model gelene kadar geçici parlaklık önizlemesi`);
         startVideoDepth(video, 'video');
-        prepareUploadedVideo(file, video);
+        startVideoPreparationByPolicy(file, video, videoProcessing);
       } else {
         const image = await loadImage(url);
         if (!isCurrent()) return;
@@ -1797,6 +1827,15 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
         >
           3D eğit
         </button>}
+        {!!videoDosya && videoPreparationAsk && <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
+          <span>Long video ({(videoPreparationAsk.video.duration / 60).toFixed(1)} min): prepare depth in the background? About {Math.ceil(videoPreparationAsk.estimate / 60)} min.</span>
+          <button onClick={() => {
+            const ask = videoPreparationAsk;
+            setVideoPreparationAsk(null);
+            if (videoRef.current === ask.video) prepareUploadedVideo(ask.file, ask.video);
+          }}>Prepare</button>
+          <button onClick={() => setVideoPreparationAsk(null)}>Skip</button>
+        </div>}
         {!!videoDosya && videoPreparation && <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
           <span>Video depth: {videoPreparation.stage}</span>
           <progress aria-label="Prepared video depth" max={Math.max(1, videoPreparation.totalSeconds)}
@@ -1859,6 +1898,12 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
                 }}
               />
               orijinal renkler
+            </label>
+            <label style={{ display: 'flex', gap: 4, alignItems: 'center', color: '#889', fontSize: 12, cursor: 'pointer' }}
+              title="Background video processing: prepares depth for uploaded videos (short videos automatically, long ones after asking)">
+              <input type="checkbox" checked={videoProcessing}
+                onChange={(e) => setVideoProcessingSetting(e.target.checked)} />
+              background video processing
             </label>
             <span style={toolDivider} />
           </>
