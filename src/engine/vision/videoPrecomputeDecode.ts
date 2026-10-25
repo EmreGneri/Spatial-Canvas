@@ -21,15 +21,33 @@ export async function decodeVideoDepthSource(file: Blob, width: number, height: 
     const aspect = rotation % 180 ? sourceHeight / sourceWidth : sourceWidth / sourceHeight;
     if (Math.abs(aspect / (width / height) - 1) > 0.15) throw Error('Offline VDA export aspect ratio unsupported; using V2.');
     await metadata(duration);
-    const sink = new mb.CanvasSink(track, { width, height, fit: 'fill', poolSize: 1 });
+    const scratch = new OffscreenCanvas(width, height);
+    const context = scratch.getContext('2d', { willReadFrequently: true });
+    if (!context) throw Error('Video canvas unavailable');
     let last = -Infinity;
-    for await (const frame of sink.canvases()) {
+    const emit = async (timestamp: number, source: CanvasImageSource) => {
       signal.throwIfAborted(); arm();
-      if (!Number.isFinite(frame.timestamp) || frame.timestamp <= last) throw Error('Non-monotonic source timestamps');
-      const context = frame.canvas.getContext('2d', { willReadFrequently: true });
-      if (!context) throw Error('Video canvas unavailable');
-      await save(frame.timestamp, context.getImageData(0, 0, width, height).data);
-      last = frame.timestamp;
+      if (!Number.isFinite(timestamp) || timestamp <= last) throw Error('Non-monotonic source timestamps');
+      context.drawImage(source, 0, 0, width, height);
+      await save(timestamp, context.getImageData(0, 0, width, height).data);
+      last = timestamp;
+    };
+    if (rotation % 360 === 0) {
+      // 4K VideoFrame GPU'da küçültülür (asenkron createImageBitmap); CPU tuvaline yalnız
+      // 266x154 kopyalanır. CanvasSink + eşzamanlı getImageData ~28 ms/kare kilitliyordu.
+      const sink = new mb.VideoSampleSink(track);
+      for await (const sample of sink.samples()) {
+        try {
+          const frame = sample.toVideoFrame();
+          let bitmap: ImageBitmap;
+          try { bitmap = await createImageBitmap(frame, { resizeWidth: width, resizeHeight: height, resizeQuality: 'medium' }); }
+          finally { frame.close(); }
+          try { await emit(sample.timestamp, bitmap); } finally { bitmap.close(); }
+        } finally { sample.close(); }
+      }
+    } else {
+      const sink = new mb.CanvasSink(track, { width, height, fit: 'fill', poolSize: 1 });
+      for await (const frame of sink.canvases()) await emit(frame.timestamp, frame.canvas);
     }
     signal.throwIfAborted();
   } finally { clearTimeout(timeout); signal.removeEventListener('abort', abort); input.dispose(); }

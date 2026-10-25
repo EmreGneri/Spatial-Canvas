@@ -16,7 +16,12 @@ export interface VideoDepthHandle {
   cancel(): void;
   dispose(): Promise<void>;
 }
-interface PrepareOptions { signal?: AbortSignal; onProgress?: (progress: VideoDepthProgress) => void; provider?: VideoWindowProvider }
+interface PrepareOptions {
+  signal?: AbortSignal; onProgress?: (progress: VideoDepthProgress) => void; provider?: VideoWindowProvider;
+  /** True while playback stutters: preparation waits (at most `PAUSE_MAX_MS` per step). */
+  shouldPause?: () => boolean;
+}
+const PAUSE_MAX_MS = 1000;
 function aborted(signal: AbortSignal): void { signal.throwIfAborted(); }
 /** Gerçek offline başlığın girdi boyutu; sağlayıcı ancak kaynak kabul edilince açılır (F10). */
 const OFFLINE_SIZE = { width: 266, height: 154 };
@@ -65,14 +70,36 @@ export async function prepareVideoDepth(file: Blob, options: PrepareOptions = {}
     lastStage = stage; lastEmit = now;
     options.onProgress?.({ stage, totalSeconds: duration, readySeconds: ready ? duration : readySeconds, processedSeconds, error });
   };
-  const put = async (name: string, data: ArrayBuffer) => {
+  /**
+   * Aşama başına TEK dosya, sıralı yazım. Kare başına `createWritable` her seferinde
+   * takas dosyası açıp kopyalıyordu: 4K 5 sn klipte 122 RGB yazımı 5.5 sn (kare başına
+   * ~45 ms, Windows), çözme süresinin yarısından fazlası (ölçüldü, F21).
+   */
+  const open = new Set<FileSystemWritableFileStream>();
+  const stream = async (name: string) => {
     aborted(signal);
-    const writable = await (await dir!.getFileHandle(name, { create: true })).createWritable();
-    try { await writable.write(data); await writable.close(); } catch (error) { await writable.abort().catch(() => {}); throw error; }
+    const handle = await dir!.getFileHandle(name, { create: true });
+    const writable = await handle.createWritable();
+    open.add(writable);
+    return {
+      async write(data: ArrayBufferView) { aborted(signal); await writable.write(data as unknown as BufferSource); },
+      async close() { open.delete(writable); await writable.close(); return handle.getFile(); },
+    };
+  };
+  const slice = async (source: File, index: number, bytes: number) => source.slice(index * bytes, (index + 1) * bytes).arrayBuffer();
+  const remove = async () => {
+    ownedStores.delete(id);
+    await Promise.all([...open].map(writable => writable.abort().catch(() => {}))); open.clear();
+    if (root) await root.removeEntry(id, { recursive: true }).catch(() => {});
+  };
+  const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+  /** Oynatma takılıyorsa kısa bekle; hazırlık sekmeyi dondurmasın (madde 4). */
+  const yieldToPlayback = async () => {
+    const until = performance.now() + PAUSE_MAX_MS;
+    while (options.shouldPause?.() && performance.now() < until && !signal.aborted) await sleep(100);
     aborted(signal);
   };
-  const get = async (name: string) => (await (await dir!.getFileHandle(name)).getFile()).arrayBuffer();
-  const remove = async () => { ownedStores.delete(id); if (root) await root.removeEntry(id, { recursive: true }).catch(() => {}); };
+  const depthFiles: File[] = [];
   const indexAt = (time: number) => {
     if ((!ready && time >= readySeconds) || disposed || signal.aborted || !Number.isFinite(time) || time < 0 || time > duration) return -1;
     let low = 0, high = stamps.length;
@@ -89,6 +116,8 @@ export async function prepareVideoDepth(file: Blob, options: PrepareOptions = {}
       dir = await root.getDirectoryHandle(id, { create: true });
       ({ width, height } = provider ?? OFFLINE_SIZE);
       if (!Number.isInteger(width) || !Number.isInteger(height) || width <= 0 || height <= 0) throw Error('Invalid offline depth dimensions');
+      const rgbBytes = width * height * 4, floatBytes = width * height * 4;
+      const rgbStream = await stream('rgb');
       await decodeVideoDepthSource(file, width, height, signal, async sourceDuration => {
         duration = sourceDuration;
         const estimate = await navigator.storage.estimate();
@@ -103,9 +132,12 @@ export async function prepareVideoDepth(file: Blob, options: PrepareOptions = {}
         const signature = vdaImza(pixels, width, height);
         if (lastSignature && signature.reduce((sum, v, i) => sum + Math.abs(v - lastSignature![i]), 0) / 16 > 0.28) scenes.push(stamps.length);
         lastSignature = signature;
-        stamps.push(time); await put(`rgb-${stamps.length - 1}`, pixels.buffer as ArrayBuffer);
+        if (pixels.length !== rgbBytes) throw Error('Unexpected decoded frame size');
+        stamps.push(time); await rgbStream.write(pixels);
         processedSeconds = time; progress('decoding');
+        await yieldToPlayback();
       });
+      const rgbFile = await rgbStream.close();
       if (!stamps.length || !provider) throw Error('No decoded video frames');
       progress('processing');
       scenes.push(stamps.length);
@@ -113,18 +145,20 @@ export async function prepareVideoDepth(file: Blob, options: PrepareOptions = {}
         const sceneStart = scenes[scene], sceneEnd = scenes[scene + 1], sceneCount = sceneEnd - sceneStart;
         let previous: number[] | undefined, refs: Float32Array[] = [], tail: Float32Array[] = [], count = sceneStart;
         const samples: number[] = [];
-        const commit = async (data: Float32Array, index: number) => {
+        const floatStream = await stream(`float-${scene}`);
+        // Frames are committed strictly in order (count++), so the scene file is sequential.
+        const commit = async (data: Float32Array, _index: number) => {
           for (const value of data) if (!Number.isFinite(value)) throw Error('Invalid offline depth');
           const stride = Math.max(1, Math.floor(data.length / RANGE_SAMPLES_PER_FRAME));
           for (let i = 0; i < data.length; i += stride) samples.push(data[i]);
-          await put(`float-${index}`, data.buffer as ArrayBuffer);
+          await floatStream.write(data);
         };
         // After the first window each one commits 22 frames and keeps an 8-frame tail:
         // a window whose new frames all lie in that tail commits nothing (F15).
         for (let start = 0; start === 0 || start + 10 < sceneCount; start += 22) {
-          aborted(signal);
+          await yieldToPlayback();
           const ids = videoWindowIndices(start, sceneCount, previous);
-          const frames = await Promise.all(ids.map(async i => new Uint8ClampedArray(await get(`rgb-${sceneStart + i}`))));
+          const frames = await Promise.all(ids.map(async i => new Uint8ClampedArray(await slice(rgbFile, sceneStart + i, rgbBytes))));
           const output = await provider.infer(frames, signal, ids.map(i => sceneStart + i)); aborted(signal);
           if (output.length !== 32 || output.some(x => x.length !== width * height)) throw Error('Offline window must return 32 depth maps');
           if (!previous) {
@@ -144,13 +178,16 @@ export async function prepareVideoDepth(file: Blob, options: PrepareOptions = {}
         for (const data of tail) { if (count < sceneEnd) await commit(data, count++); }
         // A shared scene range preserves relative depth over time. Never normalize each frame independently.
         const [min, max] = videoDepthRange(samples);
-        for (let i = sceneStart; i < sceneEnd; i++) {
-          const packed = quantizeVideoDepth(new Float32Array(await get(`float-${i}`)), min, max);
-          await put(`depth-${i}`, packed.buffer as ArrayBuffer);
-          await dir.removeEntry(`float-${i}`); await dir.removeEntry(`rgb-${i}`);
+        const floatFile = await floatStream.close();
+        const depthStream = await stream(`depth-${scene}`);
+        for (let i = 0; i < sceneCount; i++) {
+          await depthStream.write(quantizeVideoDepth(new Float32Array(await slice(floatFile, i, floatBytes)), min, max));
         }
+        depthFiles[scene] = await depthStream.close();
+        await dir.removeEntry(`float-${scene}`);
         readySeconds = sceneEnd < stamps.length ? stamps[sceneEnd] : duration; progress('processing');
       }
+      await dir.removeEntry('rgb').catch(() => {});
       aborted(signal); ready = true; progress('ready');
     } catch (error) {
       ready = false; readySeconds = 0; await remove(); progress(signal.aborted ? 'cancelled' : 'fallback', String(error));
@@ -161,7 +198,11 @@ export async function prepareVideoDepth(file: Blob, options: PrepareOptions = {}
     async frameAt(time) {
       const index = indexAt(time); if (index < 0) return null;
       try {
-        const packed = new Uint16Array(await get(`depth-${index}`));
+        let scene = 0;
+        while (scene + 1 < scenes.length && scenes[scene + 1] <= index) scene++;
+        const source = depthFiles[scene];
+        if (!source) return null;
+        const packed = new Uint16Array(await slice(source, index - scenes[scene], width * height * 2));
         if (packed.length !== width * height) return null;
         if (indexAt(time) < 0) return null;
         const data = new Float32Array(packed.length);

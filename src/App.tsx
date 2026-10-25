@@ -1095,8 +1095,19 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
       if (!liveDepthStopRef.current && !luminanceActiveRef.current) startLuminanceLoop(video, 'video');
     };
     let lastReadError = -Infinity;
+    // Takılma bekçisi: hazırlık sürerken bir kare >100 ms sürerse hazırlık kısa
+    // süre bekler (oynatma önceliklidir, sekme donmaz; madde 4).
+    let lastFrameAt = performance.now(), lastStutterAt = -Infinity, watchId = 0;
+    const watch = (t: number) => {
+      if (t - lastFrameAt > 100 && !document.hidden) lastStutterAt = t;
+      lastFrameAt = t;
+      if (videoPreparingRef.current && isCurrent() && !controller.signal.aborted) watchId = requestAnimationFrame(watch);
+    };
+    watchId = requestAnimationFrame(watch);
+    controller.signal.addEventListener('abort', () => cancelAnimationFrame(watchId), { once: true });
     void prepareVideoDepth(file, {
       signal: controller.signal,
+      shouldPause: () => !video.paused && performance.now() - lastStutterAt < 500,
       onProgress: (progress) => {
         if (!isCurrent() || controller.signal.aborted) return;
         setVideoPreparation(progress);

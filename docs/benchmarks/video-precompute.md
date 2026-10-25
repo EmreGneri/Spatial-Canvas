@@ -18,7 +18,9 @@ The encoder is the existing pinned VDA Small `encoder_fp16.onnx`; the separate o
 
 ## Processing and storage
 
-- Decode a separate muted video element, preserving actual presented media timestamps. Pause during disk writes to bound RGB memory; reject detected frame drops rather than inventing frames or FPS.
+- Decode with WebCodecs (Mediabunny `VideoSampleSink`), preserving source timestamps. Each 4K frame is resized on the GPU with an asynchronous `createImageBitmap`; only the 266x154 result is copied to the CPU. Rotated tracks keep the `CanvasSink` path.
+- One OPFS file per stage, written sequentially: `rgb` for the whole clip, `float-<scene>` and `depth-<scene>` per scene. Per-frame `createWritable` cost ~45 ms per write on Windows.
+- While a playback frame takes longer than 100 ms, preparation waits up to 1 s per step (decoded frame or window) so playback keeps priority.
 - Reset temporal context at detected scene cuts. Within each scene use 32-frame windows, stride22, overlap10, the official previous-window indices `[0,12,24..31]`, two-anchor affine alignment and an eight-frame seam blend.
 - Reuse encoder features for overlap/anchor frames with a bounded cache. Model calls share the existing GPU queue and check cancellation between frames.
 - Normalize with one range per scene and store Uint16 depth. Temporary RGB/float files are removed after that scene is committed. Storage quota is checked before decoding; errors remove the partial store and retain live playback.
@@ -61,3 +63,16 @@ Measurement (a), `drawImage(4K video) + getImageData` at 384x216, 40 frames: `wi
 On the RTX run no prepared/live ping-pong occurred (b = 0, c = 0), so F1 was not the cause there; the hysteresis guards slower machines. Live flow interpolation stays opt-in (`?araKare=1`): even capped at 12 Hz it measured ~42 FPS and 6 model Hz against ~53 FPS and 9 model Hz without it.
 
 Item 2 check: during "ready" playback the counters show 0 live inferences, 0 interpolations and 0 fallbacks per second on both clips, so no live pipeline runs beside prepared playback. Prepared playback renders far above video fps on the RTX GPU (157 FPS 4K, 160 FPS 1080p). A screenshot confirmed particle colors come from the video texture.
+
+Item 3 (hysteresis) landed with item 1: a late, missing or failed read keeps the last prepared frame; live depth resumes only for an unprepared region or after 1 s without a published frame; a hung read is never overlapped. `scripts/verify-buffered-video-playback.mjs` covers these cases. Restart storms: 0 fallbacks/s and 0 live inferences/s during "ready" playback.
+
+Item 4 (preparation must not freeze the tab), 4K 5 s clip:
+
+| Measure | Before | After item 4 |
+| --- | --- | --- |
+| Decoding stage | 9.2 s (OPFS puts 5.5 s, sync `getImageData` 3.4 s, max 77 ms per frame) | 3.4-7.0 s (`getImageData` 0.37 s total) |
+| Long tasks while decoding | 14-26, max 228 ms | 2-12, max 228 ms |
+| Long tasks while processing | max 83-104 ms | max 82-87 ms |
+| Whole preparation | 75.9 s (a4828fe), 19.9-31.3 s (item 1) | 16.1-21.8 s |
+
+The remaining worst frame during preparation (~450 ms) falls in the "loading" stage, while ORT compiles the encoder and offline head sessions on the main thread next to the live V2 startup. Moving preparation into a Worker would remove it; not done here.
