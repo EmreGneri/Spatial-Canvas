@@ -798,7 +798,9 @@ export async function estimateDepth(
   // Maske yoksa eski tek geçişli maskesiz davranış aynen korunur.
   let limited: Float32Array;
   if (subject) {
-    const inside = limitDepthSlope(normalized, outWidth, outHeight, subject);
+    // Karşıt-çift kuralı: maske kenarındaki arka plan derinlikli pikseller yüz/çene
+    // kenarını aşındırıyordu (AESPA-KARINA-5, uzak yanak). Video yolu çoğunlukta kalır.
+    const inside = limitDepthSlope(normalized, outWidth, outHeight, subject, MAX_SLOPE_PER_PX, 4, true);
     const outside = new Float32Array(subject.length);
     for (let i = 0; i < subject.length; i++) outside[i] = subject[i] >= 0.5 ? 0 : 1;
     limited = limitDepthSlope(inside, outWidth, outHeight, outside);
@@ -1751,6 +1753,7 @@ export function applyForegroundStretch(
 export const MAX_SLOPE_PER_PX = 0.02;
 /** 5×5 dış halkasındaki 8 yön: 3×3 aykırı tepeyi geniş yüzeyden ayırır. */
 const SLOPE_NEIGHBOR_RADIUS = 2;
+const OPPOSITE_DIRS = [[1, 0], [0, 1], [1, 1], [1, -1]] as const;
 
 /**
  * Bir piksel ancak iki piksel uzaktaki geçerli 8 yön örneğinin YARIDAN
@@ -1771,6 +1774,15 @@ const SLOPE_NEIGHBOR_RADIUS = 2;
  *
  * Girdiyi değiştirmez; yeni Float32Array döner (0..1 sözleşmesi korunur —
  * min() yalnızca aşağı çeker, alt sınır komşunun kendi değeridir).
+ *
+ * `oppositePairs` (yalnız fotoğrafın maske içi geçişi): çoğunluk yerine KARŞIT ÇİFT
+ * kuralı — piksel, 4 karşıt komşu çiftinin (yatay, dikey, iki çapraz) çoğunluğunda
+ * İKİ taraftan da alçaksa tepedir; önce 2 px, sonra 1 px aralıkla bakılır. Yarıçap 2'deki
+ * 8 örnekte dışbükey bir plato köşesi ile 3×3 tepe kümesinin köşesi aynı görünür; çoğunluk
+ * kuralı ikisini de kırpar. Maskenin yumuşak saçağı arka plan derinliği taşıdığında bu,
+ * uzak yanak/çene kenarını geçiş başına içeri yiyordu (AESPA-KARINA-5: sağ baş bölgesinde
+ * 0.2'den fazla düşen 474 piksel; scripts/verify-photo-depth-edges.mjs). Tek tepe,
+ * küme ve 1 px sırt yine kırpılır. Video yolu varsayılan (çoğunluk) kuralda kalır.
  */
 export function limitDepthSlope(
   depth: Float32Array,
@@ -1779,9 +1791,11 @@ export function limitDepthSlope(
   mask: Float32Array | null,
   maxStep = MAX_SLOPE_PER_PX,
   passes = 4,
+  oppositePairs = false,
 ): Float32Array {
   let src = Float32Array.from(depth);
   let dst = new Float32Array(depth.length);
+  const R = SLOPE_NEIGHBOR_RADIUS;
   for (let p = 0; p < passes; p++) {
     dst.set(src);
     for (let y = 0; y < height; y++) {
@@ -1789,6 +1803,28 @@ export function limitDepthSlope(
         const i = y * width + x;
         if (mask && mask[i] < 0.5) continue;
         const current = src[i];
+        if (oppositePairs) {
+          // Önce 2 px (geniş tepe), sonra 1 px (bir önceki geçişin kırptığı kümenin köşeleri).
+          for (const r of [R, 1]) {
+            let pairs = 0, lowPairs = 0, lowest = Infinity;
+            for (const [dx, dy] of OPPOSITE_DIRS) {
+              const ax = x + dx * r, ay = y + dy * r, bx = x - dx * r, by = y - dy * r;
+              if (ax < 0 || ax >= width || ay < 0 || ay >= height || bx < 0 || bx >= width || by < 0 || by >= height) continue;
+              const a = ay * width + ax, b = by * width + bx;
+              if (mask && (mask[a] < 0.5 || mask[b] < 0.5)) continue;
+              pairs++;
+              if (current > src[a] + maxStep && current > src[b] + maxStep) {
+                lowPairs++;
+                lowest = Math.min(lowest, src[a], src[b]);
+              }
+            }
+            if (lowPairs > pairs / 2) {
+              dst[i] = lowest + maxStep;
+              break;
+            }
+          }
+          continue;
+        }
         let neighborCount = 0;
         let lowerCount = 0;
         let lowestLower = Infinity;

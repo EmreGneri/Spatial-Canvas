@@ -193,6 +193,8 @@ export interface VolumeSampleOptions {
   videoFlowConfidence?: Float32Array;
   /** Original-resolution segmentation for subpixel contour placement. */
   videoGuideMask?: VideoGuideMask;
+  /** Photo only: hide contour pixels that sit on the far side of a depth edge. */
+  photoEdgeCull?: boolean;
 }
 
 /**
@@ -329,6 +331,14 @@ export function sampleVolumePositions(
   // yönünün derinliğe sızmasıdır (yön bir sahne özelliği değildir).
   const zSpan = zSpanFromBody(body, depthWidth, depthHeight, halfH, range);
   const zUnit = zSpan / 2;
+  // KONTUR DERİNLİK KENARI (fotoğraf; MoGe yolunun KENAR_RTOL ayıklamasının eşdeğeri):
+  // maskenin yumuşak saçağı siluetin 1-2 px dışına taşar ve orada arka plan derinliği
+  // vardır. Bu pikseller opak özne noktası olunca öznenin arkasında saçılmış nokta ve
+  // yandan bakınca arkaya uzayan perde oluyordu. Arka plan noktası gibi davranırlar.
+  if (opts.photoEdgeCull) {
+    const cull = photoContourEdgePixels(depth, depthWidth, depthHeight, alpha, dist);
+    for (let i = 0; i < cull.length; i++) if (cull[i]) alpha[i] = 0;
+  }
 
   for (let j = 0; j < grid; j++) {
     const v = 1 - (j + 0.5) / grid;
@@ -879,6 +889,26 @@ function invCdf(cdf: Float64Array, q: number): number {
 }
 
 /** Bilinear örnekleme; grid dışı taşmalar kenara kelepçelenir. */
+export const PHOTO_EDGE_JUMP = 0.25;
+export const PHOTO_EDGE_CONTOUR_PX = 3;
+/** Contour pixels (dist ≤ PX) whose 5×5 depth range > JUMP and which sit well below the local max. */
+export function photoContourEdgePixels(depth: Float32Array, w: number, h: number, alpha: Float32Array, dist: Float32Array): Uint8Array {
+  const out = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const i = y * w + x;
+    if (alpha[i] < 0.5 || dist[i] > PHOTO_EDGE_CONTOUR_PX) continue;
+    let mn = depth[i], mx = depth[i];
+    for (let dy = -2; dy <= 2; dy++) for (let dx = -2; dx <= 2; dx++) {
+      const yy = y + dy, xx = x + dx;
+      if (yy < 0 || yy >= h || xx < 0 || xx >= w) continue;
+      const v = depth[yy * w + xx];
+      if (v < mn) mn = v; else if (v > mx) mx = v;
+    }
+    if (mx - mn > PHOTO_EDGE_JUMP && mx - depth[i] > PHOTO_EDGE_JUMP * 0.4) out[i] = 1;
+  }
+  return out;
+}
+
 function sampleBilinear(
   map: Float32Array,
   w: number,

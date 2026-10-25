@@ -1793,6 +1793,7 @@ if (entry && entry.material !== this.pointsMaterial) {
       videoGuideMask: this.videoTexture && foregroundMask && maskWidth && maskHeight
         ? { data: foregroundMask, width: maskWidth, height: maskHeight } : undefined,
       worldHeight: videoWorldHeight,
+      photoEdgeCull: !this.videoTexture,
     });
     // TUR 11: fotoÄŸraf yÃ¼klÃ¼yse parÃ§acÄ±k renklerini de aynÄ± grid/remap ile
     // doldur (setPhoto'dan Ã¶nce setDepth gelirse texture boÅŸ kalÄ±r â€” renkler

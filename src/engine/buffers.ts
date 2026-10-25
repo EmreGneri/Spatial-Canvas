@@ -113,6 +113,8 @@ export interface PositionFillOptions {
   videoEdgeCleanup?: number;
   videoFlowConfidence?: Float32Array;
   videoGuideMask?: VideoGuideMask;
+  /** Photo only: hide contour pixels on the far side of a depth edge (sampler.ts). */
+  photoEdgeCull?: boolean;
   /** Override the default point cloud height for video frame fitting. */
   worldHeight?: number;
   /**
@@ -156,6 +158,7 @@ export function fillPositionsFromDepth(
     videoEdgeCleanup: opts.videoEdgeCleanup,
     videoFlowConfidence: opts.videoFlowConfidence,
     videoGuideMask: opts.videoGuideMask,
+    photoEdgeCull: opts.photoEdgeCull,
   });
   const blend = opts.blend ?? 1;
   if (blend >= 1) {
