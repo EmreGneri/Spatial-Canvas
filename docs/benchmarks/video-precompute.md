@@ -14,7 +14,7 @@ Videos shorter than 2 minutes are prepared automatically. For longer ones the ap
 
 ## Model assets
 
-The encoder is the existing pinned VDA Small `encoder_fp16.onnx`; the separate offline head is `public/models/DepthAnything/video-depth-anything-small-offline-154x266/offline32_fp16.onnx`. The local exporter checks the official Small checkpoint SHA256 and upstream revision, verifies the wrapper against the official head, then checks fp32/fp16 ONNX outputs against PyTorch. Assets are ignored local files. A clean deployment needs those assets supplied; absent models fall back explicitly. No model was uploaded to hosting by this change.
+The encoder is the existing pinned VDA Small `encoder_fp16.onnx`; the separate offline head is `public/models/DepthAnything/video-depth-anything-small-offline-154x266/offline32_fp16.onnx`. The local exporter checks the official Small checkpoint SHA256 and upstream revision, verifies the wrapper against the official head, then checks fp32/fp16 ONNX outputs against PyTorch. In development both load from the local `public/models` folders. Production loads the encoder from the pinned `EmreGneri/video-depth-anything-small-stream` revision and the offline head from https://huggingface.co/EmreGneri/video-depth-anything-small-offline at revision `29ded8c4d5f1402ebb029d8f9daf712020659bb1` (fp16 head, manifest, Apache-2.0 LICENSE, model card). Checked with curl: 200/206, `access-control-allow-origin` present, 57226264 bytes, sha256 matches the manifest.
 
 ```powershell
 & .bench-tmp/vda-export-env/Scripts/python.exe scripts/export-vda-offline.py --source .bench-tmp/vda-upstream --checkpoint .bench-tmp/vda-source-download/video_depth_anything_vits.pth --output public/models/DepthAnything/video-depth-anything-small-offline-154x266

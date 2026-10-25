@@ -5,7 +5,7 @@ export const VDA_INPUT_HEIGHT = 154;
 export const VDA_DEFAULT_ENABLED = false;
 // Dışa aktarım bizim üretimimiz: geliştirmede yerel klasörden, yayında Hugging Face'ten
 // (Apache-2.0, sabit revizyon; https://huggingface.co/EmreGneri/video-depth-anything-small-stream).
-const VDA_BASE = (import.meta as { env?: { DEV?: boolean } }).env?.DEV === true
+export const VDA_BASE = (import.meta as { env?: { DEV?: boolean } }).env?.DEV === true
   ? '/models/DepthAnything/video-depth-anything-small-stream-154x266/'
   : 'https://huggingface.co/EmreGneri/video-depth-anything-small-stream/resolve/56ff0a88aaf2262d50d5d82d69b47e9d40e1c991/';
 const VDA_PIXELS = VDA_INPUT_WIDTH * VDA_INPUT_HEIGHT;

@@ -1,8 +1,13 @@
 import type { VideoWindowProvider } from './videoPrecompute.ts';
-import { vdaOnIsle } from './videoDepthAnything.ts';
+import { VDA_BASE, vdaOnIsle } from './videoDepthAnything.ts';
 
-// Our pinned Apache-2.0 Small export uses the genuine offline temporal head.
-const BASE = '/models/DepthAnything/video-depth-anything-small-offline-154x266/';
+// Gerçek offline temporal32 başlığı (Apache-2.0, bizim dışa aktarımımız): geliştirmede yerel
+// klasör, yayında Hugging Face sabit revizyonu
+// (https://huggingface.co/EmreGneri/video-depth-anything-small-offline). Kodlayıcı akış
+// modeliyle ortak (VDA_BASE).
+export const OFFLINE_BASE = (import.meta as { env?: { DEV?: boolean } }).env?.DEV === true
+  ? '/models/DepthAnything/video-depth-anything-small-offline-154x266/'
+  : 'https://huggingface.co/EmreGneri/video-depth-anything-small-offline/resolve/29ded8c4d5f1402ebb029d8f9daf712020659bb1/';
 export async function openVideoWindowProvider(): Promise<VideoWindowProvider> {
   const ort = await import('onnxruntime-web/webgpu');
   const { gpuSirasinaGir, webgpuKullanilabilir } = await import('../../depth.ts');
@@ -10,9 +15,9 @@ export async function openVideoWindowProvider(): Promise<VideoWindowProvider> {
   const dev = (import.meta as { env?: { DEV?: boolean } }).env?.DEV === true;
   ort.env.wasm.wasmPaths = dev ? '/node_modules/onnxruntime-web/dist/' : '/ort/';
   ort.env.wasm.numThreads = 1;
-  const encoder = await gpuSirasinaGir(() => ort.InferenceSession.create('/models/DepthAnything/video-depth-anything-small-stream-154x266/encoder_fp16.onnx', { executionProviders: ['webgpu'] }));
+  const encoder = await gpuSirasinaGir(() => ort.InferenceSession.create(VDA_BASE + 'encoder_fp16.onnx', { executionProviders: ['webgpu'] }));
   let head: typeof encoder;
-  try { head = await gpuSirasinaGir(() => ort.InferenceSession.create(BASE + 'offline32_fp16.onnx', { executionProviders: ['webgpu'] })); }
+  try { head = await gpuSirasinaGir(() => ort.InferenceSession.create(OFFLINE_BASE + 'offline32_fp16.onnx', { executionProviders: ['webgpu'] })); }
   catch (error) { await encoder.release(); throw error; }
   // Bounded LRU retains overlap/anchor features; each new source frame is encoded once.
   const featureCache = new Map<number, Float32Array[]>();
