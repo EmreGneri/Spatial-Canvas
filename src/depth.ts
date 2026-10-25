@@ -329,8 +329,8 @@ export type DepthEstimateOptions = {
   /**
    * Ön plan ROI derinlik genişletmesi: model yüzü %2-3'lük dar bir aralığa
    * sıkıştırır (burun ↔ göz çukuru mikro farkları kaybolur). Maskelenmiş ön
-   * planın min/max derinliği alınıp [STRETCH_LO, STRETCH_HI] aralığına
-   * yeniden dağıtılır: D_new = lo + (hi−lo) · (D − Dmin)/(Dmax − Dmin).
+   * planın derinliği fotoğrafta en fazla 1.3 kat doğrusal genişletilir;
+   * en yakın uzuvlar yüzdelik kırpmasıyla düzleştirilmez.
    * Maske ile yumuşak harmanlanır (maske dışına bulaşmaz). false = kapalı.
    * Varsayılan açık.
    */
@@ -748,9 +748,8 @@ export async function estimateDepth(
           : foregroundMask(normalized, outWidth, outHeight))
       : null;
   if (stretchEnabled) {
-    // Near-tail clamp only with a real subject mask: the depth-derived fallback
-    // mask includes near floor/table, whose tail is scenery, not a limb.
-    applyForegroundStretch(normalized, maskFg!, outWidth, outHeight, STRETCH_TRIM_PCT, undefined, subject !== null);
+    // Fotoğrafın yakın kuyruğu doğrusal kalır; canlı yol eski eğriyi kullanır.
+    applyForegroundStretch(normalized, maskFg!, outWidth, outHeight, STRETCH_TRIM_PCT, undefined, subject !== null, PHOTO_STRETCH_MAX_GAIN);
   }
   if (sobelRelief > 0 && lum) {
     applySobelRelief(normalized, lum, maskFg!, outWidth, outHeight, sobelRelief);
@@ -1324,6 +1323,8 @@ function smoothstep(e0: number, e1: number, x: number): number {
 // ---------------------------------------------------------------------------
 
 const FOREGROUND_STRETCH_DEFAULT = true;
+/** Fotoğrafta baş/boyun aralığını büyütürken yakın kolu düz bir rafa sıkıştırma. */
+const PHOTO_STRETCH_MAX_GAIN = 1.3;
 export const SOBEL_RELIEF_DEFAULT = 0.02;
 /** Stretch hedef aralığı: tam [0,1]'e açmak arka planla çakışırdı. */
 const STRETCH_LO = 0.1;
@@ -1607,9 +1608,9 @@ export function yeniStretchAraligi(alpha?: number): StretchAraligi {
  * `zamansalYumusat` alanı yumuşatıyor, ama stretch İKİSİNDEN DE SONRA
  * çalıştığı için temporal filtre onu sönümleyemiyordu.
  *
- * `durum` verilirse uçlar `STRETCH_RANGE_ALPHA` ile taşınır. VERİLMEZSE
- * davranış birebir eskisidir — fotoğraf yolu tek karelik olduğu için taşımaya
- * ne ihtiyacı ne de anlamı vardır.
+ * `durum` verilirse uçlar `STRETCH_RANGE_ALPHA` ile taşınır. `photoMaxGain`
+ * verilmezse eski eğri korunur. Fotoğraf tek karede sınırlı, doğrusal kazanç
+ * kullanır; canlı yolun kareler arası taşıması değişmez.
  */
 export function applyForegroundStretch(
   depth: Float32Array,
@@ -1621,6 +1622,8 @@ export function applyForegroundStretch(
   /** Photo path only: clamp a near-limb tail (see NEAR_TAIL_MAX_SKEW). Off by
    *  default so the live path (range carried across frames) is untouched. */
   nearTailClamp = false,
+  /** Yalnız fotoğraf: tüm özne aralığına doğrusal, sınırlı kazanç. */
+  photoMaxGain?: number,
 ) {
   let mn = Infinity;
   let mx = -Infinity;
@@ -1634,6 +1637,21 @@ export function applyForegroundStretch(
   }
   if (count === 0) return;
   const rawSpan = mx - mn;
+  if (photoMaxGain !== undefined) {
+    if (!(rawSpan > 1e-4)) return;
+    // Uç yüzdelikleri kesmek yakın uzvu düzleştirir; gerçek uçlarla tek eğim kullan.
+    const gain = Math.min(Math.max(1, photoMaxGain), 1 / rawSpan);
+    const halfSpan = rawSpan * gain / 2;
+    const midpoint = (mn + mx) / 2;
+    const center = Math.max(halfSpan, Math.min(1 - halfSpan, midpoint));
+    for (let i = 0; i < depth.length; i++) {
+      const m = mask[i];
+      if (m <= 0.001) continue;
+      const target = Math.max(0, Math.min(1, center + (depth[i] - midpoint) * gain));
+      depth[i] += (target - depth[i]) * m;
+    }
+    return;
+  }
   let lo = mn;
   let hi = mx;
   if (pct > 0 && rawSpan > 1e-4) {

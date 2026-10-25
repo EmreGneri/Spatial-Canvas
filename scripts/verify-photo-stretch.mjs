@@ -1,0 +1,24 @@
+// Fotoğrafın yakın kolu doğrusal kalır; canlı videonun eski eğrisi korunur.
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { applyForegroundStretch } from '../src/depth.ts';
+const raw = Float32Array.from({ length: 1000 }, (_, i) => 0.35 + 0.3 * i / 999);
+const mask = new Float32Array(raw.length).fill(1);
+const photo = Float32Array.from(raw);
+applyForegroundStretch(photo, mask, 1000, 1, undefined, undefined, true, 1.3);
+const gain = (photo[999] - photo[0]) / (raw[999] - raw[0]);
+assert.ok(gain <= 1.30001 && gain >= 1, `fotoğraf kazancı: ${gain}`);
+const near = photo[990] - photo[950], middle = photo[540] - photo[500];
+assert.ok(Math.abs(near / middle - 1) < 0.001, 'yakın kuyruk doğrusal; raf yok');
+const empty = Float32Array.from(raw);
+applyForegroundStretch(empty, new Float32Array(raw.length), 1000, 1, undefined, undefined, true, 1.3);
+assert.deepEqual(empty, raw, 'boş maske değişmez');
+const flat = new Float32Array(1000).fill(0.4);
+applyForegroundStretch(flat, mask, 1000, 1, undefined, undefined, true, 1.3);
+assert.ok(flat.every(v => Math.abs(v - 0.4) < 1e-6), 'düz özne değişmez');
+const wide = Float32Array.from(raw, (_, i) => i / 999);
+applyForegroundStretch(wide, mask, 1000, 1, undefined, undefined, true, 1.3);
+assert.ok(wide.every(v => Number.isFinite(v) && v >= 0 && v <= 1));
+const source = readFileSync(new URL('../src/depth.ts', import.meta.url), 'utf8');
+assert.match(source, /applyForegroundStretch\(normalized,[^;]*PHOTO_STRETCH_MAX_GAIN\)/, 'fotoğraf çağrısı kazanç sınırını kullanır');
+console.log('verify-photo-stretch OK');
