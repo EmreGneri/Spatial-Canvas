@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { videoWindowIndices, alignVideoWindow, blendVideoSeam, quantizeVideoDepth } from '../src/engine/vision/videoPrecomputeWindow.ts';
-import { prepareVideoDepth, videoDepthRange, videoPreparationPolicy, estimatePreparationSeconds, AUTO_PREPARE_MAX_SECONDS } from '../src/engine/vision/videoPrecompute.ts';
+import { detailPreparedDepth, prepareVideoDepth, videoDepthRange, videoPreparationPolicy, estimatePreparationSeconds, AUTO_PREPARE_MAX_SECONDS } from '../src/engine/vision/videoPrecompute.ts';
 
 const first = videoWindowIndices(0, 70);
 const second = videoWindowIndices(22, 70, first);
@@ -33,6 +33,26 @@ assert.equal(videoPreparationPolicy(AUTO_PREPARE_MAX_SECONDS, true), 'ask');
 assert.equal(videoPreparationPolicy(16, false), 'off');
 assert.equal(videoPreparationPolicy(Number.NaN, true), 'off');
 assert.ok(estimatePreparationSeconds(300) >= 300, 'estimate is never faster than real time');
+
+// Prepared frames get the live post-process (detail from stored RGB; mask: stretch + sobel).
+{
+  const w = 40, h = 30, n = w * h;
+  const flatDepth = new Uint16Array(n).fill(Math.round(0.6 * 65535));
+  const rgba = (f) => { const out = new Uint8ClampedArray(n * 4); for (let i = 0; i < n; i++) { const v = f(i % w, Math.floor(i / w)); out.set([v, v, v, 255], i * 4); } return out; };
+  const spread = (a, sel = () => true) => { let lo = 1, hi = 0; a.forEach((v, i) => { if (sel(i)) { lo = Math.min(lo, v / 65535); hi = Math.max(hi, v / 65535); } }); return hi - lo; };
+  const plain = detailPreparedDepth(flatDepth, rgba(() => 128), w, h);
+  assert.ok(spread(plain) < 1e-3, 'uniform RGB adds no relief to flat depth');
+  const textured = detailPreparedDepth(flatDepth, rgba((x, y) => ((x >> 1) + (y >> 1)) % 2 ? 230 : 30), w, h);
+  assert.ok(spread(textured) > 0.02, `RGB detail adds relief: ${spread(textured)}`);
+  // A subject squeezed into a narrow band is stretched open when the mask track exists.
+  const subject = (i) => (i % w) >= 10 && (i % w) < 30 && Math.floor(i / w) >= 5 && Math.floor(i / w) < 25;
+  const squeezed = Uint16Array.from({ length: n }, (_, i) => Math.round((subject(i) ? 0.70 + 0.04 * ((i % w) - 10) / 20 : 0.2) * 65535));
+  const mask = Float32Array.from({ length: n }, (_, i) => subject(i) ? 1 : 0);
+  const masked = detailPreparedDepth(squeezed, rgba(() => 128), w, h, mask);
+  const inner = (i) => (i % w) >= 12 && (i % w) < 28 && Math.floor(i / w) >= 7 && Math.floor(i / w) < 23;
+  assert.ok(spread(masked, inner) > 2 * spread(squeezed, inner), `mask stretch widens subject: ${spread(squeezed, inner)} -> ${spread(masked, inner)}`);
+  assert.ok(masked.every(v => v >= 0 && v <= 65535));
+}
 let dispose = 0;
 const stages = [];
 const handle = await prepareVideoDepth(new Blob(), {

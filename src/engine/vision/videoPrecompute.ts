@@ -3,6 +3,11 @@ import { vdaImza } from './videoDepthAnything.ts';
 import { decodeVideoDepthSource } from './videoPrecomputeDecode.ts';
 import { maskKeyFrames, propagateMaskInterval } from './videoMaskTrack.ts';
 import type { LiveDepthFrame } from './liveDepthFlow.ts';
+import { LIVE_STRETCH_HALF_LIFE_MS } from './liveDepth.ts';
+import {
+  applyDetail, applyForegroundStretch, applySobelRelief, DETAIL_STRENGTH_DEFAULT, fillSoftMaskInterior,
+  limitDepthSlope, smoothDepthSteps, SOBEL_RELIEF_DEFAULT, yeniStretchAraligi, type StretchAraligi,
+} from '../../depth.ts';
 
 /** `mask`: nesne ayırma maske izi (varsa), derinlikle aynı ızgarada 0..1. */
 export interface VideoDepthFrame { data: Float32Array; width: number; height: number; mediaTime: number; mask?: Float32Array }
@@ -61,6 +66,50 @@ export function videoDepthRange(samples: ArrayLike<number>): [number, number] {
   const sorted = Float32Array.from(samples).sort();
   const at = (q: number) => sorted[Math.min(sorted.length - 1, Math.max(0, Math.round(q * (sorted.length - 1))))];
   return [at(0.01), at(0.99)];
+}
+/**
+ * HAZIR KAREYE CANLI YOLUN SON İŞLEMESİ — aynı aşamalar, farklı sıra.
+ *
+ * VDA kareleri ham normalize edilip doğrudan gösteriliyordu: canlı yolun detay/rölyef
+ * aşamalarının hiçbiri yoktu ("video hâlâ detaysız" şikayeti). Hazırlıkta bir kez
+ * çalışır, oynatmada maliyet yok (266x154'te ~11 ms/kare, maskeli ~15 ms; Node).
+ *
+ * SIRA: yumuşat → [maske: stretch] → eğim sınırı → RGB detay (λ) → [maske: sobel].
+ * Canlı yol sınırlayıcıyı detaydan SONRA koşuyor; VDA'nın keskin ince gövdelerinde
+ * bu sıra detay dokusunu çoğunluk kuralına takıp gövdeyi tarak gibi arka plana
+ * çekiyordu (pixabay-forest 2.5 sn, ölçüldü). Sınırlayıcının işi büyük sıçramalar;
+ * detay ±λ·HF küçük, sonradan eklenince kendisi sıçrama üretmiyor.
+ * `packed`: sahne aralığıyla nicelenmiş ham VDA; `rgba`: aynı karenin saklı RGB'si.
+ */
+export function detailPreparedDepth(packed: Uint16Array, rgba: Uint8ClampedArray, width: number, height: number,
+  mask: Float32Array | null = null, stretch?: StretchAraligi): Uint16Array {
+  const n = width * height;
+  let depth: Float32Array = new Float32Array(n);
+  const lum = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    depth[i] = packed[i] / 65535;
+    // Rec.601, canlı yol (estimateDepthLive) ile aynı katsayılar.
+    lum[i] = (0.299 * rgba[i * 4] + 0.587 * rgba[i * 4 + 1] + 0.114 * rgba[i * 4 + 2]) / 255;
+  }
+  smoothDepthSteps(depth, width, height);
+  if (!mask || mask.length !== n) {
+    depth = limitDepthSlope(depth, width, height, null);
+    applyDetail(depth, lum, width, height, DETAIL_STRENGTH_DEFAULT);
+    return quantizeVideoDepth(depth, 0, 1);
+  }
+  // Maskeli: canlı/fotoğraf yoluyla aynı yumuşak iç dolgu, taşınan stretch aralığı ve
+  // İKİ BÖLGELİ sınırlama (tek maskesiz geçiş siluet halkasını arka plana çökertir).
+  const weight = fillSoftMaskInterior(mask, width, height);
+  applyForegroundStretch(depth, weight, width, height, undefined, stretch ?? yeniStretchAraligi());
+  const outside = Float32Array.from(mask, v => v >= 0.5 ? 0 : 1);
+  depth = limitDepthSlope(limitDepthSlope(depth, width, height, mask), width, height, outside);
+  applyDetail(depth, lum, width, height, DETAIL_STRENGTH_DEFAULT);
+  applySobelRelief(depth, lum, weight, width, height, SOBEL_RELIEF_DEFAULT);
+  return quantizeVideoDepth(depth, 0, 1);
+}
+/** Kareler arası stretch taşıması canlı yolla aynı yarı ömürle (medya zamanı, Hz'den bağımsız). */
+function stretchAlpha(elapsedSeconds: number): number {
+  return 1 - Math.pow(0.5, Math.max(1, elapsedSeconds * 1000) / LIVE_STRETCH_HALF_LIFE_MS);
 }
 /** Bu süreden kısa videolar sormadan hazırlanır; uzunlar için önce tahminle sorulur. */
 export const AUTO_PREPARE_MAX_SECONDS = 120;
@@ -123,7 +172,10 @@ export async function prepareVideoDepth(file: Blob, options: PrepareOptions = {}
     while (options.shouldPause?.() && performance.now() < until && !signal.aborted) await sleep(100);
     aborted(signal);
   };
+  /** Ham VDA (maske izi detayı bundan üretir) · detaylı (maskesiz gösterim) · maskeli detaylı. */
   const depthFiles: File[] = [];
+  const detailFiles: File[] = [];
+  const maskedFiles: File[] = [];
   const maskFiles: File[] = [];
   let rgbFile: File | null = null, maskReadyFrames = 0, maskJob: Promise<void> | null = null;
   const sceneOf = (index: number) => {
@@ -152,8 +204,8 @@ export async function prepareVideoDepth(file: Blob, options: PrepareOptions = {}
       await decodeVideoDepthSource(file, width, height, signal, async sourceDuration => {
         duration = sourceDuration;
         const estimate = await navigator.storage.estimate();
-        // Reserve temporary RGBA/float depth and final Uint16 at a conservative 60 fps.
-        if ((estimate.quota ?? 0) - (estimate.usage ?? 0) < duration * 60 * width * height * 10) throw Error('Yerel video depolaması yetersiz; canlı derinlik kullanılıyor.');
+        // Reserve RGBA, temporary float, raw + detailed Uint16, mask and masked Uint16 at a conservative 60 fps.
+        if ((estimate.quota ?? 0) - (estimate.usage ?? 0) < duration * 60 * width * height * 15) throw Error('Yerel video depolaması yetersiz; canlı derinlik kullanılıyor.');
         // Codec, aspect, duration and quota are accepted: only now pay for ORT and two GPU sessions.
         provider ??= await (await import('./videoPrecomputeProvider.ts')).openVideoWindowProvider();
         aborted(signal);
@@ -210,11 +262,15 @@ export async function prepareVideoDepth(file: Blob, options: PrepareOptions = {}
         // A shared scene range preserves relative depth over time. Never normalize each frame independently.
         const [min, max] = videoDepthRange(samples);
         const floatFile = await floatStream.close();
-        const depthStream = await stream(`depth-${scene}`);
+        const depthStream = await stream(`depth-${scene}`), detailStream = await stream(`detail-${scene}`);
         for (let i = 0; i < sceneCount; i++) {
-          await depthStream.write(quantizeVideoDepth(new Float32Array(await slice(floatFile, i, floatBytes)), min, max));
+          const packed = quantizeVideoDepth(new Float32Array(await slice(floatFile, i, floatBytes)), min, max);
+          await depthStream.write(packed);
+          const rgba = new Uint8ClampedArray(await slice(rgbFile!, sceneStart + i, rgbBytes));
+          await detailStream.write(detailPreparedDepth(packed, rgba, width, height));
         }
         depthFiles[scene] = await depthStream.close();
+        detailFiles[scene] = await detailStream.close();
         await dir.removeEntry(`float-${scene}`);
         readySeconds = sceneEnd < stamps.length ? stamps[sceneEnd] : duration; progress('processing');
       }
@@ -230,7 +286,8 @@ export async function prepareVideoDepth(file: Blob, options: PrepareOptions = {}
       const index = indexAt(time); if (index < 0) return null;
       try {
         const scene = sceneOf(index);
-        const source = depthFiles[scene];
+        const masked = index < maskReadyFrames && !!maskedFiles[scene];
+        const source = masked ? maskedFiles[scene] : detailFiles[scene];
         if (!source) return null;
         const packed = new Uint16Array(await slice(source, index - scenes[scene], width * height * 2));
         if (packed.length !== width * height) return null;
@@ -238,7 +295,7 @@ export async function prepareVideoDepth(file: Blob, options: PrepareOptions = {}
         const data = new Float32Array(packed.length);
         for (let i = 0; i < packed.length; i++) data[i] = packed[i] / 65535;
         let mask: Float32Array | undefined;
-        if (index < maskReadyFrames && maskFiles[scene]) {
+        if (masked && maskFiles[scene]) {
           const bytes = new Uint8Array(await slice(maskFiles[scene], index - scenes[scene], width * height));
           if (bytes.length === width * height) {
             mask = new Float32Array(bytes.length);
@@ -270,19 +327,32 @@ export async function prepareVideoDepth(file: Blob, options: PrepareOptions = {}
         };
         for (let scene = 0; scene < scenes.length - 1; scene++) {
           const keys = maskKeyFrames(scenes[scene], scenes[scene + 1]);
-          const out = await stream(`mask-${scene}`);
+          const out = await stream(`mask-${scene}`), maskedOut = await stream(`masked-${scene}`);
+          // Maskeli detay (stretch + sobel + iki bölgeli sınır) sahne içinde sırayla, aralık taşınarak.
+          const stretch = yeniStretchAraligi();
+          let written = scenes[scene];
+          const emit = async (mask: Float32Array) => {
+            const bytes = toBytes(mask), index = written++;
+            await out.write(bytes);
+            const quantized = Float32Array.from(bytes, v => v / 255);
+            const local = index - scenes[scene];
+            stretch.alpha = local === 0 ? 1 : stretchAlpha(stamps[index] - stamps[index - 1]);
+            const packed = new Uint16Array(await slice(depthFiles[scene], local, n * 2));
+            await maskedOut.write(detailPreparedDepth(packed, (await frame(index)).data, width, height, quantized, stretch));
+          };
           let startMask = await keyMask(keys[0]);
           for (let k = 0; k < keys.length; k++) {
             const a = keys[k], b = keys[k + 1];
-            if (b === undefined) { await out.write(toBytes(startMask)); break; }
+            if (b === undefined) { await emit(startMask); break; }
             const endMask = await keyMask(b);
             const frames = await Promise.all(Array.from({ length: b - a + 1 }, (_, j) => frame(a + j)));
             const masks = await propagateMaskInterval(frames, startMask, endMask, width, height, () => sleep(0));
             aborted(signal);
-            for (let j = 0; j < masks.length - 1; j++) await out.write(toBytes(masks[j]));
+            for (let j = 0; j < masks.length - 1; j++) await emit(masks[j]);
             startMask = endMask;
           }
           maskFiles[scene] = await out.close();
+          maskedFiles[scene] = await maskedOut.close();
           maskReadyFrames = scenes[scene + 1];
           onProgress?.(maskReadyFrames / stamps.length);
         }

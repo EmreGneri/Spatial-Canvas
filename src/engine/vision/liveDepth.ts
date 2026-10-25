@@ -418,7 +418,7 @@ export function kirpmaIzgarasi(
  */
 const LIVE_RANGE_ALPHA = 0.15;
 const LIVE_RANGE_HALF_LIFE_MS = 450;
-const LIVE_STRETCH_HALF_LIFE_MS = 500;
+export const LIVE_STRETCH_HALF_LIFE_MS = 500;
 const LIVE_SCENE_CUT_LUMA_THRESHOLD = 0.25;
 let liveLo: number | null = null;
 let liveHi: number | null = null;
