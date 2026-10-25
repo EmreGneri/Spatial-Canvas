@@ -6,7 +6,7 @@ Assignment row 5 uses a genuine official VDA Small temporal32 head at 154x266. I
 
 `npm run dev`, upload a video, and watch the **Video depth** progress display. Preparation runs beside the existing live preview. Finalized scenes play from Uint16 OPFS depth; uncached timestamps and slow reads resume live V2 depth. Cancel preparation or replace the source to stop work and release the temporary store.
 
-Object separation keeps using the existing live mask/depth path because the prepared files contain depth only. Turning separation off resumes prepared playback when available. Camera input stays on the live path.
+Object separation: turning it on after (or during) preparation builds a mask track. Every 48th frame of a scene (plus the scene's first and last frame) goes through the existing live mask chain (BiRefNet + DAViD with the sidecar, else the browser segmenter); the frames in between get the mask by forward and backward optical flow over the stored 266x154 RGB, blended by distance, with untrusted pixels keeping the previous mask. Masks are stored as Uint8 per scene in OPFS. While a region has no mask yet, the live mask/depth path runs (live V2 throttled to 2 Hz); once it has one, prepared depth plays with the stored mask. The RGB file is therefore kept until the source is released. No mask work runs unless separation is turned on. Camera input stays on the live path.
 
 ## Model assets
 
@@ -76,3 +76,10 @@ Item 4 (preparation must not freeze the tab), 4K 5 s clip:
 | Whole preparation | 75.9 s (a4828fe), 19.9-31.3 s (item 1) | 16.1-21.8 s |
 
 The remaining worst frame during preparation (~450 ms) falls in the "loading" stage, while ORT compiles the encoder and offline head sessions on the main thread next to the live V2 startup. Moving preparation into a Worker would remove it; not done here.
+
+Item 5 (prepared video with object separation), `pexels-lighthouse-orbit-20744392.mp4` first 5 s (3840x2160, 29.97 fps, 153 frames), Playwright Chrome on the RTX GPU, sidecar off:
+
+- Preparation (depth only): 20.8-25.0 s. The mask track is extra and only runs when separation is turned on.
+- Mask track with a key frame every 24 frames: 92-98 s (8 key frames). One key frame mask costs ~8.5 s here (BiRefNet in the browser, also measured standalone: 8.3-9.6 s per call; the first call ~15-17 s with model load). Flow fill between key frames: ~1 s per 24 frames.
+- With a key frame every 48 frames (default): 72 s for 5 frames' worth of key masks, so roughly +3.4x the depth preparation time on this machine without the sidecar. With the sidecar the key frame masks are much cheaper.
+- Playback with separation on and the mask track ready: 133-153 FPS, 0 live inferences/s, 0 fallbacks/s (before: separation forced the full live pipeline).

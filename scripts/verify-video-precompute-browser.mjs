@@ -39,6 +39,10 @@ try {
       timestamps,
       mediaTime: frame?.mediaTime, decodedFrames: progress.filter(p => p.stage === 'decoding').length - 1,
       stage: progress.at(-1), providerDisposed: disposed };
+    output.maskBefore = handle.hasMask(0.3);
+    await handle.prepareMasks(async f => new Float32Array(f.width * f.height).fill(0.75));
+    const masked = await handle.frameAt(0.3);
+    output.mask = { ready: handle.hasMask(0.3), value: masked?.mask?.[0], length: masked?.mask?.length };
     await handle.dispose(); output.disposed = !handle.hasFrame(0.2);
     document.querySelector('#result').textContent = JSON.stringify(output, null, 2);
     return output;
@@ -51,6 +55,9 @@ try {
   assert.equal(new Set(result.timestamps).size, 8);
   assert.ok(result.mediaTime >= 0.5, 'late playback must read a late source frame');
   assert.equal(result.disposed, true);
+  assert.equal(result.maskBefore, false, 'no mask track until object separation asks for it');
+  assert.equal(result.mask.ready, true, 'mask track becomes readable');
+  assert.ok(Math.abs(result.mask.value - 0.75) < 0.01 && result.mask.length === result.frame.width * result.frame.height, JSON.stringify(result.mask));
   assert.equal(result.frame.width, real ? 266 : 16);
   assert.equal(result.frame.height, real ? 154 : 9);
   if (!real) assert.equal(result.providerDisposed, true);

@@ -1,5 +1,5 @@
 export interface BufferedDepthFrame {
-  data: Float32Array; width: number; height: number; mediaTime: number;
+  data: Float32Array; width: number; height: number; mediaTime: number; mask?: Float32Array;
 }
 interface DepthCache {
   hasFrame(time: number): boolean;
@@ -70,14 +70,14 @@ export function startBufferedVideoPlayback(video: HTMLVideoElement, cache: Depth
   onFrame: (frame: BufferedDepthFrame) => void;
   onFallback?: (time: number) => void;
   onError?: (error: unknown) => void;
-  /** False (ör. nesne ayırma açık) iken hiçbir okuma yapılmaz. */
+  /** False (ör. nesne ayırma açık, maske izi yok) iken okuma yok, canlı derinliğe dönülür. */
   enabled?: () => boolean;
 }): () => void {
   const reader = createBufferedDepthReader({ cache, ...options, currentTime: () => video.currentTime });
   let active = true, callback: number | null = null, animation: number | null = null, previousTime = -Infinity;
   const present = (time: number) => {
     if (!active || video.seeking || video.readyState < 2) return;
-    if (options.enabled && !options.enabled()) { previousTime = -Infinity; return; }
+    if (options.enabled && !options.enabled()) { previousTime = -Infinity; options.onFallback?.(time); return; }
     if (time < previousTime) reader.reset();
     if (time === previousTime) return;
     previousTime = time;

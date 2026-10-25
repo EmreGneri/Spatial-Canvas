@@ -1,8 +1,13 @@
 import { alignVideoWindow, blendVideoSeam, quantizeVideoDepth, transformVideoDepth, videoWindowIndices } from './videoPrecomputeWindow.ts';
 import { vdaImza } from './videoDepthAnything.ts';
 import { decodeVideoDepthSource } from './videoPrecomputeDecode.ts';
+import { maskKeyFrames, propagateMaskInterval } from './videoMaskTrack.ts';
+import type { LiveDepthFrame } from './liveDepthFlow.ts';
 
-export interface VideoDepthFrame { data: Float32Array; width: number; height: number; mediaTime: number }
+/** `mask`: nesne ayırma maske izi (varsa), derinlikle aynı ızgarada 0..1. */
+export interface VideoDepthFrame { data: Float32Array; width: number; height: number; mediaTime: number; mask?: Float32Array }
+/** Anahtar kare RGB'sinden derinlik ızgarası boyutunda maske; null = güvenilmez. */
+export type VideoMaskCapture = (frame: LiveDepthFrame) => Promise<Float32Array | null>;
 export interface VideoDepthProgress { stage: 'loading' | 'decoding' | 'processing' | 'ready' | 'fallback' | 'cancelled'; readySeconds: number; totalSeconds: number; processedSeconds?: number; error?: string }
 export interface VideoWindowProvider {
   width: number; height: number;
@@ -13,6 +18,14 @@ export interface VideoDepthHandle {
   done: Promise<void>;
   hasFrame(time: number): boolean;
   frameAt(time: number): Promise<VideoDepthFrame | null>;
+  /** Maske izi bu kare için hazır mı (nesne ayırma açıkken hazır derinlik kullanılabilir). */
+  hasMask(time: number): boolean;
+  /**
+   * Hazır derinlik bittikten sonra maske izini üretir: her `MASK_KEY_INTERVAL` karede
+   * bir segmentasyon, aradakiler iki yönlü akışla. Yalnız nesne ayırma istenince
+   * çağrılır (varsayılan yolda ek GPU işi yok). Tekrar çağrı aynı işi döndürür.
+   */
+  prepareMasks(capture: VideoMaskCapture, onProgress?: (fraction: number) => void): Promise<void>;
   cancel(): void;
   dispose(): Promise<void>;
 }
@@ -92,7 +105,7 @@ export async function prepareVideoDepth(file: Blob, options: PrepareOptions = {}
     await Promise.all([...open].map(writable => writable.abort().catch(() => {}))); open.clear();
     if (root) await root.removeEntry(id, { recursive: true }).catch(() => {});
   };
-  const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+  const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
   /** Oynatma takılıyorsa kısa bekle; hazırlık sekmeyi dondurmasın (madde 4). */
   const yieldToPlayback = async () => {
     const until = performance.now() + PAUSE_MAX_MS;
@@ -100,6 +113,13 @@ export async function prepareVideoDepth(file: Blob, options: PrepareOptions = {}
     aborted(signal);
   };
   const depthFiles: File[] = [];
+  const maskFiles: File[] = [];
+  let rgbFile: File | null = null, maskReadyFrames = 0, maskJob: Promise<void> | null = null;
+  const sceneOf = (index: number) => {
+    let scene = 0;
+    while (scene + 1 < scenes.length && scenes[scene + 1] <= index) scene++;
+    return scene;
+  };
   const indexAt = (time: number) => {
     if ((!ready && time >= readySeconds) || disposed || signal.aborted || !Number.isFinite(time) || time < 0 || time > duration) return -1;
     let low = 0, high = stamps.length;
@@ -137,7 +157,7 @@ export async function prepareVideoDepth(file: Blob, options: PrepareOptions = {}
         processedSeconds = time; progress('decoding');
         await yieldToPlayback();
       });
-      const rgbFile = await rgbStream.close();
+      rgbFile = await rgbStream.close();
       if (!stamps.length || !provider) throw Error('No decoded video frames');
       progress('processing');
       scenes.push(stamps.length);
@@ -158,7 +178,7 @@ export async function prepareVideoDepth(file: Blob, options: PrepareOptions = {}
         for (let start = 0; start === 0 || start + 10 < sceneCount; start += 22) {
           await yieldToPlayback();
           const ids = videoWindowIndices(start, sceneCount, previous);
-          const frames = await Promise.all(ids.map(async i => new Uint8ClampedArray(await slice(rgbFile, sceneStart + i, rgbBytes))));
+          const frames = await Promise.all(ids.map(async i => new Uint8ClampedArray(await slice(rgbFile!, sceneStart + i, rgbBytes))));
           const output = await provider.infer(frames, signal, ids.map(i => sceneStart + i)); aborted(signal);
           if (output.length !== 32 || output.some(x => x.length !== width * height)) throw Error('Offline window must return 32 depth maps');
           if (!previous) {
@@ -187,7 +207,7 @@ export async function prepareVideoDepth(file: Blob, options: PrepareOptions = {}
         await dir.removeEntry(`float-${scene}`);
         readySeconds = sceneEnd < stamps.length ? stamps[sceneEnd] : duration; progress('processing');
       }
-      await dir.removeEntry('rgb').catch(() => {});
+      // RGB stays until dispose: an optional mask track (object separation) reads it.
       aborted(signal); ready = true; progress('ready');
     } catch (error) {
       ready = false; readySeconds = 0; await remove(); progress(signal.aborted ? 'cancelled' : 'fallback', String(error));
@@ -198,8 +218,7 @@ export async function prepareVideoDepth(file: Blob, options: PrepareOptions = {}
     async frameAt(time) {
       const index = indexAt(time); if (index < 0) return null;
       try {
-        let scene = 0;
-        while (scene + 1 < scenes.length && scenes[scene + 1] <= index) scene++;
+        const scene = sceneOf(index);
         const source = depthFiles[scene];
         if (!source) return null;
         const packed = new Uint16Array(await slice(source, index - scenes[scene], width * height * 2));
@@ -207,8 +226,57 @@ export async function prepareVideoDepth(file: Blob, options: PrepareOptions = {}
         if (indexAt(time) < 0) return null;
         const data = new Float32Array(packed.length);
         for (let i = 0; i < packed.length; i++) data[i] = packed[i] / 65535;
-        return { data, width, height, mediaTime: stamps[index] };
+        let mask: Float32Array | undefined;
+        if (index < maskReadyFrames && maskFiles[scene]) {
+          const bytes = new Uint8Array(await slice(maskFiles[scene], index - scenes[scene], width * height));
+          if (bytes.length === width * height) {
+            mask = new Float32Array(bytes.length);
+            for (let i = 0; i < bytes.length; i++) mask[i] = bytes[i] / 255;
+          }
+        }
+        return { data, width, height, mediaTime: stamps[index], mask };
       } catch { return null; }
+    },
+    hasMask: time => { const index = indexAt(time); return index >= 0 && index < maskReadyFrames; },
+    prepareMasks(capture, onProgress) {
+      maskJob ??= (async () => {
+        await done;
+        if (!ready || !rgbFile) throw Error('Video depth is not prepared');
+        const rgbBytes = width * height * 4, n = width * height;
+        const frame = async (i: number): Promise<LiveDepthFrame> =>
+          ({ width, height, data: new Uint8ClampedArray(await slice(rgbFile!, i, rgbBytes)) });
+        const toBytes = (mask: Float32Array) => {
+          const out = new Uint8Array(n);
+          for (let i = 0; i < n; i++) out[i] = Math.round(Math.max(0, Math.min(1, mask[i])) * 255);
+          return out;
+        };
+        let lastValid: Float32Array = new Float32Array(n).fill(1);
+        const keyMask = async (i: number) => {
+          await yieldToPlayback();
+          const mask = await capture(await frame(i)); aborted(signal);
+          if (mask && mask.length === n) lastValid = mask;
+          return lastValid;
+        };
+        for (let scene = 0; scene < scenes.length - 1; scene++) {
+          const keys = maskKeyFrames(scenes[scene], scenes[scene + 1]);
+          const out = await stream(`mask-${scene}`);
+          let startMask = await keyMask(keys[0]);
+          for (let k = 0; k < keys.length; k++) {
+            const a = keys[k], b = keys[k + 1];
+            if (b === undefined) { await out.write(toBytes(startMask)); break; }
+            const endMask = await keyMask(b);
+            const frames = await Promise.all(Array.from({ length: b - a + 1 }, (_, j) => frame(a + j)));
+            const masks = await propagateMaskInterval(frames, startMask, endMask, width, height, () => sleep(0));
+            aborted(signal);
+            for (let j = 0; j < masks.length - 1; j++) await out.write(toBytes(masks[j]));
+            startMask = endMask;
+          }
+          maskFiles[scene] = await out.close();
+          maskReadyFrames = scenes[scene + 1];
+          onProgress?.(maskReadyFrames / stamps.length);
+        }
+      })();
+      return maskJob;
     },
     async dispose() { disposed = true; cancel(); await done; await remove(); },
   };

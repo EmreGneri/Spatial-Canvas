@@ -3,9 +3,10 @@ import { yuzNoktalari } from './engine/vision/yuzTespit';
 import { yuzRolyefHaritasi, type YuzRolyefi } from './engine/reconstruction/yuzRolyef';
 import { estimateDepth, FOTO_KALITE, loadDepthModel, luminanceHeightMap, resetLuminanceState } from './depth';
 import { segmentForeground } from './engine/reconstruction/segmentation';
+import { resampleBilinear } from './engine/reconstruction/silhouette';
 import { captureLiveMask } from './engine/vision/liveMask';
 import { isLiveFrameUnchanged, shouldPresentLiveDepth } from './engine/vision/liveDepthFlow';
-import { prepareVideoDepth, type VideoDepthHandle, type VideoDepthProgress } from './engine/vision/videoPrecompute';
+import { prepareVideoDepth, type VideoDepthHandle, type VideoDepthProgress, type VideoMaskCapture } from './engine/vision/videoPrecompute';
 import { startBufferedVideoPlayback } from './engine/vision/bufferedVideoPlayback';
 import { videoStats } from './engine/vision/videoStats';
 import { Engine } from './engine';
@@ -235,6 +236,9 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
   const preparedVideoUsableRef = useRef(false);
   /** Hazırlık sürüyor: canlı çıkarım kısılır (F4), V2 zorlanır (F11). */
   const videoPreparingRef = useRef(false);
+  /** Nesne ayırma açılınca hazır videonun maske izini başlatır (varsa). */
+  const preparedMaskRequestRef = useRef<(() => void) | null>(null);
+  const maskPreparingRef = useRef(false);
   const preparedFrameTimeRef = useRef(-Infinity);
   const preparedFramePresenterRef = useRef<((frame: LiveDepthResult) => void) | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -267,6 +271,8 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
   const [videoEdgeCleanup, setVideoEdgeCleanup] = useState(0);
   const [liveRates, setLiveRates] = useState({ model: 0, flow: 0 });
   const [videoPreparation, setVideoPreparation] = useState<VideoDepthProgress | null>(null);
+  /** Hazır videonun maske izi ilerlemesi (0..1); null = istenmedi. */
+  const [videoMaskProgress, setVideoMaskProgress] = useState<number | null>(null);
   const [segment, setSegment] = useState(false);
   const segmentRef = useRef(false);
   const segmentRevisionRef = useRef(0);
@@ -460,7 +466,10 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
     preparedVideoUsableRef.current = false;
     preparedFrameTimeRef.current = -Infinity;
     preparedFramePresenterRef.current = null;
+    preparedMaskRequestRef.current = null;
+    maskPreparingRef.current = false;
     setVideoPreparation(null);
+    setVideoMaskProgress(null);
     clearTimer();
     luminanceActiveRef.current = false;
     cancelLuminanceFrame();
@@ -1015,10 +1024,11 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
         },
         {
           shouldInfer: () => {
-            if (!segmentRef.current && preparedVideoUsableRef.current
-              && preparedVideoRef.current?.hasFrame(video.currentTime)) return false;
-            // Hazırlık aynı GPU kuyruğunu kullanır: canlı çıkarım 2 Hz'e kısılır (F4).
-            if (videoPreparingRef.current) {
+            const prepared = preparedVideoRef.current;
+            if ((!segmentRef.current || prepared?.hasMask(video.currentTime)) && preparedVideoUsableRef.current
+              && prepared?.hasFrame(video.currentTime)) return false;
+            // Hazırlık ve maske izi aynı GPU kuyruğunu kullanır: canlı çıkarım 2 Hz'e kısılır (F4).
+            if (videoPreparingRef.current || maskPreparingRef.current) {
               const now = performance.now();
               if (now - lastPreparingInfer < PREPARING_LIVE_INFER_MS) return false;
               lastPreparingInfer = now;
@@ -1117,14 +1127,15 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
       if (!isCurrent() || controller.signal.aborted) { await handle.dispose(); return; }
       preparedVideoRef.current = handle;
       const beginPlayback = () => startBufferedVideoPlayback(video, handle, {
-        // Prepared files contain depth only; separation keeps the live mask pipeline (F6).
-        enabled: () => !segmentRef.current,
+        // Separation needs the mask track for this frame; until then the live mask pipeline runs (F6).
+        enabled: () => !segmentRef.current || handle.hasMask(video.currentTime),
         onFrame: (frame) => {
           if (!isCurrent() || controller.signal.aborted) return;
           preparedVideoUsableRef.current = true;
           videoStats.preparedFrames++;
           preparedFramePresenterRef.current?.({ ...frame, inferenceMs: 0, depthModel: 'vda',
-            modelOutput: { data: frame.data, width: frame.width, height: frame.height } });
+            modelOutput: { data: frame.data, width: frame.width, height: frame.height },
+            flowMask: frame.mask ? { data: frame.mask, width: frame.width, height: frame.height } : undefined });
         },
         onFallback: fallback,
         onError: (error) => {
@@ -1135,6 +1146,35 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
         },
       });
       preparedVideoStopRef.current = beginPlayback();
+      // Maske izi: anahtar karelerde canlı maske zinciri (sidecar varsa BiRefNet+DAViD,
+      // yoksa IS-Net), aradaki kareler akışla. Yalnız nesne ayırma açıkken istenir.
+      const capture: VideoMaskCapture = async (frame) => {
+        const canvas = document.createElement('canvas');
+        canvas.width = frame.width; canvas.height = frame.height;
+        canvas.getContext('2d')?.putImageData(new ImageData(new Uint8ClampedArray(frame.data), frame.width, frame.height), 0, 0);
+        const result = await captureLiveMask(canvas);
+        let foreground = 0;
+        for (const value of result.data) if (value >= 0.5) foreground++;
+        const coverage = foreground / result.data.length;
+        if (coverage < 0.08 || coverage >= 0.92) return null;
+        return resampleBilinear(result.data, result.width, result.height, frame.width, frame.height);
+      };
+      preparedMaskRequestRef.current = () => {
+        if (!segmentRef.current || !isCurrent() || controller.signal.aborted) return;
+        const started = performance.now();
+        setVideoMaskProgress((value) => value ?? 0);
+        maskPreparingRef.current = true;
+        void handle.prepareMasks(capture, (fraction) => {
+          if (isCurrent() && !controller.signal.aborted) setVideoMaskProgress(fraction);
+        }).finally(() => { if (isCurrent()) maskPreparingRef.current = false; }).then(() => {
+          if (isCurrent()) say(`video maske izi hazır · ${((performance.now() - started) / 1000).toFixed(1)} sn`);
+        }).catch((error) => {
+          if (!isCurrent() || controller.signal.aborted) return;
+          setVideoMaskProgress(null);
+          say(`video maske izi üretilemedi; canlı maske sürüyor: ${String(error)}`);
+        });
+      };
+      preparedMaskRequestRef.current();
       await handle.done;
       if (!isCurrent() || controller.signal.aborted) return;
       videoPreparingRef.current = false;
@@ -1170,6 +1210,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
     if (next && !liveDepthStopRef.current && !luminanceActiveRef.current && videoRef.current) startLuminanceLoop(videoRef.current, 'video');
     updateSegment(next);
     engineRef.current!.setObjectSeparation(next);
+    if (next) preparedMaskRequestRef.current?.();
     say(`nesne ayırma: ${next ? 'AÇIK (arka plan parçacıkları atılır, sadece büst)' : 'kapalı (tüm sahne, arka plan karartılır)'}`);
     if (!next) return;
     // Video: request a mask now instead of waiting for a new depth frame,
@@ -1768,7 +1809,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
             setVideoPreparation({ ...videoPreparation, stage: 'cancelled' });
           }}>Cancel preparation</button>}
           {videoPreparation.error && <span role="status">Live depth fallback</span>}
-          {videoPreparation.stage === 'ready' && segment && <span>Live depth for object separation</span>}
+          {segment && videoMaskProgress !== null && videoMaskProgress < 1 && <span>Live depth for object separation · mask track {Math.round(videoMaskProgress * 100)}%</span>}
         </div>}
         {(cameraOn || !!videoDosya) && <>
           <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 12 }}>
