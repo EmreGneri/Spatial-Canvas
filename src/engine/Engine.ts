@@ -60,6 +60,10 @@ import { inpaintMaskedPhoto } from './reconstruction/photo-inpaint.ts';
 import type { CameraPose, MediaType } from './preset';
 
 const MAX_DPR = 2;
+/** false: bulutun arkasındaki düz "kâğıt" foto düzlemi hiç çizilmez (kamera dönünce görünüyordu). */
+const BACKDROP_GORUNUR = false;
+/** true: ayırma kapalıyken arka plan maskeyle kesilip bulanık doldurulur (eski davranış). */
+const BACKDROP_INPAINT = false;
 const DEFAULT_CAMERA_DISTANCE = 3.5;
 const VIDEO_VIEWPORT_FILL = 0.94;
 
@@ -804,7 +808,7 @@ setPointsMaterial(material: THREE.Material) {
     const flat = flatActive ? this.ensureFlatMesh() : this.flatMesh;
     if (flat) flat.visible = flatActive;
     if (this.photoBackdrop) {
-      this.photoBackdrop.visible = !flatActive && !this.objectSeparation && Boolean(this.photoData);
+      this.photoBackdrop.visible = BACKDROP_GORUNUR && !flatActive && !this.objectSeparation && Boolean(this.photoData);
     }
     const solidActive = Engine.usesShellMesh(this.renderModeName) && !crystalOnSplat;
     // 'splat' aktif + GaussianBuffer dolu → nokta bulutu gizlenir, splat
@@ -1955,7 +1959,11 @@ depth,
         rgb[to + 2] = this.photoData[from + 2];
       }
     }
-    const filled = inpaintMaskedPhoto(rgb, width, height, mask);
+    // Ayırma KAPALIYKEN maske kullanıcıya bir şey söylemiyor; ama maskeyle
+    // kesilen (bulanık dolgulu) arka plan her fotoğrafta maske şeklinde delik
+    // olarak görünüyordu, yanlış maskede (manzara) çok daha belirgin. Kapalıyken
+    // fotoğrafın kesilmemiş hali kullanılır; eski davranış için BACKDROP_INPAINT.
+    const filled = BACKDROP_INPAINT ? inpaintMaskedPhoto(rgb, width, height, mask) : rgb;
     if (!this.photoBackdropCanvas) this.photoBackdropCanvas = document.createElement('canvas');
     const canvas = this.photoBackdropCanvas;
     if (canvas.width !== width || canvas.height !== height) {
@@ -1968,7 +1976,7 @@ depth,
     if (!ctx) return;
     const image = ctx.createImageData(width, height);
     for (let i = 0; i < width * height; i++) {
-      const m = THREE.MathUtils.clamp((mask[i] - 0.15) / 0.7, 0, 1);
+      const m = BACKDROP_INPAINT ? THREE.MathUtils.clamp((mask[i] - 0.15) / 0.7, 0, 1) : 1;
       image.data[i * 4] = Math.round(filled[i * 3] * 255);
       image.data[i * 4 + 1] = Math.round(filled[i * 3 + 1] * 255);
       image.data[i * 4 + 2] = Math.round(filled[i * 3 + 2] * 255);
@@ -2005,7 +2013,7 @@ depth,
       (this.photoBackdrop.material as THREE.MeshBasicMaterial).needsUpdate = true;
     }
     this.photoBackdrop.scale.set((width / height) * 2, 2, 1);
-    this.photoBackdrop.visible = !this.objectSeparation && !this.flatVideoActive;
+    this.photoBackdrop.visible = BACKDROP_GORUNUR && !this.objectSeparation && !this.flatVideoActive;
   }
 
   /** Konum texture'Ä± â€” artÄ±k simÃ¼lasyonun ping-pong RT texture'Ä±. */
