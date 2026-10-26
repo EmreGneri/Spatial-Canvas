@@ -32,6 +32,7 @@ import { kaynakBelirle } from './ui/presetOnizleme';
 import { soganAcilisGerekliMi, sunumAcikMi } from './ui/sunumModu';
 import { serializeRenderState } from './shaders/renderPreset';
 import { maskeKarari, maskeTekParcaOrani } from './ui/maskeKarari';
+import { classifyCategory, type CategoryInput } from './ui/category';
 import { useDarEkran } from './ui/useDarEkran';
 import { ACILIS_BOY, ACILIS_EN, ACILIS_NOTU, acilisDerinligi, BINALAR, GOK, KURE, UFUK_Y, ZEMIN } from './ui/acilisSahnesi';
 import { indirmeDinle, indirmeSifirla } from './indirmeIlerleme';
@@ -590,6 +591,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
       let mask: Float32Array | undefined;
       let maskW = 0;
       let maskH = 0;
+      let categoryMask: CategoryInput = {};
       lastPhotoRef.current = source;
       lastPhotoCameraRef.current = undefined;
       maskLoadedRef.current = false;
@@ -619,7 +621,9 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
           // geçince sentetik görselde maske kadrajın %4,7'sini seçip sahnenin
           // gerisini siliyordu — ekran pratikte siyahtı, sebebi de yazmıyordu.
           // Eşiklerin ölçümü: ui/maskeKarari.ts başlığı.
-          const karar = maskeKarari(fgCount / seg.mask.length, maskeTekParcaOrani(seg.mask, seg.width, seg.height));
+          const mainComponent = maskeTekParcaOrani(seg.mask, seg.width, seg.height);
+          const karar = maskeKarari(fgCount / seg.mask.length, mainComponent);
+          categoryMask = { maskCoverage: fgCount / seg.mask.length, maskMainComponent: mainComponent, maskAccepted: karar.tip === 'kullan' };
           if (karar.sebep) say(karar.sebep);
           if (karar.tip === 'kullan') {
             mask = seg.mask;
@@ -683,12 +687,28 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
         const t3 = performance.now();
         const yuz = photoFace === undefined ? await yuzNoktalari(source) : photoFace;
         if (!isCurrent()) return;
+        photoFace = yuz;
         rolyef = yuz ? yuzRolyefHaritasi(yuz.noktalar, depth.width, depth.height, YUZ_GUCU) : null;
         say(rolyef
           ? `yüz rölyefi              ${Math.round(performance.now() - t3)} ms  (${yuz!.noktalar.length} nokta, güç ×${YUZ_GUCU})`
           : 'yüz rölyefi: yüz bulunamadı, uygulanmadı');
       }
       engineRef.current!.setYuzRolyefi(rolyef);
+      if (!analitikDerinlik && isCurrent()) {
+        // Yalnız kayıt: mevcut yüz sonucunu kullan; ek model çağrısı yapma.
+        try {
+          const canvas = document.createElement('canvas');
+          const scale = Math.min(1, 128 / Math.max(source.width, source.height));
+          canvas.width = Math.max(1, Math.round(source.width * scale));
+          canvas.height = Math.max(1, Math.round(source.height * scale));
+          const context = canvas.getContext('2d');
+          context?.drawImage(source, 0, 0, canvas.width, canvas.height);
+          const result = classifyCategory({ ...categoryMask, faceDetected: photoFace === undefined ? undefined : !!photoFace,
+            frame: context?.getImageData(0, 0, canvas.width, canvas.height) });
+          console.info('[category:photo]', result);
+          say(`kategori: ${result.kategori} · sezgisel puan ${result.guven.toFixed(2)} (kalibre değil)`);
+        } catch (error) { console.warn('[category:photo] signals unavailable', error); }
+      }
       // Deliği kapatılmış maske (derinlik ızgarasında) varsa motor da onu kullanır:
       // siluet aynı maskeden çıkar, yoksa yüz/karındaki delikler 3B'de boş kalır.
       if (depth.subjectMask) engineRef.current!.setDepth(depth.data, depth.width, depth.height, depth.subjectMask, depth.width, depth.height);
@@ -902,13 +922,29 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
       video.paused && preparedMask && Math.abs(preparedMask.mediaTime - time) <= 0.2 ? preparedMask : null;
     // The mask only sets particle opacity. Re-applying the last depth lets a
     // mask that arrives while the video is paused take effect immediately.
+    let lastCategoryAt = -Infinity;
     const applyDepth = (d: LiveDepthResult, fromCache = false) => {
+      if (iptal || !isCurrent() || videoRef.current !== video) return;
       // Duraklatılmış karede canlı 378 sonucu hazır kareyi bilerek geçer (aynı medya zamanı).
       if (!fromCache && !video.paused && preparedVideoUsableRef.current && preparedFrameTimeRef.current >= d.mediaTime) return;
       // Referans yol gibi kurulu maske her karede (kaydırma koluyla izlenerek) kullanılır.
       const mask = segmentRef.current ? (d.flowMask ?? videoMask ?? pausedPreparedMask(d.mediaTime)) : null;
       engineRef.current?.setDepth(d.data, d.width, d.height,
         mask?.data, mask?.width, mask?.height, d.colorFrame, d.flowConfidence);
+      // Hazır renk karesini en çok beş saniyede bir oku; model/ek kare yakalama yok.
+      if (d.colorFrame && performance.now() - lastCategoryAt >= 5000) {
+        lastCategoryAt = performance.now();
+        const categoryMask = d.flowMask ?? videoMask ?? pausedPreparedMask(d.mediaTime);
+        let signals: CategoryInput = {};
+        if (categoryMask && (categoryMask === d.flowMask || !videoMask || Math.abs(videoMask.mediaTime - d.mediaTime) < 0.5)) {
+          let count = 0;
+          for (const value of categoryMask.data) if (value >= 0.5) count++;
+          const coverage = count / categoryMask.data.length;
+          const main = maskeTekParcaOrani(categoryMask.data, categoryMask.width, categoryMask.height);
+          signals = { maskCoverage: coverage, maskMainComponent: main, maskAccepted: maskeKarari(coverage, main).tip === 'kullan' };
+        }
+        console.info('[category:video]', classifyCategory({ ...signals, frame: d.colorFrame }));
+      }
     };
     videoDepthRefreshRef.current = () => {
       if (!iptal && isCurrent() && lastDepth) applyDepth(lastDepth, preparedVideoUsableRef.current);
