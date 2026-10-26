@@ -141,15 +141,29 @@ function freshSegmentation() {
   console.log('[3] basarisiz kurulumdan sonra yeniden deneme ✓');
 }
 
-// [4] Takilan is sirayi sonsuza dek tutmaz: zaman asimi reddeder, sonraki is kosar.
+// [4] Çağıran vazgeçse de kaynak gerçek iş bitene kadar tutulur.
 {
-  const t0 = Date.now();
-  const hung = gpuSirasinaGir(() => new Promise(() => {}), 50);
-  const next = gpuSirasinaGir(async () => 'devam');
-  await assert.rejects(hung, /sıra serbest bırakıldı/, 'takilan is zaman asiminda reddedilmeli');
-  assert.equal(await next, 'devam', 'takilan isten sonra sira serbest kalmali');
-  assert.ok(Date.now() - t0 < 5000, 'zaman asimi hizli isledi');
-  console.log('[4] takilan GPU isi sirayi kilitlemiyor ✓');
+  let active = 0, peak = 0;
+  const events = [];
+  const slow = gpuSirasinaGir(async () => {
+    peak = Math.max(peak, ++active);
+    await new Promise((r) => setTimeout(r, 120));
+    events.push('first-end');
+    active--;
+  }, 20);
+  const next = gpuSirasinaGir(async () => {
+    peak = Math.max(peak, ++active);
+    events.push('second-start');
+    active--;
+    return 'devam';
+  });
+  await assert.rejects(slow, /GPU işi/);
+  assert.equal(await next, 'devam');
+  assert.equal(peak, 1, 'zaman aşımı kaynak sahipliğini bırakmamalı');
+  assert.deepEqual(events, ['first-end', 'second-start']);
+  await assert.rejects(gpuSirasinaGir(() => { throw new Error('sync'); }), /sync/);
+  assert.equal(await gpuSirasinaGir(async () => 'recovered'), 'recovered');
+  console.log('[4] zaman aşımından sonra gerçek iş bitmeden yeni iş başlamıyor ✓');
 }
 
 console.log('OK segmentasyon GPU sirasi + kurulum tekillestirme');
