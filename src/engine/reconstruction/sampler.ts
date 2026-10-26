@@ -160,7 +160,11 @@ const SAMPLE_MAX_DENSITY = 2.5;
  */
 const FG_IMPORTANCE_WEIGHT = 0.4;
 
+import { applyLayerGap, type DepthLayers } from './layers.ts';
+
 export interface VolumeSampleOptions {
+  layers?: DepthLayers;
+  layerGap?: number;
   /** Grid boyutu (kare). Varsayılan 384. */
   gridSize?: number;
   /** Bulut dünya yüksekliği. Varsayılan 2 (POINTS_WORLD_HEIGHT). */
@@ -279,6 +283,7 @@ export function sampleVolumePositions(
         }
       }
     }
+    if (opts.layers && opts.layerGap) applyLayerGap(out, grid, opts.layers, opts.layerGap);
     return out;
   }
   const remap =
@@ -442,6 +447,7 @@ export function sampleVolumePositions(
       out[o + 3] = a;
     }
   }
+  if (opts.layers && opts.layerGap) applyLayerGap(out, grid, opts.layers, opts.layerGap);
   return out;
 }
 

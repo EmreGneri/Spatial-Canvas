@@ -1,3 +1,4 @@
+import { Vector3 as LayerVector3 } from 'three';
 import assert from 'node:assert/strict';
 import {register} from 'node:module';
 register('./ts-extension-loader.mjs',import.meta.url);
@@ -17,6 +18,8 @@ try {
  const photo=new T.DataTexture(new Uint8Array([128,64,32,128]),1,1);photo.colorSpace=T.SRGBColorSpace;
  const linear=new T.VideoTexture({});linear.colorSpace=T.LinearSRGBColorSpace;
  const e=Object.create(Engine.prototype);
+ Object.assign(e, { layerGap: 0, layerVisible: new LayerVector3(1, 1, 1),
+   layers: null, layerTexture: null, layerInput: null });
  Object.assign(e,{objectSeparation:true,useTextureColor:true,neonCropDensity:1,currentDpr:1,initialDpr:1,videoAspect:1,videoWorldHeight:2,viewportPx:new T.Vector2(640,480),composer:{readBuffer:{texture:new T.Texture()}}});
  for(const create of [createAsciiMaterial,createPointCloudMaterial,createSolidMaterial,createCrystalMaterial,createNeonWireMaterial]) {
   const material=create();

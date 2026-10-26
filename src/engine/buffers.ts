@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { sampleAoGrid, sampleImageGrid, sampleVolumePositions } from './reconstruction/index.ts';
+import { applyLayerGap } from './reconstruction/layers.ts';
 import { sampleMetricPhotoPositions, type MetricPhotoProjection } from './reconstruction/metricPhotoGeometry.ts';
 import type { VideoGuideMask } from './reconstruction/videoDepthEdges.ts';
 
@@ -91,6 +92,8 @@ export function createHomeTexture(): THREE.DataTexture {
 }
 
 export interface PositionFillOptions {
+  layers?: import('./reconstruction/layers.ts').DepthLayers;
+  layerGap?: number;
   /** Calibrated photo surface, already cropped and fitted with one similarity transform. */
   metricProjection?: MetricPhotoProjection | null;
   /** Elipsoit kavis şiddeti (α). 0 = kapalı (düz kart). Varsayılan VOLUME_CURVATURE. */
@@ -159,7 +162,11 @@ export function fillPositionsFromDepth(
     videoFlowConfidence: opts.videoFlowConfidence,
     videoGuideMask: opts.videoGuideMask,
     photoEdgeCull: opts.photoEdgeCull,
+    layers: opts.layers,
+    layerGap: opts.layerGap,
   });
+  if (opts.metricProjection && !opts.fullFrame && opts.layers && opts.layerGap)
+    applyLayerGap(xyz, n, opts.layers, opts.layerGap);
   const blend = opts.blend ?? 1;
   if (blend >= 1) {
     for (let o = 0, k = 0; o < data.length; o += 4, k += 4) {

@@ -1,3 +1,4 @@
+import { Vector3 as LayerVector3 } from 'three';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { registerHooks } from 'node:module';
@@ -61,6 +62,8 @@ for (const geri of ['setPixelRatio', 'setSize', 'position.copy', 'target.copy', 
 // Removing the composer DPR update must make the requested 200x100 target
 // become 400x200 on a DPR-2 screen, rather than silently changing rasterization.
 const engine = Object.create(Engine.prototype);
+Object.assign(engine, { layerGap: 0, layerVisible: new LayerVector3(1, 1, 1),
+  layers: null, layerTexture: null, layerInput: null });
 let pixelRatio = 2;
 const size = new THREE.Vector2(800, 500);
 engine.renderer = {

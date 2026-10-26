@@ -1,3 +1,4 @@
+import { Vector3 as LayerVector3 } from 'three';
 // Graph editor / ControlPanel parameter ownership (no GPU, no WebGL).
 //
 // WHY: the graph editor re-applied stored node params on every setGraph while
@@ -47,6 +48,8 @@ function makeUniforms(defs, colors = {}) {
 /** Engine without a renderer: only what setGraph / toPreset touch. */
 function makeEngine() {
   const engine = Object.create(Engine.prototype);
+  Object.assign(engine, { layerGap: 0, layerVisible: new LayerVector3(1, 1, 1),
+    layers: null, layerTexture: null, layerInput: null });
   const materials = {
     points: { uniforms: makeUniforms(POINTS_PARAMS, { uNearColor: '#aabbcc' }) },
     ascii: { uniforms: makeUniforms(ASCII_PARAMS) },

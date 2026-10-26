@@ -1,3 +1,4 @@
+import { Vector3 as LayerVector3 } from 'three';
 import assert from 'node:assert/strict';
 import { registerHooks } from 'node:module';
 registerHooks({ resolve(specifier, context, next) {
@@ -9,6 +10,8 @@ registerHooks({ resolve(specifier, context, next) {
 const { Engine } = await import('../src/engine/Engine.ts');
 const { createHomeTexture } = await import('../src/engine/buffers.ts');
 const engine = Object.create(Engine.prototype);
+Object.assign(engine, { layerGap: 0, layerVisible: new LayerVector3(1, 1, 1),
+  layers: null, layerTexture: null, layerInput: null });
 assert.equal(typeof engine.setVideoEdgeCleanup, 'function', 'Engine exposes the video cleanup control');
 engine.setVideoEdgeCleanup(9);
 assert.equal(engine.videoEdgeCleanupStrength, 4, 'cleanup clamps to the supported range');

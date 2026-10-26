@@ -1,3 +1,4 @@
+import { Vector3 as LayerVector3 } from 'three';
 // Raw video colors use linear UVs, so live depth must sample the same UVs.
 import assert from 'node:assert/strict';
 import { registerHooks } from 'node:module';
@@ -25,6 +26,8 @@ for (let y = 0; y < height; y++) {
 }
 
 const engine = Object.create(Engine.prototype);
+Object.assign(engine, { layerGap: 0, layerVisible: new LayerVector3(1, 1, 1),
+  layers: null, layerTexture: null, layerInput: null });
 engine.homeTexture = createHomeTexture();
 engine.videoTexture = { image: {} };
 engine.camera = { fov: 60, aspect: 800 / 526 };

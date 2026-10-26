@@ -1,3 +1,4 @@
+import { Vector3 as LayerVector3 } from 'three';
 // Photo flatness regression ("basik ve yayik" bust).
 //
 // The importance remap bent the SAMPLING coordinate while world xy stayed on
@@ -86,6 +87,8 @@ function assertBust(xyz, label) {
 // the particle's world x (positions and colors on the same remap).
 {
   const engine = Object.create(Engine.prototype);
+  Object.assign(engine, { layerGap: 0, layerVisible: new LayerVector3(1, 1, 1),
+    layers: null, layerTexture: null, layerInput: null });
   engine.homeTexture = createHomeTexture();
   engine.videoTexture = null;
   engine.camera = { fov: 60, aspect: 1.5 };

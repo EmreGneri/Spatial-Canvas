@@ -1,3 +1,4 @@
+import { Vector3 as LayerVector3 } from 'three';
 // CPU contract: calibrated camera Z must survive as one Euclidean shape.
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
@@ -107,6 +108,8 @@ const old=createHomeTexture(),fallback=createHomeTexture();fillPositionsFromDept
 const { Engine }=await import('../src/engine/Engine.ts');
 assert.equal(typeof Engine.prototype.setMetricPhotoGeometry,'function','engine accepts photo-only metric geometry');
 const engine=Object.create(Engine.prototype);
+Object.assign(engine, { layerGap: 0, layerVisible: new LayerVector3(1, 1, 1),
+  layers: null, layerTexture: null, layerInput: null });
 Object.assign(engine,{homeTexture:createHomeTexture(),videoTexture:null,photoData:new Float32Array(W*H*3).fill(.5),photoWidth:W,photoHeight:H,imageColorTexture:createImageColorTexture(),simulation:{seedFrom(){},setHome(){}},refreshGaussians(){},updatePhotoBackdrop(){},setShellGeometry(data){this.shellData=data;}});
 engine.setMetricPhotoGeometry(plane);
 engine.setDepth(display,W,H,mask,W,H);

@@ -1,3 +1,4 @@
+import { Vector3 as LayerVector3 } from 'three';
 // A stale crop factor after a source/toggle change would alter uncropped neon.
 // Exercise the actual Engine crop and uniform dispatch, with GPU transport stubbed.
 import assert from 'node:assert/strict';
@@ -11,6 +12,8 @@ const { createHomeTexture } = await import('../src/engine/buffers.ts');
 const material = createNeonWireMaterial();
 assert.equal(material.uniforms.uCropDensity?.value, 1, 'uncropped neon must start with identity crop compensation');
 const engine = Object.create(Engine.prototype);
+Object.assign(engine, { layerGap: 0, layerVisible: new LayerVector3(1, 1, 1),
+  layers: null, layerTexture: null, layerInput: null });
 Object.assign(engine, {
   homeTexture: createHomeTexture(), currentDepthTexture: null, videoTexture: null,
   photoData: null, objectSeparation: true, renderModes: new Map([['neon', {material}]]),

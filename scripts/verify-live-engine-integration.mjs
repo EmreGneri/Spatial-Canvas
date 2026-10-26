@@ -1,3 +1,4 @@
+import { Vector3 as LayerVector3 } from 'three';
 import assert from 'node:assert/strict';
 import { registerHooks } from 'node:module';
 import * as THREE from 'three';
@@ -16,6 +17,8 @@ const { createHomeTexture } = await import('../src/engine/buffers.ts');
 
 function makeEngine() {
   const engine = Object.create(Engine.prototype);
+  Object.assign(engine, { layerGap: 0, layerVisible: new LayerVector3(1, 1, 1),
+    layers: null, layerTexture: null, layerInput: null });
   engine.homeTexture = createHomeTexture();
   engine.videoTexture = { image: {} };
   engine.videoElement = { videoWidth: 4096, videoHeight: 1974 };
@@ -107,6 +110,8 @@ assert.equal(uniformUpdates, 1, 'video point footprint must follow viewport resi
 // Dense video points need alpha blending, but photos and presets were tuned
 // for the additive glow. The switch must follow the source both ways.
 const blendEngine = Object.create(Engine.prototype);
+Object.assign(blendEngine, { layerGap: 0, layerVisible: new LayerVector3(1, 1, 1),
+  layers: null, layerTexture: null, layerInput: null });
 blendEngine.pointsMaterial = { blending: THREE.AdditiveBlending, depthWrite: false, uniforms: {
   uImageTexture: { value: null }, uHasImage: { value: 0 }, uVideoFootprint: { value: 0 },
 } };
@@ -134,6 +139,8 @@ assert.equal(blendEngine.pointsMaterial.depthWrite, false,
 // while flat video shows and restore it for the 3D scene.
 const { createLookUniforms } = await import('../src/shaders/look.ts');
 const toneEngine = Object.create(Engine.prototype);
+Object.assign(toneEngine, { layerGap: 0, layerVisible: new LayerVector3(1, 1, 1),
+  layers: null, layerTexture: null, layerInput: null });
 toneEngine.look = createLookUniforms();
 toneEngine.renderModes = new Map();
 toneEngine.pointsMaterial = { uniforms: {} };
@@ -180,6 +187,8 @@ const dprMaterial = () => ({ uniforms: {
   uImageTexture: { value: null }, uHasImage: { value: 0 }, uDprScale: { value: 1 },
 } });
 const dprScaleEngine = Object.create(Engine.prototype);
+Object.assign(dprScaleEngine, { layerGap: 0, layerVisible: new LayerVector3(1, 1, 1),
+  layers: null, layerTexture: null, layerInput: null });
 dprScaleEngine.adaptiveDpr = true;
 dprScaleEngine.initialDpr = 2;
 dprScaleEngine.currentDpr = 2;

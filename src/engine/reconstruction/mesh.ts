@@ -79,7 +79,11 @@ const DEFAULT_WORLD_HEIGHT = 2;
 const DEFAULT_DEPTH_RANGE = 2;
 const DEFAULT_CURVATURE = 0.1;
 
+import { applyShellLayerGap, layerShellIndices, type DepthLayers } from './layers.ts';
+
 export interface ShellMeshOptions {
+  layers?: DepthLayers;
+  layerGap?: number;
   /** Köşe ızgarası boyutu (tek eksen, köşe sayısı = (N+1)²). Varsayılan 128. */
   gridSize?: number;
   /** Bulut dünya yüksekliği. Varsayılan 2 (POINTS_WORLD_HEIGHT). */
@@ -380,7 +384,11 @@ export function buildShellMesh(
     tris.push(b, a, a + 1, b, a + 1, b + 1);
   }
 
-  const indices = new Uint32Array(tris);
+  let indices: Uint32Array = new Uint32Array(tris);
+  if (opts.layers && opts.layerGap) {
+    applyShellLayerGap(positions, uvs, opts.layers, opts.layerGap);
+    indices = layerShellIndices(indices, uvs, opts.layers);
+  }
   return { positions, uvs, normals, shell, indices };
 }
 

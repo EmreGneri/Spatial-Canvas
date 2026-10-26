@@ -1,5 +1,7 @@
 ﻿import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+import { inferLayers, applyShellLayerGap, layerShellIndices, type DepthLayers, type LayerId } from './reconstruction/layers.ts';
+import { attachLayerVisibility } from '../shaders/layerVisibility.ts';
 import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
@@ -209,6 +211,70 @@ export class Engine {
    * YalnÄ±zca startLuminanceLoop (canlÄ±) sÄ±rasÄ±nda true â€” fotoÄŸraf yolu deÄŸil.
    */
   dynamicHome = false;
+  private layerGap = 0;
+  private layerVisible = new THREE.Vector3(1, 1, 1);
+  private layers: DepthLayers | null = null;
+  private layerTexture: THREE.DataTexture | null = null;
+  private layerTextureDirty = false;
+  private layerInput: { depth: Float32Array; width: number; height: number; mask?: Float32Array } | null = null;
+
+  /** 0 varsayılan görüntüyü aynen korur; birim motorun dünya z birimidir. */
+  setLayerGap(gap: number) {
+    if (!Number.isFinite(gap) || gap < 0 || gap > 2) throw new RangeError('Layer gap must be between 0 and 2');
+    if (this.gaussianSource === 'authored') throw new Error('Layers require a photo or live video depth grid');
+    if (gap === this.layerGap) return;
+    this.layerGap = gap;
+    const d = this.currentDepthTexture;
+    if (d) {
+      this.setDepth(d.image.data as Float32Array, d.image.width, d.image.height,
+        this.lastFgMask ?? undefined, d.image.width, d.image.height);
+      if (!this.videoTexture) this.yenidenTohumla();
+    }
+  }
+
+  /** Geometriyi yeniden örneklemeden katmanı shader'da gizler. */
+  setLayerVisible(layer: LayerId, visible: boolean) {
+    if (![0,1,2].includes(layer) || typeof visible !== 'boolean') throw new RangeError('Invalid layer visibility');
+    this.layerVisible.setComponent(layer, visible ? 1 : 0);
+    if (!this.layers && this.layerInput) this.updateLayers();
+    if (!this.layerTexture || this.layerTextureDirty) this.updateLayerTexture();
+    this.pushSharedUniformsAll();
+  }
+
+  getLayers() {
+    if (this.gaussianSource === 'authored') return null;
+    const l = this.layers;
+    return l ? { ratios: [...l.ratios], thresholds: [...l.thresholds], masked: l.masked,
+      width: l.width, height: l.height, gap: this.layerGap, visible: this.layerVisible.toArray() } : null;
+  }
+
+  private updateLayers() {
+    const input = this.layerInput;
+    if (!input) return;
+    this.layers = inferLayers(input.depth, input.width, input.height, input.mask,
+      this.videoTexture ? this.layers ?? undefined : undefined);
+    this.layerTextureDirty = true;
+    this.updateLayerTexture();
+  }
+
+  private updateLayerTexture() {
+    const l = this.layers;
+    if (!l || (this.layerVisible.x===1 && this.layerVisible.y===1 && this.layerVisible.z===1)) return;
+    let tex = this.layerTexture;
+    if (!tex || tex.image.width !== l.width || tex.image.height !== l.height) {
+      tex?.dispose();
+      tex = new THREE.DataTexture(new Float32Array(l.width*l.height*4),l.width,l.height,THREE.RGBAFormat,THREE.FloatType);
+      tex.flipY = true; tex.minFilter = THREE.NearestFilter; tex.magFilter = THREE.NearestFilter;
+      tex.generateMipmaps = false;
+      this.layerTexture = tex;
+    }
+    const data = tex.image.data as Float32Array;
+    for (let i=0;i<l.labels.length;i++) {
+      data[i*4]=l.weights[i*3]; data[i*4+1]=l.weights[i*3+1]; data[i*4+2]=l.weights[i*3+2]; data[i*4+3]=1;
+    }
+    tex.needsUpdate = true;
+    this.layerTextureDirty = false;
+  }
 
   /** Graf = sahnenin tek doÄŸruluk kaynaÄŸÄ± (GÃ¼n 4). */
   private graph: Graph = createDefaultGraph();
@@ -845,7 +911,15 @@ setPointsMaterial(material: THREE.Material) {
    * uObjectSeparation (nesne ayÄ±rma), uUseTextureColor (renk modu). Hepsi
    * Engine'in sahipliÄŸinde; UI/source deÄŸiÅŸimi buradan tek kapÄ±yla yayÄ±lÄ±r.
    */
+  private pushLayerVisibility(material: THREE.Material) {
+    if ((material as THREE.ShaderMaterial).isShaderMaterial)
+      attachLayerVisibility(material as THREE.ShaderMaterial, this.layerTexture, this.layerVisible,
+        this.gaussianSource !== 'authored' && !!this.layerTexture
+          && (this.layerVisible.x!==1 || this.layerVisible.y!==1 || this.layerVisible.z!==1));
+  }
+
   private pushSharedUniforms(material: THREE.Material) {
+    this.pushLayerVisibility(material);
     const u = (material as THREE.ShaderMaterial).uniforms as Record<
       string,
       THREE.IUniform
@@ -914,6 +988,7 @@ setPointsMaterial(material: THREE.Material) {
   }
 
   private pushSharedUniformsAll() {
+    if (this.crystalSplatMaterial) this.pushLayerVisibility(this.crystalSplatMaterial);
     for (const entry of this.renderModes.values()) {
       this.pushSharedUniforms(entry.material);
     }
@@ -976,6 +1051,11 @@ setPointsMaterial(material: THREE.Material) {
     if (video) this.configurePhotoCamera(null);
     if (video) this.metricPhotoGeometry = null;
     if (video === this.videoElement) return;
+    this.layers = null;
+    this.layerInput = null;
+    this.layerTexture?.dispose();
+    this.layerTexture = null;
+    this.layerTextureDirty = false;
     this.gaussianSource = 'point-cloud';
     this.gaussiansDirty = true;
     this.videoTexture?.dispose();
@@ -1019,6 +1099,11 @@ setPointsMaterial(material: THREE.Material) {
    * varsa uHasImage yeniden 1 olur; yoksa derinlik rampasÄ±na dÃ¼ÅŸÃ¼lÃ¼r.
    */
   releasePhoto() {
+    this.layers = null;
+    this.layerInput = null;
+    this.layerTexture?.dispose();
+    this.layerTexture = null;
+    this.layerTextureDirty = false;
     this.metricPhotoGeometry = null;
     this.neonCropDensity = 1;
     this.imageColorTexture?.dispose();
@@ -1105,6 +1190,7 @@ setPointsMaterial(material: THREE.Material) {
   setGaussians(data: GaussianBufferData | null) {
     if (!this.splatObject) return;
     this.gaussianSource = data ? 'authored' : 'point-cloud';
+    this.pushSharedUniformsAll();
     this.gaussiansDirty = false;
     if (!data) {
       this.splatObject.syncFromTextures(0, null);
@@ -1324,6 +1410,7 @@ setPointsMaterial(material: THREE.Material) {
   /** Crystal'ın splat varyantını kaydeder (App kurar; knob'lar ortaktır). */
   setCrystalSplatMaterial(material: THREE.Material | null) {
     this.crystalSplatMaterial = material;
+    if (material) this.pushLayerVisibility(material);
     this.syncRenderVisibility();
   }
 
@@ -1773,12 +1860,18 @@ if (entry && entry.material !== this.pointsMaterial) {
         crop.depth = yuzRolyefiUygula(crop.depth, crop.depthWidth, crop.depthHeight, rol, (zSpan * crop.depthHeight) / (2 * halfH));
       }
     }
+    this.layerInput = { depth: crop.depth, width: crop.depthWidth, height: crop.depthHeight, mask: crop.mask };
+    // Canlı videoda varsayılan yola katman hesabı eklenmez.
+    if (!this.videoTexture || this.layerGap > 0 || this.layerVisible.x!==1 || this.layerVisible.y!==1 || this.layerVisible.z!==1)
+      this.updateLayers();
     const cropDensity = (width * height) / (crop.depthWidth * crop.depthHeight);
     if (cropDensity !== this.neonCropDensity) {
       this.neonCropDensity = cropDensity;
       if (this.renderModes) this.pushSharedUniformsAll();
     }
     fillPositionsFromDepth(this.homeTexture, crop.depth, crop.depthWidth, crop.depthHeight, {
+      layers: this.layers ?? undefined,
+      layerGap: this.layerGap,
       metricProjection,
       foregroundMask: crop.mask,
       blend: metricProjection || this.videoTexture ? 1 : this.dynamicHome ? 0.8 : 1,
@@ -1815,11 +1908,16 @@ if (this.photoData) {
       // fotoğrafta çalışır, video yolunda mesh güncellenmez (ucuz kalır).
       // Aynı kırpma (crop) burada da uygulanır — mesh, parçacık bulutuyla
       // aynı bbox'ı görmezse 'solid' modunda yüzey hizası kayar.
-      this.setShellGeometry(
-        metricProjection ? buildMetricPhotoShell(metricProjection) : buildShellMesh(crop.depth, crop.depthWidth, crop.depthHeight, {
+      const shellData = metricProjection ? buildMetricPhotoShell(metricProjection) : buildShellMesh(crop.depth, crop.depthWidth, crop.depthHeight, {
           foregroundMask: crop.mask,
-        }),
-      );
+          layers: this.layers ?? undefined,
+          layerGap: this.layerGap,
+        });
+      if (metricProjection && shellData && this.layers && this.layerGap) {
+        applyShellLayerGap(shellData.positions, shellData.uvs, this.layers, this.layerGap);
+        shellData.indices = layerShellIndices(shellData.indices, shellData.uvs, this.layers);
+      }
+      this.setShellGeometry(shellData);
     }
     if (this.videoTexture && videoFrame) {
       const { data: rgba, width: frameWidth, height: frameHeight } = videoFrame;
@@ -1848,6 +1946,7 @@ if (this.photoData) {
       this.simulation.seedFrom(this.homeTexture);
       this.seeded = true;
     }
+    if (this.layerTexture) this.pushSharedUniformsAll();
     // SPLAT köprüsü: GaussianBuffer home + renk grid'inden türer, ikisi de
     // yukarıda tazelendi. Splat modu kayıtlı değilse (splatObject null) bu
     // çağrı bedavadır.
@@ -2210,6 +2309,7 @@ depth,
   }
 
   dispose() {
+    this.layerTexture?.dispose();
     this.renderer.setAnimationLoop(null);
     this.resizeObserver.disconnect();
     this.controls.dispose();
