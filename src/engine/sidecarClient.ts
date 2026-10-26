@@ -37,12 +37,17 @@ export function sidecarAcikMi(search: string, kayitli: string | null, yerel = fa
   return { acik: yerel, acikca: false, kaydet: undefined };
 }
 
-/** One capability probe per page. Failed inference switches to browser until
- * reload, avoiding a timeout on every video frame or repeated model allocation. */
+const BUSY_BACKOFF_MS = 3000;
+const CIRCUIT_COOLDOWN_MS = 30000;
+const FAILURE_LIMIT = 3;
+
+/** Hatalı kare yeniden denenmez; soğuma bitince tek ortak health yoklaması yapılır. */
 export class SidecarClient {
   private url: string;
   private probe: Promise<boolean> | null = null;
   private disabled = false;
+  private retryAt = 0;
+  private failures = 0;
   private sequence = 0;
   backend = 'browser';
   /** /health `modeller`: optional models (moge) are called only when the server lists them. */
@@ -51,24 +56,42 @@ export class SidecarClient {
   constructor(url: string) { this.url = url.replace(/\/$/, ''); }
 
   available(): Promise<boolean> {
-    if (this.disabled) return Promise.resolve(false);
+    if (Date.now() < this.retryAt) return Promise.resolve(false);
+    if (this.disabled) {
+      this.disabled = false;
+      this.probe = null;
+    }
     this.probe ??= (async () => {
       try {
         const response = await fetch(`${this.url}/health`, { signal: AbortSignal.timeout(1500) });
         const health = await response.json();
         // CPU arka ucu KABUL EDİLMEZ: DA3 CPU'da ~14 sn/çağrı, fotoğraf başına ~7 çağrı;
         // tarayıcıdan yavaş olur ve sıradaki canlı kareleri zaman aşımına iterdi.
-        if (!response.ok || health.ok !== true || !['DmlExecutionProvider','CUDAExecutionProvider'].includes(health.arkaUc)) return false;
+        if (!response.ok || health.ok !== true || !['DmlExecutionProvider','CUDAExecutionProvider'].includes(health.arkaUc)) {
+          this.coolDown();
+          return false;
+        }
         this.backend = `sidecar · ${health.arkaUc}`;
         this.models = Array.isArray(health.modeller) ? health.modeller : [];
+        this.failures = 0;
         return true;
-      } catch { return false; }
+      } catch {
+        this.coolDown();
+        return false;
+      }
     })();
     return this.probe;
   }
 
+  private coolDown(): void {
+    this.disabled = true;
+    this.retryAt = Date.now() + CIRCUIT_COOLDOWN_MS;
+    this.backend = 'browser';
+  }
+
   async infer(model: SidecarModel, tensor: RawTensor, fallback: () => Promise<RawTensor>): Promise<RawTensor> {
     if (await this.available()) {
+      let status = 0;
       try {
         const id = String(++this.sequence);
         const path = model === 'mask' ? '/infer/mask' : `/infer/depth?model=${model}`;
@@ -79,6 +102,7 @@ export class SidecarClient {
           // Respect views into a larger processor buffer. No JSON/base64 conversion.
           body: new Uint8Array(tensor.data.buffer, tensor.data.byteOffset, tensor.data.byteLength) as BodyInit,
         });
+        status = response.status;
         const buffer = await response.arrayBuffer();
         if (response.status === 409) throw new SidecarDroppedError('Sidecar superseded frame');
         if (!response.ok) throw new Error(`Sidecar HTTP ${response.status}`);
@@ -90,13 +114,20 @@ export class SidecarClient {
         }
         const data = new Float32Array(buffer);
         if (!data.every(Number.isFinite)) throw new Error('Sidecar returned non-finite depth');
+        this.failures = 0;
         return { data, dims };
       } catch (error) {
         if (error instanceof SidecarDroppedError) throw error;
         // DAViD maskesi isteğe bağlı bir ek: hatası DA3/BiRefNet yardımcısını kapatmamalı (davidDepth kendini kapatır).
         if (model !== 'david-mask') {
-          this.disabled = true;
-          this.backend = 'browser';
+          if (status === 503) {
+            this.retryAt = Date.now() + BUSY_BACKOFF_MS;
+          } else if (++this.failures >= FAILURE_LIMIT) {
+            this.coolDown();
+          } else {
+            // Bağlantı hatası da her canlı karede yeni zaman aşımı üretmemeli.
+            this.retryAt = Date.now() + BUSY_BACKOFF_MS;
+          }
         }
         console.warn('Local inference unavailable; switching to browser.', error);
       }
