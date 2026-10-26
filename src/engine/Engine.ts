@@ -1852,6 +1852,7 @@ if (entry && entry.material !== this.pointsMaterial) {
       const halfH = POINTS_WORLD_HEIGHT / 2;
       for (const r0 of rolyefler) {
         const rol: YuzRolyefi = {
+          otomatikGuc: r0.otomatikGuc, sacPayi: r0.sacPayi,
           rel: kes(r0.rel), agirlik: kes(r0.agirlik),
           ...(r0.ust && r0.ustAgirlik ? { ust: kes(r0.ust), ustAgirlik: kes(r0.ustAgirlik) } : {}),
         };

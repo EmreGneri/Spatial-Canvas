@@ -216,8 +216,8 @@ const toolDivider: CSSProperties = {
 
 
 /**
- * Yüz rölyefi gücü (MediaPipe yüz ağı, yuzRolyef.ts). Varsayılan 1.5: kullanıcı görsel
- * karşılaştırmayla seçti (2026-10-12; 1 = ağın fiziksel oranı "biraz yassı" bulundu).
+ * Yüz rölyefi güç tavanı (MediaPipe yüz ağı, yuzRolyef.ts). Varsayılan 1.5;
+ * otomatik yolda zayıf yüz derinliği ek güçle sivrilmesin diye kazanç sınırlanır.
  * `?yuz=<güç>` ezer, `?yuz=0` kapatır.
  */
 const VARSAYILAN_YUZ_GUCU = 1.5;
@@ -688,9 +688,10 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
         const yuz = photoFace === undefined ? await yuzNoktalari(source) : photoFace;
         if (!isCurrent()) return;
         photoFace = yuz;
-        rolyef = yuz ? yuzRolyefHaritasi(yuz.noktalar, depth.width, depth.height, YUZ_GUCU) : null;
+        rolyef = yuz ? yuzRolyefHaritasi(yuz.noktalar, depth.width, depth.height, YUZ_GUCU,
+          new URLSearchParams(location.search).get('yuz') === null) : null;
         say(rolyef
-          ? `yüz rölyefi              ${Math.round(performance.now() - t3)} ms  (${yuz!.noktalar.length} nokta, güç ×${YUZ_GUCU})`
+          ? `yüz rölyefi              ${Math.round(performance.now() - t3)} ms  (${yuz!.noktalar.length} nokta, güç tavanı ×${YUZ_GUCU})`
           : 'yüz rölyefi: yüz bulunamadı, uygulanmadı');
       }
       engineRef.current!.setYuzRolyefi(rolyef);

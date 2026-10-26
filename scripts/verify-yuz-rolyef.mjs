@@ -106,3 +106,25 @@ for (const angle of [0, Math.PI / 6, -Math.PI / 6]) {
   assert.ok(relief.agirlik[atAxis(0.5)] > 0.999, 'orta yüz detayı korunur');
 }
 console.log('verify-yuz-rolyef OK');
+
+// Zayıf model rölyefinde fazladan güç, yüz yanlarını geriye çekip kama üretmemeli.
+const amplified = yuzRolyefHaritasi(noktalar, w, h, 1.5);
+const canonical = yuzRolyefHaritasi(noktalar, w, h, 1);
+const weak = Float32Array.from({length:w*h},(_,i)=>.5+.01*Math.sin(i%w));
+const safe = yuzRolyefiUygula(weak,w,h,amplified,birim);
+const physical = yuzRolyefiUygula(weak,w,h,canonical,birim);
+assert.ok(safe.every((v,i)=>Math.abs(v-physical[i])<1e-6),'zayıf derinlikte ek ×1.5 yerine fiziksel ×1 şekli korunmalı');
+const manual = yuzRolyefHaritasi(noktalar,w,h,1.5,false);
+assert.notDeepEqual(yuzRolyefiUygula(weak,w,h,manual,birim),physical,'açık güç isteği korunmalı');
+// Eşleşen güçlü modelde istenen güç gereksiz yere azaltılmamalı.
+const matched = Float32Array.from(amplified.rel,v=>.5+v/birim);
+assert.deepEqual(yuzRolyefiUygula(matched,w,h,amplified,birim),yuzRolyefiUygula(matched,w,h,manual,birim));
+const transformed = Float32Array.from(weak,v=>.25+.5*v);
+const scaledResult = yuzRolyefiUygula(transformed,w,h,amplified,birim*2);
+assert.ok(scaledResult.every((v,i)=>Math.abs(v-(.25+.5*safe[i]))<1e-6),'uyarlama derinlik biriminin afin ölçeğinden bağımsız olmalı');
+const sparse = {...amplified,agirlik:new Float32Array(w*h)};
+sparse.agirlik.fill(1,0,7);
+assert.deepEqual(yuzRolyefiUygula(weak,w,h,sparse,birim),weak,'yetersiz destek değiştirilmez');
+const flatRelief = {...amplified,rel:new Float32Array(w*h)};
+assert.ok(yuzRolyefiUygula(weak,w,h,flatRelief,birim).every(Number.isFinite),'sıfır ağ yayılımı sonlu kalır');
+console.log('adaptive face relief: extra amplification limited; physical detail and explicit override retained');

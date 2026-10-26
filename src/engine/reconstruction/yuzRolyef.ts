@@ -20,6 +20,10 @@ export interface YuzNoktasi {
 }
 
 export interface YuzRolyefi {
+  /** Yalnız otomatik ayarda ek kazanç fotoğrafın yüz derinliğine göre sınırlanır. */
+  otomatikGuc?: number;
+  /** Kafa sınırı ölçeklenirken fiziksel saç payı sabit kalır. */
+  sacPayi?: number;
   /** Rölyef, derinlik ızgarası PİKSELİ cinsinden; + = kameraya doğru, yüz medyanı 0. */
   rel: Float32Array;
   /** 0..1 harman ağırlığı: yüz ovali içinde 1, kenarda yumuşak sönüm, dışında 0. */
@@ -87,7 +91,7 @@ function kenaraUzaklik(px: number, py: number, poly: readonly [number, number][]
  * ve doğrudan (x·w, y·h) ile eşlenir. 468'den az nokta ya da dejenere oval → null.
  */
 export function yuzRolyefHaritasi(
-  noktalar: readonly YuzNoktasi[], w: number, h: number, guc = 1,
+  noktalar: readonly YuzNoktasi[], w: number, h: number, guc = 1, otomatik = true,
 ): YuzRolyefi | null {
   if (noktalar.length < 468) return null;
   // `guc`: rölyef çarpanı (1 = ağın fiziksel oranı); z'ye uygulanır ki ağ ve elipsoid tutarlı kalsın.
@@ -169,7 +173,7 @@ export function yuzRolyefHaritasi(
     alinRel += -(p.z - zMed) * w;
     n++;
   }
-  if (!(ax > 2) || !(by > 2) || !(yuzY > 2) || n === 0) return { rel, agirlik };
+  if (!(ax > 2) || !(by > 2) || !(yuzY > 2) || n === 0) return { rel, agirlik, otomatikGuc: otomatik ? guc : undefined };
   off /= n;
   alinRel /= n;
   // Saç payı fiziksel kalır; yüz gücü 1.5 olunca kafatası sınırı gevşemez.
@@ -186,7 +190,7 @@ export function yuzRolyefHaritasi(
       ustAgirlik[i] = t * t * (3 - 2 * t) * (1 - agirlik[i]) * jawWeight(x + 0.5, y + 0.5);
     }
   }
-  return { rel, agirlik, ust, ustAgirlik };
+  return { rel, agirlik, ust, ustAgirlik, otomatikGuc: otomatik ? guc : undefined, sacPayi: pad };
 }
 
 /**
@@ -194,6 +198,7 @@ export function yuzRolyefHaritasi(
  * `derinlikBirimiPiksel`: 1 derinlik birimi kaç ızgara pikseline karşılık gelir (motorun
  * dünya eşlemesinden: zSpan / dünya-birimi-başına-piksel). Hedef yüzey:
  *   çapa + rel/derinlikBirimiPiksel + yüksek frekans(d),  çapa = oval içi medyan(d − rel/birim)
+ * Otomatik güçte yüz içi %10–90 yayılımı fazla kazancı sınırlar; fiziksel ×1 altına inilmez.
  * Yüzün UZAKLIĞI modelden, ŞEKLİ ve EĞİMİ ağdan, ince doku (göz, dudak) modelden; oval dışında
  * geçiş bandı boyunca model devralır.
  */
@@ -210,8 +215,23 @@ export function yuzRolyefiUygula(
   // EĞİMİ (baş öne/arkaya dönüşü) ağdan. Modelin kenar eğimine düzlem oturtmak ağın eğimini
   // eziyordu (alın burnun önüne geçti, ölçüldü 2026-10-12).
   const fark: number[] = [];
+  let olcek = 1;
+  if ((rolyef.otomatikGuc ?? 1) > 1) {
+    const model: number[] = [], ag: number[] = [];
+    for (let i=0;i<depth.length;i++) if (rolyef.agirlik[i]>=0.999) {
+      model.push(depth[i]); ag.push(rolyef.rel[i]/derinlikBirimiPiksel);
+    }
+    if (model.length>=16) {
+      model.sort((a,b)=>a-b); ag.sort((a,b)=>a-b);
+      const lo=Math.floor(model.length*.1), hi=Math.floor(model.length*.9);
+      const modelYay=model[hi]-model[lo], agYay=ag[hi]-ag[lo];
+      // Ek kazanç zayıf modelle birleşince yanakları geriye çekip yüzü sivriltiyordu.
+      // Ağın fiziksel ×1 şekli/eğimi korunur; yalnız üstündeki sanatsal güç kısılır.
+      if (agYay>0) olcek=Math.min(1,Math.max(1/rolyef.otomatikGuc!,modelYay/agYay));
+    }
+  }
   for (let i = 0; i < depth.length; i++) {
-    if (rolyef.agirlik[i] >= 0.999) fark.push(depth[i] - rolyef.rel[i] / derinlikBirimiPiksel);
+    if (rolyef.agirlik[i] >= 0.999) fark.push(depth[i] - rolyef.rel[i] * olcek / derinlikBirimiPiksel);
   }
   if (fark.length < 16) return out;
   fark.sort((a, b) => a - b);
@@ -221,7 +241,7 @@ export function yuzRolyefiUygula(
   for (let i = 0; i < depth.length; i++) {
     const a = rolyef.agirlik[i];
     if (!(a > 0)) continue;
-    const hedef = capa((i % w) / w, Math.floor(i / w) / h) + rolyef.rel[i] / derinlikBirimiPiksel + (depth[i] - bulanik[i]);
+    const hedef = capa((i % w) / w, Math.floor(i / w) / h) + rolyef.rel[i] * olcek / derinlikBirimiPiksel + (depth[i] - bulanik[i]);
     if (!Number.isFinite(hedef)) continue;
     out[i] = Math.min(1, Math.max(0, depth[i] + a * (hedef - depth[i])));
   }
@@ -230,7 +250,9 @@ export function yuzRolyefiUygula(
     for (let i = 0; i < out.length; i++) {
       const a = rolyef.ustAgirlik[i];
       if (!(a > 0)) continue;
-      const sinir = capa((i % w) / w, Math.floor(i / w) / h) + rolyef.ust[i] / derinlikBirimiPiksel;
+      const pad = rolyef.sacPayi ?? 0;
+      const ust = olcek === 1 ? rolyef.ust[i] : (rolyef.ust[i]-pad)*olcek+pad;
+      const sinir = capa((i % w) / w, Math.floor(i / w) / h) + ust / derinlikBirimiPiksel;
       if (out[i] > sinir) out[i] = Math.max(0, out[i] - a * (out[i] - sinir));
     }
   }
