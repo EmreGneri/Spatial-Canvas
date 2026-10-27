@@ -43,6 +43,32 @@ function makulLogit() {
   return d;
 }
 
+// Byte downloads may overlap depth work, but prefetch must never create/run a GPU session.
+{
+  gpuVar(true);
+  const originalFetch = globalThis.fetch;
+  let downloads = 0, creates = 0, release;
+  const gate = new Promise(resolve => { release = resolve; });
+  globalThis.fetch = async (...args) => { downloads++; await gate; return originalFetch(...args); };
+  ort.InferenceSession.create = async () => {
+    creates++;
+    return { run: async () => ({ output_image: { dims: DIMS, data: makulLogit() } }), release: async () => {} };
+  };
+  const api = await taze();
+  const a = api.preloadPhotoMaskBytes(), b = api.preloadPhotoMaskBytes();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(downloads, 1, 'concurrent prefetch must share one download');
+  assert.equal(creates, 0, 'byte prefetch must not initialize the GPU');
+  release();
+  await Promise.all([a, b]);
+  assert.ok(await api.tarayiciBirefnet(girdi));
+  await api.preloadPhotoMaskBytes();
+  assert.equal(downloads, 1, 'session creation and later photos reuse the existing bytes/session');
+  assert.equal(creates, 1);
+  globalThis.fetch = originalFetch;
+  console.log('[0] shared byte prefetch, deferred GPU setup, no duplicate download ✓');
+}
+
 // [1] sigmoid + makullük (saf)
 {
   const { birefnetOlasilik } = await taze();

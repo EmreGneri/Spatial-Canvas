@@ -5,7 +5,7 @@ import { yuzRolyefHaritasi, type YuzRolyefi } from './engine/reconstruction/yuzR
 import { photoPerspectiveEnabled, type PhotoCameraInput } from './engine/reconstruction/photoPerspective';
 import { readExifFocal } from './vendor/splat.js/io/exif.js';
 import { estimateDepth, depthDevice, FOTO_KALITE, loadDepthModel, luminanceHeightMap, resetLuminanceState } from './depth';
-import { segmentForeground } from './engine/reconstruction/segmentation';
+import { segmentForeground, preloadPhotoMaskBytes } from './engine/reconstruction/segmentation';
 import { resampleBilinear } from './engine/reconstruction/silhouette';
 import { captureLiveMask } from './engine/vision/liveMask';
 import { shouldPresentLiveDepth } from './engine/vision/liveDepthFlow';
@@ -615,6 +615,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
       const progressive = !analitikDerinlik && FOTO_KALITE.model !== 'moge-2'
         && !photoPerspectiveEnabled(location.search)
         && new URLSearchParams(location.search).get('onizleme') !== '0';
+      if (progressive) void preloadPhotoMaskBytes().catch(() => {});
       async function prepareMask() {
         if (!isCurrent()) throw new Error('Photo source changed');
         if (analitikDerinlik) {

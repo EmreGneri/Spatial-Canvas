@@ -10,6 +10,8 @@ Canlı video modeli ısıtması artık yalnız kamera/video kaynağı olduğunda
 
 Varsayılan fotoğraf yolu, sahne modelinin ilk çıkarımını maskelerden önce gösterir. Aynı çıkarım sonucu nihai kalite hattında yeniden kullanılır; BiRefNet, DAViD, parça/özne/baş ayrıntıları ve yüz rölyefi daha sonra tamamlanır. Önizleme sırasında arayüz bunu belirtir ve dışa aktarma düğmeleri nihai sonuç hazır olana kadar kapalıdır. Deneysel MoGe ve perspektif kalibrasyonu mevcut sırayı korur. Karşılaştırma için `?onizleme=0` eski sırayı kullanır.
 
+BiRefNet'in gerekli dosyası fotoğraf yüklenirken derinlik dosyasıyla paralel indirilir. Paylaşılan tek indirme sonucu oturum kurulurken tüketilir; GPU kurulumu ve çıkarımı önizleme sonrasında aynı sırayı kullanır. Böylece önizleme için nihai kaliteye giden indirmeler gereksiz yere art arda bekletilmez. Yardımcı çalışıyorsa, WebGPU yoksa veya BiRefNet zaten hazırsa bu indirme başlatılmaz.
+
 `metadata.previewReadyMs` önizleme geometrisinin hazırlanmasına kadar geçen süredir; GPU'nun fiziksel ekrana sunduğu kare zamanı değildir. `totalMs` nihai kalite hazır olana kadar devam eder. `depth.pipeline` artık ertelenen maske hattını da kapsayabilir; aşama sürelerini toplamayın. Bu değişiklik ilk görünen sonucu erkene alır; nihai dışa aktarımın hızlandığı ayrıca ölçülmeden iddia edilmez.
 
 `?olcum=1` ölçümü açar. Örneğin `http://localhost:5173/?olcum=1` veya mevcut sorguya `&olcum=1` eklenir. Ölçüm model seçimini, kaliteyi veya işlem sırasını değiştirmez; hazırdaki işlemleri süreler ve mevcut tarayıcı kayıtlarını okur. Bu bayrak dışında oturum/Resource Timing observer kurulmaz.

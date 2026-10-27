@@ -137,6 +137,18 @@ let birefnetSession: ort.InferenceSession | null = null;
 let yukleBirefnet: (() => Promise<ort.InferenceSession>) | null = null;
 /** İlk hatadan sonra oturum boyunca kapalı: 115 MB her fotoğrafta yeniden inmesin, OOM tekrarlanmasın. */
 let birefnetKapali = false;
+let birefnetDownload: Promise<ArrayBuffer> | null = null;
+function downloadBirefnet() {
+  return birefnetDownload ??= ilerlemeliGetir(BIREFNET_PATH, 'BiRefNet nesne ayırma modeli')
+    .catch(error => { birefnetDownload = null; throw error; });
+}
+
+/** Download only the photo mask weights while depth loads; GPU setup stays serialized. */
+export async function preloadPhotoMaskBytes(): Promise<void> {
+  if (!TARAYICI_BIREFNET || birefnetKapali || birefnetSession || typeof navigator === 'undefined'
+    || !('gpu' in navigator) || await localInferenceAvailable()) return;
+  await downloadBirefnet();
+}
 
 /** BiRefNet logit → 0..1 olasılık; boş / tüm kare / NaN ise null (o kare IS-Net'e düşer). */
 export function birefnetOlasilik(logit: Float32Array): Float32Array | null {
@@ -164,8 +176,10 @@ export async function tarayiciBirefnet(girdi: { data: Float32Array; dims: number
     if (typeof navigator === 'undefined' || !('gpu' in navigator)) throw new Error('WebGPU yok');
     // Yalnız WebGPU: wasm'a düşmek dakikalar sürer ve 32-bit yığında bad_alloc verir.
     yukleBirefnet ??= onceRetry(async () => {
-      const bayt = await ilerlemeliGetir(BIREFNET_PATH, 'BiRefNet nesne ayırma modeli');
-      return gpuSirasinaGir(() => ort.InferenceSession.create(bayt, { executionProviders: ['webgpu'] }));
+      const pending = downloadBirefnet();
+      const bayt = await pending;
+      try { return await gpuSirasinaGir(() => ort.InferenceSession.create(bayt, { executionProviders: ['webgpu'] })); }
+      finally { if (birefnetDownload === pending) birefnetDownload = null; }
     });
     birefnetSession ??= await yukleBirefnet();
     const session = birefnetSession;
