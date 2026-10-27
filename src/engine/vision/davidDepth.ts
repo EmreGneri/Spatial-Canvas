@@ -1,3 +1,4 @@
+import { currentPhotoMeasurement, type PhotoMeasurement } from '../photoMeasurement.ts';
 // DAViD (Microsoft, ICCV 2025, MIT) insan derinliği + yumuşak ön plan maskesi.
 //  - inferDavid: derinlik + maske, tarayıcıda; yalnız `?derinlik=david` (depth.ts).
 //  - inferDavidMaske: yalnız maske; önce yerel yardımcı ('david-mask'), tarayıcı yalnız
@@ -6,6 +7,7 @@
 import * as ort from 'onnxruntime-web/webgpu';
 import { ilerlemeliGetir } from '../../indirmeIlerleme.ts';
 import { localInference, localModelAvailable } from '../sidecarClient.ts';
+import { loadDavidMaskBytes } from './davidMaskAsset.ts';
 
 /**
  * depth.ts yardımcıları ÇAĞIRANDAN gelir, burada `import` edilmez: depth.ts → (dinamik) bu
@@ -33,14 +35,9 @@ export const DAVID_DOSYALARI = {
   maske: `foreground-segmentation-model-vitb16_384${ek}.onnx`,
 } as const;
 
-/**
- * Tarayıcı maskesi Hugging Face'teki int8 kopyadan iner (180 MB; MIT, provenance model kartında:
- * https://huggingface.co/EmreGneri/david-foreground-int8). Revizyon SABİT. Yerel 449 MB fp32
- * kopyayla karşılaştırma için `&david=fp32`.
- */
-const HF_MASKE = 'https://huggingface.co/EmreGneri/david-foreground-int8/resolve/7b404af3cfa9c1fb8851bae03a20b4250608aa7b/foreground-segmentation-model-vitb16_384-int8.onnx';
+/** The pinned int8 mask ships through the deployment CDN; HF remains a fallback.
+ * `&david=fp32` retains the local unquantized comparison path. */
 const FP32_MASKE = typeof location !== 'undefined' && new URLSearchParams(location.search).get('david') === 'fp32';
-const kaynak = (ad: keyof typeof DAVID_DOSYALARI) => (ad === 'maske' && !FP32_MASKE ? HF_MASKE : KOK + DAVID_DOSYALARI[ad]);
 
 const VITE_DEV = (import.meta as { env?: { DEV?: boolean } }).env?.DEV === true;
 ort.env.wasm.wasmPaths = VITE_DEV ? '/node_modules/onnxruntime-web/dist/' : '/ort/';
@@ -74,7 +71,9 @@ let yardimciKapali = false;
 /** Oturumlar tembel ve ayrı: maske yolu derinlik modelini (449 MB) hiç indirmez. */
 function oturumlariHazirla({ gpuSirasinaGir, onceRetry }: DavidAraclari) {
   const oturum = (ad: keyof typeof DAVID_DOSYALARI) => onceRetry(async () => {
-    const bayt = await ilerlemeliGetir(kaynak(ad), `DAViD ${ad}`);
+    const bayt = ad === 'maske' && !FP32_MASKE
+      ? await loadDavidMaskBytes()
+      : await ilerlemeliGetir(KOK + DAVID_DOSYALARI[ad], `DAViD ${ad}`);
     return gpuSirasinaGir(() => ort.InferenceSession.create(bayt, { executionProviders: ['webgpu'] }));
   });
   return oturumlar ??= { derinlik: oturum('derinlik'), maske: oturum('maske') };
@@ -93,12 +92,13 @@ function ilkDuzlem(t: ort.Tensor, S: number): Float32Array | null {
 }
 
 /** Tek modeli GPU kuyruğunda koşturur; ilk düzlem (S×S) ya da geçersizse null. */
-function modeliKos(s: ort.InferenceSession, x: Float32Array, S: number, gpuSirasinaGir: DavidAraclari['gpuSirasinaGir']) {
+function modeliKos(s: ort.InferenceSession, x: Float32Array, S: number, gpuSirasinaGir: DavidAraclari['gpuSirasinaGir'], trace: PhotoMeasurement | null, stage: string) {
   return gpuSirasinaGir(async () => {
     const girdi = new ort.Tensor('float32', x, [1, 3, S, S]);
     let o: Record<string, ort.Tensor> = {};
     try {
-      o = await s.run({ [s.inputNames[0]]: girdi });
+      const run = () => s.run({ [s.inputNames[0]]: girdi });
+      o = await (trace ? trace.measure(stage, run) : run());
       return ilkDuzlem(o[s.outputNames[0]], S);
     } finally {
       girdi.dispose();
@@ -118,12 +118,14 @@ export interface DavidMaskeHam {
 /** Girdi: S×S letterbox RGBA. Yardımcı 'david-mask' listeliyorsa orada; yoksa yalnız `tarayici` ile WebGPU. */
 export async function inferDavidMaske(
   rgba: Uint8ClampedArray, araclar: DavidAraclari, { tarayici }: { tarayici: boolean },
+  trace: PhotoMeasurement | null = currentPhotoMeasurement(),
 ): Promise<DavidMaskeHam | null> {
   const S = DAVID_BOYUT, n = S * S, t0 = performance.now();
   if (!yardimciKapali && await localModelAvailable('david-mask')) {
     try {
-      const raw = await localInference!.infer('david-mask', { data: bgrTensoru(rgba, S), dims: [1, 3, S, S] },
+      const run = () => localInference!.infer('david-mask', { data: bgrTensoru(rgba, S), dims: [1, 3, S, S] },
         async () => { throw new Error('DAViD maskesi yardımcıda başarısız'); });
+      const raw = await (trace ? trace.measure('david.mask.sidecar.infer', run) : run());
       return { maske: maskeyiKirp(raw.data.slice(0, n)), boyut: S, sureMs: performance.now() - t0, arkaUc: 'sidecar' };
     } catch (err) {
       yardimciKapali = true; // isteğe bağlı ek: her fotoğrafta yeniden denenmez, DA3 yardımcısı açık kalır
@@ -137,7 +139,7 @@ export async function inferDavidMaske(
     return null;
   }
   try {
-    const maske = await modeliKos(await oturumlariHazirla(araclar).maske(), bgrTensoru(rgba, S), S, araclar.gpuSirasinaGir);
+    const maske = await modeliKos(await oturumlariHazirla(araclar).maske(), bgrTensoru(rgba, S), S, araclar.gpuSirasinaGir, trace, 'david.mask.run');
     if (!maske) throw new Error('DAViD maske çıktısı geçersiz (şekil/NaN)');
     return { maske: maskeyiKirp(maske), boyut: S, sureMs: performance.now() - t0, arkaUc: 'webgpu' };
   } catch (err) {
@@ -148,7 +150,7 @@ export async function inferDavidMaske(
 }
 
 /** Girdi: S×S letterbox RGBA. İki model sırayla (aynı GPU kuyruğu). */
-export async function inferDavid(rgba: Uint8ClampedArray, araclar: DavidAraclari): Promise<DavidHam | null> {
+export async function inferDavid(rgba: Uint8ClampedArray, araclar: DavidAraclari, trace: PhotoMeasurement | null = currentPhotoMeasurement()): Promise<DavidHam | null> {
   const S = DAVID_BOYUT;
   if (kapali) return null;
   const { gpuSirasinaGir, webgpuKullanilabilir } = araclar;
@@ -163,8 +165,8 @@ export async function inferDavid(rgba: Uint8ClampedArray, araclar: DavidAraclari
     const [sd, sm] = [await oturumlar!.derinlik(), await oturumlar!.maske()];
     const t1 = performance.now();
     const x = bgrTensoru(rgba, S);
-    const derinlik = await modeliKos(sd, x, S, gpuSirasinaGir);
-    const maske = await modeliKos(sm, x, S, gpuSirasinaGir);
+    const derinlik = await modeliKos(sd, x, S, gpuSirasinaGir, trace, 'david.depth.run');
+    const maske = await modeliKos(sm, x, S, gpuSirasinaGir, trace, 'david.mask.run');
     if (!derinlik || !maske) throw new Error('DAViD çıktısı geçersiz (şekil/NaN)');
     return { derinlik, maske: maskeyiKirp(maske), boyut: S, sureMs: { yukleme: t1 - t0, cikarim: performance.now() - t1 } };
   } catch (err) {

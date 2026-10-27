@@ -1,0 +1,8 @@
+{
+  "repo": "EmreGneri/david-foreground-int8",
+  "rev": "7b404af3cfa9c1fb8851bae03a20b4250608aa7b",
+  "file": "foreground-segmentation-model-vitb16_384-int8.onnx",
+  "dest": "microsoft-david/7b404af3cfa9c1fb8851bae03a20b4250608aa7b/foreground-segmentation-model-vitb16_384-int8.onnx",
+  "size": 180404556,
+  "sha256": "07db5e75a4dc85f92ef339c6cbd0ba1edb008695f5661d5633f74a2aab91ad49"
+}

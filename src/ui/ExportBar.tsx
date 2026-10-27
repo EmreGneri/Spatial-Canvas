@@ -30,7 +30,7 @@ type Durum =
   | { tip: 'bitti'; mesaj: string }
   | { tip: 'hata'; mesaj: string };
 
-export function ExportBar({ engine, say }: { engine: Engine | null; say: (mesaj: string) => void }) {
+export function ExportBar({ engine, say, preparing = false }: { engine: Engine | null; say: (mesaj: string) => void; preparing?: boolean }) {
   const [sure, setSure] = useState<number>(5);
   const [imza, setImza] = useState(true);
   const [durum, setDurum] = useState<Durum>({ tip: 'bos' });
@@ -38,7 +38,7 @@ export function ExportBar({ engine, say }: { engine: Engine | null; say: (mesaj:
 
   useEffect(() => () => { if (sayacRef.current !== null) clearInterval(sayacRef.current); }, []);
 
-  const mesgul = durum.tip === 'calisiyor';
+  const mesgul = preparing || durum.tip === 'calisiyor';
 
   function bitir(mesaj: string) {
     setDurum({ tip: 'bitti', mesaj });

@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { yuzNoktalari } from './engine/vision/yuzTespit';
+import { beginPhotoMeasurement } from './engine/photoMeasurement';
 import { yuzRolyefHaritasi, type YuzRolyefi } from './engine/reconstruction/yuzRolyef';
 import { photoPerspectiveEnabled, type PhotoCameraInput } from './engine/reconstruction/photoPerspective';
 import { readExifFocal } from './vendor/splat.js/io/exif.js';
-import { estimateDepth, FOTO_KALITE, loadDepthModel, luminanceHeightMap, resetLuminanceState } from './depth';
+import { estimateDepth, depthDevice, FOTO_KALITE, loadDepthModel, luminanceHeightMap, resetLuminanceState } from './depth';
 import { segmentForeground } from './engine/reconstruction/segmentation';
 import { resampleBilinear } from './engine/reconstruction/silhouette';
 import { captureLiveMask } from './engine/vision/liveMask';
@@ -282,6 +283,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
   );
   const [log, setLog] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
+  const [photoPreview, setPhotoPreview] = useState(false);
   const [cameraOn, setCameraOn] = useState(false);
   const [videoEdgeCleanup, setVideoEdgeCleanup] = useState(VIDEO_EDGE_CLEANUP_DEFAULT);
   const [liveRates, setLiveRates] = useState({ model: 0, flow: 0 });
@@ -482,6 +484,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
    * durdurur.
    */
   function teardownSource() {
+    setPhotoPreview(false);
     // Every pending async source path (photo inference, camera prompt, video
     // decode, live-depth start) sees this and stops before writing anything.
     sourceGenRef.current++;
@@ -563,14 +566,28 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
     photoFile?: Blob,
   ) {
     setBusy(true);
+    setPhotoPreview(false);
     // Captured after the caller's teardownSource. A stale result must not
     // write depth, mask, photo or segmentation settings over a newer source.
     const isCurrent = captureGeneration(sourceGenRef);
+    const measurement = analitikDerinlik ? null : beginPhotoMeasurement({
+      generation: sourceGenRef.current, width: source.width, height: source.height,
+    });
+    let measurementStatus: 'ready' | 'failed' | 'cancelled' = 'cancelled';
+    const measurementMeta: Record<string, unknown> = {
+      scope: 'decoded-photo-through-geometry',
+      includesImageDecode: false, includesFirstPresentedFrame: false,
+      encoding: 'separate-output-measurement',
+    };
+    const olc = <T,>(name: string, task: () => Promise<T>): Promise<T> =>
+      measurement ? measurement.measure(name, task) : task();
+    const olcSync = <T,>(name: string, task: () => T): T =>
+      measurement ? measurement.measureSync(name, task) : task();
     try {
       // DA3/MoGe seçimini estimateDepth yönetir; burada ek V2 oturumu ayırma.
       if (!analitikDerinlik && FOTO_KALITE.model === 'v2-small') {
         const t0 = performance.now();
-        await loadDepthModel();
+        await olc('depth.load', () => loadDepthModel());
         if (!isCurrent()) return;
         say(`model yüklendi            ${Math.round(performance.now() - t0)} ms`);
       }
@@ -595,52 +612,62 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
       lastPhotoRef.current = source;
       lastPhotoCameraRef.current = undefined;
       maskLoadedRef.current = false;
-      if (analitikDerinlik) {
-        // Analitik sahnede ayırma YOK: maske zaten anlamsız, IS-Net de inmez.
-        updateSegment(false);
-        engineRef.current!.setObjectSeparation(false);
-      } else {
-        const t2 = performance.now();
-        try {
-          const seg = await segmentForeground(source, 'webgpu', 'foto');
-          if (!isCurrent()) return;
-          // Güvenlik: boş maske (sentetik/soyut görsel) kullanılmaz — AND tüm
-          // silueti sıfırlar, mesh null'a düşer, parçacıklar ölür.
-          // GÜN E (bulgu 9): boş maske kadar TÜM KAREYİ kaplayan maske de
-          // kullanılamaz. RMBG bazı karelerde (ölçüldü: ayna selfie'si) "her
-          // piksel ön plan" döndürüyor — o maske hiçbir şey ayırmaz ama ZARAR
-          // verir: stretch aralığı sahnenin tamamına açılır (özne bandı yine
-          // sıkışır) ve siluet AND'i arka planı elemez. Eşik %92: gerçek bir
-          // özne kadrajı tamamen doldursa bile RMBG kenarlarda 0 bırakır;
-          // %92 üstü pratikte "model pes etti" demektir.
-          let fgCount = 0;
-          for (let q = 0; q < seg.mask.length; q++) {
-            if (seg.mask[q] >= 0.5) fgCount++;
-          }
-          // GÜN 25 (düzeltme): karar ÜÇ uçlu. Alt uç eskiden yoktu ve IS-Net'e
-          // geçince sentetik görselde maske kadrajın %4,7'sini seçip sahnenin
-          // gerisini siliyordu — ekran pratikte siyahtı, sebebi de yazmıyordu.
-          // Eşiklerin ölçümü: ui/maskeKarari.ts başlığı.
-          const mainComponent = maskeTekParcaOrani(seg.mask, seg.width, seg.height);
-          const karar = maskeKarari(fgCount / seg.mask.length, mainComponent);
-          categoryMask = { maskCoverage: fgCount / seg.mask.length, maskMainComponent: mainComponent, maskAccepted: karar.tip === 'kullan' };
-          if (karar.sebep) say(karar.sebep);
-          if (karar.tip === 'kullan') {
-            mask = seg.mask;
-            maskW = seg.width;
-            maskH = seg.height;
-            maskLoadedRef.current = true;
-            say(`nesne ayırma (${seg.model === 'birefnet' ? 'BiRefNet' : 'IS-Net'})  ${Math.round(performance.now() - t2)} ms  (${maskW}x${maskH})`);
-          }
-          updateSegment(karar.ayirmaAcik);
-          engineRef.current!.setObjectSeparation(karar.ayirmaAcik);
-        } catch (err) {
-          if (!isCurrent()) return;
-          say(`nesne ayırma atlandı (${err instanceof Error ? err.message : String(err)}); maske olmadan devam`);
+      const progressive = !analitikDerinlik && FOTO_KALITE.model !== 'moge-2'
+        && !photoPerspectiveEnabled(location.search)
+        && new URLSearchParams(location.search).get('onizleme') !== '0';
+      async function prepareMask() {
+        if (!isCurrent()) throw new Error('Photo source changed');
+        if (analitikDerinlik) {
+          // Analitik sahnede ayırma YOK: maske zaten anlamsız, IS-Net de inmez.
           updateSegment(false);
           engineRef.current!.setObjectSeparation(false);
+        } else {
+          const t2 = performance.now();
+          try {
+            const seg = await olc('segmentation.pipeline', () => segmentForeground(source, 'webgpu', 'foto'));
+            measurementMeta.segmentationModel = seg.model;
+            if (!isCurrent()) throw new Error('Photo source changed');
+            // Güvenlik: boş maske (sentetik/soyut görsel) kullanılmaz — AND tüm
+            // silueti sıfırlar, mesh null'a düşer, parçacıklar ölür.
+            // GÜN E (bulgu 9): boş maske kadar TÜM KAREYİ kaplayan maske de
+            // kullanılamaz. RMBG bazı karelerde (ölçüldü: ayna selfie'si) "her
+            // piksel ön plan" döndürüyor — o maske hiçbir şey ayırmaz ama ZARAR
+            // verir: stretch aralığı sahnenin tamamına açılır (özne bandı yine
+            // sıkışır) ve siluet AND'i arka planı elemez. Eşik %92: gerçek bir
+            // özne kadrajı tamamen doldursa bile RMBG kenarlarda 0 bırakır;
+            // %92 üstü pratikte "model pes etti" demektir.
+            let fgCount = 0;
+            for (let q = 0; q < seg.mask.length; q++) {
+              if (seg.mask[q] >= 0.5) fgCount++;
+            }
+            // GÜN 25 (düzeltme): karar ÜÇ uçlu. Alt uç eskiden yoktu ve IS-Net'e
+            // geçince sentetik görselde maske kadrajın %4,7'sini seçip sahnenin
+            // gerisini siliyordu — ekran pratikte siyahtı, sebebi de yazmıyordu.
+            // Eşiklerin ölçümü: ui/maskeKarari.ts başlığı.
+            const mainComponent = maskeTekParcaOrani(seg.mask, seg.width, seg.height);
+            const karar = maskeKarari(fgCount / seg.mask.length, mainComponent);
+            categoryMask = { maskCoverage: fgCount / seg.mask.length, maskMainComponent: mainComponent, maskAccepted: karar.tip === 'kullan' };
+            if (karar.sebep) say(karar.sebep);
+            if (karar.tip === 'kullan') {
+              mask = seg.mask;
+              maskW = seg.width;
+              maskH = seg.height;
+              maskLoadedRef.current = true;
+              say(`nesne ayırma (${seg.model === 'birefnet' ? 'BiRefNet' : 'IS-Net'})  ${Math.round(performance.now() - t2)} ms  (${maskW}x${maskH})`);
+            }
+            updateSegment(karar.ayirmaAcik);
+            engineRef.current!.setObjectSeparation(karar.ayirmaAcik);
+          } catch (err) {
+            if (!isCurrent()) throw new Error('Photo source changed');
+            say(`nesne ayırma atlandı (${err instanceof Error ? err.message : String(err)}); maske olmadan devam`);
+            updateSegment(false);
+            engineRef.current!.setObjectSeparation(false);
+          }
         }
+        if (!isCurrent()) throw new Error('Photo source changed');
+        return mask ? { data: mask, width: maskW, height: maskH } : undefined;
       }
+      if (!progressive) await prepareMask();
 
       // Depth ARTIK maskeyi görüyor (GÜN E, bulgu 1).
       let depth: Partial<Awaited<ReturnType<typeof estimateDepth>>> & { data: Float32Array; width: number; height: number };
@@ -650,22 +677,46 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
         say(ACILIS_NOTU);
       } else {
         const t1 = performance.now();
-        const focal35 = photoFile ? (await readExifFocal(photoFile))?.f35 : undefined;
+        const focal35 = photoFile ? (await olc('photo.exif', () => readExifFocal(photoFile)))?.f35 : undefined;
         if (!isCurrent()) return;
         const photoCamera: PhotoCameraInput | undefined = photoPerspectiveEnabled(location.search) ? { focal35 } : undefined;
         if (photoCamera) {
-          photoFace = await yuzNoktalari(source);
+          photoFace = await olc('face.pipeline', () => yuzNoktalari(source));
           if (!isCurrent()) return;
           if (photoFace) photoCamera.face = [photoFace.noktalar[234],photoFace.noktalar[454]];
         }
         lastPhotoCameraRef.current = photoCamera;
-        depth = await estimateDepth(
+        depth = await olc('depth.pipeline', () => estimateDepth(
           source,
           { ...FOTO_KALITE,
+            ...(progressive ? {
+              prepareSubjectMask: prepareMask,
+              onPreview: async (preview: Awaited<ReturnType<typeof estimateDepth>>) => {
+                if (!isCurrent()) throw new Error('Photo source changed');
+                olcSync('geometry.preview', () => {
+                  const engine = engineRef.current!;
+                  engine.setPhoto(source);
+                  engine.setMetricPhotoGeometry(null);
+                  engine.setYuzRolyefi(null);
+                  engine.setObjectSeparation(false);
+                  engine.setDepth(preview.data, preview.width, preview.height);
+                  engine.yenidenTohumla();
+                });
+                measurementMeta.previewReadyMs = measurement ? performance.now() - measurement.startedAt : undefined;
+                setPhotoPreview(true);
+                say('Önizleme hazır · maske ve kalite iyileştiriliyor…');
+                // Let the renderer present the coarse scene before expensive mask setup.
+                await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+                if (!isCurrent()) throw new Error('Photo source changed');
+              },
+            } : {}),
             ...(photoCamera ? { photoCamera } : {}),
             ...(mask ? { subjectMask: { data: mask, width: maskW, height: maskH } } : {}) },
-        );
+        ));
         if (!isCurrent()) return;
+        measurementMeta.depthModel = depth.sourceModel;
+        measurementMeta.depthBackend = depthDevice;
+        measurementMeta.davidMask = depth.davidMaske;
         say(
           `çıkarım                  ${Math.round(performance.now() - t1)} ms  (${depth.width}x${depth.height})` +
             (depth.sourceModel ? ` · ${depth.sourceModel}` : '') +
@@ -678,18 +729,18 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
       // TUR 11: fotoğrafın kendisi de parçacık renklerine bağlanır (görev 1 —
       // varsayılan mavi rampa yerine orijinal RGB). Kamera/video yolu bu
       // çağrıyı yapmaz → shader'lar derinlik rampasına düşer.
-      engineRef.current!.setPhoto(source);
+      olcSync('geometry.photo-colors', () => engineRef.current!.setPhoto(source));
       engineRef.current!.setMetricPhotoGeometry(depth.metricGeometry ?? null);
       // YÜZ RÖLYEFİ (varsayılan, ?yuz=0 kapatır): MediaPipe yüz ağının 3B şekli yüz bölgesine işlenir
       // (yuzRolyef.ts). Yüz bulunamazsa ya da kapalıysa null → eski davranış birebir.
       let rolyef: YuzRolyefi | null = null;
       if (YUZ_GUCU > 0 && !analitikDerinlik) {
         const t3 = performance.now();
-        const yuz = photoFace === undefined ? await yuzNoktalari(source) : photoFace;
+        const yuz = photoFace === undefined ? await olc('face.pipeline', () => yuzNoktalari(source)) : photoFace;
         if (!isCurrent()) return;
         photoFace = yuz;
-        rolyef = yuz ? yuzRolyefHaritasi(yuz.noktalar, depth.width, depth.height, YUZ_GUCU,
-          new URLSearchParams(location.search).get('yuz') === null) : null;
+        rolyef = yuz ? olcSync('geometry.face-relief-map', () => yuzRolyefHaritasi(yuz.noktalar, depth.width, depth.height, YUZ_GUCU,
+          new URLSearchParams(location.search).get('yuz') === null)) : null;
         say(rolyef
           ? `yüz rölyefi              ${Math.round(performance.now() - t3)} ms  (${yuz!.noktalar.length} nokta, güç tavanı ×${YUZ_GUCU})`
           : 'yüz rölyefi: yüz bulunamadı, uygulanmadı');
@@ -712,17 +763,23 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
       }
       // Deliği kapatılmış maske (derinlik ızgarasında) varsa motor da onu kullanır:
       // siluet aynı maskeden çıkar, yoksa yüz/karındaki delikler 3B'de boş kalır.
-      if (depth.subjectMask) engineRef.current!.setDepth(depth.data, depth.width, depth.height, depth.subjectMask, depth.width, depth.height);
-      else engineRef.current!.setDepth(depth.data, depth.width, depth.height, mask, maskW, maskH);
+      olcSync('geometry.depth-points-shell', () => {
+        if (depth.subjectMask) engineRef.current!.setDepth(depth.data, depth.width, depth.height, depth.subjectMask, depth.width, depth.height);
+        else engineRef.current!.setDepth(depth.data, depth.width, depth.height, mask, maskW, maskH);
+      });
       if (maskOverlayOnRef.current) drawMaskOverlay();
       // KAYNAK DEĞİŞTİ: parçacıklar yeni sahneye OTURTULUR. Yumuşak geçiş
       // yolu (setHome + yay) hedefe varmıyordu; ölçüm ve gerekçe
       // Engine.yenidenTohumla'da.
-      engineRef.current!.yenidenTohumla();
+      olcSync('geometry.seed', () => engineRef.current!.yenidenTohumla());
+      measurementStatus = 'ready';
       say('depth → engine · point cloud konumları positionTexture\'dan okunur');
     } catch (err) {
+      measurementStatus = isCurrent() ? 'failed' : 'cancelled';
       if (isCurrent()) say(`HATA: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
+      measurement?.finish(measurementStatus, measurementMeta);
+      if (isCurrent() && measurementStatus === 'ready') setPhotoPreview(false);
       // Cleared even when stale: skipping it would leave the source controls locked.
       setBusy(false);
     }
@@ -870,7 +927,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
     // beklenirken 178,8 MB). Koşul artık GERÇEKTEN canlı yolu kullanacak
     // kaynak: kamera açık ya da video yüklü.
     const canliKaynak = cameraOn || !!videoDosya;
-    if (sunum && !canliKaynak) return () => { iptal = true; };
+    if (!canliKaynak) return () => { iptal = true; };
     const id = window.setTimeout(isit, 1500);
     return () => {
       iptal = true;
@@ -2120,13 +2177,15 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
             ms'yi aşan işlerde ekranda bir şey DEĞİŞMELİ. Model yükleme, RMBG
             ve derinlik çıkarımı saniyeler sürüyordu ve tek geri bildirim en
             alttaki log satırıydı — kullanıcı donmuş sanıyordu. */}
-        {busy && (
+        {(busy || photoPreview) && (
           <div style={calismaKatmani}>
             <span style={calismaNokta} />
             {/* İNDİRME VARSA ONU SÖYLE. "işleniyor…" 131 MB boyunca da aynı
                 kalıyordu; değişmeyen bir ekran "bozuldu" diye okunur. İndirme
                 bitince satir düşer ve yine "işleniyor…" yazılır. */}
-            <span>{indirme ?? 'işleniyor…'}</span>
+            <span>{photoPreview
+              ? busy ? `Önizleme · ${indirme ?? 'kalite iyileştiriliyor…'}` : 'Önizleme · kalite tamamlanamadı; yeniden yükleyin'
+              : indirme ?? 'işleniyor…'}</span>
             {indirme && (
               <span style={{ fontSize: yazi.kucuk, color: renk.metinSilik }}>
                 görüntün bilgisayarından çıkmıyor
@@ -2173,7 +2232,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
           ciktiKatlanir={sunum}
           cikti={
             <>
-              <ExportBar engine={engine} say={say} />
+              <ExportBar engine={engine} say={say} preparing={busy || photoPreview} />
               {/* AR/VR önizleme ÇIKTI bloğunda: sahneyi başka bir yere
                   taşıyan işlemler burada toplanır (PNG · WebM · PLY · AR). */}
               <ArDugmesi engine={engine} sahneVar={!egitimDosya} say={say} />

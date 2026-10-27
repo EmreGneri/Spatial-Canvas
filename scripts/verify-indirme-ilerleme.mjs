@@ -2,6 +2,7 @@
 // getirme ve Content-Length olmayan yol.
 //   node scripts/verify-indirme-ilerleme.mjs
 import assert from 'node:assert/strict';
+import { beginPhotoMeasurement } from '../src/engine/photoMeasurement.ts';
 import {
   baskinDurum, boyut, ilerlemeSatiri, ilerlemeliGetir,
   indirmeBildir, indirmeBitti, indirmeDinle, indirmeSifirla,
@@ -125,4 +126,72 @@ function sahteYanit(bayt, { uzunlukVer = true, parca = 4 } = {}) {
   assert.ok(!satirlar.some((s) => s !== null), 'hata sonrası satır kalmış');
 }
 
-console.log('verify-indirme-ilerleme: OK · satır, baskın dosya, yayın, akıtma, uzunluksuz ve hatalı yollar');
+// Ölçüm buffer okumasını tekrar etmez; indirilen gövdeyi cache transferi diye saymaz.
+{
+  const trace = beginPhotoMeasurement({ generation: 1, width: 8, height: 8 }, true);
+  let calls = 0;
+  const response = sahteYanit(12);
+  const buffer = await ilerlemeliGetir('/measured.onnx', 'measured', async () => { calls++; return response; });
+  const report = trace.finish('ready');
+  assert.equal(calls, 1);
+  assert.equal(buffer.byteLength, 12);
+  assert.equal(report.downloads.length, 1);
+  assert.equal(report.downloads[0].source, 'fetch');
+  assert.equal(report.downloads[0].bodyBytes, 12);
+  assert.equal(report.downloads[0].status, 'ok');
+  assert.ok(report.downloads[0].endedAt >= report.downloads[0].startedAt);
+}
+{
+  const trace = beginPhotoMeasurement({ generation: 2, width: 8, height: 8 }, true);
+  const original = new Uint8Array([1, 2, 3]).buffer;
+  const response = { ...sahteYanit(0), body: null, arrayBuffer: async () => original };
+  assert.equal(await ilerlemeliGetir('/bodyless.onnx', 'bodyless', async () => response), original);
+  const report = trace.finish('ready');
+  assert.equal(report.downloads[0].bodyBytes, 3);
+}
+{
+  const trace = beginPhotoMeasurement({ generation: 3, width: 8, height: 8 }, true);
+  await assert.rejects(ilerlemeliGetir('/failed.onnx', 'failed', async () => { throw Error('offline'); }), /offline/);
+  const report = trace.finish('ready');
+  assert.equal(report.downloads[0].status, 'failed');
+  assert.equal(report.downloads[0].bodyBytes, 0);
+}
+{
+  const previous = globalThis.caches;
+  let fetches = 0, reads = 0;
+  globalThis.caches = { open: async () => ({ match: async () => ({ arrayBuffer: async () => { reads++; return new Uint8Array([4, 5]).buffer; } }) }) };
+  try {
+    const trace = beginPhotoMeasurement({ generation: 4, width: 8, height: 8 }, true);
+    const buffer = await ilerlemeliGetir('https://models.invalid/pinned.onnx', 'cached', async () => { fetches++; throw Error('must not fetch'); });
+    const report = trace.finish('ready');
+    assert.deepEqual([...new Uint8Array(buffer)], [4, 5]);
+    assert.equal(reads, 1);
+    assert.equal(fetches, 0);
+    assert.equal(report.downloads[0].source, 'cache-storage');
+    assert.equal(report.downloads[0].bodyBytes, 2);
+  } finally { if (previous === undefined) delete globalThis.caches; else globalThis.caches = previous; }
+}
+{
+  const trace = beginPhotoMeasurement({ generation: 5, width: 8, height: 8 }, true);
+  let reads = 0;
+  const response = sahteYanit(4);
+  response.body.getReader = () => ({ read: async () => {
+    if (reads++ === 0) return { done: false, value: new Uint8Array([1, 2, 3, 4]) };
+    throw Error('stream failed');
+  } });
+  await assert.rejects(ilerlemeliGetir('/stream-failure.onnx', 'stream', async () => response), /stream failed/);
+  const report = trace.finish('ready');
+  assert.equal(report.downloads[0].status, 'failed');
+  assert.equal(report.downloads[0].bodyBytes, 4, 'partial bytes must survive a stream error');
+}
+{
+  const old = beginPhotoMeasurement({ generation: 6, width: 8, height: 8 }, true);
+  let resolve;
+  const pending = ilerlemeliGetir('/stale.onnx', 'stale', () => new Promise(r => { resolve = r; }));
+  const next = beginPhotoMeasurement({ generation: 7, width: 8, height: 8 }, true);
+  resolve(sahteYanit(4));
+  await pending;
+  assert.equal(next.finish('ready').downloads.length, 0, 'old completion leaked into the new photo');
+  assert.equal(old.finish('ready').status, 'cancelled');
+}
+console.log('verify-indirme-ilerleme: OK · existing paths, measured fetch/cache/failure/bodyless/stale parity');

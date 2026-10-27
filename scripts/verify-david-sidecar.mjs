@@ -103,6 +103,6 @@ kos(`
   assert.equal(r.arkaUc, 'webgpu');
   assert.equal(r.maske[5], 0.25);
   assert.equal(olusan, 1);
-  assert.deepEqual(istekler, ['https://huggingface.co/EmreGneri/david-foreground-int8/resolve/7b404af3cfa9c1fb8851bae03a20b4250608aa7b/foreground-segmentation-model-vitb16_384-int8.onnx'], 'tarayıcı maskesi: HF int8, sabit revizyon');
+  assert.deepEqual(istekler, ['https://example.com/models/microsoft-david/7b404af3cfa9c1fb8851bae03a20b4250608aa7b/foreground-segmentation-model-vitb16_384-int8.onnx'], 'tarayıcı maskesi: deployment int8, sabit revizyon');
 `, '', 'example.com');
 console.log('OK DAViD maskesi: yardımcı protokolü, hata yalıtımı, indirme yok, tarayıcı/int8 açık isteği, politika');

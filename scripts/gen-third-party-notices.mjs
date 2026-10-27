@@ -178,6 +178,7 @@ lines.push('  model cards list MIT; verified 2026-10-24). Copyright (c) Microsof
 lines.push('  The foreground mask is used by default for person masks: on the local sidecar, or in the');
 lines.push('  browser from a dynamic-int8 copy (MatMul/Gemm weights uint8, onnxruntime quantize_dynamic)');
 lines.push('  hosted at https://huggingface.co/EmreGneri/david-foreground-int8 (MIT, provenance in its model card).');
+lines.push('  The pinned int8 mask (180404556 bytes) is also shipped by the deployment CDN, unchanged.');
 lines.push('  Depth fusion is opt-in (?derinlik=david; VITE_DAVID_PHOTO=1 fetches the fp32 models at build).');
 lines.push('  Files: depth-model-vitb16_384.onnx (449231953 bytes),');
 lines.push('  foreground-segmentation-model-vitb16_384.onnx (449231719 bytes), unmodified.');

@@ -10,6 +10,7 @@
  * deformu kare hızını düşürmez, yalnız render süresini uzatır.
  */
 import { turAcisi } from './paylasim.ts';
+import { measureOutput } from '../engine/photoMeasurement.ts';
 import { cekimTuru, flySiniri, yolKamerasi } from './egitimControls.ts';
 import {
   kameraMerkezi, yorunge, type DeformSettings, type Egitim, type GsKamera,
@@ -305,6 +306,14 @@ export interface KlipSecimi {
  * çekiminde (`cekimTuru` = 'yol') `ev` kullanılmaz: kamera kaydedilen yolu izler.
  */
 export async function klipRenderEt(
+  e: Egitim, ev: GsKamera, secim: KlipSecimi,
+  ilerleme: (oran: number) => void, signal?: AbortSignal,
+): Promise<{ blob: Blob; kap: 'mp4' | 'webm'; kareSayisi: number }> {
+  return measureOutput('3dgs.clip', () => renderKlip(e, ev, secim, ilerleme, signal),
+    { durationSec: secim.sureSn, includesRenderAndEncoding: true });
+}
+
+async function renderKlip(
   e: Egitim, ev: GsKamera, secim: KlipSecimi,
   ilerleme: (oran: number) => void, signal?: AbortSignal,
 ): Promise<{ blob: Blob; kap: 'mp4' | 'webm'; kareSayisi: number }> {

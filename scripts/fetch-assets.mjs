@@ -11,6 +11,7 @@ import { downloadAsset, warnUnknownAssets } from './download-asset.mjs';
 // depth-anything-v2-small: Apache-2.0, IS-Net: MIT. Ticari olmayan V2-base
 // ve RMBG-1.4 listeye geri eklenmez; yerel deneyler yalnız uyarıyla korunur.
 const MODEL_REPOS = JSON.parse(await readFile(new URL('./model-assets.json', import.meta.url), 'utf8'));
+const DAVID_MASK_INT8 = JSON.parse(await readFile(new URL('../src/engine/vision/david-mask-asset.json', import.meta.url), 'utf8'));
 // İzole test/CI hedefi: FETCH_ASSETS_PUBLIC_DIR=<temporary directory>.
 const PUBLIC_DIR = process.env.FETCH_ASSETS_PUBLIC_DIR || 'public';
 const modelRoot = join(PUBLIC_DIR, 'models');
@@ -62,7 +63,8 @@ const MOGE = {
   file: 'model.onnx', size: 140852051,
 };
 MOGE.dest = join(modelRoot, MOGE.repo, MOGE.file);
-const EXTRA_MODELS = [BIREFNET, ...(process.env.VITE_MOGE2_PHOTO === '1' ? [MOGE] : [])];
+const EXTRA_MODELS = [BIREFNET, { ...DAVID_MASK_INT8, dest: join(modelRoot, DAVID_MASK_INT8.dest) },
+  ...(process.env.VITE_MOGE2_PHOTO === '1' ? [MOGE] : [])];
 // DAViD insan derinliği (?derinlik=david açar; varsayılan kapalı). LİSANS: MIT (microsoft/DAViD
 // README + model kartları). HF değil, Microsoft'un Azure statik deposu; dosya adları sürüm
 // taşımadığı için boyut kontrolü sabitleme görevi görür (2026-10-24 HEAD: Content-Length).
@@ -155,6 +157,7 @@ await warnUnknownAssets(modelRoot, new Set([
   ...MODEL_REPOS.flatMap(({ repo, files }) => files.map(({ file }) => `${repo}/${file}`)),
   'mediapipe/face_landmarker.task',
   `${BIREFNET.repo}/${BIREFNET.file}`,
+  DAVID_MASK_INT8.dest,
   `${MOGE.repo}/${MOGE.file}`,
   ...DAVID.map((m) => `microsoft-david/${m.file}`),
   ...VDA_FILES.map(file => `${VDA_DIR}/${file}`),

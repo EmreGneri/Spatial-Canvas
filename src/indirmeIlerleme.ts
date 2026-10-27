@@ -20,6 +20,8 @@
  * satır görür.
  */
 
+import { currentPhotoMeasurement } from './engine/photoMeasurement.ts';
+
 export interface IndirmeDurumu {
   /** Kullanıcıya görünen ad: "derinlik modeli", "nesne ayırma" gibi. */
   ad: string;
@@ -111,13 +113,19 @@ export function indirmeSifirla(): void {
  * toplar. `ort.InferenceSession.create` bir ArrayBuffer kabul ettiği için
  * dosyayı önce buradan geçirip sonra ona vermek, tek ilerleme yolu.
  */
-const MODEL_ONBELLEGI = 'spatial-canvas-modeller-v1';
+export const MODEL_ONBELLEGI = 'spatial-canvas-modeller-v1';
 
 export async function ilerlemeliGetir(
   url: string,
   ad: string,
   getir: typeof fetch = fetch,
 ): Promise<ArrayBuffer> {
+  // Oturumu await öncesinde yakala: geç biten eski kaynak yeni rapora yazılmasın.
+  const trace = currentPhotoMeasurement();
+  const startedAt = trace ? performance.now() : 0;
+  const record = (source: 'cache-storage' | 'fetch', bodyBytes: number, status: 'ok' | 'failed') => {
+    trace?.recordDownload({ url, label: ad, source, bodyBytes, startedAt, endedAt: performance.now(), status });
+  };
   // Sabit revizyonlu uzak modeller (Hugging Face) Cache Storage'da tutulur: ikinci ziyarette
   // yeniden inmez. HTTP önbelleği yüzlerce MB'lık dosyaları güvenilir tutmuyor. Önbellek yoksa
   // (gizli pencere, kota, eski tarayıcı) sessizce normal indirmeye düşülür.
@@ -125,40 +133,56 @@ export async function ilerlemeliGetir(
   if (onbellekli) {
     try {
       const kayit = await (await caches.open(MODEL_ONBELLEGI)).match(url);
-      if (kayit) return await kayit.arrayBuffer();
+      if (kayit) {
+        try {
+          const buffer = await kayit.arrayBuffer();
+          record('cache-storage', buffer.byteLength, 'ok');
+          return buffer;
+        } catch { record('cache-storage', 0, 'failed'); }
+      }
     } catch { /* önbellek erişilemez: indirmeye devam */ }
   }
-  const yanit = await getir(url);
-  if (!yanit.ok) throw new Error(`${ad}: ${yanit.status} ${yanit.statusText}`);
-  const uzunluk = Number(yanit.headers.get('content-length') ?? 0);
-  // Gövde akıtılamıyorsa (eski tarayıcı, önbellekten dönen yanıt) ilerleme
-  // yok ama indirme ÇALIŞMALI: sessizce tam okumaya düşülür.
-  if (!yanit.body) return yanit.arrayBuffer();
-
-  const okuyucu = yanit.body.getReader();
-  const parcalar: Uint8Array[] = [];
   let inen = 0;
   try {
-    for (;;) {
-      const { done, value } = await okuyucu.read();
-      if (done) break;
-      if (!value) continue;
-      parcalar.push(value);
-      inen += value.byteLength;
-      indirmeBildir(url, { ad, inen, toplam: uzunluk > 0 ? uzunluk : undefined });
+    const yanit = await getir(url);
+    if (!yanit.ok) throw new Error(`${ad}: ${yanit.status} ${yanit.statusText}`);
+    const uzunluk = Number(yanit.headers.get('content-length') ?? 0);
+    // Gövde akıtılamıyorsa (eski tarayıcı, önbellekten dönen yanıt) ilerleme
+    // yok ama indirme ÇALIŞMALI: sessizce tam okumaya düşülür.
+    if (!yanit.body) {
+      const buffer = await yanit.arrayBuffer();
+      record('fetch', buffer.byteLength, 'ok');
+      return buffer;
     }
-  } finally {
-    indirmeBitti(url);
-  }
 
-  const hepsi = new Uint8Array(inen);
-  let konum = 0;
-  for (const p of parcalar) {
-    hepsi.set(p, konum);
-    konum += p.byteLength;
+    const okuyucu = yanit.body.getReader();
+    const parcalar: Uint8Array[] = [];
+    try {
+      for (;;) {
+        const { done, value } = await okuyucu.read();
+        if (done) break;
+        if (!value) continue;
+        parcalar.push(value);
+        inen += value.byteLength;
+        indirmeBildir(url, { ad, inen, toplam: uzunluk > 0 ? uzunluk : undefined });
+      }
+    } finally {
+      indirmeBitti(url);
+    }
+
+    const hepsi = new Uint8Array(inen);
+    let konum = 0;
+    for (const p of parcalar) {
+      hepsi.set(p, konum);
+      konum += p.byteLength;
+    }
+    if (onbellekli) {
+      try { await (await caches.open(MODEL_ONBELLEGI)).put(url, new Response(hepsi.slice())); } catch { /* kota dolu: sorun değil */ }
+    }
+    record('fetch', inen, 'ok');
+    return hepsi.buffer;
+  } catch (error) {
+    record('fetch', inen, 'failed');
+    throw error;
   }
-  if (onbellekli) {
-    try { await (await caches.open(MODEL_ONBELLEGI)).put(url, new Response(hepsi.slice())); } catch { /* kota dolu: sorun değil */ }
-  }
-  return hepsi.buffer;
 }

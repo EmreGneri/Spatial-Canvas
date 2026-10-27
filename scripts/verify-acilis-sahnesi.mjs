@@ -100,7 +100,7 @@ assert.ok(!/\[40, 70, 160\]|\[150, 90, 240\]/.test(app), 'bina koordinatları Ap
 // çıkarımı atlar ama diğer tüm yan etkileri aynen işler.
 assert.match(app, /return run\(g, acilisDerinligi\(/, 'soğuk açılış modelsiz yolu kullanmıyor');
 assert.ok(!/void run\(syntheticImage\(\)\)/.test(app), 'örnek sahne hâlâ model indiren run() ile koşuyor');
-assert.match(app, /if \(sunum && !canliKaynak\) return/, 'canlı model ön ısıtması sunumda hâlâ spekülatif');
+assert.match(app, /if \(!canliKaynak\) return/, 'canlı model ön ısıtması fotoğraf/açılışta hâlâ spekülatif');
 // Isıtma GERÇEKTEN canlı yolu kullanacak kaynağa bağlı olmalı. "Bir dosya
 // seçildi mi" yetmez: fotoğraf yüklenince de tetikleniyordu ve aynı 47 MB
 // iki kez paralel iniyordu (ölçüldü: 131 MB beklenirken 178,8 MB).

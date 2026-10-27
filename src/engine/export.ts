@@ -22,6 +22,8 @@
  * aynı görevde revoke Firefox/Safari'de indirmeyi düşürür (Chrome tolere
  * ediyor). Gecikme `Egitim3D.plyIndir` ile aynı.
  */
+import { measureOutput } from './photoMeasurement.ts';
+
 export function downloadBlob(blob: Blob, filename: string): void {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
@@ -65,7 +67,7 @@ export async function exportPNG(
     ctx.drawImage(canvas, 0, 0, big.width, big.height);
     canvas = big as HTMLCanvasElement;
   }
-  return new Promise((resolve, reject) => {
+  return measureOutput('png.toBlob', () => new Promise<void>((resolve, reject) => {
     canvas.toBlob((blob) => {
       if (!blob) {
         reject(new Error('toBlob başarısız'));
@@ -74,7 +76,7 @@ export async function exportPNG(
       downloadBlob(blob, `${filename}.png`);
       resolve();
     }, 'image/png');
-  });
+  }), { width: canvas.width, height: canvas.height });
 }
 
 export interface WebMExportOptions {
@@ -123,7 +125,7 @@ export function exportWebM(
   // bırakılmazsa her export bir track daha ekler (görünmez CPU maliyeti).
   const stopStream = () => stream.getTracks().forEach((t) => t.stop());
 
-  return new Promise((resolve, reject) => {
+  return measureOutput('webm.recording', () => new Promise<void>((resolve, reject) => {
     recorder.onerror = (e) => {
       stopStream();
       reject(new Error(`MediaRecorder: ${e.error?.message ?? 'bilinmeyen'}`));
@@ -135,7 +137,7 @@ export function exportWebM(
     };
     recorder.start();
     setTimeout(() => recorder.stop(), durationSec * 1000);
-  });
+  }), { durationSec, videoBitsPerSecond, includesRealtimeWait: true });
 }
 
 // ---------------------------------------------------------------------------

@@ -357,6 +357,7 @@ Optional DAViD human depth + soft foreground (microsoft/DAViD, ViT-B/16)
   The foreground mask is used by default for person masks: on the local sidecar, or in the
   browser from a dynamic-int8 copy (MatMul/Gemm weights uint8, onnxruntime quantize_dynamic)
   hosted at https://huggingface.co/EmreGneri/david-foreground-int8 (MIT, provenance in its model card).
+  The pinned int8 mask (180404556 bytes) is also shipped by the deployment CDN, unchanged.
   Depth fusion is opt-in (?derinlik=david; VITE_DAVID_PHOTO=1 fetches the fp32 models at build).
   Files: depth-model-vitb16_384.onnx (449231953 bytes),
   foreground-segmentation-model-vitb16_384.onnx (449231719 bytes), unmodified.

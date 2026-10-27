@@ -1,3 +1,4 @@
+import { currentPhotoMeasurement, type PhotoMeasurement } from './engine/photoMeasurement.ts';
 import type { pipeline, RawImage } from '@huggingface/transformers';
 // Saf CPU yeniden örnekleme (silhouette.ts hiçbir şey import etmez — model
 // yığınına bağımlılık YOK, eval harness bağımsızlığı korunur).
@@ -270,6 +271,10 @@ export type DepthResult = {
 };
 
 export type DepthEstimateOptions = {
+  /** Publish an isolated coarse result before loading photo-only refinement models. */
+  onPreview?: (depth: DepthResult) => void | Promise<void>;
+  /** Delays segmentation until the first depth result is visible; inference is reused. */
+  prepareSubjectMask?: () => Promise<{ data: Float32Array; width: number; height: number } | undefined>;
   /** Yalnız açık fotoğraf deneyi: normalize edilmemiş dispariteden perspektif geometri. */
   photoCamera?: PhotoCameraInput;
   /**
@@ -448,9 +453,11 @@ const sidecarKabugu = async (shiftK: number) => {
 };
 
 let photoModelQueue: Promise<void> = Promise.resolve();
-function runPhotoModel(model: Awaited<ReturnType<typeof loadDepthModel>>, input: RawImage) {
+function runPhotoModel(model: Awaited<ReturnType<typeof loadDepthModel>>, input: RawImage, trace: PhotoMeasurement | null = null, stage = 'depth.main') {
   const run = async () => {
-    const result = await model(input);
+    // Estimator sınırı: işlemci/son işlem dahildir; model kurulumu ve kuyruk bekleme hariçtir.
+    // Yardımcı geri düşüşünde iç yükleme/çıkarım span'leri kapsayıcıdır, süreler toplanmaz.
+    const result = await (trace ? trace.measure(stage, () => model(input)) : model(input));
     return { ...result, photoShift: photoDisparityShifts.get(model) ?? 0,
       photoModel: photoDisparityShifts.has(model) ? 'da3-mono' as const : 'v2-small' as const };
   };
@@ -634,6 +641,7 @@ export async function estimateDepth(
   source: HTMLCanvasElement | HTMLImageElement,
   opts: DepthEstimateOptions = {},
 ): Promise<DepthResult> {
+  const trace = currentPhotoMeasurement();
   if (opts.model === 'moge-2') {
     try {
       const [{ inferMoge }, { mogePhotoResult }] = await Promise.all([
@@ -697,7 +705,7 @@ export async function estimateDepth(
 
   // GPU sırası: canlı derinlik döngüsü koşarken fotoğraf yüklenirse iki
   // WebGPU oturumu çakışır (bkz. gpuSirasinaGir).
-  const { predicted_depth, photoShift, photoModel } = await runPhotoModel(model, input);
+  const { predicted_depth, photoShift, photoModel } = await runPhotoModel(model, input, trace);
   if (yardimciMi && photoModel === 'v2-small') depthDevice = tarayiciCihazi;
 
   const [height, width] = predicted_depth.dims.slice(-2) as [number, number];
@@ -717,15 +725,21 @@ export async function estimateDepth(
     outHeight = rect.h;
   }
 
+  if (opts.onPreview) {
+    await opts.onPreview({ data: normalizeDepth(data, opts.percentile ?? 1),
+      width: outWidth, height: outHeight, sourceModel: photoModel });
+  }
+  const subjectMask = opts.prepareSubjectMask ? await opts.prepareSubjectMask() : opts.subjectMask;
+
   // GÜN E (bulgu 1): özne maskesi verildiyse depth uzayına örnekle. Boyutlar
   // zaten eşitse kopya çıkarılmaz (gereksiz tahsis yok).
-  let subject = opts.subjectMask
-    ? opts.subjectMask.width === outWidth && opts.subjectMask.height === outHeight
-      ? opts.subjectMask.data
+  let subject = subjectMask
+    ? subjectMask.width === outWidth && subjectMask.height === outHeight
+      ? subjectMask.data
       : resampleBilinear(
-          opts.subjectMask.data,
-          opts.subjectMask.width,
-          opts.subjectMask.height,
+          subjectMask.data,
+          subjectMask.width,
+          subjectMask.height,
           outWidth,
           outHeight,
         )
@@ -738,7 +752,7 @@ export async function estimateDepth(
     // canvas) tüm fotoğrafı düşürmesin; parçasız global derinlik zaten geçerli.
     const yedek = Float32Array.from(normalized);
     try {
-      await mergeTiledDetail(normalized, outWidth, outHeight, source, model, RawImageCtor);
+      await mergeTiledDetail(normalized, outWidth, outHeight, source, model, RawImageCtor, trace);
     } catch (err) {
       normalized.set(yedek);
       console.warn('Parça detay aşaması atlandı.', err);
@@ -755,7 +769,7 @@ export async function estimateDepth(
   }
   // GÜN E (bulgu 11) — ÖZNE KIRPMA ÇIKARIMI + FREKANS BİRLEŞTİRME.
   if (subject) {
-    await mergeSubjectDetail(normalized, subject, outWidth, outHeight, source, model, RawImageCtor);
+    await mergeSubjectDetail(normalized, subject, outWidth, outHeight, source, model, RawImageCtor, trace);
   }
   if (smoothingEnabled) {
     smoothDepthSteps(normalized, outWidth, outHeight);
@@ -810,15 +824,15 @@ export async function estimateDepth(
     limited = limitDepthSlope(normalized, outWidth, outHeight, null);
   }
   const headDetail = subject
-    ? await mergeHeadDetail(limited, subject, outWidth, outHeight, source, model, RawImageCtor, opts.yuz ?? null)
+    ? await mergeHeadDetail(limited, subject, outWidth, outHeight, source, model, RawImageCtor, opts.yuz ?? null, trace)
     : undefined;
   let cikti = limited, david: DepthResult['david'];
   if (opts.insanDerinligi === 'david') {
-    const f = await davidUygula(limited, outWidth, outHeight, source, subject);
+    const f = await davidUygula(limited, outWidth, outHeight, source, subject, trace);
     if (f) ({ data: cikti, tani: david } = f);
   }
   // subject, delikDoldur'da zaten deliği kapatılmış maske (doldurulmusMaske).
-  const dm = await applyDavidMask(opts.insanMaskesi, source, subject, outWidth, outHeight);
+  const dm = await applyDavidMask(opts.insanMaskesi, source, subject, outWidth, outHeight, trace);
   return {
     data: cikti, width: outWidth, height: outHeight, sourceModel: photoModel, headDetail, subjectMask: dm?.maske ?? doldurulmusMaske, delikTani,
     ...(photoDisparity ? { metricGeometry: relativePhotoGeometry(photoDisparity, outWidth, outHeight, opts.photoCamera!, { shift: photoShift, mask: subject ?? undefined }) } : {}),
@@ -830,6 +844,7 @@ export async function estimateDepth(
 export async function applyDavidMask(
   secim: DepthEstimateOptions['insanMaskesi'], source: HTMLCanvasElement | HTMLImageElement,
   ozne: Float32Array | null, w: number, h: number,
+  trace: PhotoMeasurement | null = currentPhotoMeasurement(),
 ) {
   const plan = davidPlani(secim, ozne !== null, secim === 'otomatik' && ozne !== null && await localModelAvailable('david-mask'));
   if (!plan || !ozne) return null;
@@ -837,7 +852,7 @@ export async function applyDavidMask(
     const { inferDavidMaske, DAVID_BOYUT } = await import('./engine/vision/davidDepth.ts');
     const lb = letterboxCanvas(source, DAVID_BOYUT);
     const rgba = lb.canvas.getContext('2d', { willReadFrequently: true })!.getImageData(0, 0, DAVID_BOYUT, DAVID_BOYUT).data;
-    const ham = await inferDavidMaske(rgba, { gpuSirasinaGir, onceRetry, webgpuKullanilabilir }, plan);
+    const ham = await inferDavidMaske(rgba, { gpuSirasinaGir, onceRetry, webgpuKullanilabilir }, plan, trace);
     if (!ham) return null;
     const maske = davidMaskeKesisimi(ozne,davidCiktisiniCoz(ham.maske, ham.boyut, lb, w, h));
     return { maske, tani: { arkaUc: ham.arkaUc, sureMs: ham.sureMs } };
@@ -853,12 +868,13 @@ export async function applyDavidMask(
  */
 async function davidUygula(
   sahne: Float32Array, w: number, h: number, source: HTMLCanvasElement | HTMLImageElement, ozne: Float32Array | null,
+  trace: PhotoMeasurement | null,
 ) {
   try {
     const { inferDavid, DAVID_BOYUT } = await import('./engine/vision/davidDepth.ts');
     const lb = letterboxCanvas(source, DAVID_BOYUT);
     const rgba = lb.canvas.getContext('2d', { willReadFrequently: true })!.getImageData(0, 0, DAVID_BOYUT, DAVID_BOYUT).data;
-    const ham = await inferDavid(rgba, { gpuSirasinaGir, onceRetry, webgpuKullanilabilir });
+    const ham = await inferDavid(rgba, { gpuSirasinaGir, onceRetry, webgpuKullanilabilir }, trace);
     if (!ham) return null;
     const derinlik = davidCiktisiniCoz(ham.derinlik, ham.boyut, lb, w, h);
     const maske = davidCiktisiniCoz(ham.maske, ham.boyut, lb, w, h);
@@ -892,6 +908,7 @@ async function mergeTiledDetail(
   source: HTMLCanvasElement | HTMLImageElement,
   model: Awaited<ReturnType<typeof loadDepthModel>>,
   RawImageCtor: typeof RawImage,
+  trace: PhotoMeasurement | null = null,
 ): Promise<void> {
   const src = toCanvas(source);
   if (Math.max(src.width, src.height) < TILE_MIN_LONG_SIDE) return;
@@ -908,7 +925,7 @@ async function mergeTiledDetail(
     cut.height = ch;
     cut.getContext('2d', { willReadFrequently: true })!.drawImage(src, cx, cy, cw, ch, 0, 0, cw, ch);
     const lb = letterboxCanvas(cut, MODEL_INPUT_SIZE);
-    const out = await runPhotoModel(model, await RawImageCtor.fromCanvas(lb.canvas));
+    const out = await runPhotoModel(model, await RawImageCtor.fromCanvas(lb.canvas), trace, 'depth.tile');
     const sq = (out.predicted_depth.dims.slice(-1) as [number])[0];
     const tile = normalizeDepth(cropDepth2(out.predicted_depth.data as Float32Array, sq, lb), 1);
     results.push({ rect, depth: resampleBilinear(tile, lb.w, lb.h, rect.w, rect.h) });
@@ -960,6 +977,7 @@ async function mergeSubjectDetail(
   source: HTMLCanvasElement | HTMLImageElement,
   model: Awaited<ReturnType<typeof loadDepthModel>>,
   RawImageCtor: typeof RawImage,
+  trace: PhotoMeasurement | null = null,
 ): Promise<void> {
   // 1. Özne bbox'ı (depth uzayında) + küçük pay.
   let x0 = w;
@@ -1002,7 +1020,7 @@ async function mergeSubjectDetail(
   // 3. Aynı letterbox yolundan ikinci çıkarım.
   const lb = letterboxCanvas(cut, MODEL_INPUT_SIZE);
   const kirpimGirdisi = await RawImageCtor.fromCanvas(lb.canvas);
-  const out = await runPhotoModel(model, kirpimGirdisi);
+  const out = await runPhotoModel(model, kirpimGirdisi, trace, 'depth.subject');
   // Model kare çıktı verir (kenar = cw2); yükseklik bilgisi kullanılmaz.
   const cw2 = (out.predicted_depth.dims.slice(-1) as [number])[0];
   const cropped = normalizeDepth(
@@ -1070,6 +1088,7 @@ async function mergeHeadDetail(
   model: Awaited<ReturnType<typeof loadDepthModel>>,
   RawImageCtor: typeof RawImage,
   yuz: YuzReferansi | null,
+  trace: PhotoMeasurement | null = null,
 ): Promise<HeadDetailDiagnostics | undefined> {
   const { roi, kaynak } = headRoiSec(mask, w, h, yuz);
   if (!roi || roi.width < 8 || roi.height < 8) return undefined;
@@ -1093,7 +1112,7 @@ async function mergeHeadDetail(
   const letterboxed = letterboxCanvas(cut, MODEL_INPUT_SIZE);
   const input = await RawImageCtor.fromCanvas(letterboxed.canvas);
   const startedAt = performance.now();
-  const out = await runPhotoModel(model, input);
+  const out = await runPhotoModel(model, input, trace, 'depth.head');
   const elapsedMs = performance.now() - startedAt;
   const outputWidth = (out.predicted_depth.dims.slice(-1) as [number])[0];
   const cropDepth = normalizeDepth(

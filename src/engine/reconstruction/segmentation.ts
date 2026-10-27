@@ -1,3 +1,4 @@
+import { currentPhotoMeasurement, type PhotoMeasurement } from '../photoMeasurement.ts';
 /**
  * GENEL NESNE/ARKA PLAN AYIRMA (CPU, OPSİYONEL MODÜL).
  *
@@ -157,7 +158,7 @@ export function birefnetOlasilik(logit: Float32Array): Float32Array | null {
  * oturum boyunca kapatır; çağıran IS-Net'e düşer. Kurulum ve çıkarım IS-Net
  * ile aynı GPU sırasından AYRI turlar olarak geçer (kuyruk yeniden girişli değil).
  */
-export async function tarayiciBirefnet(girdi: { data: Float32Array; dims: number[] }): Promise<Float32Array | null> {
+export async function tarayiciBirefnet(girdi: { data: Float32Array; dims: number[] }, trace: PhotoMeasurement | null = currentPhotoMeasurement()): Promise<Float32Array | null> {
   if (!TARAYICI_BIREFNET || birefnetKapali) return null;
   try {
     if (typeof navigator === 'undefined' || !('gpu' in navigator)) throw new Error('WebGPU yok');
@@ -168,9 +169,8 @@ export async function tarayiciBirefnet(girdi: { data: Float32Array; dims: number
     });
     birefnetSession ??= await yukleBirefnet();
     const session = birefnetSession;
-    const r = await gpuSirasinaGir(() =>
-      session.run({ input_image: new ort.Tensor('float32', girdi.data, girdi.dims) }),
-    );
+    const run = () => session.run({ input_image: new ort.Tensor('float32', girdi.data, girdi.dims) });
+    const r = await gpuSirasinaGir(() => trace ? trace.measure('mask.birefnet.run', run) : run());
     const out = r.output_image;
     if (out.dims.join('x') !== `1x1x${MODEL_INPUT_SIZE}x${MODEL_INPUT_SIZE}`) {
       throw new Error(`BiRefNet çıktısı beklenmeyen şekil: ${out.dims.join('x')}`);
@@ -203,6 +203,7 @@ export async function segmentForeground(
   device: 'wasm' | 'webgpu' = 'webgpu',
   kaynak: 'foto' | 'video' = 'video',
 ): Promise<SegmentationResult> {
+  const trace = kaynak === 'foto' ? currentPhotoMeasurement() : null;
   const lb = letterboxCanvas(source, MODEL_INPUT_SIZE);
   let raw: Float32Array | null = null;
   let model: SegmentationResult['model'] = 'isnet';
@@ -212,13 +213,14 @@ export async function segmentForeground(
     let olasilik: Float32Array | null = null;
     if (await localInferenceAvailable()) {
       let yardimci = true;
-      const out = await localInference!.infer('mask', girdi, async () => {
+      const run = () => localInference!.infer('mask', girdi, async () => {
         yardimci = false;
         return { data: new Float32Array(0), dims: [] };
       });
+      const out = await (trace ? trace.measure('mask.sidecar.infer', run) : run());
       if (yardimci) olasilik = out.data;
     }
-    olasilik ??= await tarayiciBirefnet(girdi);
+    olasilik ??= await tarayiciBirefnet(girdi, trace);
     if (olasilik) {
       model = 'birefnet';
       // BiRefNet girdisi kareye ESNETİLMİŞ görüntü (ölçüm bu yolla yapıldı);
@@ -226,7 +228,7 @@ export async function segmentForeground(
       raw = resampleBilinear(olasilik, MODEL_INPUT_SIZE, MODEL_INPUT_SIZE, lb.w, lb.h);
     }
   }
-  raw ??= kirp((await isnetCikti(lb, device)).data, lb);
+  raw ??= kirp((await isnetCikti(lb, device, trace)).data, lb);
   // TUR 10: sert kesim yerine dilate + feather — yüz/el kenarı delikleri
   // güven marjıyla kapanır; perde koruması (AND eşiği) değişmez.
   // GÜN E (bulgu 12): önce kopuk parçaları düşür (özneye bitişik OLMAYAN model
@@ -249,6 +251,7 @@ function kirp(out: Float32Array, lb: { x: number; y: number; w: number; h: numbe
 async function isnetCikti(
   lb: { canvas: HTMLCanvasElement },
   device: 'wasm' | 'webgpu',
+  trace: PhotoMeasurement | null,
 ): Promise<{ data: Float32Array; dims: number[] }> {
   const session = await loadSegmentationModel(device);
   const ctx = lb.canvas.getContext('2d', { willReadFrequently: true });
@@ -267,11 +270,10 @@ async function isnetCikti(
   // ayrı bir kuyruk turu olarak YUKARIDA bitti (`await loadSegmentationModel`);
   // burası kuyruğa AYRI ve ARDIŞIK girer, iç içe DEĞİL (kuyruk yeniden girişli
   // değil — depth.ts:112).
-  const result = await gpuSirasinaGir(() =>
-    session.run({
-      input: new ort.Tensor('float32', tensor, [1, 3, MODEL_INPUT_SIZE, MODEL_INPUT_SIZE]),
-    }),
-  );
+  const run = () => session.run({
+    input: new ort.Tensor('float32', tensor, [1, 3, MODEL_INPUT_SIZE, MODEL_INPUT_SIZE]),
+  });
+  const result = await gpuSirasinaGir(() => trace ? trace.measure('mask.isnet.run', run) : run());
   const tOut = result.output;
   const [batch, ch, outH, outW] = tOut.dims as [number, number, number, number];
   if (batch !== 1 || ch !== 1 || outW !== MODEL_INPUT_SIZE || outH !== MODEL_INPUT_SIZE) {
