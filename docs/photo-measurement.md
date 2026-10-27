@@ -12,6 +12,8 @@ Varsayılan fotoğraf yolu, sahne modelinin ilk çıkarımını maskelerden önc
 
 BiRefNet'in gerekli dosyası fotoğraf yüklenirken derinlik dosyasıyla paralel indirilir. Paylaşılan tek indirme sonucu oturum kurulurken tüketilir; GPU kurulumu ve çıkarımı önizleme sonrasında aynı sırayı kullanır. Böylece önizleme için nihai kaliteye giden indirmeler gereksiz yere art arda bekletilmez. Yardımcı çalışıyorsa, WebGPU yoksa veya BiRefNet zaten hazırsa bu indirme başlatılmaz.
 
+Fotoğrafın kalite hesabı sırasında tam hızlı sahne animasyonu GPU'ya iş göndermeyi bırakır; önizleme saniyede bir yeniden çizilir. Tamamlanma, hata ve kaynak değişiminde normal çizim geri açılır. Nihai çıktı veya bitmiş sahnenin animasyon hızı değiştirilmez.
+
 `metadata.previewReadyMs` önizleme geometrisinin hazırlanmasına kadar geçen süredir; GPU'nun fiziksel ekrana sunduğu kare zamanı değildir. `totalMs` nihai kalite hazır olana kadar devam eder. `depth.pipeline` artık ertelenen maske hattını da kapsayabilir; aşama sürelerini toplamayın. Bu değişiklik ilk görünen sonucu erkene alır; nihai dışa aktarımın hızlandığı ayrıca ölçülmeden iddia edilmez.
 
 `?olcum=1` ölçümü açar. Örneğin `http://localhost:5173/?olcum=1` veya mevcut sorguya `&olcum=1` eklenir. Ölçüm model seçimini, kaliteyi veya işlem sırasını değiştirmez; hazırdaki işlemleri süreler ve mevcut tarayıcı kayıtlarını okur. Bu bayrak dışında oturum/Resource Timing observer kurulmaz.

@@ -485,6 +485,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
    */
   function teardownSource() {
     setPhotoPreview(false);
+    engineRef.current?.setSuspended(false);
     // Every pending async source path (photo inference, camera prompt, video
     // decode, live-depth start) sees this and stops before writing anything.
     sourceGenRef.current++;
@@ -583,6 +584,8 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
       measurement ? measurement.measure(name, task) : task();
     const olcSync = <T,>(name: string, task: () => T): T =>
       measurement ? measurement.measureSync(name, task) : task();
+    let previewTimer: number | undefined;
+    let photoGpuBudget = false;
     try {
       // DA3/MoGe seçimini estimateDepth yönetir; burada ek V2 oturumu ayırma.
       if (!analitikDerinlik && FOTO_KALITE.model === 'v2-small') {
@@ -615,6 +618,10 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
       const progressive = !analitikDerinlik && FOTO_KALITE.model !== 'moge-2'
         && !photoPerspectiveEnabled(location.search)
         && new URLSearchParams(location.search).get('onizleme') !== '0';
+      if (progressive) {
+        photoGpuBudget = true;
+        engineRef.current!.setSuspended(true);
+      }
       if (progressive) void preloadPhotoMaskBytes().catch(() => {});
       async function prepareMask() {
         if (!isCurrent()) throw new Error('Photo source changed');
@@ -702,7 +709,12 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
                   engine.setObjectSeparation(false);
                   engine.setDepth(preview.data, preview.width, preview.height);
                   engine.yenidenTohumla();
+                  engine.renderFrame();
                 });
+                // Keep the preview visible without competing with model inference at full frame rate.
+                previewTimer = window.setInterval(() => {
+                  if (isCurrent()) engineRef.current?.renderFrame();
+                }, 1000);
                 measurementMeta.previewReadyMs = measurement ? performance.now() - measurement.startedAt : undefined;
                 setPhotoPreview(true);
                 say('Önizleme hazır · maske ve kalite iyileştiriliyor…');
@@ -779,6 +791,8 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
       measurementStatus = isCurrent() ? 'failed' : 'cancelled';
       if (isCurrent()) say(`HATA: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
+      if (previewTimer !== undefined) clearInterval(previewTimer);
+      if (photoGpuBudget && isCurrent()) engineRef.current?.setSuspended(egitimDosya !== null);
       measurement?.finish(measurementStatus, measurementMeta);
       if (isCurrent() && measurementStatus === 'ready') setPhotoPreview(false);
       // Cleared even when stale: skipping it would leave the source controls locked.
