@@ -6,6 +6,7 @@ const session = await tarayiciOturumu({ chrome: true, basli: true,
   vite: { server: { host: '127.0.0.1', port: 0, hmr: false, watch: null } } });
 const page = session.page;
 const errors = [], blockedModels = [];
+let evaluationTimeout;
 page.on('pageerror', error => errors.push(error.message));
 await page.route('**/models/**', route => { blockedModels.push(route.request().url()); return route.abort(); });
 await page.route('https://**', route => route.abort());
@@ -14,7 +15,7 @@ try {
     '<!doctype html><title>Video synchronization check</title><h1>Video synchronization check</h1><pre id="result">Running decoder, OPFS and timestamp regressions…</pre><video id="video" muted controls></video>' }));
   await page.goto(session.url('/__video_sync_check'), { waitUntil: 'domcontentloaded', timeout: 60000 });
   await page.bringToFront();
-  const result = await page.evaluate(async () => {
+  const result = await Promise.race([page.evaluate(async () => {
     const { prepareVideoDepth } = await import('/src/engine/vision/videoPrecompute.ts');
     const { startBufferedVideoPlayback } = await import('/src/engine/vision/bufferedVideoPlayback.ts');
     const { propagateMaskInterval } = await import('/src/engine/vision/videoMaskTrack.ts');
@@ -59,16 +60,24 @@ try {
       stop();
       const preserved = published[0] === actual.mediaTime && Math.abs(published[0] - .6) < .001;
 
-      let enabled = true, release, readStarted = false;
+      let enabled = true, release, readStarted = false, readSettled = false;
       const gate = new Promise(resolve => { release = resolve; });
-      const disabledPublications = [];
+      const disabledPublications = [], disabledFallbacks = [];
       stop = startBufferedVideoPlayback(video, {
         hasFrame: time => handle.hasFrame(time),
-        frameAt: async time => { readStarted = true; const frame = await handle.frameAt(time); await gate; return frame; },
-      }, { enabled: () => enabled, onFrame: frame => disabledPublications.push(frame.mediaTime) });
+        frameAt: async time => {
+          readStarted = true;
+          const frame = await handle.frameAt(time);
+          await gate;
+          readSettled = true;
+          return frame;
+        },
+      }, { enabled: () => enabled, onFrame: frame => disabledPublications.push(frame.mediaTime),
+        onFallback: time => disabledFallbacks.push(time) });
       await waitUntil(() => readStarted);
       enabled = false; release();
-      await new Promise(resolve => setTimeout(resolve, 100));
+      await waitUntil(() => readSettled && disabledFallbacks.length > 0);
+      await nextTick();
       stop();
 
       const frames = [0, 0, 255, 255].map(value => {
@@ -82,15 +91,21 @@ try {
         && masks[2][18] === 0 && masks[2][29] === 1;
       const result = { sourceTimestamp: actual.mediaTime, requestedTimestamp: video.currentTime,
         publishedTimestamp: published[0], timestampPreserved: preserved,
-        disabledPublications: disabledPublications.length, cutClean, frames: 8, model: 'deterministic fixture (no inference)' };
+        disabledPublications: disabledPublications.length, disabledFallbacks: disabledFallbacks.length,
+        readSettled, cutClean, frames: 8, model: 'deterministic fixture (no inference)' };
       document.querySelector('#result').textContent = JSON.stringify(result, null, 2);
       return result;
     } finally { stop(); await handle.dispose(); URL.revokeObjectURL(url); video.removeAttribute('src'); video.load(); }
-  });
+  }), new Promise((_, reject) => {
+    evaluationTimeout = setTimeout(() => reject(new Error('Browser video synchronization check timed out')), 60000);
+  })]);
+  clearTimeout(evaluationTimeout);
   assert.equal(result.timestampPreserved, true, JSON.stringify(result));
   assert.equal(result.disabledPublications, 0, JSON.stringify(result));
+  assert.equal(result.readSettled, true, JSON.stringify(result));
+  assert.ok(result.disabledFallbacks > 0, JSON.stringify(result));
   assert.equal(result.cutClean, true, JSON.stringify(result));
   assert.deepEqual(errors, []);
   assert.deepEqual(blockedModels, []);
   console.log('PASS real browser video decoding, OPFS source timestamps, disable race and scene-local masks', JSON.stringify(result));
-} finally { await session.kapat(); }
+} finally { clearTimeout(evaluationTimeout); await session.kapat(); }

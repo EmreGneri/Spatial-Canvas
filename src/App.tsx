@@ -1024,9 +1024,9 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
     };
     preparedFramePresenterRef.current = (frame) => {
       if (iptal || !isCurrent() || videoRef.current !== video) return;
-      // Duraklatılmış karenin detaylı canlı sonucu (V2 378) aynı kare için hazır derinliği geçer.
+      // A detailed result for the paused cursor wins even when the cache floors to an earlier source frame.
       if (video.paused && lastDepth?.depthModel === 'v2' && !lastDepth.interpolated
-        && Math.abs(lastDepth.mediaTime - frame.mediaTime) < 1e-3) return;
+        && Math.abs(lastDepth.mediaTime - video.currentTime) < 1e-3) return;
       stopLuminanceLoop();
       if (preparedFrameTimeRef.current === -Infinity) setLiveRates({ model: 0, flow: 0 });
       // Hazır derinlik o anki kareyle hizalı: renk doğrudan video dokusundan (canlı
