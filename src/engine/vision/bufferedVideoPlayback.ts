@@ -22,6 +22,7 @@ export function createBufferedDepthReader(options: {
   onFrame: (frame: BufferedDepthFrame) => void;
   onFallback?: (time: number) => void;
   onError?: (error: unknown) => void;
+  enabled?: () => boolean;
   currentTime?: () => number;
   now?: () => number;
 }) {
@@ -29,26 +30,37 @@ export function createBufferedDepthReader(options: {
   let epoch = 0, busy = false, disposed = false, lastTime = -Infinity;
   let pending: number | null = null;
   let missSince: number | null = null;
+  const reset = () => { epoch++; pending = null; lastTime = -Infinity; missSince = null; };
+  const enabled = (time: number) => {
+    if (options.enabled?.() !== false) return true;
+    reset(); options.onFallback?.(time); return false;
+  };
   const softMiss = (time: number) => {
     missSince ??= now();
     if (now() - missSince >= MISS_TOLERANCE_MS) { missSince = null; options.onFallback?.(time); }
   };
   const submit = (time: number) => {
-    if (disposed || !Number.isFinite(time)) return;
+    if (disposed || !Number.isFinite(time) || !enabled(time)) return;
     // A hung read must not block forever; the busy read itself is never overlapped.
     if (busy) { pending = time; softMiss(time); return; }
     if (!options.cache.hasFrame(time)) { missSince = null; options.onFallback?.(time); return; }
     busy = true;
     const generation = epoch;
     void options.cache.frameAt(time).then(frame => {
-      if (disposed || generation !== epoch || time < lastTime) return;
-      if (!frame || (options.currentTime && Math.abs(options.currentTime() - time) > STALE_SECONDS)) {
+      if (disposed || generation !== epoch || !enabled(time)) return;
+      const currentTime = options.currentTime?.() ?? time;
+      // The cache floors source stamps, except that frame zero may lie just ahead of the request.
+      if (!frame || !Number.isFinite(frame.mediaTime) || frame.mediaTime < 0 || frame.mediaTime < lastTime
+        || !Number.isFinite(currentTime) || Math.abs(currentTime - frame.mediaTime) > STALE_SECONDS) {
         softMiss(time); return;
       }
-      lastTime = time; missSince = null;
-      options.onFrame({ ...frame, mediaTime: time });
+      lastTime = frame.mediaTime; missSince = null;
+      options.onFrame({ ...frame });
     }).catch(error => {
-      if (!disposed && generation === epoch) { options.onError?.(error); softMiss(time); }
+      if (!disposed && generation === epoch) {
+        options.onError?.(error);
+        if (enabled(time)) softMiss(time);
+      }
     }).finally(() => {
       busy = false;
       const latest = pending;
@@ -56,7 +68,6 @@ export function createBufferedDepthReader(options: {
       if (latest !== null && !disposed) submit(latest);
     });
   };
-  const reset = () => { epoch++; pending = null; lastTime = -Infinity; missSince = null; };
   return { submit, reset, dispose() { disposed = true; reset(); } };
 }
 
@@ -73,11 +84,17 @@ export function startBufferedVideoPlayback(video: HTMLVideoElement, cache: Depth
   /** False (ör. nesne ayırma açık, maske izi yok) iken okuma yok, canlı derinliğe dönülür. */
   enabled?: () => boolean;
 }): () => void {
-  const reader = createBufferedDepthReader({ cache, ...options, currentTime: () => video.currentTime });
   let active = true, callback: number | null = null, animation: number | null = null, previousTime = -Infinity;
+  const reader = createBufferedDepthReader({ cache, ...options, currentTime: () => video.currentTime,
+    enabled: () => {
+      const eligible = active && !video.seeking && video.readyState >= 2 && options.enabled?.() !== false;
+      if (!eligible) previousTime = -Infinity;
+      return eligible;
+    },
+  });
   const present = (time: number) => {
     if (!active || video.seeking || video.readyState < 2) return;
-    if (options.enabled && !options.enabled()) { previousTime = -Infinity; options.onFallback?.(time); return; }
+    if (options.enabled && !options.enabled()) { reader.reset(); previousTime = -Infinity; options.onFallback?.(time); return; }
     if (time < previousTime) reader.reset();
     if (time === previousTime) return;
     previousTime = time;
