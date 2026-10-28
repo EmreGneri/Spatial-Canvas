@@ -2,6 +2,20 @@ import assert from 'node:assert/strict';
 import { makeFlowTexture, panTexture } from '../src/engine/vision/lab.ts';
 import * as flow from '../src/engine/vision/liveDepthFlow.ts';
 
+// Zero-weight corners have no coverage requirement, even at integer samples.
+for (const invalid of [Infinity, -Infinity, NaN]) {
+  assert.equal(flow.sampleLiveFlowBilinear(new Float32Array([4, invalid, invalid, invalid]), 2, 2, 0, 0), 4,
+    'an exact covered pixel ignores invalid zero-weight neighbors');
+  assert.equal(flow.sampleLiveFlowBilinear(new Float32Array([2, 6, invalid, invalid]), 2, 2, 0.5, 0), 4,
+    'a horizontal sample ignores the zero-weight row');
+  assert.equal(flow.sampleLiveFlowBilinear(new Float32Array([2, invalid, 6, invalid]), 2, 2, 0, 0.5), 4,
+    'a vertical sample ignores the zero-weight column');
+  assert.ok(!Number.isFinite(flow.sampleLiveFlowBilinear(new Float32Array([2, invalid, 6, 8]), 2, 2, 0.5, 0.5)),
+    'any positively weighted invalid coverage rejects the sample');
+}
+assert.equal(flow.sampleLiveFlowBilinear(new Float32Array([2, 4, 6, 8]), 2, 2, 0.5, 0.5), 5);
+assert.equal(flow.sampleLiveFlowBilinear(new Float32Array([2, 4, 6, 8]), 2, 2, -1, 9), 6, 'coordinates retain clamping');
+
 assert.equal(typeof flow.propagateLiveDepth, 'function', 'live flow must generate depth between model frames');
 const width = 112, height = 80, n = width * height;
 const luminance = makeFlowTexture(width, height);
@@ -41,6 +55,22 @@ assert.equal(staticResult.coverage, 1, 'unchanged textureless RGB needs no optic
 assert.deepEqual(staticResult.depth, oldDepth);
 assert.deepEqual(staticResult.mask, flatMask);
 assert.notEqual(staticResult.mask, flatMask, 'mask history owns its buffer');
+assert.notEqual(staticResult.depth, oldDepth, 'unchanged depth owns its buffer');
+// Count real RGB reads so luminance work cannot creep back into the static path.
+let rgbReads = 0;
+const counted = frame => ({ ...frame, data: new Proxy(frame.data, { get(target, key) {
+  if (typeof key === 'string' && /^\d+$/.test(key) && Number(key) % 4 !== 3) rgbReads++;
+  return Reflect.get(target, key, target);
+} }) });
+const countedStatic = flow.propagateLiveDepth(oldDepth, counted(flatFrame), counted(quantizedFrame), width, height, flatMask);
+assert.equal(countedStatic.coverage, 1);
+assert.equal(rgbReads, n * 6, 'unchanged frames read each RGB channel once per frame without luminance conversion');
+const invalidStatic = flow.propagateLiveDepth(oldDepth.subarray(1), counted(flatFrame), counted(quantizedFrame), width, height);
+assert.equal(invalidStatic.coverage, 0, 'dimension validation runs before the unchanged fast path');
+assert.equal(rgbReads, n * 6, 'invalid dimensions do not inspect RGB pixels');
+countedStatic.depth[0] = 0; countedStatic.mask[0] = 0;
+assert.equal(oldDepth[0], Math.fround(0.35), 'static propagation cannot mutate the input depth');
+assert.equal(flatMask[0], Math.fround(0.7), 'static propagation cannot mutate the input mask');
 const drifted = Float32Array.from(target, v => v * 1.2 + 0.06);
 const aligned = flow.stabilizeLiveDepthPair(oldDepth, drifted, toFrame(luminance), nextFrame, width, height);
 let alignedError = 0;
@@ -123,4 +153,4 @@ assert.ok(due30.length >= 9 && due30.length <= 12, `30 fps -> ${due30.length} in
 assert.equal(flow.liveInterpolationEnabled(''), false, 'interpolation is opt-in (default live path stays as fast as before)');
 assert.equal(flow.liveInterpolationEnabled('?araKare=1'), true);
 assert.equal(flow.isLiveInterpolationDue(1 + 1 / 24, 1), false, 'the frame right after a model frame is skipped');
-console.log('OK live interpolation: motion, occlusion, scene cuts, affine alignment, single flight, resets');
+console.log('OK live interpolation: finite bilinear coverage, static RGB fast path, motion, occlusion, scene cuts, affine alignment, single flight, resets');

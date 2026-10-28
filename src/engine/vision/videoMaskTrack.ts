@@ -15,7 +15,7 @@ export const MASK_KEY_INTERVAL = 48;
  * maskesini, geri zincir bitiş maskesini taşır; kare j'de ağırlık j/(n-1).
  * Akışın güvenmediği pikseller bir önceki maskeyi yerinde korur: canlı
  * yayılımdaki gibi 0'a düşselerdi 24 karelik zincirde maske aşınırdı.
- * Sahne kesmesi görülürse o adımda maske değişmeden taşınır.
+ * Histories stop at detected cuts. Scenes without an endpoint anchor keep all pixels.
  */
 export async function propagateMaskInterval(
   frames: readonly LiveDepthFrame[], startMask: Float32Array, endMask: Float32Array | null,
@@ -26,20 +26,35 @@ export async function propagateMaskInterval(
   const n = frames.length;
   if (n < 1) return [];
   const zero = new Float32Array(width * height);
+  const cuts = new Set<number>();
   const step = (mask: Float32Array, from: number, to: number) => {
     const result = propagateLiveDepth(zero, frames[from], frames[to], width, height, mask);
-    if (result.sceneCut || !result.mask) return mask;
+    if (result.sceneCut) {
+      cuts.add(Math.max(from, to));
+      return new Float32Array(zero.length).fill(1);
+    }
+    if (!result.mask) return mask;
     const out = result.mask;
     for (let i = 0; i < out.length; i++) if (!result.confidence[i]) out[i] = mask[i];
     return out;
   };
   const forward = [startMask];
   for (let j = 1; j < n; j++) { forward.push(step(forward[j - 1], j - 1, j)); await pause(); }
-  if (!endMask || n < 2) return forward;
+  const firstCut = cuts.size ? Math.min(...cuts) : n;
+  const lastCut = cuts.size ? Math.max(...cuts) : 0;
+  if ((!endMask || n < 2) && !cuts.size) return forward;
   const backward: Float32Array[] = new Array(n);
-  backward[n - 1] = endMask;
-  for (let j = n - 2; j >= 0; j--) { backward[j] = step(backward[j + 1], j + 1, j); await pause(); }
+  if (endMask) {
+    backward[n - 1] = endMask;
+    for (let j = n - 2; j >= lastCut; j--) { backward[j] = step(backward[j + 1], j + 1, j); await pause(); }
+  }
   return forward.map((f, j) => {
+    if (cuts.size) {
+      if (j < firstCut) return new Float32Array(f);
+      if (endMask && j >= lastCut) return new Float32Array(backward[j]);
+      // No scene-local anchor: retain the scene rather than importing an unrelated subject.
+      return new Float32Array(zero.length).fill(1);
+    }
     const w = j / (n - 1), b = backward[j], out = new Float32Array(f.length);
     for (let i = 0; i < f.length; i++) out[i] = f[i] * (1 - w) + b[i] * w;
     return out;

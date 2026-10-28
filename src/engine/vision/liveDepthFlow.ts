@@ -65,9 +65,16 @@ function sample(data: Float32Array, w: number, h: number, x: number, y: number):
   x = Math.max(0, Math.min(w - 1, x)); y = Math.max(0, Math.min(h - 1, y));
   const x0 = Math.floor(x), y0 = Math.floor(y), x1 = Math.min(w - 1, x0 + 1), y1 = Math.min(h - 1, y0 + 1);
   const fx = x - x0, fy = y - y0;
-  return (data[y0 * w + x0] * (1 - fx) + data[y0 * w + x1] * fx) * (1 - fy)
-    + (data[y1 * w + x0] * (1 - fx) + data[y1 * w + x1] * fx) * fy;
+  // Zero-weight corners do not require coverage; Infinity * 0 would erase a valid sample.
+  const top = fx === 0 ? data[y0 * w + x0]
+    : data[y0 * w + x0] * (1 - fx) + data[y0 * w + x1] * fx;
+  if (!Number.isFinite(top)) return NaN;
+  if (fy === 0) return top;
+  const bottom = fx === 0 ? data[y1 * w + x0]
+    : data[y1 * w + x0] * (1 - fx) + data[y1 * w + x1] * fx;
+  return Number.isFinite(bottom) ? top * (1 - fy) + bottom * fy : NaN;
 }
+export { sample as sampleLiveFlowBilinear };
 /** Backward flow is evaluated at destination pixels; newly exposed pixels have zero confidence. */
 export function propagateLiveDepth(
   previousDepth: Float32Array, previousFrame: LiveDepthFrame | undefined,
@@ -80,16 +87,16 @@ export function propagateLiveDepth(
     || previousDepth.length !== width * height
     || previousFrame.data.length !== previousFrame.width * previousFrame.height * 4
     || currentFrame.data.length !== currentFrame.width * currentFrame.height * 4) return empty();
+  if (isLiveFrameUnchanged(previousFrame, currentFrame)) {
+    return { depth: new Float32Array(previousDepth), confidence: new Float32Array(previousDepth.length).fill(1),
+      coverage: 1, mask: previousMask?.length === previousDepth.length ? new Float32Array(previousMask) : undefined };
+  }
   const scale = Math.min(1, MAX_FLOW_EDGE / Math.max(width, height));
   const fw = Math.max(2, Math.round(width * scale)), fh = Math.max(2, Math.round(height * scale));
   const oldLuma = toLuminance(previousFrame, fw, fh), newLuma = toLuminance(currentFrame, fw, fh);
   let delta = 0;
   for (let i = 0; i < oldLuma.length; i++) delta += Math.abs(oldLuma[i] - newLuma[i]);
   if (delta / oldLuma.length > SCENE_CUT_MEAN_DELTA) return { ...empty(), sceneCut: true };
-  if (isLiveFrameUnchanged(previousFrame, currentFrame)) {
-    return { depth: new Float32Array(previousDepth), confidence: new Float32Array(previousDepth.length).fill(1),
-      coverage: 1, mask: previousMask?.length === previousDepth.length ? new Float32Array(previousMask) : undefined };
-  }
   const options = { maxCorners: 80, pyramidLevels: 2, windowRadius: 4 };
   const forward = computeOpticalFlow(oldLuma, newLuma, fw, fh, options).filter(p => p.status === 1);
   const backward = computeOpticalFlow(newLuma, oldLuma, fw, fh, options).filter(p => p.status === 1);
