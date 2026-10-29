@@ -32,7 +32,7 @@ import { KutuphanePaneli } from './ui/KutuphanePaneli';
 import { kaynakBelirle } from './ui/presetOnizleme';
 import { soganAcilisGerekliMi, sunumAcikMi } from './ui/sunumModu';
 import { serializeRenderState } from './shaders/renderPreset';
-import { AYIRMA_KAPATMA_ORANI, maskeKarari, maskeTekParcaOrani, videoAyirmaDurumu } from './ui/maskeKarari';
+import { AYIRMA_KAPATMA_ORANI, maskeKarari, maskeTekParcaOrani, videoAyirmaDurumu, videoMaskeIstegi } from './ui/maskeKarari';
 import { classifyCategory, type CategoryInput } from './ui/category';
 import { useDarEkran } from './ui/useDarEkran';
 import { ACILIS_BOY, ACILIS_EN, ACILIS_NOTU, acilisDerinligi, BINALAR, GOK, KURE, UFUK_Y, ZEMIN } from './ui/acilisSahnesi';
@@ -57,8 +57,8 @@ import * as THREE from 'three';
 import { type TrackedTarget, type TrackerModu } from './engine/vision/tracker';
 import { TrackerClient } from './engine/vision/trackerClient';
 import {
-  isitLiveModel, kutleMerkezi, liveDepthKullanilabilir, liveGrabSize, maskeBayatMi, maskeKacirmaOrani,
-  maskeKaydir, maskeYenilenmeliMi, startLiveDepth, ustPercentilEsigi, type KutleMerkezi, type LiveDepthResult,
+  isitLiveModel, kutleMerkezi, liveDepthKullanilabilir, liveGrabSize, maskeBayatMi,
+  maskeKaydir, startLiveDepth, ustPercentilEsigi, type KutleMerkezi, type LiveDepthResult,
 } from './engine/vision/liveDepth';
 import { yetenekRaporu } from './engine/vision/yetenek';
 import {
@@ -90,12 +90,10 @@ const LUMINANCE_SMOOTHING_ALPHA = 0.12;
  * hareketli bölge anında takip eder. |Δ| ≥ ~0.15 → tam takip.
  */
 const LUMINANCE_MOTION_GAIN = 6;
-/** A new segmentation pass blocks the shared GPU queue, so refresh only on drift. */
-const VIDEO_MASK_MIN_REFRESH_MS = 15_000;
 /**
  * Gerçek tazelemeler ARASINDA maskenin kaydırılabileceği toplam yol (kadraj
  * oranı) — referans yoldaki `MASKE_MAX_KAYMA`. Öteleme dışı değişimler birikir;
- * sınırdan sonra kaydırma durur, kaçırma oranı tazelemeyi tetikler.
+ * sınırdan sonra kaydırma durur, periyodik tazeleme (VIDEO_MASKE_TAZELEME_MS) düzeltir.
  */
 const VIDEO_MASK_MAX_SHIFT = 0.25;
 /** Video hazırlanırken canlı V2 çıkarımları arası en az süre (GPU kuyruğu paylaşılır). */
@@ -981,7 +979,6 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
     let maskErrors = 0;
     let invalidMasks = 0;
     let maskNextRetryAt = 0;
-    let maskBaseline: number | null = null;
     // Kaydırma kolu (referans yol · maskeBayatsaTazele): temel merkez ve birikmiş yol.
     let shiftBase: KutleMerkezi | null = null;
     let shiftTotal = 0;
@@ -1044,7 +1041,6 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
       maskRevision++;
       if (lastDepth) lastDepth = { ...lastDepth, flowMask: undefined };
       videoMask = null;
-      maskBaseline = null;
       maskUnavailable = false;
       maskErrors = 0;
       invalidMasks = 0;
@@ -1096,7 +1092,6 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
           // Referans yoldaki kapı (`maskeGecerliMi`): boş ya da %92'den dolu maske kullanılmaz.
           if (foreground === 0 || coverage > 0.92) {
             videoMask = null;
-            maskBaseline = null;
             invalidMasks++;
             maskNextRetryAt = performance.now() + Math.min(60_000, 15_000 * 2 ** (invalidMasks - 1));
             say(`video maskesi güvenilir değil (%${(coverage * 100).toFixed(0)} ön plan); sonra yeniden denenecek`);
@@ -1104,7 +1099,6 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
           }
           videoMask = { data: result.data, width: result.width, height: result.height,
             mediaTime: maskMediaTime, colorFrame: maskColorFrame, job };
-          maskBaseline = null;
           shiftBase = null;
           shiftTotal = 0;
           invalidMasks = 0;
@@ -1128,7 +1122,6 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
           if (iptal || revision !== maskRevision) return;
           say(`video maskesi atlandı: ${err instanceof Error ? err.message : String(err)}`);
           videoMask = null;
-          maskBaseline = null;
           maskErrors++;
           maskUnavailable = maskErrors >= 3;
           maskNextRetryAt = performance.now() + 30_000;
@@ -1180,16 +1173,15 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
             applyDepth(d);
           }
           const mask = segmentRef.current ? videoMask : null;
-          if (!videoMask && !segmentKapaliRef.current && !pausedPreparedMask(d.mediaTime)) {
-            captureMask('first');
-          } else if (mask && !maskBusy) {
+          // First mask, retry after a rejected one, and the periodic refresh (also while
+          // separation is off, so a later larger mask can switch it on): maskeKarari.ts.
+          const istek = videoMaskeIstegi({ maskeVar: !!videoMask, kullaniciKapatti: segmentKapaliRef.current,
+            duraklatildi: video.paused, hazirMaskeVar: !!pausedPreparedMask(d.mediaTime),
+            ayirmaAcik: segmentRef.current, gecenMs: performance.now() - lastMaskAttempt });
+          if (istek) captureMask(istek);
+          else if (videoMask) videoStats.maskGate.interval++;
+          if (mask && !maskBusy) {
             const threshold = ustPercentilEsigi(d.data, 25);
-            const miss = maskeKacirmaOrani(d.data, d.width, d.height,
-              mask.data, mask.width, mask.height, threshold);
-            if (maskBaseline === null) maskBaseline = miss;
-            else if (!maskeYenilenmeliMi(miss, maskBaseline)) videoStats.maskGate.missOk++;
-            else if (performance.now() - lastMaskAttempt < VIDEO_MASK_MIN_REFRESH_MS) videoStats.maskGate.interval++;
-            else captureMask('miss');
             // KAYDIRMA KOLU (~1 ms, referans yol): yakın kütlenin merkezi maske
             // kurulduğundan beri kaydıysa maske o kadar ötelenir; RMBG/IS-Net koşmaz.
             const now = kutleMerkezi(d.data, d.width, d.height, threshold);
@@ -1203,7 +1195,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
                 shiftTotal += path;
               }
             }
-          } else if (videoMask) videoStats.maskGate.separationOff++;
+          }
           sayac++;
           if (video.currentTime >= d.mediaTime) {
             ageSamples.push((video.currentTime - d.mediaTime) * 1000);
@@ -1261,7 +1253,6 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
             if (reason !== 'loop' && !cutTooSoon) {
               maskRevision++;
               videoMask = null;
-              maskBaseline = null;
               shiftBase = null;
               shiftTotal = 0;
               maskUnavailable = false;

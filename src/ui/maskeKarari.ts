@@ -41,13 +41,39 @@ export const MASKE_UST_ESIK = 0.92;
  * maskeler bacak/gövde parçası. %15 açma eşiği karelerin %67'sinde kişi
  * seçen maskeyi dışarıda bırakıyordu (%12–13'lük iki dansçı dahil) → açma %8
  * (karelerin %73'ü), kapatma parça sınırının hemen üstünde %4.
- * BİLİNEN SINIR: %4–8'lik geçerli ama küçük İLK maske ayırmayı açmaz;
- * maske yeniden istenmedikçe kapalı kalır. Açma
+ * BİLİNEN SINIR: %4–8'lik geçerli ama küçük İLK maske ayırmayı açmaz; sonraki
+ * periyodik tazeleme (VIDEO_MASKE_TAZELEME_MS) daha büyük maskeyle açar. Açma
  * eşiği %8 altına indirilmedi: yukarıdaki sentetik "kadrajı yuttu" maskesi
  * %4,7 idi, tek klipte parça/kişi aralığı (%3,7 / %4,5) çok dar.
  */
 export const AYIRMA_ACMA_ORANI = 0.08;
 export const AYIRMA_KAPATMA_ORANI = 0.04;
+/**
+ * Canlı video maskesinin tazeleme periyodu — ayırma açık da kapalı da
+ * (docs/benchmarks/video-mask-refresh.md). Eski kapı (kaçırma oranı tabanı
+ * aşarsa, en erken 15 sn) personal clip A'da hiç tetiklenmedi; küçük ilk maskeyle
+ * ayırma kapalıysa hiç yeni maske istenmiyordu. 15/8/4 sn denendi.
+ */
+export const VIDEO_MASKE_TAZELEME_MS = 8000;
+
+/**
+ * Bir derinlik karesinde maske işi istenmeli mi (saf; yakalamayı App yapar,
+ * uçuşta iş varsa ya da hata geri çekilmesi sürüyorsa yine o reddeder).
+ * - kullanıcı ayırmayı kapattıysa: hiç istenmez (mandal);
+ * - maske yoksa (ilk kare ya da reddedilen maskeden sonra): 'ilk';
+ * - maske varsa: duraklatılmamışsa her periyotta bir; ayırma kapalıyken de
+ *   ('ayirma-kapali'), ki küçük ilk maskeden sonraki büyük maske ayırmayı açsın.
+ */
+export function videoMaskeIstegi(d: {
+  maskeVar: boolean; kullaniciKapatti: boolean; duraklatildi: boolean;
+  hazirMaskeVar: boolean; ayirmaAcik: boolean; gecenMs: number;
+}): 'ilk' | 'tazele' | 'ayirma-kapali' | null {
+  if (d.kullaniciKapatti) return null;
+  if (!d.maskeVar) return d.hazirMaskeVar ? null : 'ilk';
+  if (d.duraklatildi || d.gecenMs < VIDEO_MASKE_TAZELEME_MS) return null;
+  return d.ayirmaAcik ? 'tazele' : 'ayirma-kapali';
+}
+
 /** Histerezisli sonraki ayırma durumu (kullanıcı-kapalı mandalı çağıranda). */
 export function videoAyirmaDurumu(fgOran: number, acik: boolean): boolean {
   return acik ? fgOran >= AYIRMA_KAPATMA_ORANI : fgOran >= AYIRMA_ACMA_ORANI;

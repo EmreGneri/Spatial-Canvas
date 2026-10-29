@@ -8,8 +8,8 @@ export const videoStats = {
   advanceLast: null as { field: LiveFlowField; k: number; target: number; data: Float32Array } | null,
   /** Live video mask jobs: request -> compute done -> first render with it (null = not rendered). */
   maskLog: [] as VideoMaskJob[],
-  /** Why a depth frame with a mask did NOT request a refresh. */
-  maskGate: { separationOff: 0, missOk: 0, interval: 0, busy: 0 },
+  /** Why a depth frame with a mask did NOT start a refresh (period not elapsed / job in flight). */
+  maskGate: { interval: 0, busy: 0 },
 };
 
 export type VideoMaskJob = {
