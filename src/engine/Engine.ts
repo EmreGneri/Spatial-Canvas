@@ -17,6 +17,7 @@ import {
   POSITION_TEXTURE_SIZE,
 } from './buffers';
 import { createPointsCloud } from './points';
+import { createVideoOcclusionMaterial, videoOcclusionMode, VIDEO_OCCLUSION_DEFAULTS, type VideoOcclusionMode, type VideoOcclusionTuning } from './videoOcclusion.ts';
 import { SplatObject, fillGaussiansFromPointCloud, uploadGaussianData } from './splats';
 import type { GaussianBufferData } from '../shaders/splatFixture';
 import { splatOpacityGate, type SplatSortMode } from '../shaders/splatSort';
@@ -165,6 +166,11 @@ export class Engine {
   private pointsMaterial: THREE.Material;
   private currentDepthTexture: THREE.DataTexture | null = null;
   private composer: EffectComposer;
+  /** ?videoOrtme experiment (videoOcclusion.ts); 0 adds nothing to the scene. */
+  private videoOcclusion: VideoOcclusionMode = typeof location === 'undefined' ? 0 : videoOcclusionMode(location.search);
+  private videoOcclusionTuning: VideoOcclusionTuning = { ...VIDEO_OCCLUSION_DEFAULTS };
+  private occlusion: { points: THREE.Points; source: THREE.Material; key: string } | null = null;
+  private occlusionIgnoredLogged = '';
   private feedbackPass: FeedbackPass;
   private chromaticPass: ChromaticPass;
   private grainPass: GrainPass;
@@ -532,6 +538,7 @@ export class Engine {
           this.splatObject.mesh.material as THREE.Material,
         );
       }
+      this.syncVideoOcclusion();
       this.tickPasses(time / 1000);
       if (this.xrSunuyor) {
         // XR'DA POST-FX YOK — ve bu bir eksiklik değil, zincirin yapısı.
@@ -551,6 +558,49 @@ export class Engine {
       this.frameTap?.(this.renderer.domElement);
       this.countFps();
     });
+  }
+
+  /** Experiment hook (bench/verify): ?videoOrtme mode and pre-pass tuning at runtime. */
+  setVideoOcclusion(mode: VideoOcclusionMode, tuning: Partial<VideoOcclusionTuning> = {}) {
+    this.videoOcclusion = mode;
+    this.videoOcclusionTuning = { ...this.videoOcclusionTuning, ...tuning };
+    this.syncVideoOcclusion();
+  }
+
+  /**
+   * Pre-pass for live video in the point-cloud draw mode only. It is a child
+   * of `points`, so it follows its transform and visibility. Other modes and
+   * layer-visibility edits (whose shader patch the pre-pass lacks) skip it.
+   */
+  private syncVideoOcclusion() {
+    const mode = this.videoOcclusion ?? 0;
+    const main = this.pointsMaterial as THREE.ShaderMaterial;
+    const v = this.layerVisible;
+    const layerEdit = v.x !== 1 || v.y !== 1 || v.z !== 1;
+    const honoured = main.name === 'point-cloud' && !layerEdit;
+    if (mode && this.videoTexture && !honoured && this.occlusionIgnoredLogged !== this.renderModeName) {
+      this.occlusionIgnoredLogged = this.renderModeName;
+      console.info(`videoOrtme=${mode}: ignored in draw mode '${this.renderModeName}'${layerEdit ? ' (layer edit)' : ''}; only the point-cloud mode honours it`);
+    }
+    if (!mode || !this.videoTexture || !honoured) {
+      if (this.occlusion) this.occlusion.points.visible = false;
+      return;
+    }
+    const { bias, core } = this.videoOcclusionTuning;
+    const key = `${mode}:${bias}:${core}`;
+    if (!this.occlusion) {
+      const points = new THREE.Points(this.points.geometry);
+      points.frustumCulled = false;
+      this.points.add(points);
+      this.occlusion = { points, source: main, key: '' };
+    }
+    if (this.occlusion.source !== main || this.occlusion.key !== key) {
+      (this.occlusion.points.material as THREE.Material).dispose();
+      this.occlusion.points.material = createVideoOcclusionMaterial(main.uniforms, mode, { bias, core });
+      this.occlusion.source = main;
+      this.occlusion.key = key;
+    }
+    this.occlusion.points.visible = true;
   }
 
   /** Leave GPU time to WebGPU training while its view covers this canvas. */
@@ -2353,6 +2403,7 @@ depth,
     this.videoTexture?.dispose();
 this.simulation.dispose();
     this.points.geometry.dispose();
+    (this.occlusion?.points.material as THREE.Material | undefined)?.dispose();
     this.splatObject?.dispose();
     this.trajectoryOverlay?.dispose();
     this.solidMesh?.geometry.dispose();
