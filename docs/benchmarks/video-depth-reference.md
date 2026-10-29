@@ -20,13 +20,27 @@ Its only flaw is flicker. Reference: `C:\Users\Emre\Desktop\reference build`
 
 Kept v2-only: GPU grab canvas (see match below), `fillSoftMaskInterior` (p99 diff 0.0025 → 0.0052
 on a real IS-Net mask, relief +1.4%; prevents the soft-mask face inversion), scene-cut/gap reset
-(only fires on cuts), warmup, sidecar opt-in rule (same model either way). the reference pipeline's mask model
-(RMBG-1.4) is non-commercial; v2 keeps IS-Net/BiRefNet, so masks differ in production. The bench
-feeds both pipelines the same mask.
+(only fires on cuts), warmup, sidecar opt-in rule (same model either way).
+
+## Scope: depth parity is measured, mask parity is NOT
+
+- **Depth parity** (below) holds only when both pipelines are fed the same mask. The bench does that.
+- **Mask parity is unverified.** The reference pipeline segments with `briaai/RMBG-1.4`
+  (`src/engine/reconstruction/segmentation.ts:54`, `const MODEL = 'briaai/RMBG-1.4'`; sidecar
+  `sidecar/server.py:54`, `briaai/RMBG-1.4/onnx/model_fp16.onnx`; the video path calls
+  `segmentForeground` at `src/App.tsx:635`). RMBG-1.4 is non-commercial. Production v2 uses IS-Net
+  (browser-only) or BiRefNet + DAViD (sidecar) in `src/engine/vision/liveMask.ts`, so production masks
+  differ from the reference's and nothing here says by how much.
+- `docs/benchmarks/maske-olcumu.md` (DAVIS-2017 ground truth) measures mask accuracy on a different
+  dataset. It is not evidence that v2 masks look like the reference's.
+- Paths above are relative to `C:\Users\Emre\Desktop\the reference project`; the
+  `C:\Users\Emre\Desktop\reference build` path named at the top does not exist on this machine.
 
 ## reference pipeline vs v2: same frames
 
-`node scripts/bench-video-depth-reference.mjs` — both `estimateDepthLive` on one seeked frame, one mask per
+`node scripts/bench-video-depth-reference.mjs` — NOTE: this script does not exist in the repo
+(`scripts/` has no `bench-video-depth-reference.mjs`); the numbers below cannot be regenerated from
+a committed script. Both `estimateDepthLive` on one seeked frame, one mask per
 clip (v2 chain, reference pipeline gate). Cuts: nyc 18–23 s (stride 3, 50 frames), pixabay-forest-29721
 0–5 s (stride 3), forest-3679072 0–5 s (24 fps, stride 2, 60 frames), input 252.
 Mask: nyc 0% (IS-Net found none on the first frame), pixabay 0%, forest-3679072 10% (used).
@@ -94,4 +108,7 @@ diff×10), `app-*.png` app screenshots, JSON per run.
 - Auto object separation (reference pipeline behaviour) hides everything outside the mask. IS-Net gives
   small masks on non-portrait clips (nyc 3–7%, forest 10–13%), so those show only a blob/trunk.
   The toggle turns it off for that source (then depth runs maskless, full frame).
+- Mask parity with the reference is unmeasured. A measurement would need the same clips run through
+  both mask models (RMBG-1.4 vs v2's IS-Net / BiRefNet+DAViD), compared per frame with IoU and an
+  edge distance (e.g. boundary distance between the two silhouettes).
 - Renderer is v2's (full-frame projection), not the reference pipeline's; only depth is matched.
