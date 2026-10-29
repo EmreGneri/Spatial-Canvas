@@ -12,6 +12,7 @@ import { shouldPresentLiveDepth } from './engine/vision/liveDepthFlow';
 import { estimatePreparationSeconds, prepareVideoDepth, videoPreparationPolicy, type VideoDepthHandle, type VideoDepthProgress, type VideoMaskCapture } from './engine/vision/videoPrecompute';
 import { startBufferedVideoPlayback } from './engine/vision/bufferedVideoPlayback';
 import { logMaskJob, videoStats, type VideoMaskJob } from './engine/vision/videoStats';
+import { previewNextAt } from './engine/vision/previewBudget';
 import { Engine } from './engine';
 import { VIDEO_EDGE_CLEANUP_DEFAULT } from './engine/Engine';
 import { ControlPanel } from './ui/ControlPanel';
@@ -824,6 +825,8 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
     let prev: Float32Array | null = null;
     // rVFC koruması: callback içinde iş tekrar tetiklenirse atla (birikme yok).
     let scheduled = false;
+    // Main-thread budget: the preview must not starve the depth model it is waiting for.
+    let nextAt = 0;
 
     const processFrame = () => {
       scheduled = false;
@@ -832,6 +835,8 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
       // Video ilk kareyi çözmeden drawImage boş/hatalı çizer.
       if (source instanceof HTMLVideoElement && source.readyState < 2) return;
       const t0 = performance.now();
+      // Only while a live model is starting; the no-WebGPU fallback keeps every frame.
+      if (liveDepthStopRef.current && t0 < nextAt) return;
       const hm = luminanceHeightMap(source, 256, {
         // GÜN 6/C: işaretli mikro rölyef + netlik (defocus) ipucu + ölçülü
         // merkez vurgusu. Netlik ipucu asıl yapıyı taşır (özne net → yakın),
@@ -858,6 +863,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
         prev = new Float32Array(data); // ilk kare / yeni boyut: ham + kopya
       }
       engineRef.current!.setDepth(data, hm.width, hm.height);
+      nextAt = previewNextAt(t0, performance.now());
       if (performance.now() - lastLog > 2000) {
         lastLog = performance.now();
         say(`luminance · ${label} · ${Math.round(performance.now() - t0)} ms`);
