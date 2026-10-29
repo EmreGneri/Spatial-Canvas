@@ -65,7 +65,7 @@ if (process.argv.includes('--selftest')) {
 
 const args = process.argv.slice(2);
 const opt = (name, fallback) => { const i = args.indexOf(name); return i >= 0 ? args.splice(i, 2)[1] : fallback; };
-const runs = Number(opt('--runs', 3)), seconds = Number(opt('--seconds', 20)), MAX_CPU = Number(opt('--max-cpu', 40));
+const runs = Number(opt('--runs', 3)), seconds = Number(opt('--seconds', 20)), MAX_CPU = Number(opt('--max-cpu', 40)), MAX_GPU = Number(opt('--max-gpu', 100));
 const phases = opt('--phases', 'live,masks,compose').split(',');
 const cellNames = opt('--cells', 'ours,reference').split(',');
 const out = opt('--out', 'reports/video-vs-reference-dev.json');
@@ -73,7 +73,7 @@ const crops = JSON.parse(opt('--crops', '[]')); // compose: [{f, crop:[x,y,w,h],
 const [clip, referenceRoot] = args;
 assert.ok(clip && referenceRoot, 'Pass <clip> <reference-root>');
 const OURS = process.cwd(), REFERENCE = resolve(referenceRoot);
-const IMG_T = 12.0; // paused frame for the render screenshots
+const IMG_T = Number(opt('--img-t', 12.0)); // paused frame for the render screenshots
 mkdirSync('reports/vvp', { recursive: true });
 const report = existsSync(out) ? JSON.parse(readFileSync(out, 'utf8')) : {};
 const save = () => writeFileSync(out, JSON.stringify(report, null, 2));
@@ -90,9 +90,9 @@ async function quietGate() {
   const started = Date.now();
   for (;;) {
     const comp = competitors(), cpu = await cpuBusy(3000), gpu = gpuUtil();
-    if (!comp.length && cpu < MAX_CPU) return { cpuBeforePct: cpu, gpuBeforePct: gpu, waitedS: Math.round((Date.now() - started) / 1000) };
+    if (!comp.length && cpu < MAX_CPU && !(gpu > MAX_GPU)) return { cpuBeforePct: cpu, gpuBeforePct: gpu, waitedS: Math.round((Date.now() - started) / 1000) };
     if (Date.now() - started > 20 * 60_000) return { cpuBeforePct: cpu, gpuBeforePct: gpu, waitedS: Math.round((Date.now() - started) / 1000), gateTimedOut: true, competitors: comp };
-    console.log(`busy (cpu ${cpu} %, ${comp.length} competing node procs) — waiting 60 s`);
+    console.log(`busy (cpu ${cpu} %, gpu ${gpu} %, ${comp.length} competing node procs) — waiting 60 s`);
     await new Promise(r => setTimeout(r, 60_000));
   }
 }
@@ -141,7 +141,8 @@ const measureWindow = async ({ seconds }) => {
   const L = window.__bench, video = document.querySelector('[aria-label="Kaynak video önizlemesi"] video');
   const f0 = L.frames.length, d0 = L.depth.length, m0 = L.masks.length, start = performance.now(), samples = [], labels = [];
   await new Promise(done => { const iv = setInterval(() => { const now = performance.now();
-    samples.push({ now, t: L.presented, ct: video.currentTime, mask: L.masks.length - 1, paused: video.paused, vis: document.visibilityState, focus: document.hasFocus() });
+    samples.push({ now, t: L.presented, ct: video.currentTime, mask: L.masks.length - 1, paused: video.paused, vis: document.visibilityState, focus: document.hasFocus(),
+      sep: !!window.__engine?.objectSeparation });
     if (samples.length % 2) labels.push(document.querySelector('[aria-label="Canlı derinlik ölçümü"]')?.textContent ?? '');
     if (now - start >= seconds * 1000) { clearInterval(iv); done(); } }, 500); });
   const end = performance.now();
@@ -174,8 +175,10 @@ const referencePass = async ({ app, times }) => {
 
 async function liveRun(cell, run, takeImages) {
   const load = await quietGate();
-  const root = cell.app === 'reference' ? REFERENCE : OURS;
-  const session = await tarayiciOturumu({ chrome: true, basli: true, vite: { root, server: { host: '127.0.0.1', port: 0, hmr: false, watch: null } } });
+  const root = cell.root ?? (cell.app === 'reference' ? REFERENCE : OURS);
+  // A variant snapshot (junctioned node_modules) gets its own deps cache: never rewrite the shared one.
+  const session = await tarayiciOturumu({ chrome: true, basli: true, vite: { root, ...(cell.root && { cacheDir: resolve(cell.root, '.vite') }),
+    server: { host: '127.0.0.1', port: 0, hmr: false, watch: null, ...(cell.root && { fs: { allow: [cell.root, OURS] } }) } } });
   const page = session.page, errors = [], remote = [], sidecar = [];
   try {
     page.setDefaultTimeout(150_000);
@@ -245,10 +248,22 @@ async function liveRun(cell, run, takeImages) {
       captures: captures.map(c => [Math.round(c[0] - B.t0), c[1], c[2], c[3]]),
       sampleTimes: w.samples.map(x => [Math.round(x.now - B.t0), x.t, x.ct, x.mask]), hiddenSamples: w.samples.filter(x => x.vis !== 'visible').length, unfocusedSamples: w.samples.filter(x => !x.focus).length };
     row.appLogTail = await page.evaluate(() => document.body.innerText.split('\n').filter(l => /canlı derinlik|mask|maske/i.test(l)).slice(-12));
-    row.videoStats = await page.evaluate(() => window.__videoStats ?? null);
+    row.videoStats = await page.evaluate(() => { const s = window.__videoStats; return s ? { ...s, advanceLast: undefined } : null; });
+    // Ours only (App instrumentation): each mask job request -> compute done -> first render, and why refreshes were not asked.
+    row.mask.separationOnFraction = w.samples.filter(s => s.sep).length / w.samples.length;
+    if (row.videoStats?.maskLog) {
+      const jobs = row.videoStats.maskLog.map(j => ({ ...j, atMs: Math.round(j.startAt - B.t0), computeMs: j.doneAt && j.doneAt - j.startAt,
+        doneToAppliedMs: j.appliedAt && j.doneAt && j.appliedAt - j.doneAt, inWindow: j.startAt >= w.start && j.startAt <= w.end }));
+      row.maskJobs = jobs;
+      row.mask.jobsPerS = jobs.filter(j => j.inWindow && !j.dropped).length / dur;
+      row.mask.computeMs = stats(jobs.map(j => j.computeMs).filter(x => x !== null));
+      row.mask.doneToAppliedMs = stats(jobs.map(j => j.doneToAppliedMs).filter(x => x !== null));
+      row.mask.gate = row.videoStats.maskGate;
+    }
     if (takeImages) row.images = await screenshots(page, cell.name).catch(e => ({ failed: e.message }));
     console.log(cell.name, run, JSON.stringify({ load: row.load, startup: row.startup, fps: row.playback.fpsP50, low: row.playback.fps1pctLow, p99: row.playback.frameP99Ms,
-      long: row.playback.longOver25PerMin, depthHz: row.playback.depthUpdateHz, inf: row.playback.labelInferenceMs.p50, mask: { hz: row.mask.refreshHz, age: row.mask.ageMs.p50, iou: row.mask.iouVsExactFrame.p50 } }));
+      long: row.playback.longOver25PerMin, depthHz: row.playback.depthUpdateHz, inf: row.playback.labelInferenceMs.p50, mask: { hz: row.mask.refreshHz, age: row.mask.ageMs.p50, ageP95: row.mask.ageMs.p95,
+        iou: row.mask.iouVsExactFrame.p50, sepOn: row.mask.separationOnFraction, jobsPerS: row.mask.jobsPerS, computeMs: row.mask.computeMs?.p50, gate: row.mask.gate } }));
     return row;
   } catch (e) {
     const state = await page.evaluate(() => { const L = window.__bench; return L && { t0: L.t0, firstModel: L.firstModel, firstMasked: L.firstMasked, depth: L.depth.slice(-8), masks: L.masks.length,
@@ -266,16 +281,21 @@ async function screenshots(page, name) {
   await page.waitForFunction(t => { const L = window.__bench; const cap = L.draws.find(d => Math.abs(d[3] - t) < .02);
     return cap && ((L.masks.length && L.masks.at(-1).now > cap[0]) || performance.now() - cap[0] > 8000); }, IMG_T, { timeout: 90_000 });
   const maskInstalled = await page.evaluate(t => { const L = window.__bench; const cap = L.draws.find(d => Math.abs(d[3] - t) < .02); return !!(L.masks.length && L.masks.at(-1).now > cap[0]); }, IMG_T);
+  // Ours: the job on this frame must have finished (applied, or rejected with separation off).
+  const job = await page.waitForFunction(t => { const j = window.__videoStats?.maskLog?.findLast(j => Math.abs(j.mediaTime - t) < .05);
+    return !window.__videoStats?.maskLog || (j && j.doneAt !== null && (j.appliedAt !== null || j.separation === false) && { coverage: j.coverage, separation: j.separation }); }, IMG_T, { timeout: 30_000 })
+    .then(h => h.jsonValue(), () => null);
   await page.mouse.move(0, 0);
+  await page.evaluate(() => window.__engine.controls?.reset()); // same default camera in every cell
   await page.evaluate(() => new Promise(r => { let n = 0; const f = () => ++n >= 60 ? r() : requestAnimationFrame(f); requestAnimationFrame(f); }));
   const canvas = await page.evaluateHandle(() => window.__engine.renderer.domElement);
   const render = `reports/vvp/${name}-render.png`; await canvas.asElement().screenshot({ path: render });
-  const maskPng = await page.evaluate(() => { const { data, w, h } = window.__bench.lastMask; const c = document.createElement('canvas'); c.width = w; c.height = h;
+  const maskPng = await page.evaluate(() => { if (!window.__bench.lastMask) return ''; const { data, w, h } = window.__bench.lastMask; const c = document.createElement('canvas'); c.width = w; c.height = h;
     const im = c.getContext('2d').createImageData(w, h); for (let i = 0; i < w * h; i++) { const v = Math.round(255 * data[i]); im.data.set([v, v, v, 255], i * 4); }
     c.getContext('2d').putImageData(im, 0, 0); return c.toDataURL('image/png').split(',')[1]; });
   const mask = `reports/vvp/${name}-applied-mask.png`; writeFileSync(mask, Buffer.from(maskPng, 'base64'));
   const camera = await page.evaluate(() => { const c = window.__engine.camera; return c && [c.position.x, c.position.y, c.position.z, c.fov]; });
-  return { render, mask, maskInstalled, camera, t: IMG_T };
+  return { render, mask, maskInstalled, job, separation: await page.evaluate(() => !!window.__engine.objectSeparation), camera, t: IMG_T };
 }
 
 // ---------- task d: production masks on identical frames ----------
@@ -283,7 +303,7 @@ const FD = 3 / 89, frameT = i => (i + 0.5) * FD;
 const SPARSE = Array.from({ length: 12 }, (_, i) => Math.round((1.5 + i * 2.8) / FD));
 const BURST = Array.from({ length: 10 }, (_, k) => Math.round(9.0 / FD) + k);
 const RW = 540, RH = 960;
-const maskPage = async ({ which, sidecar, frames, RW, RH, compose }) => {
+const maskPage = async ({ which, sidecar, frames, RW, RH, compose, grid }) => {
   const blob = await (await fetch('/__clip')).blob(); const v = document.createElement('video'); v.muted = true; v.src = URL.createObjectURL(blob);
   await new Promise((y, n) => { v.onloadeddata = y; v.onerror = n; });
   const seek = async t => { const s = new Promise(y => v.addEventListener('seeked', y, { once: true })); v.currentTime = t; await s; };
@@ -291,6 +311,20 @@ const maskPage = async ({ which, sidecar, frames, RW, RH, compose }) => {
     const sx = (x + .5) * w / RW - .5, sy = (y + .5) * h / RH - .5, x0 = Math.max(0, Math.floor(sx)), y0 = Math.max(0, Math.floor(sy)), x1 = Math.min(w - 1, x0 + 1), y1 = Math.min(h - 1, y0 + 1), fx = Math.max(0, sx - x0), fy = Math.max(0, sy - y0);
     const val = (m[y0 * w + x0] * (1 - fx) + m[y0 * w + x1] * fx) * (1 - fy) + (m[y1 * w + x0] * (1 - fx) + m[y1 * w + x1] * fx) * fy;
     s += String.fromCharCode(Math.max(0, Math.min(255, Math.round(val * 255)))); } return btoa(s); };
+  if (grid) { // one tile per frame: outside-mask dark grey, label on top
+    const tw = RW / 3, th = RH / 3, cols = Math.min(grid.length, 6), c = document.createElement('canvas');
+    c.width = tw * cols; c.height = (th + 20) * Math.ceil(grid.length / cols); const g = c.getContext('2d');
+    g.fillStyle = '#111'; g.fillRect(0, 0, c.width, c.height);
+    const tmp = document.createElement('canvas'); tmp.width = tw; tmp.height = th; const tg = tmp.getContext('2d', { willReadFrequently: true });
+    for (const [k, cell] of grid.entries()) { await seek(cell.t); tg.drawImage(v, 0, 0, tw, th);
+      const im = tg.getImageData(0, 0, tw, th), bin = atob(cell.b64);
+      for (let y = 0; y < th; y++) for (let x = 0; x < tw; x++) { const a = bin.charCodeAt(Math.floor(y * RH / th) * RW + Math.floor(x * RW / tw)) / 255, i = (y * tw + x) * 4;
+        const grey = (im.data[i] + im.data[i + 1] + im.data[i + 2]) / 3 * .25; // outside mask: dark grey
+        for (let ch = 0; ch < 3; ch++) im.data[i + ch] = im.data[i + ch] * a + grey * (1 - a); }
+      const x0 = (k % cols) * tw, y0 = Math.floor(k / cols) * (th + 20);
+      g.putImageData(im, x0, y0 + 20); g.fillStyle = '#eee'; g.font = '13px sans-serif'; g.fillText(cell.label, x0 + 4, y0 + 15); }
+    return c.toDataURL('image/png').split(',')[1];
+  }
   if (compose) { // compose panels in-page: frame | mask cutouts, plus crops
     const out = [];
     for (const p of compose) { await seek(p.t);
@@ -325,7 +359,8 @@ const maskPage = async ({ which, sidecar, frames, RW, RH, compose }) => {
     const c = document.createElement('canvas'); const s = which === 'rmbg' ? 1 : Math.min(1, 640 / Math.max(v.videoWidth, v.videoHeight));
     c.width = Math.round(v.videoWidth * s); c.height = Math.round(v.videoHeight * s); c.getContext('2d', { willReadFrequently: true }).drawImage(v, 0, 0, c.width, c.height);
     const t0 = performance.now(); const r = await run(c); const ms = performance.now() - t0;
-    if (i >= 0) res.push({ t, ms, model: r.model, native: [r.width, r.height], b64: toB64(r.data, r.width, r.height) });
+    let fg = 0; for (const x of r.data) fg += x >= 0.5; // the app's own coverage (native grid, >= 0.5)
+    if (i >= 0) res.push({ t, ms, model: r.model, native: [r.width, r.height], cov: fg / r.data.length, b64: toB64(r.data, r.width, r.height) });
   }
   return res;
 };
@@ -395,10 +430,13 @@ async function profileRun(cell) {
 // ---------- main ----------
 const CELLS = { ours: { name: 'ours', app: 'ours' }, reference: { name: 'reference', app: 'reference' },
   'ours-sidecar': { name: 'ours-sidecar', app: 'ours', sidecar: true } };
+// --variants base=<dir>,thr=<dir>: extra 'ours' cells served from source snapshots (A/B of one change).
+for (const v of (opt('--variants', '') || '').split(',').filter(Boolean)) { const [name, dir] = v.split('='); CELLS[name] = { name, app: 'ours', root: resolve(dir) }; }
 report.clip = clip; report.meta ??= { chrome: 'installed Chrome, headed, playwright-core', viewport: [1280, 800], flags: process.env.TARAYICI_EK_BAYRAKLAR };
 if (phases.includes('live')) {
   report.live ??= [];
-  for (let run = 1; run <= runs; run++) {
+  const first = Number(opt('--first-run', 1)); // resume an interrupted interleave at this run index
+  for (let run = first; run < first + runs; run++) {
     const order = cellNames.map(n => CELLS[n]); if (run % 2 === 0) order.reverse(); // interleave, alternate order
     for (const cell of order) { report.live.push(await liveRun(cell, run, run === 1)); save(); }
   }
@@ -415,6 +453,22 @@ if (phases.includes('masks')) {
   for (const cfg of configs.filter(c => !only || only.includes(c.key))) { results[cfg.key] = await maskSession(cfg, { which: cfg.which, sidecar: !!cfg.sidecar, frames }); console.log(cfg.key, results[cfg.key].map(r => `${r.model}:${Math.round(r.ms)}`).join(' ')); }
   writeFileSync(rawPath, JSON.stringify(results));
   report.masks = { load, sidecarBackend: 'DirectML (127.0.0.1:8765 /health arkaUc)', ...maskMetrics(results) }; save();
+}
+// IS-Net (ours, production captureLiveMask, sidecar blocked) every 0.5 s + the two first-capture times of the
+// interim runs; prints the app's own coverage and saves a tinted grid of the given times (--grid t1,t2,...).
+if (phases.includes('coverage')) {
+  const rawPath = 'reports/vvp/coverage-raw.json';
+  const frames = [...Array.from({ length: 70 }, (_, i) => 0.25 + i * 0.5), 13.504723, 14.148751];
+  const res = existsSync(rawPath) ? JSON.parse(readFileSync(rawPath, 'utf8')) : await maskSession({ root: OURS }, { which: 'ours', frames });
+  writeFileSync(rawPath, JSON.stringify(res));
+  report.coverage = res.map(r => ({ t: r.t, cov: r.cov, ms: Math.round(r.ms), model: r.model })); save();
+  console.log(res.map(r => `${r.t.toFixed(2)}:${(100 * r.cov).toFixed(1)}`).join(' '));
+  const want = opt('--grid', null)?.split(',').map(Number);
+  if (want) {
+    const cells = want.map(t => res.reduce((a, b) => Math.abs(b.t - t) < Math.abs(a.t - t) ? b : a)).map(r => ({ t: r.t, b64: r.b64, label: `t=${r.t.toFixed(2)}s  IS-Net ${(100 * r.cov).toFixed(1)}%` }));
+    const png = await maskSession({ root: OURS }, { grid: cells });
+    writeFileSync(opt('--grid-out', 'reports/vvp/coverage-grid.png'), Buffer.from(png, 'base64')); console.log('grid written');
+  }
 }
 if (phases.includes('compose')) {
   const results = JSON.parse(readFileSync('reports/vvp/masks-raw.json', 'utf8')), names = Object.keys(results);

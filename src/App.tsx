@@ -11,7 +11,7 @@ import { captureLiveMask } from './engine/vision/liveMask';
 import { shouldPresentLiveDepth } from './engine/vision/liveDepthFlow';
 import { estimatePreparationSeconds, prepareVideoDepth, videoPreparationPolicy, type VideoDepthHandle, type VideoDepthProgress, type VideoMaskCapture } from './engine/vision/videoPrecompute';
 import { startBufferedVideoPlayback } from './engine/vision/bufferedVideoPlayback';
-import { videoStats } from './engine/vision/videoStats';
+import { logMaskJob, videoStats, type VideoMaskJob } from './engine/vision/videoStats';
 import { Engine } from './engine';
 import { VIDEO_EDGE_CLEANUP_DEFAULT } from './engine/Engine';
 import { ControlPanel } from './ui/ControlPanel';
@@ -975,7 +975,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
     startLuminanceLoop(video, label);
     let iptal = false;
     let videoMask: { data: Float32Array; width: number; height: number; mediaTime: number;
-      colorFrame: { data: Uint8ClampedArray; width: number; height: number } } | null = null;
+      colorFrame: { data: Uint8ClampedArray; width: number; height: number }; job?: VideoMaskJob } | null = null;
     let maskBusy = false;
     let maskUnavailable = false;
     let maskErrors = 0;
@@ -1004,6 +1004,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
       const mask = segmentRef.current ? (d.flowMask ?? videoMask ?? pausedPreparedMask(d.mediaTime)) : null;
       engineRef.current?.setDepth(d.data, d.width, d.height,
         mask?.data, mask?.width, mask?.height, d.colorFrame, d.flowConfidence);
+      if (mask && mask === videoMask && videoMask.job && videoMask.job.appliedAt === null) videoMask.job.appliedAt = performance.now();
       // Hazır renk karesini en çok beş saniyede bir oku; model/ek kare yakalama yok.
       if (d.colorFrame && performance.now() - lastCategoryAt >= 5000) {
         lastCategoryAt = performance.now();
@@ -1052,14 +1053,17 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
     };
     // Referans yol: maske ilk derinlikten sonra KENDİLİĞİNDEN üretilir; yalnız
     // kullanıcı nesne ayırmayı kapattıysa üretilmez.
-    const captureMask = () => {
+    const captureMask = (reason = 'request') => {
       syncMaskRequest();
+      if (maskBusy) videoStats.maskGate.busy++;
       if (segmentKapaliRef.current || iptal || maskBusy || maskUnavailable ||
         performance.now() < maskNextRetryAt || videoRef.current !== video) return;
       if (video.readyState < 2 || video.videoWidth === 0 || video.videoHeight === 0) return;
       maskBusy = true;
       lastMaskAttempt = performance.now();
       const revision = maskRevision;
+      const job = logMaskJob({ reason, startAt: lastMaskAttempt, mediaTime: video.currentTime, doneAt: null,
+        appliedAt: null, coverage: null, separation: null, dropped: false });
       // Capture before awaiting GPU work; the mask must describe one stable frame.
       const canvas = document.createElement('canvas');
       const scale = Math.min(1, 640 / Math.max(video.videoWidth, video.videoHeight));
@@ -1083,10 +1087,12 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
       // değil, depth.ts:~112).
       void captureLiveMask(canvas)
         .then((result) => {
-          if (iptal || videoRef.current !== video || revision !== maskRevision) return;
+          job.doneAt = performance.now();
+          if (iptal || videoRef.current !== video || revision !== maskRevision) { job.dropped = true; return; }
           let foreground = 0;
           for (const value of result.data) if (value >= 0.5) foreground++;
           const coverage = foreground / result.data.length;
+          job.coverage = coverage;
           // Referans yoldaki kapı (`maskeGecerliMi`): boş ya da %92'den dolu maske kullanılmaz.
           if (foreground === 0 || coverage > 0.92) {
             videoMask = null;
@@ -1097,7 +1103,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
             return;
           }
           videoMask = { data: result.data, width: result.width, height: result.height,
-            mediaTime: maskMediaTime, colorFrame: maskColorFrame };
+            mediaTime: maskMediaTime, colorFrame: maskColorFrame, job };
           maskBaseline = null;
           shiftBase = null;
           shiftTotal = 0;
@@ -1114,6 +1120,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
             requestedRevision = segmentRevisionRef.current;
             engineRef.current?.setObjectSeparation(ayirma);
           }
+          job.separation = segmentRef.current;
           say(`video özne maskesi hazır · ${result.model} · %${(coverage * 100).toFixed(0)} ön plan · nesne ayırma ${segmentRef.current ? 'açık' : 'kapalı (maske küçük)'}`);
           if (lastDepth) applyDepth(lastDepth);
         })
@@ -1174,14 +1181,15 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
           }
           const mask = segmentRef.current ? videoMask : null;
           if (!videoMask && !segmentKapaliRef.current && !pausedPreparedMask(d.mediaTime)) {
-            captureMask();
+            captureMask('first');
           } else if (mask && !maskBusy) {
             const threshold = ustPercentilEsigi(d.data, 25);
             const miss = maskeKacirmaOrani(d.data, d.width, d.height,
               mask.data, mask.width, mask.height, threshold);
             if (maskBaseline === null) maskBaseline = miss;
-            else if (maskeYenilenmeliMi(miss, maskBaseline)
-              && performance.now() - lastMaskAttempt >= VIDEO_MASK_MIN_REFRESH_MS) captureMask();
+            else if (!maskeYenilenmeliMi(miss, maskBaseline)) videoStats.maskGate.missOk++;
+            else if (performance.now() - lastMaskAttempt < VIDEO_MASK_MIN_REFRESH_MS) videoStats.maskGate.interval++;
+            else captureMask('miss');
             // KAYDIRMA KOLU (~1 ms, referans yol): yakın kütlenin merkezi maske
             // kurulduğundan beri kaydıysa maske o kadar ötelenir; RMBG/IS-Net koşmaz.
             const now = kutleMerkezi(d.data, d.width, d.height, threshold);
@@ -1195,7 +1203,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
                 shiftTotal += path;
               }
             }
-          }
+          } else if (videoMask) videoStats.maskGate.separationOff++;
           sayac++;
           if (video.currentTime >= d.mediaTime) {
             ageSamples.push((video.currentTime - d.mediaTime) * 1000);
