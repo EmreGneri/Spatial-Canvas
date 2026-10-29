@@ -11,7 +11,7 @@ registerHooks({
 });
 
 const { createHomeTexture, fillPositionsFromDepth, POSITION_TEXTURE_SIZE } = await import('../src/engine/buffers.ts');
-const { BACKDROP_OPACITY, sampleVolumePositions } = await import('../src/engine/reconstruction/sampler.ts');
+const { VIDEO_BACKDROP_OPACITY, sampleVolumePositions } = await import('../src/engine/reconstruction/sampler.ts');
 
 const width = 4;
 const height = 2;
@@ -31,7 +31,7 @@ for (let offset = 0; offset < masked.length; offset += 4) {
     'a segmentation mask must not switch live video to portrait silhouette geometry');
 }
 assert.equal(masked[(4 * 8 + 0) * 4 + 3], 1, 'foreground pixels remain opaque');
-assert.ok(Math.abs(masked[(4 * 8 + 7) * 4 + 3] - BACKDROP_OPACITY) < 1e-6,
+assert.ok(Math.abs(masked[(4 * 8 + 7) * 4 + 3] - VIDEO_BACKDROP_OPACITY) < 1e-6,
   'background pixels use the existing two-level alpha');
 const invalidMask = sampleVolumePositions(depth, width, height, {
   gridSize: 8, fullFrame, foregroundMask: new Float32Array(1),
@@ -55,7 +55,7 @@ assert.ok(Math.abs(first[0] - expectedX) < 1e-6,
 assert.ok(Math.abs(first[1] - expectedY) < 1e-6,
   'video worldHeight must reach the position buffer in Y');
 assert.equal(first[2], expectedZ);
-assert.ok(Math.abs(first[3] - BACKDROP_OPACITY) < 1e-6,
+assert.ok(Math.abs(first[3] - VIDEO_BACKDROP_OPACITY) < 1e-6,
   'mask dims background without changing full-frame video geometry');
 
 // F7: cloud width follows the source video aspect, not the depth grid

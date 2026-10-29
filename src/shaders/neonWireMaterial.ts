@@ -66,6 +66,8 @@ export interface NeonWireMaterialUniforms {
   uHasImage: { value: number };
   /** 1 = arka plan parçacıkları atılır (yalnızca özne), 0 = çizilir ve karartılır */
   uObjectSeparation: { value: number };
+  /** 1 = live video source (Engine): backdrop is dimmed via vOpacity, not discarded. */
+  uVideoFootprint: { value: number };
   /** 1 = renk görselden, 0 = doku yok sayılır ve uNeonColor kullanılır */
   uUseTextureColor: { value: number };
   /**
@@ -327,6 +329,7 @@ const FRAGMENT = /* glsl */ `
   ${SOURCE_COLOR_GLSL}
   uniform float uHasImage;
   uniform float uObjectSeparation;
+  uniform float uVideoFootprint;
   uniform float uUseTextureColor;
   uniform float uFogDensity;
   uniform vec3 uFogColor;
@@ -359,7 +362,9 @@ const FRAGMENT = /* glsl */ `
   void main() {
     // Nesne ayırma AÇIK: arka plan parçacıkları (w < 0.5) tamamen atılır —
     // yalnızca özne kalır. pointCloudMaterial/asciiMaterial ile aynı eşik.
-    if (uObjectSeparation > 0.5 && vOpacity < 0.5) discard;
+    // VIDEO: backdrop is DIMMED, never discarded (the subject stays readable
+    // against a still-visible scene). Photo keeps the discard.
+    if (uVideoFootprint < 0.5 && uObjectSeparation > 0.5 && vOpacity < 0.5) discard;
 
     // Nokta merkezinden radyal mesafe, kenarda 1.0.
     float r = length(gl_PointCoord - 0.5) * 2.0;
@@ -411,7 +416,7 @@ const FRAGMENT = /* glsl */ `
 
     // Nesne ayırma KAPALI: arka plan pikselleri karartılır (×0.4) — parlak
     // duvar özneyi yutmasın. Diğer iki moddaki çarpanın aynısı.
-    if (uObjectSeparation < 0.5 && vOpacity < 0.5) tint *= 0.4;
+    if (uVideoFootprint < 0.5 && uObjectSeparation < 0.5 && vOpacity < 0.5) tint *= 0.4;
 
 // Kenar şiddeti rengi süzer: zayıf kenarlar sönük, keskin kenarlar parlak.
     // vOpacity (pos.w): arka plan parçacıkları 0.4 ile sınırlanır — diğer iki
@@ -444,6 +449,7 @@ export function createNeonWireMaterial(): NeonWireMaterial {
     uDecodeVideo: { value: 0 },
     uHasImage: { value: 0 },
     uObjectSeparation: { value: 0 },
+    uVideoFootprint: { value: 0 },
     uUseTextureColor: { value: 1 },
     // Yarıçap 0: sprite büyümez, hale yok — eski uGlow davranışıyla aynı.
     uGlowRadius: { value: 0 },

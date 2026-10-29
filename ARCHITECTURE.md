@@ -466,8 +466,18 @@ değil zSpan darboğaz.
     opak çizer. Izgara satır sırasıyla çizildiği için derinlik yazılmazsa
     kamera dönünce uzak satır yakının üstüne biniyordu. Yarı saydam piksel
     derinlik yazsaydı arkadaki komşu düşer, koyu benekler kalırdı; bedeli
-    video sprite kenarlarının (nesne ayırma silueti dahil) sertleşmesidir.
-    Fotoğraf `depthWrite = false` + additive kalır.
+    video sprite kenarlarının sertleşmesidir. Kesim SPRITE ŞEKLİ alfasına
+    uygulanır; maske dışı piksel atılmaz, soluklaştırılır (aşağıda). Fotoğraf
+    `depthWrite = false` + additive kalır.
+  - **Maske dışı = soluk, gizli değil (video):** `discard` yalnız fotoğrafta
+    (`uVideoFootprint < 0.5`; nokta bulutu, ascii, neon-wire). Video için
+    maske dışı opaklık TEK yerde uygulanır: sampler `w = VIDEO_BACKDROP_OPACITY`
+    (0.2, başlangıç değeri — optimum kanıtlanmadı) yazar, shader `vOpacity`
+    ile bir kez çarpar; ek sabit ve `col *= 0.4` karartması video için yok
+    (karesi alınmasın). Ayırma histerezisi `ui/maskeKarari.ts`:
+    `AYIRMA_ACMA_ORANI` 0.15 (aç), `AYIRMA_KAPATMA_ORANI` 0.10 (kapat); canlı
+    yol ve anahtar kare yakalama aynı sabitleri kullanır. Boş ya da >%92 maske
+    yine atılır, kullanıcı-kapalı mandalı (`segmentKapaliRef`) korunur.
   - **Kadraj:** dünya yüksekliği sabit 2 değil,
     `2 · 3.5 · tan(fov/2) · min(1, kameraOranı / videoOranı) · 0.94`
     (`contain`). Değer her derinlik karesinde Engine'de hesaplanır.

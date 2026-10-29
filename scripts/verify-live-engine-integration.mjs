@@ -113,7 +113,7 @@ const blendEngine = Object.create(Engine.prototype);
 Object.assign(blendEngine, { layerGap: 0, layerVisible: new LayerVector3(1, 1, 1),
   layers: null, layerTexture: null, layerInput: null });
 blendEngine.pointsMaterial = { blending: THREE.AdditiveBlending, depthWrite: false, uniforms: {
-  uImageTexture: { value: null }, uHasImage: { value: 0 }, uVideoFootprint: { value: 0 },
+  uImageTexture: { value: null }, uHasImage: { value: 0 }, uVideoFootprint: { value: 0 }, uSoftness: { value: 0 },
 } };
 blendEngine.renderModes = new Map();
 blendEngine.viewportPx = new THREE.Vector2(640, 420);

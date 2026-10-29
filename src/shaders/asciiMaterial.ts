@@ -84,6 +84,8 @@ export interface AsciiMaterialUniforms {
    * Değerini Engine.setObjectSeparation yazar.
    */
   uObjectSeparation: { value: number };
+  /** 1 = live video source (Engine): backdrop is dimmed via vOpacity, not discarded. */
+  uVideoFootprint: { value: number };
   /**
    * Renk modu (Tur 12 — şikayet 3): 1 (varsayılan) → karakter ve dolgu
    * rengi doğrudan görselin RGB dokusundan (uImageTexture); 0 → dokular
@@ -219,6 +221,7 @@ const FRAGMENT = /* glsl */ `
   ${SOURCE_COLOR_GLSL}
   uniform float uHasImage;
   uniform float uObjectSeparation;
+  uniform float uVideoFootprint;
   uniform float uUseTextureColor;
   uniform float uFogDensity;
   uniform vec3 uFogColor;
@@ -234,7 +237,9 @@ const FRAGMENT = /* glsl */ `
   void main() {
     // Tur 12 (şikayet 4): nesne ayırma AÇIK iken arka plan parçacıkları
     // (w = BACKDROP_OPACITY < 0.5) tamamen atılır — yalnızca büst kalır.
-    if (uObjectSeparation > 0.5 && vOpacity < 0.5) discard;
+    // VIDEO: backdrop is DIMMED, never discarded (the subject stays readable
+    // against a still-visible scene). Photo keeps the discard.
+    if (uVideoFootprint < 0.5 && uObjectSeparation > 0.5 && vOpacity < 0.5) discard;
 
     // Derinlikten gelen hücre konumu ile tohumdan gelen rastgele konumun
     // karışımı: uCharRandom = 0 → saf derinlik, 1 → parçacık başına rastgele
@@ -273,7 +278,7 @@ const FRAGMENT = /* glsl */ `
     }
     // Tur 12 (şikayet 4): nesne ayırma KAPALI iken arka plan pikselleri
     // derinlikle karartılır (×0.4) — parlak duvar büstü yutmasın.
-    if (uObjectSeparation < 0.5 && vOpacity < 0.5) col *= 0.4;
+    if (uVideoFootprint < 0.5 && uObjectSeparation < 0.5 && vOpacity < 0.5) col *= 0.4;
 
     // Gün A (fog): kamera uzaklığıyla üstel sis — uFogDensity = 0 iken
     // görünüm hiç değişmez. Uzak karakterler arka rengine yığılır.
@@ -309,6 +314,7 @@ export function createAsciiMaterial(): AsciiMaterial {
     // Tur 12: nesne ayırma kapalı (tüm sahne), renk modu açık (doku) —
     // değerleri Engine yönetir.
     uObjectSeparation: { value: 0 },
+    uVideoFootprint: { value: 0 },
     uUseTextureColor: { value: 1 },
     // Gün A (fog): kapalı başlar — Engine.lookUniforms her karede işler.
     uFogDensity: { value: 0 },

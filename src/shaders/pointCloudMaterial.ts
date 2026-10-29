@@ -314,7 +314,9 @@ const FRAGMENT = /* glsl */ `
     // Tur 12 (şikayet 4): nesne ayırma AÇIK iken arka plan parçacıkları
     // (w = BACKDROP_OPACITY < 0.5) tamamen atılır — ekranda beyaz kağıt/
     // perde kalmaz, yalnızca 3B büst görünür.
-    if (uObjectSeparation > 0.5 && vOpacity < 0.5) discard;
+    // VIDEO: backdrop is DIMMED, never discarded (the subject stays readable
+    // against a still-visible scene). Photo keeps the discard.
+    if (uVideoFootprint < 0.5 && uObjectSeparation > 0.5 && vOpacity < 0.5) discard;
 
     // Nokta merkezinden radyal mesafe, kenarda 1.0 olacak şekilde.
     float r = length(gl_PointCoord - 0.5) * 2.0;
@@ -327,15 +329,15 @@ const FRAGMENT = /* glsl */ `
 
     // Opaklık (Tur 11): ön plan 1.0, arka plan noktaları 0.4 — iki katman
     // tek buffer'da, tek draw call; mantık hatası yok, w doğrudan alpha.
-    // A video mask labels foreground for object separation. With separation
-    // off, the entire captured frame stays opaque when a mask appears.
-    alpha *= (uVideoFootprint > 0.5 && uObjectSeparation < 0.5)
-      ? 1.0 : vOpacity;
-    // A see-through fragment that writes depth would hide the neighbour drawn
-    // after it and let the clear colour through, so video keeps no fringe.
+    // VIDEO: the sprite's soft edge is still cut on the SHAPE alpha (a
+    // see-through fragment that writes depth would hide the neighbour drawn
+    // after it), then vOpacity attenuates once. vOpacity already holds
+    // VIDEO_BACKDROP_OPACITY (sampler.ts) — this is the only place it applies.
     if (uVideoFootprint > 0.5) {
       if (alpha < VIDEO_ALPHA_CUTOFF) discard;
-      alpha = 1.0;
+      alpha = uObjectSeparation < 0.5 ? 1.0 : vOpacity;
+    } else {
+      alpha *= vOpacity;
     }
 
     // Additive stacking: per-pixel energy grows with particle density. Photo

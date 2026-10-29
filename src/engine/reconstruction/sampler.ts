@@ -107,6 +107,15 @@ const THIN_SHELL_PX = 3;
  */
 export const BACKDROP_OPACITY = 0.4;
 /**
+ * VIDEO backdrop opacity. Video dims outside-mask pixels instead of hiding
+ * them. THE single attenuation point: the sampler writes this value into w and
+ * the fragment shaders multiply alpha by vOpacity exactly once (no second
+ * constant, and the photo-style `col *= 0.4` darkening is skipped for video),
+ * so the effect is never squared. 0.2 is a tunable starting value, not proven
+ * optimal (see docs/benchmarks/video-depth-reference.md).
+ */
+export const VIDEO_BACKDROP_OPACITY = 0.2;
+/**
  * Arka plan düzlemi sabiti (Tur 11): arka plan noktalarının z'si
  * (d − 0.5)·range − BACKDROP_Z_PIN olarak SABİTLENİR — duvar, ön plan
  * kabuğunun kenar dökümüyle aynı z düzlemine düşüp parıldamasın diye tüm
@@ -270,12 +279,12 @@ export function sampleVolumePositions(
         out[offset + 2] = z;
         out[offset + 3] = videoMask
           ? (sampleBilinear(videoMask, depthWidth, depthHeight, x, y) >= 0.5
-            ? 1 : BACKDROP_OPACITY)
+            ? 1 : VIDEO_BACKDROP_OPACITY)
           : 1;
         if (guide) {
           const gx = Math.min(guide.width - 1, Math.floor(u * guide.width));
           const gy = Math.min(guide.height - 1, Math.floor((j + 0.5) / grid * guide.height));
-          out[offset + 3] = guide.data[gy * guide.width + gx] >= 0.5 ? 1 : BACKDROP_OPACITY;
+          out[offset + 3] = guide.data[gy * guide.width + gx] >= 0.5 ? 1 : VIDEO_BACKDROP_OPACITY;
         }
         if (edges) out[offset + 3] *= edges.confidence[j * grid + i];
         if (flowConfidence) {

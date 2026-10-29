@@ -30,6 +30,19 @@ export const MASKE_ALT_ESIK = 0.08;
 /** Bu oranın üstünde model "her piksel ön plan" demiştir: maske işe yaramaz. */
 export const MASKE_UST_ESIK = 0.92;
 
+/**
+ * VIDEO nesne ayırma histerezisi (tek doğruluk kaynağı: canlı yol ve anahtar
+ * kare yakalama aynı sabitleri kullanır). Maske oranı %12 civarında salınırken
+ * ayırma açılıp kapanmasın diye iki eşik: kapalıyken >= AÇMA'da açılır, açıkken
+ * yalnız < KAPATMA'da kapanır. Değerler ölçülmüş optimum değil, başlangıç değeri.
+ */
+export const AYIRMA_ACMA_ORANI = 0.15;
+export const AYIRMA_KAPATMA_ORANI = 0.1;
+/** Histerezisli sonraki ayırma durumu (kullanıcı-kapalı mandalı çağıranda). */
+export function videoAyirmaDurumu(fgOran: number, acik: boolean): boolean {
+  return acik ? fgOran >= AYIRMA_KAPATMA_ORANI : fgOran >= AYIRMA_ACMA_ORANI;
+}
+
 export type MaskeKarari =
   /** Maske kullanılır, nesne ayırma otomatik açılır (eski davranış). */
   | { tip: 'kullan'; ayirmaAcik: true; sebep: null }

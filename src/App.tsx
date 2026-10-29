@@ -32,7 +32,7 @@ import { KutuphanePaneli } from './ui/KutuphanePaneli';
 import { kaynakBelirle } from './ui/presetOnizleme';
 import { soganAcilisGerekliMi, sunumAcikMi } from './ui/sunumModu';
 import { serializeRenderState } from './shaders/renderPreset';
-import { maskeKarari, maskeTekParcaOrani } from './ui/maskeKarari';
+import { AYIRMA_KAPATMA_ORANI, maskeKarari, maskeTekParcaOrani, videoAyirmaDurumu } from './ui/maskeKarari';
 import { classifyCategory, type CategoryInput } from './ui/category';
 import { useDarEkran } from './ui/useDarEkran';
 import { ACILIS_BOY, ACILIS_EN, ACILIS_NOTU, acilisDerinligi, BINALAR, GOK, KURE, UFUK_Y, ZEMIN } from './ui/acilisSahnesi';
@@ -1105,13 +1105,14 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
           maskErrors = 0;
           maskNextRetryAt = 0;
           // Referans yol: maske gelince nesne ayırma açılır (kullanıcı kapatmadıysa). Fark:
-          // %8'den küçük maskede açılmaz — IS-Net uzak kişili sokak/orman karesinde %3-13
-          // veriyordu ve ekranda tek bir leke kalıyordu. Maske yine saklanır; elle açılınca kullanılır.
-          const otomatikAc = coverage >= 0.08 && !segmentRef.current && !segmentKapaliRef.current;
-          if (otomatikAc) {
-            updateSegment(true);
+          // Histerezis (maskeKarari.ts): %15'te açılır, %10'un altında kapanır — %12 civarında
+          // salınan maske ayırmayı açıp kapatmaz. Maske yine saklanır; elle açılınca kullanılır.
+          // Kullanıcı-kapalı mandalı (segmentKapaliRef) açmayı engellemeye devam eder.
+          const ayirma = videoAyirmaDurumu(coverage, segmentRef.current);
+          if (ayirma !== segmentRef.current && !(ayirma && segmentKapaliRef.current)) {
+            updateSegment(ayirma);
             requestedRevision = segmentRevisionRef.current;
-            engineRef.current?.setObjectSeparation(true);
+            engineRef.current?.setObjectSeparation(ayirma);
           }
           say(`video özne maskesi hazır · ${result.model} · %${(coverage * 100).toFixed(0)} ön plan · nesne ayırma ${segmentRef.current ? 'açık' : 'kapalı (maske küçük)'}`);
           if (lastDepth) applyDepth(lastDepth);
@@ -1351,7 +1352,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
         let foreground = 0;
         for (const value of result.data) if (value >= 0.5) foreground++;
         const coverage = foreground / result.data.length;
-        if (coverage < 0.08 || coverage >= 0.92) return null;
+        if (coverage < AYIRMA_KAPATMA_ORANI || coverage >= 0.92) return null;
         return resampleBilinear(result.data, result.width, result.height, frame.width, frame.height);
       };
       preparedMaskRequestRef.current = () => {

@@ -960,12 +960,14 @@ setPointsMaterial(material: THREE.Material) {
       u['uVideoFootprint'].value = this.videoTexture ? 1 : 0;
       // Blending is render state, not part of the shader program, so this
       // switch needs no recompile. Photos keep the tuned additive glow.
+      if (u['uSoftness']) { // point cloud only; ascii/neon declare the flag for dimming
       material.blending = this.videoTexture ? THREE.NormalBlending : THREE.AdditiveBlending;
       // The grid draws in row order, not depth order, so without depth writes
       // a far row painted later covers a near one while orbiting. The shader
       // cuts the video sprite's soft edge so only opaque fragments write.
       // Additive photos stay depth-free: they would clip the glow behind them.
       material.depthWrite = Boolean(this.videoTexture);
+      }
     }
     if (u['uViewportHeightPx']) {
       u['uViewportHeightPx'].value = this.viewportPx.y;

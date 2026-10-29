@@ -106,8 +106,8 @@ const cutoffMatch = frag.match(/const float VIDEO_ALPHA_CUTOFF = (\d+(?:\.\d+)?)
 assert.ok(cutoffMatch, 'video fragments need a named alpha cutoff');
 const cutoff = Number(cutoffMatch[1]);
 assert.match(frag,
-  /if \(uVideoFootprint > 0\.5\) \{\s*if \(alpha < VIDEO_ALPHA_CUTOFF\) discard;\s*alpha = 1\.0;\s*\}/,
-  'only video cuts its edge, and kept fragments must be opaque because they write depth');
+  /if \(uVideoFootprint > 0\.5\) \{\s*if \(alpha < VIDEO_ALPHA_CUTOFF\) discard;\s*alpha = uObjectSeparation < 0\.5 \? 1\.0 : vOpacity;\s*\} else \{\s*alpha \*= vOpacity;\s*\}/,
+  'only video cuts its edge; video attenuates once via vOpacity (VIDEO_BACKDROP_OPACITY), photo unchanged');
 
 const smoothstep = (e0, e1, x) => {
   const t = Math.min(Math.max((x - e0) / (e1 - e0), 0), 1);
