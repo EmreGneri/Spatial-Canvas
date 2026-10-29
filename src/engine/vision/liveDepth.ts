@@ -17,8 +17,8 @@ import {
 } from '../../depth.ts';
 import { resampleBilinear } from '../reconstruction/silhouette.ts';
 import { localInference, localInferenceAvailableCanli, type RawTensor } from '../sidecarClient.ts';
-import { isLiveDepthResultStale, isLiveInterpolationDue, liveInterpolationEnabled, stabilizeLiveDepthPair, LIVE_DEPTH_MAX_AGE_SECONDS } from './liveDepthFlow.ts';
-import type { LiveDepthFlowInput, LiveDepthFrame } from './liveDepthFlow.ts';
+import { advanceByField, depthAdvanceEnabled, DEPTH_ADVANCE_MAX_STEPS, isDepthAdvanceUsable, isLiveDepthResultStale, isLiveInterpolationDue, liveInterpolationEnabled, stabilizeLiveDepthPair, LIVE_DEPTH_MAX_AGE_SECONDS } from './liveDepthFlow.ts';
+import type { LiveDepthFlowInput, LiveDepthFrame, LiveFlowField } from './liveDepthFlow.ts';
 import { LiveDepthFlowClient } from './liveDepthFlowClient.ts';
 import { videoStats } from './videoStats.ts';
 import {
@@ -1403,6 +1403,8 @@ export interface LiveDepthOptions {
   subjectMask?: { data: Float32Array; width: number; height: number } | null;
   /** RGB güdümlü mikro rölyef (detay + sobel). Varsayılan AÇIK. */
   detay?: boolean;
+  /** `?derinlikIlerlet=1`: the model's RGB frame, as soon as it is grabbed (before inference). */
+  onColorFrame?: (frame: ImageData, mediaTime: number) => void;
 }
 
 export interface LiveDepthResult extends DepthResult {
@@ -1567,6 +1569,7 @@ export async function estimateDepthLive(
       // Both draws happen in this one synchronous task, before model inference.
       colorFrameCtx.drawImage(source, 0, 0, size.w, size.h);
       colorFrame = colorFrameCtx.getImageData(0, 0, size.w, size.h);
+      opts.onColorFrame?.(colorFrame, mediaTime);
     }
   }
   // Same synchronous task as the grabs above: VDA sees the same decoded frame.
@@ -1727,6 +1730,52 @@ export function startLiveDepth(
         ? { data: result.mask, width: input.width, height: input.height } : undefined,
     });
   }) : null;
+  // `?derinlikIlerlet=1`: while the GPU runs the model on frame t1, the Worker computes
+  // flow between the previous model RGB (t0) and t1. When depth(t1) lands, it is pushed
+  // forward along that flow by (now - t1) / (t1 - t0) steps: constant-velocity guess,
+  // ~1-3 ms main thread, no extra inference or setDepth, no stale drop. araKare wins.
+  let advancePrevious: { frame: ImageData; mediaTime: number } | null = null;
+  let advanceField: { t0: number; t1: number; field: LiveFlowField; coverage: number } | null = null;
+  const advanceClient = !flowClient && depthAdvanceEnabled() ? new LiveDepthFlowClient((result, input) => {
+    if (!active || !input.modelMediaTime) return;
+    advanceField = isDepthAdvanceUsable(result) && result.field
+      ? { t0: input.modelMediaTime, t1: input.mediaTime, field: result.field, coverage: result.coverage } : null;
+  }) : null;
+  const onColorFrame = (frame: ImageData, mediaTime: number) => {
+    const previous = advancePrevious;
+    advancePrevious = { frame, mediaTime };
+    if (!previous || previous.frame.width !== frame.width || previous.frame.height !== frame.height
+      || !(mediaTime > previous.mediaTime) || mediaTime - previous.mediaTime > 0.5) return;
+    advanceClient!.submit({ depth: new Float32Array(0), previousFrame: previous.frame, currentFrame: frame,
+      width: frame.width, height: frame.height, mediaTime, modelMediaTime: previous.mediaTime, fieldOnly: true });
+  };
+  const advance = (model: LiveDepthResult): LiveDepthResult => {
+    if (!advanceClient || video.paused || video.seeking) return model;
+    const ready = advanceField?.t1 === model.mediaTime ? advanceField : null;
+    const lead = video.currentTime - model.mediaTime;
+    if (!ready || !(lead > 0.004)) {
+      if (lead > 0.004) videoStats.advanceFallbacks++;
+      return model;
+    }
+    const k = Math.min(DEPTH_ADVANCE_MAX_STEPS, lead / (ready.t1 - ready.t0));
+    const started = performance.now();
+    const data = advanceByField(model.data, model.width, model.height, 1, ready.field, k);
+    const target = model.mediaTime + k * (ready.t1 - ready.t0);
+    videoStats.advanceApplied++;
+    videoStats.advanceCoverage += ready.coverage;
+    videoStats.advanceSteps += k;
+    videoStats.advanceMs += performance.now() - started;
+    // colorFrame stays the model RGB (not shown in live colour); the bench warps it itself.
+    videoStats.advanceLast = { field: ready.field, k, target, data };
+    return { ...model, data, mediaTime: target, modelMediaTime: model.mediaTime };
+  };
+  const present = (depth: LiveDepthResult) => {
+    const uploadStart = performance.now();
+    onDepth(depth);
+    if (autoQuality && !video.paused) {
+      qualityState = advanceLiveQuality(qualityState, depth.inferenceMs + performance.now() - uploadStart);
+    }
+  };
   const interpolate = (mediaTime: number) => {
     const model = previousAccepted;
     if (!flowClient || !model?.colorFrame || video.paused || video.seeking || video.readyState < 2
@@ -1757,6 +1806,9 @@ export function startLiveDepth(
     processedTime = Number.NaN;
     previousAccepted = null;
     flowClient?.reset();
+    advanceClient?.reset();
+    advancePrevious = null;
+    advanceField = null;
     lastInterpolatedTime = -Infinity;
     lastInterpolationSubmit = -Infinity;
     resetLiveDepthState();
@@ -1821,6 +1873,7 @@ export function startLiveDepth(
     active = false;
     previousAccepted = null;
     flowClient?.dispose();
+    advanceClient?.dispose();
     interpolationCanvas = null;
     interpolationContext = null;
     activeLiveDrivers--;
@@ -1892,6 +1945,7 @@ export function startLiveDepth(
           girdi: size,
           subjectMask: mask,
           isCurrent,
+          ...(advanceClient ? { onColorFrame } : {}),
         });
       } catch (error) {
         if (!isCurrent()) return null;
@@ -1929,11 +1983,7 @@ export function startLiveDepth(
           raw.luminance ?? null, canliStabil, raw.sourceWindow ?? null) };
       }
       previousAccepted = depth;
-      const uploadStart = performance.now();
-      onDepth(depth);
-      if (autoQuality && !video.paused) {
-        qualityState = advanceLiveQuality(qualityState, depth.inferenceMs + performance.now() - uploadStart);
-      }
+      present(advanceClient ? advance(depth) : depth);
     },
     onError: (err, ardisik) => {
       opts.onError?.(err, ardisik);

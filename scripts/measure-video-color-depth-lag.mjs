@@ -1,6 +1,8 @@
 // Measurement only: how far the colour the renderer shows is ahead of the
 // geometry (depth) it is drawn on, during live video playback.
 // node scripts/measure-video-color-depth-lag.mjs <clip.mp4> [more clips] [--seconds 12]
+//   [--modes live,araKare,aligned,advance] [--runs 1] [--out reports/video-color-depth-lag.json]
+// advance = ?derinlikIlerlet=1 (docs/benchmarks/video-depth-advance.md). Runs are interleaved.
 // Headed installed Chrome (tarayiciOturumu chrome+basli): the built-in pane throttles rAF.
 // Modes: live (default: realtime VideoTexture colour), araKare (?araKare=1), aligned
 // (setRealtimeVideoColor(false): depth-time RGB). Results: reports/video-color-depth-lag.json
@@ -12,13 +14,18 @@ import { tarayiciOturumu } from './tarayici-oturumu.mjs';
 const args = process.argv.slice(2);
 const secIdx = args.indexOf('--seconds');
 const seconds = secIdx >= 0 ? Number(args.splice(secIdx, 2)[1]) : 12;
+const opt = (name, fallback) => { const i = args.indexOf(name); return i >= 0 ? args.splice(i, 2)[1] : fallback; };
+const runs = Number(opt('--runs', 1));
+const out = opt('--out', 'reports/video-color-depth-lag.json');
+const modeNames = opt('--modes', 'live,araKare,aligned').split(',');
 const clips = args;
 assert.ok(clips.length, 'Pass at least one local video path');
 const MODES = [
   { name: 'live', query: '' },
   { name: 'araKare', query: '?araKare=1' },
   { name: 'aligned', query: '', aligned: true },
-];
+  { name: 'advance', query: '?derinlikIlerlet=1' },
+].filter(m => modeNames.includes(m.name));
 
 // Tags every ImageData read from a canvas that was drawn from the video with the
 // video.currentTime at draw time: that is exactly the mediaTime liveDepth stores.
@@ -43,6 +50,7 @@ const instrument = () => {
 // Runs in the page. Phase A: cheap timing only. Phase B: adds pixel analysis at ~3 Hz.
 const measure = async ({ seconds }) => {
   const e = window.__engine, video = e.videoElement, tags = window.__lagTags;
+  const flowModule = await import('/src/engine/vision/liveDepthFlow.ts');
   const AW = 160;
   const pct = (v, q) => { if (!v.length) return null; const s = [...v].sort((a, b) => a - b);
     return s[Math.min(s.length - 1, Math.max(0, Math.ceil(q * s.length) - 1))]; };
@@ -99,10 +107,29 @@ const measure = async ({ seconds }) => {
     return mags;
   };
 
-  let analyse = false, depth = null, prevDepth = null, depthCalls = 0, untagged = 0;
+  // Edge artefact proxies on the analysis grid. depth is 0..1, so the thresholds are absolute.
+  const DEPTH_EDGE = 0.06, LUMA_EDGE = 0.06;
+  const edgeStats = (gD, gL, mask, AH) => {
+    let edges = 0, unsupported = 0, movingEdges = 0, movingUnsupported = 0;
+    for (let y = 3; y < AH - 3; y++) for (let x = 3; x < AW - 3; x++) {
+      const i = y * AW + x; if (gD[i] <= DEPTH_EDGE) continue;
+      let lumaEdge = false;
+      for (let dy = -2; dy <= 2 && !lumaEdge; dy++) for (let dx = -2; dx <= 2; dx++) if (gL[i + dy * AW + dx] > LUMA_EDGE) { lumaEdge = true; break; }
+      edges++; if (!lumaEdge) unsupported++;
+      if (mask[i]) { movingEdges++; if (!lumaEdge) movingUnsupported++; }
+    }
+    const area = (AW - 6) * (AH - 6);
+    return { density: edges / area, unsupported: edges ? unsupported / edges : 0,
+      movingUnsupported: movingEdges ? movingUnsupported / movingEdges : null };
+  };
+  let analyse = false, depth = null, prevDepth = null, depthCalls = 0, untagged = 0, advanceTagged = 0;
   const original = e.setDepth;
   e.setDepth = function (data, width, height, m1, m2, m3, frame, ...rest) {
-    const mediaTime = frame ? tags.get(frame) : undefined;
+    let mediaTime = frame ? tags.get(frame) : undefined;
+    // ?derinlikIlerlet=1: geometry was pushed to `target`; the RGB passed is still the model frame,
+    // so the analysis warps it with the same field to get the RGB that geometry corresponds to.
+    const adv = window.__videoStats.advanceLast?.data === data ? window.__videoStats.advanceLast : null;
+    if (adv && mediaTime !== undefined) { mediaTime = adv.target; advanceTagged++; }
     depthCalls++;
     if (mediaTime === undefined) untagged++;
     else {
@@ -111,7 +138,8 @@ const measure = async ({ seconds }) => {
         const AH = Math.round(AW * height / width);
         record.AH = AH;
         record.depth = resample((x, y) => data[y * width + x], width, height, AH);
-        record.luma = lumaOf(frame.data, frame.width, frame.height, AH);
+        record.luma = lumaOf(adv ? flowModule.advanceByField(frame.data, frame.width, frame.height, 4, adv.field, adv.k) : frame.data,
+          frame.width, frame.height, AH);
       }
       prevDepth = depth; depth = record;
     }
@@ -123,9 +151,11 @@ const measure = async ({ seconds }) => {
   const canvas = document.createElement('canvas'), ctx = canvas.getContext('2d', { willReadFrequently: true });
 
   const phase = async (withAnalysis) => {
-    analyse = withAnalysis; depth = prevDepth = null; depthCalls = untagged = 0;
+    analyse = withAnalysis; depth = prevDepth = null; depthCalls = untagged = advanceTagged = 0;
     const interp0 = window.__videoStats.interpolatedApplied;
+    const adv0 = { ...window.__videoStats };
     const lag = [], stale = [], frameMs = [], edgeShown = [], edgeAligned = [], block = [], motionFrac = [];
+    const edgeDensity = [], edgeUnsupported = [], edgeMovingUnsupported = [];
     let frames = 0, videoFrames = 0, lastT = null, lastAnalysis = 0;
     const end = performance.now() + seconds * 1000, start = performance.now();
     await new Promise(done => {
@@ -157,8 +187,11 @@ const measure = async ({ seconds }) => {
               mask[i] = raw[i] | raw[i - 1] | raw[i + 1] | raw[i - AW] | raw[i + AW]; count += mask[i]; }
             motionFrac.push(count / mask.length);
             if (count / mask.length > .01) {
-              const gD = grad(depth.depth, AH);
-              const s1 = nccShift(gD, grad(shown, AH), mask, AH), s0 = nccShift(gD, grad(depth.luma, AH), mask, AH);
+              const gD = grad(depth.depth, AH), gS = grad(shown, AH);
+              const es = edgeStats(gD, gS, mask, AH);
+              edgeDensity.push(es.density); edgeUnsupported.push(es.unsupported);
+              if (es.movingUnsupported !== null) edgeMovingUnsupported.push(es.movingUnsupported);
+              const s1 = nccShift(gD, gS, mask, AH), s0 = nccShift(gD, grad(depth.luma, AH), mask, AH);
               if (s1 && s0) { edgeShown.push(s1.mag); edgeAligned.push(s0.mag); }
               block.push(...blockShift(depth.luma, shown, mask, AH));
             }
@@ -172,13 +205,21 @@ const measure = async ({ seconds }) => {
     const interpolated = window.__videoStats.interpolatedApplied - interp0;
     const pxScale = video.videoWidth / AW;
     const toSrc = v => v.map(x => x * pxScale);
-    return { elapsedS: elapsed, renderFps: frames / elapsed, frameMs: summary(frameMs),
+    const stats = window.__videoStats, advApplied = stats.advanceApplied - adv0.advanceApplied;
+    return { elapsedS: elapsed, renderFps: frames / elapsed, frameMs: { ...summary(frameMs), p99: pct(frameMs, .99) },
+      longFramesOver25ms: frameMs.filter(v => v > 25).length, longFramesPerMin: frameMs.filter(v => v > 25).length / elapsed * 60,
+      advance: { applied: advApplied, fallbacks: stats.advanceFallbacks - adv0.advanceFallbacks, setDepthWithTarget: advanceTagged,
+        meanWarpMs: advApplied ? (stats.advanceMs - adv0.advanceMs) / advApplied : null,
+        meanFlowCoverage: advApplied ? (stats.advanceCoverage - adv0.advanceCoverage) / advApplied : null,
+        meanSteps: advApplied ? (stats.advanceSteps - adv0.advanceSteps) / advApplied : null },
       videoTextureShareOfFrames: videoFrames / Math.max(1, frames),
       depthHz: depthCalls / elapsed, modelHz: (depthCalls - interpolated) / elapsed, interpolatedHz: interpolated / elapsed,
       untaggedDepthCalls: untagged, colourMinusDepthMs: summary(lag), shownColourAgeVsClockMs: summary(stale),
       ...(withAnalysis ? { analysisGridPx: AW, sourcePxPerGridPx: pxScale, motionFraction: summary(motionFrac),
         blockDisplacementSrcPx: summary(toSrc(block)), edgeShiftShownSrcPx: summary(toSrc(edgeShown)),
-        edgeShiftAlignedBaselineSrcPx: summary(toSrc(edgeAligned)) } : {}) };
+        edgeShiftAlignedBaselineSrcPx: summary(toSrc(edgeAligned)),
+        depthEdgeDensity: summary(edgeDensity), depthEdgeWithoutShownLumaEdge: summary(edgeUnsupported),
+        movingDepthEdgeWithoutShownLumaEdge: summary(edgeMovingUnsupported) } : {}) };
   };
   try {
     const timing = await phase(false);
@@ -188,7 +229,7 @@ const measure = async ({ seconds }) => {
 };
 
 const results = [];
-for (const clip of clips) for (const mode of MODES) {
+for (let run = 1; run <= runs; run++) for (const clip of clips) for (const mode of MODES) {
   const session = await tarayiciOturumu({ chrome: true, basli: true,
     vite: { server: { host: '127.0.0.1', port: 0, hmr: false, watch: null } } });
   const page = session.page, errors = [], remote = [];
@@ -209,17 +250,19 @@ for (const clip of clips) for (const mode of MODES) {
     await page.waitForTimeout(6000); // model warm-up, first mask
     const result = await Promise.race([page.evaluate(measure, { seconds }),
       new Promise((_, reject) => { timeout = setTimeout(() => reject(Error(`${mode.name} timed out`)), (seconds * 2 + 60) * 1000); })]);
-    const row = { clip: basename(clip), mode: mode.name, adapter, browser: 'installed Chrome, headed (playwright-core)', ...result, errors, remote };
+    const row = { run, clip: basename(clip), mode: mode.name, adapter, browser: 'installed Chrome, headed (playwright-core)', ...result, errors, remote };
     results.push(row);
     const t = result.timing, p = result.pixels;
-    console.log(row.clip, mode.name, JSON.stringify({ fps: t.renderFps.toFixed(1), depthHz: t.depthHz.toFixed(2), modelHz: t.modelHz.toFixed(2),
+    console.log(run, row.clip, mode.name, JSON.stringify({ fps: t.renderFps.toFixed(1), long: t.longFramesOver25ms, p99: t.frameMs.p99?.toFixed(1),
+      adv: t.advance, edgeUnsup: p.depthEdgeWithoutShownLumaEdge?.p50, density: p.depthEdgeDensity?.p50,
+      depthHz: t.depthHz.toFixed(2), modelHz: t.modelHz.toFixed(2),
       lagP50: t.colourMinusDepthMs.p50, lagP95: t.colourMinusDepthMs.p95, block: p.blockDisplacementSrcPx, edge: p.edgeShiftShownSrcPx,
       edgeBase: p.edgeShiftAlignedBaselineSrcPx, untagged: t.untaggedDepthCalls }));
   } catch (err) {
     console.error(basename(clip), mode.name, 'FAILED', err.message);
-    results.push({ clip: basename(clip), mode: mode.name, failed: err.message, errors });
+    results.push({ run, clip: basename(clip), mode: mode.name, failed: err.message, errors });
   } finally { clearTimeout(timeout); await session.kapat(); }
 }
 mkdirSync('reports', { recursive: true });
-writeFileSync('reports/video-color-depth-lag.json', JSON.stringify({ seconds, results }, null, 2));
-console.log('WROTE reports/video-color-depth-lag.json');
+writeFileSync(out, JSON.stringify({ seconds, runs, results }, null, 2));
+console.log('WROTE', out);

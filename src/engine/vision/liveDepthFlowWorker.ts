@@ -1,4 +1,4 @@
-import { propagateLiveDepth } from './liveDepthFlow.ts';
+import { liveFlowFieldResult, propagateLiveDepth } from './liveDepthFlow.ts';
 import { resampleBilinear } from '../reconstruction/silhouette.ts';
 import type { FlowRequest, FlowResponse } from './liveDepthFlowClient.ts';
 import type { LiveDepthFrame } from './liveDepthFlow.ts';
@@ -13,6 +13,11 @@ self.onmessage = (event: MessageEvent<FlowRequest>) => {
   const { id, generation, input } = event.data;
   let response: FlowResponse;
   try {
+    // ?derinlikIlerlet=1: stateless, leaves the araKare mask history alone.
+    if (input.fieldOnly) {
+      self.postMessage({ id, generation, result: liveFlowFieldResult(input.previousFrame, input.currentFrame, input.width, input.height) } satisfies FlowResponse);
+      return;
+    }
     if (generation !== maskGeneration || input.mediaTime <= previousMaskTime) {
       previousMask = undefined; previousMaskFrame = undefined; maskSourceTime = undefined;
       maskGeneration = generation;
