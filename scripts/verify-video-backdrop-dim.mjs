@@ -1,7 +1,7 @@
 // Video: outside-mask pixels are DIMMED, not discarded; photo keeps the discard.
 // Attenuation lives in ONE place (sampler w = VIDEO_BACKDROP_OPACITY, shader
 // multiplies by vOpacity once, no extra constant, no col *= 0.4 for video).
-// Separation hysteresis: on at >= 15 %, off at < 10 %, no flapping around 12 %.
+// Separation hysteresis: on at >= 8 %, off at < 4 %, no flapping in between.
 import assert from 'node:assert/strict';
 import { register } from 'node:module';
 register('./ts-extension-loader.mjs', import.meta.url);
@@ -48,19 +48,24 @@ assert.equal((pc.match(/vOpacity/g) ?? []).filter(Boolean).length > 0, true);
 assert.equal((pc.match(/alpha \*= vOpacity;|alpha = uObjectSeparation < 0\.5 \? 1\.0 : vOpacity;/g) ?? []).length >= 1, true);
 assert.doesNotMatch(pc, /(vOpacity|alpha)\s*\*=?\s*0\.\d|0\.\d+\s*\*\s*vOpacity/, 'shader holds no backdrop constant; sampler value is the only one');
 
-// 4. Hysteresis 15 on / 10 off.
-assert.equal(AYIRMA_ACMA_ORANI, 0.15);
-assert.equal(AYIRMA_KAPATMA_ORANI, 0.1);
-assert.equal(videoAyirmaDurumu(0.149, false), false, 'off stays off below 15 %');
-assert.equal(videoAyirmaDurumu(0.15, false), true, 'turns on at 15 %');
-assert.equal(videoAyirmaDurumu(0.1, true), true, 'on stays on at 10 %');
-assert.equal(videoAyirmaDurumu(0.099, true), false, 'turns off below 10 %');
+// 4. Hysteresis 8 on / 4 off (personal clip A IS-Net coverages, docs/benchmarks/video-mask-refresh.md).
+assert.equal(AYIRMA_ACMA_ORANI, 0.08);
+assert.equal(AYIRMA_KAPATMA_ORANI, 0.04);
+assert.ok(AYIRMA_KAPATMA_ORANI < AYIRMA_ACMA_ORANI, 'off below on (hysteresis)');
+assert.equal(videoAyirmaDurumu(0.079, false), false, 'off stays off below 8 %');
+assert.equal(videoAyirmaDurumu(0.08, false), true, 'turns on at 8 %');
+assert.equal(videoAyirmaDurumu(0.04, true), true, 'on stays on at 4 %');
+assert.equal(videoAyirmaDurumu(0.039, true), false, 'turns off below 4 %');
+// Recorded personal clip A frames: two dancers at 12.1 / 13.5 % and one dancer at 4.5-6.5 % are valid people.
+assert.equal(videoAyirmaDurumu(0.121, false), true, 'two-dancer frame (12.1 %) enables');
+for (const c of [0.045, 0.051, 0.058, 0.065]) assert.equal(videoAyirmaDurumu(c, true), true, `valid single dancer ${c} keeps it on`);
+for (const c of [0.009, 0.029, 0.037]) assert.equal(videoAyirmaDurumu(c, true), false, `body fragment ${c} turns it off`);
 let on = false, flips = 0;
-for (const c of [0.13, 0.11, 0.12, 0.125, 0.115, 0.13, 0.11]) { const n = videoAyirmaDurumu(c, on); flips += n !== on; on = n; }
-assert.equal(flips, 0, 'no flapping around 12 % (off side)');
+for (const c of [0.07, 0.05, 0.06, 0.065, 0.055, 0.07, 0.05]) { const n = videoAyirmaDurumu(c, on); flips += n !== on; on = n; }
+assert.equal(flips, 0, 'no flapping around 6 % (off side)');
 on = true;
-for (const c of [0.13, 0.11, 0.12, 0.125, 0.115, 0.13, 0.11]) { const n = videoAyirmaDurumu(c, on); flips += n !== on; on = n; }
-assert.equal(flips, 0, 'no flapping around 12 % (on side)');
+for (const c of [0.07, 0.05, 0.06, 0.065, 0.055, 0.07, 0.05]) { const n = videoAyirmaDurumu(c, on); flips += n !== on; on = n; }
+assert.equal(flips, 0, 'no flapping around 6 % (on side)');
 
 // 5. App wiring: live path and keyframe capture share the constants; user latch + 92 % gate kept.
 import { readFileSync } from 'node:fs';
@@ -70,4 +75,4 @@ assert.match(app, /ayirma && segmentKapaliRef\.current/, 'user-off latch respect
 assert.match(app, /coverage < AYIRMA_KAPATMA_ORANI \|\| coverage >= 0\.92/, 'keyframe capture shares the constant');
 assert.match(app, /foreground === 0 \|\| coverage > 0\.92/, 'empty / >92 % gate kept');
 assert.doesNotMatch(app, /coverage >= 0\.08|coverage < 0\.08/);
-console.log('OK video backdrop dims (single attenuation), photo discard kept, 15/10 hysteresis');
+console.log('OK video backdrop dims (single attenuation), photo discard kept, 8/4 hysteresis');

@@ -475,7 +475,7 @@ değil zSpan darboğaz.
     (0.2, başlangıç değeri — optimum kanıtlanmadı) yazar, shader `vOpacity`
     ile bir kez çarpar; ek sabit ve `col *= 0.4` karartması video için yok
     (karesi alınmasın). Ayırma histerezisi `ui/maskeKarari.ts`:
-    `AYIRMA_ACMA_ORANI` 0.15 (aç), `AYIRMA_KAPATMA_ORANI` 0.10 (kapat); canlı
+    `AYIRMA_ACMA_ORANI` 0.08 (aç), `AYIRMA_KAPATMA_ORANI` 0.04 (kapat; personal clip A ölçümü, `docs/benchmarks/video-mask-refresh.md`); canlı
     yol ve anahtar kare yakalama aynı sabitleri kullanır. Boş ya da >%92 maske
     yine atılır, kullanıcı-kapalı mandalı (`segmentKapaliRef`) korunur.
   - **Kadraj:** dünya yüksekliği sabit 2 değil,

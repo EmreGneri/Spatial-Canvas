@@ -83,7 +83,7 @@ assert.match(app, /maskeAl: \(\) => segmentRef\.current \? \(videoMask \?\? paus
 assert.match(app, /if \(segmentKapaliRef\.current \|\| iptal \|\| maskBusy/, 'mask capture is automatic unless the user turned separation off');
 assert.match(app, /localStorage\.getItem\(VIDEO_PROCESSING_KEY\) === '1'/, 'offline preparation is opt-in');
 assert.match(app, /get\('videoHazirla'\) === '1'/);
-assert.match(app, /videoAyirmaDurumu\(coverage, segmentRef\.current\)/, 'separation auto-enables at 15% and disables under 10% (hysteresis, maskeKarari.ts)');
+assert.match(app, /videoAyirmaDurumu\(coverage, segmentRef\.current\)/, 'separation auto-enables at 8% and disables under 4% (hysteresis, maskeKarari.ts)');
 const engine = readFileSync(new URL('../src/engine/Engine.ts', import.meta.url), 'utf8');
 assert.match(engine, /export const VIDEO_EDGE_CLEANUP_DEFAULT = 0;/);
 const { vdaIstendi } = await import('../src/engine/vision/videoDepthAnything.ts');

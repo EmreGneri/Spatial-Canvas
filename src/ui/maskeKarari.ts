@@ -32,12 +32,22 @@ export const MASKE_UST_ESIK = 0.92;
 
 /**
  * VIDEO nesne ayırma histerezisi (tek doğruluk kaynağı: canlı yol ve anahtar
- * kare yakalama aynı sabitleri kullanır). Maske oranı %12 civarında salınırken
- * ayırma açılıp kapanmasın diye iki eşik: kapalıyken >= AÇMA'da açılır, açıkken
- * yalnız < KAPATMA'da kapanır. Değerler ölçülmüş optimum değil, başlangıç değeri.
+ * kare yakalama aynı sabitleri kullanır). Kapalıyken >= AÇMA'da açılır, açıkken
+ * yalnız < KAPATMA'da kapanır.
+ *
+ * Ölçüm (personal clip A konser klibi, IS-Net, 0,5 sn'de bir 70 kare,
+ * docs/benchmarks/video-mask-refresh.md): oran p50 %13; %4,5–6,5 maskeler
+ * sahnedeki 3–5 kişiden BİRİNİ seçiyor (kenar o kişiyi izliyor), %0–3,7
+ * maskeler bacak/gövde parçası. %15 açma eşiği karelerin %67'sinde kişi
+ * seçen maskeyi dışarıda bırakıyordu (%12–13'lük iki dansçı dahil) → açma %8
+ * (karelerin %73'ü), kapatma parça sınırının hemen üstünde %4.
+ * BİLİNEN SINIR: %4–8'lik geçerli ama küçük İLK maske ayırmayı açmaz;
+ * maske yeniden istenmedikçe kapalı kalır. Açma
+ * eşiği %8 altına indirilmedi: yukarıdaki sentetik "kadrajı yuttu" maskesi
+ * %4,7 idi, tek klipte parça/kişi aralığı (%3,7 / %4,5) çok dar.
  */
-export const AYIRMA_ACMA_ORANI = 0.15;
-export const AYIRMA_KAPATMA_ORANI = 0.1;
+export const AYIRMA_ACMA_ORANI = 0.08;
+export const AYIRMA_KAPATMA_ORANI = 0.04;
 /** Histerezisli sonraki ayırma durumu (kullanıcı-kapalı mandalı çağıranda). */
 export function videoAyirmaDurumu(fgOran: number, acik: boolean): boolean {
   return acik ? fgOran >= AYIRMA_KAPATMA_ORANI : fgOran >= AYIRMA_ACMA_ORANI;

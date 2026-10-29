@@ -12,7 +12,7 @@ Its only flaw is flicker. Reference: `C:\Users\Emre\Desktop\reference build`
 | subject crop for video | off | on (`canliKirpmaKutusu`, reference pipeline) |
 | input size | 154, 252 probe on fast GPUs; 378 paused | Detaylı: 252 playing, 378 paused; 154 only after 3 frames < 1 Hz |
 | range EMA | media-time half-life (450/500 ms) | per frame 0.15 / `STRETCH_RANGE_ALPHA` (reference pipeline) |
-| mask in post-process | paused frame only | always; produced by itself after the first depth frame, turns object separation on at ≥15% mask coverage and off below 10% (hysteresis, `src/ui/maskeKarari.ts`; user-off latch respected), shift arm between refreshes; gate = non-empty and ≤92% |
+| mask in post-process | paused frame only | always; produced by itself after the first depth frame, turns object separation on at ≥8% mask coverage and off below 4% (hysteresis, measured in `video-mask-refresh.md`, `src/ui/maskeKarari.ts`; user-off latch respected), shift arm between refreshes; gate = non-empty and ≤92% |
 | flow blend + stale-frame drop | on | only with `?araKare=1` |
 | edge cleanup | 2 | 0 (slider keeps 1–4) |
 | offline preparation | on | off (setting, or `?videoHazirla=1`) |
@@ -107,8 +107,8 @@ diff×10), `app-*.png` app screenshots, JSON per run.
 
 - Object separation no longer hides the outside of the mask for video: those points are dimmed to
   `VIDEO_BACKDROP_OPACITY` (0.2, `sampler.ts`; a starting value, picked by eye, NOT proven optimal) and
-  the `discard` is photo-only. Auto separation turns on at ≥15% mask coverage and off below 10%
-  (hysteresis). IS-Net still gives small masks on non-portrait clips (nyc 3–7%, forest 10–13%): below 10%
+  the `discard` is photo-only. Auto separation turns on at ≥8% mask coverage and off below 4%
+  (hysteresis). IS-Net still gives small masks on non-portrait clips (nyc 3–7%, forest 10–13%): below 8%
   the toggle stays off and depth runs maskless; manual toggling still works. Backdrop opacity has no
   measurement behind it.
 - Mask parity with the reference is unmeasured. A measurement would need the same clips run through

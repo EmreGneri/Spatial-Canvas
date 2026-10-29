@@ -1111,7 +1111,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
           maskErrors = 0;
           maskNextRetryAt = 0;
           // Referans yol: maske gelince nesne ayırma açılır (kullanıcı kapatmadıysa). Fark:
-          // Histerezis (maskeKarari.ts): %15'te açılır, %10'un altında kapanır — %12 civarında
+          // Histerezis (maskeKarari.ts): %8'de açılır, %4'ün altında kapanır — eşik civarında
           // salınan maske ayırmayı açıp kapatmaz. Maske yine saklanır; elle açılınca kullanılır.
           // Kullanıcı-kapalı mandalı (segmentKapaliRef) açmayı engellemeye devam eder.
           const ayirma = videoAyirmaDurumu(coverage, segmentRef.current);
