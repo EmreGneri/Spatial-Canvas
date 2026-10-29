@@ -74,12 +74,16 @@ export interface KaliteProfili {
 
 export const MOD_KALITE: Record<RenderMode, KaliteProfili> = {
   /**
-   * POINT CLOUD — siyah üstünde seyrek parlak nokta. Eksik olan, noktaların
-   * BİRBİRİNE bağlanması: geniş ama eşikli bloom onları yüzeye dönüştürür.
-   * Ölçüldü: konu kapsamı 0.0060 → 0.0124 (iki katı), p99 0.0008 → 0.083.
+   * POINT CLOUD — siyah üstünde parlak nokta. Noktalar toplamsal (additive)
+   * karıştığı için konu zaten HDR'a yakın doyar; bloom'un eşiği konu piksellerini
+   * hep aşar ve gücü doğrudan kadraj boyunca beyaz perdeye dönüşür.
+   * 512² ızgarada (0.35 / 0.75 / 0.6) ölçüldü: portrait photo B kenar parlaklığı 0.19,
+   * kırpılan konu pikseli %18; thumbnail.jpg'de kadrajın tamamı beyaz. Bu yüzden
+   * bloom yalnız ince bir hale bırakıldı (0.06 / 0.4 / 0.92): kenar parlaklığı
+   * 0.01 / 0.0004, kırpılan ≤ %0.05, yüz ve giysi dokusu okunur.
    */
   points: {
-    bloom: { uBloomStrength: 0.35, uBloomRadius: 0.75, uBloomThreshold: 0.6 },
+    bloom: { uBloomStrength: 0.06, uBloomRadius: 0.4, uBloomThreshold: 0.92 },
     grain: { uVignette: 0.55, uContrast: 1, uSaturation: 1.12 },
     look: { uExposure: 1.05 },
   },

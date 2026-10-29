@@ -140,6 +140,9 @@ export type PointCloudMaterial = THREE.ShaderMaterial & {
   uniforms: PointCloudMaterialUniforms;
 };
 
+/** Position grid the photo brightness/bloom profile (modKalite.ts) was calibrated on. */
+const PHOTO_TUNED_GRID = 384;
+
 const VERTEX = /* glsl */ `
   uniform sampler2D uPositions;
   uniform float uPointSize;
@@ -304,6 +307,8 @@ const FRAGMENT = /* glsl */ `
    * softness/jitter slider value (verify-video-point-footprint).
    */
   const float VIDEO_ALPHA_CUTOFF = 0.3;
+  /** Grid size the photo look was tuned at (see ENERGY note in main()). */
+  const float PHOTO_GRID_ENERGY = ${((PHOTO_TUNED_GRID / POSITION_TEXTURE_SIZE) ** 2).toFixed(4)};
 
   void main() {
     // Tur 12 (şikayet 4): nesne ayırma AÇIK iken arka plan parçacıkları
@@ -332,6 +337,12 @@ const FRAGMENT = /* glsl */ `
       if (alpha < VIDEO_ALPHA_CUTOFF) discard;
       alpha = 1.0;
     }
+
+    // Additive stacking: per-pixel energy grows with particle density. Photo
+    // post-FX (bloom threshold, exposure) was tuned at the 384x384 grid, so the
+    // 512x512 grid must deposit the same energy per pixel or the whole subject
+    // saturates and bloom floods the frame. Video keeps the reference sprite.
+    alpha *= mix(PHOTO_GRID_ENERGY, 1.0, step(0.5, uVideoFootprint));
 
     // Renk (Tur 12 — şikayet 3): uUseTextureColor AÇIK ve doku varsa parçacık
     // kendi pikselinin RGB'sini alır (fotoğraf grid'i ya da canlı video);

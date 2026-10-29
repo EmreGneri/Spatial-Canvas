@@ -123,6 +123,16 @@ for (const m of MODLAR) {
     MOD_KALITE.crystal.bloom.uBloomStrength);
 }
 
+// ── POINT CLOUD: toplamsal karışım konuyu zaten doyurur; güçlü/düşük eşikli
+// bloom kadrajı beyaz perdeye çeviriyordu (512² ızgarada ölçüldü).
+assert.ok(MOD_KALITE.points.bloom.uBloomStrength <= 0.15,
+  `Point Cloud bloom ${MOD_KALITE.points.bloom.uBloomStrength} — 0.15 ustu kadraji beyazlatiyor (olculdu)`);
+assert.ok(MOD_KALITE.points.bloom.uBloomThreshold >= 0.85,
+  `Point Cloud bloom esigi ${MOD_KALITE.points.bloom.uBloomThreshold} — additive konu hep esigi asar, hale tum kadraji kaplar`);
+const nokta = readFileSync(new URL('../src/shaders/pointCloudMaterial.ts', import.meta.url), 'utf8');
+assert.match(nokta, /alpha \*= mix\(PHOTO_GRID_ENERGY, 1\.0, step\(0\.5, uVideoFootprint\)\)/,
+  'foto parcacik enerjisi izgara boyutuna gore normalize edilmiyor (video yolu haric)');
+
 // ── KABLO: App çıkarken YAZAR, girerken OKUR (sıra önemli) ─────────────────
 const app = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
 const govde = app.slice(app.indexOf('function changeMode('), app.indexOf('changeModeRef.current = changeMode'));
