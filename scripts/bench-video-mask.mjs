@@ -7,7 +7,7 @@
 // (overlay PNGs under --out; the reference is only trusted on frames checked by eye); depth Hz,
 // frame p99, long frames and whether a mask job was in flight during them.
 //   node scripts/bench-video-mask.mjs <clip> --root <app-dir> --label base --out <dir> [--seconds 25]
-//     [--mbps 100] [--passes cold,warm] [--samples 8]
+//     [--mbps 100] [--passes cold,warm] [--samples 8] [--query ?flag=value]
 //   node scripts/bench-video-mask.mjs --selftest
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
@@ -66,6 +66,8 @@ const opt = (name, fallback) => { const i = args.indexOf(name); return i >= 0 ? 
 const root = resolve(opt('--root', process.cwd())), label = opt('--label', basename(root)), outDir = resolve(opt('--out', join(tmpdir(), 'bench-video-mask-out')));
 const profileS = Number(opt('--profile', 0)), seconds = Number(opt('--seconds', 25)), mbps = Number(opt('--mbps', 100)), nSamples = Number(opt('--samples', 8));
 const passes = opt('--passes', 'cold,warm').split(',');
+// --query '?hizliMaske=multiclass': URL flags of the app page (docs/benchmarks/video-fast-mask.md).
+const query = opt('--query', '');
 const [clip] = args; assert.ok(clip, 'Pass <clip>');
 const tag = `${basename(clip).replace(/\.[^.]+$/, '')}-${label}`;
 mkdirSync(outDir, { recursive: true });
@@ -140,7 +142,7 @@ const referenceAndOverlay = async ({ snaps }) => {
 async function pass(session, name, cdp) {
   const page = session.page;
   await cdp.send('Network.emulateNetworkConditions', { offline: false, latency: 20, downloadThroughput: mbps * 125_000, uploadThroughput: 2_500_000 });
-  await page.goto(session.url('/'), { waitUntil: 'domcontentloaded' });
+  await page.goto(session.url('/' + query), { waitUntil: 'domcontentloaded' });
   await page.bringToFront(); await page.mouse.move(0, 0);
   await page.waitForFunction(() => window.__engine?.__vmb, undefined, { timeout: 60_000 });
   const c0 = cpuTimes(); const gpu = [];
@@ -188,7 +190,7 @@ async function pass(session, name, cdp) {
     return { shown: r1(x.shown * 100) / 100, sep: x.sep, masked: !!x.mask, ageS: x.age === null ? null : Math.round(x.age * 100) / 100, iouVsExactFrame: io === null ? null : Math.round(io * 100) / 100, refModel: refs[i].refModel, file };
   });
   const row = {
-    pass: name, label, clip: basename(clip), mbps, seconds,
+    pass: name, label, query, clip: basename(clip), mbps, seconds,
     startup: { firstModelDepthS: s(L.firstModel), firstMaskRequestS: s(firstJob?.startAt), firstMaskDoneS: s(firstJob?.doneAt),
       firstMaskComputeS: firstJob?.doneAt ? r1((firstJob.doneAt - firstJob.startAt) / 1000) : null,
       firstAcceptedMaskDoneS: s(firstOk?.doneAt), firstMaskedFrameS: s(L.firstMasked), firstMaskCoverage: firstJob?.coverage ?? null },
