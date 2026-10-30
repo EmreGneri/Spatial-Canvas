@@ -198,7 +198,7 @@ export async function ilerlemeliGetir(
     }
     const etag = yerelOnbellekli ? yanit.headers.get('etag') : null;
     if (etag) {
-      try { await (await caches.open(MODEL_ONBELLEGI)).put(url, new Response(hepsi.slice(), { headers: { etag } })); } catch { /* kota dolu */ }
+      try { await (await caches.open(MODEL_ONBELLEGI)).put(url, new Response(hepsi, { headers: { etag } })); /* Response copies the bytes */ } catch { /* kota dolu */ }
     }
     record('fetch', inen, 'ok');
     return hepsi.buffer;
