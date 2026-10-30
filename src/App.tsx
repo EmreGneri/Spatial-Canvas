@@ -12,6 +12,7 @@ import { liveInterpolationEnabled, shouldPresentLiveDepth } from './engine/visio
 import { estimatePreparationSeconds, prepareVideoDepth, videoPreparationPolicy, type VideoDepthHandle, type VideoDepthProgress, type VideoMaskCapture } from './engine/vision/videoPrecompute';
 import { startBufferedVideoPlayback } from './engine/vision/bufferedVideoPlayback';
 import { logMaskJob, videoStats, type VideoMaskJob } from './engine/vision/videoStats';
+import { maskeOverlayKaynagi, type OverlayMask } from './ui/maskOverlay';
 import { previewNextAt } from './engine/vision/previewBudget';
 import { Engine } from './engine';
 import { VIDEO_EDGE_CLEANUP_DEFAULT } from './engine/Engine';
@@ -365,6 +366,9 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
    *  toggleSegment) drawMaskOverlay çağrılır; state'i beklemez. */
   const segOverlayRef = useRef<HTMLCanvasElement | null>(null);
   const maskOverlayOnRef = useRef(false);
+  /** Video: the mask the engine got with the last depth frame (null = none applied); the overlay draws it. */
+  const appliedVideoMaskRef = useRef<OverlayMask | null>(null);
+  const drawnOverlayMaskRef = useRef<Float32Array | null>(null);
 
   useEffect(() => {
     // Dev-only switch gives the E3 benchmark an identical main-thread path.
@@ -523,6 +527,8 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
       video.removeAttribute('src');
       videoRef.current = null;
     }
+    appliedVideoMaskRef.current = null;
+    if (maskOverlayOnRef.current) drawMaskOverlay();
     setPlaybackVideo(null);
     if (objectUrlRef.current) {
       URL.revokeObjectURL(objectUrlRef.current);
@@ -1011,6 +1017,9 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
       const mask = segmentRef.current ? (d.flowMask ?? videoMask ?? pausedPreparedMask(d.mediaTime)) : null;
       engineRef.current?.setDepth(d.data, d.width, d.height,
         mask?.data, mask?.width, mask?.height, d.colorFrame, d.flowConfidence);
+      appliedVideoMaskRef.current = mask ?? null;
+      // Overlay off: nothing else. On: redraw only when the applied array changed (new or moved mask).
+      if (maskOverlayOnRef.current && (mask?.data ?? null) !== drawnOverlayMaskRef.current) drawMaskOverlay();
       if (mask && mask === videoMask && videoMask.job && videoMask.job.appliedAt === null) videoMask.job.appliedAt = performance.now();
       statsFrames++; totalFrames++;
       const statsNow = performance.now();
@@ -1524,29 +1533,37 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
     maskOverlayOnRef.current = showMask;
     if (!showMask) return;
     drawMaskOverlay();
-    if (!engineRef.current?.foregroundMask) {
-      say('maskeyi göster: bu kaynakta maske yok (video/kamera ya da nesne ayırma kapalı)');
+    if (!videoRef.current && !engineRef.current?.foregroundMask) {
+      say('maskeyi göster: bu kaynakta maske yok (kamera ya da nesne ayırma kapalı)');
     }
   }, [showMask, engine]);
 
-  /** RMBG maskesini (Engine'de işlenmiş hali: resample + dilate) gri tonlama
-   *  overlay olarak çizer — "model mi morf mu" tanısı için (K1/K3 ayarını
-   *  görsel doğrulamak). Maske yoksa (video/kamera) overlay temizlenir. */
+  /** Maskeyi gri tonlama overlay olarak çizer. Fotoğraf: Engine'de işlenmiş RMBG maskesi
+   *  (resample + dilate) — "model mi morf mu" tanısı; yoksa temizlenir. Video: sahneye
+   *  uygulanan maske (izleyici kaydırması sonrası); yoksa sebep yazılır. */
   function drawMaskOverlay() {
     const canvas = segOverlayRef.current;
     const engine = engineRef.current;
     if (!canvas || !engine) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
-    const mask = engine.foregroundMask;
-    const dt = engine.depthTexture;
-    if (!mask || !dt) {
+    const source = maskeOverlayKaynagi({ video: !!videoRef.current, videoMask: appliedVideoMaskRef.current,
+      photoMask: engine.foregroundMask, photoSize: engine.depthTexture?.image as { width: number; height: number } | undefined });
+    drawnOverlayMaskRef.current = source && 'mask' in source ? source.mask.data : null;
+    if (!source || 'mesaj' in source) {
       ctx.clearRect(0, 0, canvas.width, canvas.height);
+      if (source) {
+        canvas.width = 256;
+        canvas.height = 40;
+        ctx.fillStyle = '#ccc';
+        ctx.font = '11px sans-serif';
+        source.mesaj.split(' (').forEach((line, i) => ctx.fillText(i ? `(${line}` : line, 6, 16 + i * 14));
+      }
       return;
     }
-    const dims = dt.image as { width: number; height: number };
-    const w = dims.width;
-    const h = dims.height;
+    const mask = source.mask.data;
+    const w = source.mask.width;
+    const h = source.mask.height;
     const off = document.createElement('canvas');
     off.width = w;
     off.height = h;
