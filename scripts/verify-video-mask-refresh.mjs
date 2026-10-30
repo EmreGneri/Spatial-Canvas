@@ -40,20 +40,21 @@ function simulate({ start, seconds = 60, userOff = false, pausedAt = Infinity, c
 const base = { maskeVar: true, kullaniciKapatti: false, duraklatildi: false, hazirMaskeVar: false, ayirmaAcik: true, gecenMs: 1e9, sonIsMs: 500 };
 assert.equal(VIDEO_MASKE_TAZELEME_MS, 8000, 'upper bound: the measured 8 s period (15/8/4 s sweep)');
 // Cost-bounded period: a job may take at most VIDEO_MASKE_IS_PAYI of the time, never rarer than 8 s.
-assert.equal(VIDEO_MASKE_IS_PAYI, 0.25);
-assert.equal(videoMaskeAraligi(500), 2000, '0.5 s job -> every 2 s');
+assert.equal(VIDEO_MASKE_IS_PAYI, 0.15);
+assert.equal(Math.round(videoMaskeAraligi(500)), 3333, '0.5 s job -> every 3.3 s');
 assert.equal(videoMaskeAraligi(3000), 8000, 'slow device: capped at the old 8 s');
-assert.equal(videoMaskeAraligi(null), 2400, 'unknown cost (first job pending): 0.6 s assumed');
-assert.equal(videoMaskeAraligi(Number.NaN), 2400);
+assert.equal(videoMaskeAraligi(300), 2000);
+assert.equal(videoMaskeAraligi(null), 4000, 'unknown cost (first job pending): 0.6 s assumed');
+assert.equal(videoMaskeAraligi(Number.NaN), 4000);
 assert.equal(videoMaskeIstegi({ ...base, maskeVar: false }), 'ilk', 'no mask (first or after a rejected one) -> capture');
 assert.equal(videoMaskeIstegi({ ...base, maskeVar: false, hazirMaskeVar: true }), null, 'paused prepared mask covers it');
 assert.equal(videoMaskeIstegi(base), 'tazele');
 assert.equal(videoMaskeIstegi({ ...base, ayirmaAcik: false }), 'ayirma-kapali', 'small mask, separation off: still refreshed');
-assert.equal(videoMaskeIstegi({ ...base, gecenMs: 1999 }), null, 'one per period');
-assert.equal(videoMaskeIstegi({ ...base, gecenMs: 2000 }), 'tazele');
+assert.equal(videoMaskeIstegi({ ...base, gecenMs: 3333 }), null, 'one per period');
+assert.equal(videoMaskeIstegi({ ...base, gecenMs: 3334 }), 'tazele');
 // Tracker lost the subject: asked as soon as the cost bound allows, never sooner (no storm).
-assert.equal(videoMaskeIstegi({ ...base, gecenMs: 2000, izKayip: true }), 'kayip');
-assert.equal(videoMaskeIstegi({ ...base, gecenMs: 1999, izKayip: true }), null, 'lost still respects the cost bound');
+assert.equal(videoMaskeIstegi({ ...base, gecenMs: 3334, izKayip: true }), 'kayip');
+assert.equal(videoMaskeIstegi({ ...base, gecenMs: 3333, izKayip: true }), null, 'lost still respects the cost bound');
 assert.equal(videoMaskeIstegi({ ...base, izKayip: true, duraklatildi: true }), null);
 assert.equal(videoMaskeIstegi({ ...base, izKayip: true, kullaniciKapatti: true }), null, 'user-off latch wins over lost');
 assert.equal(videoMaskeIstegi({ ...base, duraklatildi: true }), null, 'paused: no refresh of the same frame');

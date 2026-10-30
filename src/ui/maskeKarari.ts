@@ -58,7 +58,7 @@ export const AYIRMA_KAPATMA_ORANI = 0.04;
  * (kesme, örtülme, özne çıktı) tazeleme periyodu beklemeden, yine pay sınırıyla istenir.
  */
 export const VIDEO_MASKE_TAZELEME_MS = 8000;
-export const VIDEO_MASKE_IS_PAYI = 0.25;
+export const VIDEO_MASKE_IS_PAYI = 0.15;
 /** İş süresi bilinmezken (ilk iş henüz bitmedi) varsayılan maliyet. */
 const VARSAYILAN_IS_MS = 600;
 
