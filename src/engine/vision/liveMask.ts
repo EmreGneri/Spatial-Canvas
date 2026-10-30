@@ -114,32 +114,6 @@ type MaskDependencies = {
   ) => Promise<{ maske: Float32Array } | null>;
 };
 
-/** Browser-only visitors: fetch the IS-Net bytes ahead of the first mask request (no GPU work). */
-export async function preloadLiveMaskModel(): Promise<void> {
-  const [{ preloadSegmentationBytes }, { localModelAvailable }] = await Promise.all([
-    import('../reconstruction/segmentation.ts'), import('../sidecarClient.ts'),
-  ]);
-  // Same decision as `captureLiveMask`: with a local helper the video mask never uses IS-Net.
-  if (await localModelAvailable('david-mask') || await localModelAvailable('mask')) return;
-  await preloadSegmentationBytes();
-}
-
-/**
- * Calls `onFetched` once the live depth model's weights have arrived over the network
- * (Resource Timing), i.e. before its GPU session is built. Nothing fires when the weights
- * come from Cache Storage; the caller keeps a later trigger for that case.
- */
-export function whenDepthModelFetched(onFetched: () => void): () => void {
-  if (typeof PerformanceObserver === 'undefined') return () => {};
-  const observer = new PerformanceObserver((list) => {
-    if (!list.getEntries().some(e => /depth-anything-v2-small\/onnx\/model/.test(e.name))) return;
-    observer.disconnect();
-    onFetched();
-  });
-  try { observer.observe({ type: 'resource', buffered: true }); } catch { return () => {}; }
-  return () => observer.disconnect();
-}
-
 /** Keep the captured canvas unchanged until both models finish to align their edges. */
 export async function captureLiveMask(
   source: HTMLCanvasElement,

@@ -94,10 +94,9 @@ assert.match(app, /const istek = videoMaskeIstegi\(\{ maskeVar: !!videoMask, kul
 assert.match(app, /if \(istek\) captureMask\(istek\);/);
 assert.match(app, /izKayip: maskLost, sonIsMs: lastJobMs \}\);/, 'tracker state and last job cost reach the gate');
 assert.doesNotMatch(app, /trackLiveMask|kutleMerkezi\(d\.data/, 'depth-centroid shift replaced by the image tracker');
-// First mask: the IS-Net bytes start when the depth weights arrive (or its session is ready), not at the first depth frame.
-assert.match(app, /const stopFetchWatch = whenDepthModelFetched\(preloadMask\);\s*void isitLiveModel\(\)\.then\(preloadMask, \(\) => \{\}\);/);
-assert.match(app, /iptal = true;\s*stopFetchWatch\(\);\s*stopDriver\(\);/, 'a switched source stops watching');
-assert.match(app, /const preloadMask = \(\) => \{ if \(!iptal && !segmentKapaliRef\.current\)/, 'no preload for a stale source or a user-off mask');
+// No early IS-Net download: measured cold at 100 Mbit/s it delayed the first depth frame by
+// 0.6-3 s for a 0-2 s earlier mask (docs/benchmarks/video-mask-tracking.md).
+assert.doesNotMatch(app, /preloadLiveMaskModel|whenDepthModelFetched/);
 assert.doesNotMatch(app, /maskeYenilenmeliMi|VIDEO_MASK_MIN_REFRESH_MS|maskBaseline/, 'drift gate (never fired on personal clip A) removed');
 assert.match(app, /if \(segmentKapaliRef\.current \|\| iptal \|\| maskBusy \|\|/, 'single flight: a busy request is dropped, no queue');
 assert.match(app, /if \(iptal \|\| videoRef\.current !== video \|\| revision !== maskRevision\) \{ job\.dropped = true; return; \}/,

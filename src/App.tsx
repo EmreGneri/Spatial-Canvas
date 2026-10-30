@@ -7,7 +7,7 @@ import { readExifFocal } from './vendor/splat.js/io/exif.js';
 import { estimateDepth, depthDevice, FOTO_KALITE, loadDepthModel, luminanceHeightMap, resetLuminanceState } from './depth';
 import { segmentForeground, preloadPhotoMaskBytes } from './engine/reconstruction/segmentation';
 import { resampleBilinear } from './engine/reconstruction/silhouette';
-import { captureLiveMask, estimateMaskShift, preloadLiveMaskModel, shiftLiveMask, whenDepthModelFetched } from './engine/vision/liveMask';
+import { captureLiveMask, estimateMaskShift, shiftLiveMask } from './engine/vision/liveMask';
 import { liveInterpolationEnabled, shouldPresentLiveDepth } from './engine/vision/liveDepthFlow';
 import { estimatePreparationSeconds, prepareVideoDepth, videoPreparationPolicy, type VideoDepthHandle, type VideoDepthProgress, type VideoMaskCapture } from './engine/vision/videoPrecompute';
 import { startBufferedVideoPlayback } from './engine/vision/bufferedVideoPlayback';
@@ -1288,14 +1288,8 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
           },
         },
       );
-      // Mask model bytes download right after the depth model's bytes (not at the first depth
-      // frame); a cached depth model gives no network entry, so its loaded session also starts it.
-      const preloadMask = () => { if (!iptal && !segmentKapaliRef.current) void preloadLiveMaskModel().catch(() => {}); };
-      const stopFetchWatch = whenDepthModelFetched(preloadMask);
-      void isitLiveModel().then(preloadMask, () => {});
       liveDepthStopRef.current = () => {
         iptal = true;
-        stopFetchWatch();
         stopDriver();
       };
     });
