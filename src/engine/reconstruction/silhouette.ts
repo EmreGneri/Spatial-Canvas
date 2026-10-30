@@ -173,6 +173,13 @@ function dilateBinary(src: Uint8Array, w: number, h: number, r: number): Uint8Ar
 export const MASK_SECONDARY_MIN_FRAC = 0.002;
 /** İkincil parçanın ana kütleye en fazla uzaklığı (piksel) — dilate yarıçapının 3 katı. */
 export const MASK_SECONDARY_NEAR_PX = 3 * MASK_DILATE_RADIUS;
+/**
+ * Video: a separate component at least this big (relative to the largest one) is another person, not a
+ * door frame or floor patch, so it stays however far it is. On the three test clips the model's raw mask
+ * had every one of these (8 parts >= 0.10 of the main, a second dancer or walker each time) and the
+ * near-only rule removed them; photos keep the old rule (no far kept, `Infinity`).
+ */
+export const VIDEO_FAR_MIN_FRAC = 0.1;
 
 /**
  * `keepLargestComponent`'in uzuv dostu hali: en büyük bileşene EK OLARAK ona
@@ -185,6 +192,7 @@ export const MASK_SECONDARY_NEAR_PX = 3 * MASK_DILATE_RADIUS;
 export function keepMainComponents(
   mask: Float32Array, w: number, h: number,
   nearPx: number = MASK_SECONDARY_NEAR_PX, minFrac: number = MASK_SECONDARY_MIN_FRAC,
+  farMinFrac: number = Infinity,
 ): Float32Array {
   const n = w * h;
   const id = new Int32Array(n).fill(-1);
@@ -215,6 +223,7 @@ export function keepMainComponents(
   for (let i = 1; i < next; i++) if (sizes[i] > sizes[big]) big = i;
   const kept = new Uint8Array(next);
   kept[big] = 1;
+  for (let i = 0; i < next; i++) if (sizes[i] >= sizes[big] * farMinFrac) kept[i] = 1;
   const minSize = sizes[big] * minFrac;
   // Aday varken yakınlık turu: kabul edilenlerin genişletilmişine değen aday da kabul (zincir el→kol→gövde).
   for (let tur = 0; tur < 4; tur++) {

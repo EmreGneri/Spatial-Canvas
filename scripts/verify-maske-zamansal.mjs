@@ -22,6 +22,17 @@ assert.equal(say(yeni), 3200 + 280 + 60, 'gövde + kol + el');
 assert.equal(yeni[20 * w + 110], 0, 'uzak parça düşer');
 assert.equal(yeni[81 * w + 53], 0, 'minik benek düşer');
 assert.equal(yeni[40 * w + 60], 1, 'kol kalır');
+// video: yeterince büyük (>= %10) ayrı parça başka bir kişidir, uzak olsa da kalır; küçük uzak parça yine düşer
+const { VIDEO_FAR_MIN_FRAC } = await import('../src/engine/reconstruction/silhouette.ts');
+const iki = bos();
+dikdortgen(iki, 10, 10, 50, 90);   // ana kişi 3200
+dikdortgen(iki, 70, 20, 90, 80);   // ikinci kişi, 20 px uzakta: 1200 = %37,5
+dikdortgen(iki, 105, 10, 115, 40); // 300 px = %9,4: eşiğin altı (kapı kasası)
+assert.equal(say(keepMainComponents(iki, w, h)), 3200, 'varsayılan (foto): uzak kişi düşer');
+const video = keepMainComponents(iki, w, h, undefined, undefined, VIDEO_FAR_MIN_FRAC);
+assert.equal(say(video), 3200 + 1200, 'video: uzak ikinci kişi kalır');
+assert.equal(video[20 * w + 110], 0, 'video: küçük uzak parça yine düşer');
+assert.equal(VIDEO_FAR_MIN_FRAC, 0.1);
 // tek parça: aynı nesne döner
 const tek = dikdortgen(bos(), 10, 10, 50, 90);
 assert.equal(keepMainComponents(tek, w, h), tek);
