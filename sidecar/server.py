@@ -167,9 +167,22 @@ def provider_adi(providers: list) -> str:
     return p if isinstance(p, str) else p[0]
 
 
-def session(path: Path, providers: list, fixed: dict[str, int] | None = None) -> ort.InferenceSession:
+def mask_threads() -> int:
+    """SIDECAR_MASK_THREADS: BiRefNet CPU intra-op iş parçacığı sayısı. Boş/0 = ORT varsayılanı (değişmedi).
+
+    Deney anahtarı (docs/benchmarks/video-sidecar-mask-threads.md); varsayılan kapalı.
+    """
+    value = int(os.environ.get('SIDECAR_MASK_THREADS') or 0)
+    if value < 0:
+        raise SystemExit(f'SIDECAR_MASK_THREADS negatif olamaz: {value}')
+    return value
+
+
+def session(path: Path, providers: list, fixed: dict[str, int] | None = None, threads: int = 0) -> ort.InferenceSession:
     so = ort.SessionOptions()
     so.log_severity_level = 3
+    if threads:
+        so.intra_op_num_threads = threads
     # ORT_ENABLE_ALL, DirectML'de fp16 V2'nin LayerNorm füzyonunu bozuyor
     # ("InsertedPrecisionFreeCast ... does not exist"); BASIC hem koşuyor hem BiRefNet'te daha hızlı.
     so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_BASIC
@@ -208,7 +221,7 @@ class Models:
         # BiRefNet CPU'da: DirectML'de 1024² etkinlikleri ~4,4 GB VRAM ekliyor; DA3 ile
         # toplam 7,2/8 GB olunca DA3 0,25 sn'den 11,6 sn'ye çıkıyor ve sonunda bellek
         # hatasıyla düşüyordu (ölçüldü 2026-10-10). CPU'da VRAM sabit ~3 GB, maske ~7 sn.
-        self.mask = session(model_dir / MODEL_FILES['mask'], ['CPUExecutionProvider'])
+        self.mask = session(model_dir / MODEL_FILES['mask'], ['CPUExecutionProvider'], threads=mask_threads())
         # Isınma: ilk çağrı kabukları derler (DA3 ~3,8 sn); ilk kullanıcı isteği beklemesin.
         self.run_small(np.zeros((1, 3, DA3_SIZE, DA3_SIZE), np.float32))
         self.run_da3(np.zeros((1, 3, DA3_SIZE, DA3_SIZE), np.float32))

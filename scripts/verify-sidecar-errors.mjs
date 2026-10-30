@@ -85,6 +85,9 @@ if (spawnSync(python, ['-c', 'import numpy, onnxruntime, PIL'], { timeout: 10000
   const diagnostics = spawnSync(python, ['sidecar/test_diagnostics.py'], { encoding: 'utf8' });
   assert.equal(diagnostics.status, 0, diagnostics.stderr || diagnostics.error?.message);
   console.log('verify-sidecar-diagnostics OK');
+  const threads = spawnSync(python, ['sidecar/test_mask_threads.py'], { encoding: 'utf8' });
+  assert.equal(threads.status, 0, threads.stderr || threads.error?.message);
+  console.log('verify-sidecar-mask-threads OK');
 } else {
   console.log('verify-sidecar-diagnostics SKIP (optional sidecar dependencies are not installed)');
 }

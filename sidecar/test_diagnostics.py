@@ -18,7 +18,7 @@ class DiagnosticsTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             for filename in server.MODEL_FILES.values():
                 (Path(folder) / filename).touch()
-            def fake_session(path, providers, fixed=None):
+            def fake_session(path, providers, fixed=None, threads=0):
                 return FakeSession(['CPUExecutionProvider'])
             with patch.object(server, 'session', side_effect=fake_session), \
                  patch.object(server.Models, 'run_small'), \
