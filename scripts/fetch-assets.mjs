@@ -75,6 +75,18 @@ const DAVID = [
   { file: 'foreground-segmentation-model-vitb16_384.onnx', size: 449231719 },
 ].map((m) => ({ ...m, url: DAVID_URL + m.file, dest: join(modelRoot, 'microsoft-david', m.file) }));
 const URL_MODELS = process.env.VITE_DAVID_PHOTO === '1' ? DAVID : [];
+// ?hizliMaske=selfie|multiclass (video fast person mask, off by default; docs/benchmarks/video-fast-mask.md).
+// LİSANS: Apache-2.0 — model kartları "Model Card MediaPipe Selfie Segmentation" ve "Model Card
+// Multiclass Segmentation", ikisi de "LICENSED UNDER Apache License, Version 2.0". Sürümlü URL (1).
+// Yalnız VITE_FAST_MASK=1 ile iner: temiz build'de yoktur, bayrak IS-Net'e düşer.
+const FAST_MASK = [
+  { url: 'https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter/float16/1/selfie_segmenter.tflite',
+    dest: join(modelRoot, 'mediapipe/selfie_segmenter.tflite'), size: 249537,
+    sha256: '191ac9529ae506ee0beefa6b2c945a172dab9d07d1e802a290a4e4038226658b' },
+  { url: 'https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_multiclass_256x256/float32/1/selfie_multiclass_256x256.tflite',
+    dest: join(modelRoot, 'mediapipe/selfie_multiclass_256x256.tflite'), size: 16371837,
+    sha256: 'c6748b1253a99067ef71f7e26ca71096cd449baefa8f101900ea23016507e0e0' },
+];
 // VDA resmî ağırlıktan yerelde üretilir (scripts/export-video-depth-anything.py).
 // Build Python/Torch kurmaz ve ölçümde çöken eski topluluk aktarımını dağıtmaz.
 // Bu aktarım HİÇBİR YERDE barındırılmıyor (açık karar): temiz Vercel build'inde
@@ -122,7 +134,7 @@ for (const file of ORT_FILES) {
   console.log(`${mb((await stat(src)).size)}  ort/${file}`);
 }
 
-for (const model of [FACE_LANDMARKER, ...EXTRA_MODELS, ...URL_MODELS]) {
+for (const model of [FACE_LANDMARKER, ...EXTRA_MODELS, ...URL_MODELS, ...(process.env.VITE_FAST_MASK === '1' ? FAST_MASK : [])]) {
   const url = model.url ?? `https://huggingface.co/${model.repo}/resolve/${model.rev}/${model.file}`;
   const result = await downloadAsset({ ...model, url });
   console.log(`${result === 'skip' ? '     skip' : mb(model.size)}  ${model.dest}`);
@@ -156,6 +168,8 @@ for (const file of MP_WASM_FILES) {
 await warnUnknownAssets(modelRoot, new Set([
   ...MODEL_REPOS.flatMap(({ repo, files }) => files.map(({ file }) => `${repo}/${file}`)),
   'mediapipe/face_landmarker.task',
+  'mediapipe/selfie_segmenter.tflite',
+  'mediapipe/selfie_multiclass_256x256.tflite',
   `${BIREFNET.repo}/${BIREFNET.file}`,
   DAVID_MASK_INT8.dest,
   `${MOGE.repo}/${MOGE.file}`,

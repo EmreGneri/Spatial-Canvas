@@ -89,6 +89,15 @@ export function videoMaskeIstegi(d: {
   return d.ayirmaAcik ? 'tazele' : 'ayirma-kapali';
 }
 
+/**
+ * `?hizliMaske`: the fast person mask of THIS depth frame replaces the IS-Net mask while it holds a
+ * person (same 8 % on / 4 % off hysteresis as separation, same 92 % upper gate); otherwise the
+ * IS-Net path (tracked, refreshed) takes over unchanged.
+ */
+export function hizliMaskeKullan(fgOran: number, oncekiKullanildi: boolean): boolean {
+  return fgOran <= MASKE_UST_ESIK && videoAyirmaDurumu(fgOran, oncekiKullanildi);
+}
+
 /** Histerezisli sonraki ayırma durumu (kullanıcı-kapalı mandalı çağıranda). */
 export function videoAyirmaDurumu(fgOran: number, acik: boolean): boolean {
   return acik ? fgOran >= AYIRMA_KAPATMA_ORANI : fgOran >= AYIRMA_ACMA_ORANI;

@@ -8,6 +8,7 @@ import { estimateDepth, depthDevice, FOTO_KALITE, loadDepthModel, luminanceHeigh
 import { segmentForeground, preloadPhotoMaskBytes } from './engine/reconstruction/segmentation';
 import { resampleBilinear } from './engine/reconstruction/silhouette';
 import { captureLiveMask, estimateMaskShift, shiftLiveMask } from './engine/vision/liveMask';
+import { fastMaskModel, loadPersonSegmenter, segmentPerson } from './engine/vision/personMask';
 import { liveInterpolationEnabled, shouldPresentLiveDepth } from './engine/vision/liveDepthFlow';
 import { estimatePreparationSeconds, prepareVideoDepth, videoPreparationPolicy, type VideoDepthHandle, type VideoDepthProgress, type VideoMaskCapture } from './engine/vision/videoPrecompute';
 import { startBufferedVideoPlayback } from './engine/vision/bufferedVideoPlayback';
@@ -36,7 +37,7 @@ import { KutuphanePaneli } from './ui/KutuphanePaneli';
 import { kaynakBelirle } from './ui/presetOnizleme';
 import { soganAcilisGerekliMi, sunumAcikMi } from './ui/sunumModu';
 import { serializeRenderState } from './shaders/renderPreset';
-import { AYIRMA_KAPATMA_ORANI, maskeKarari, maskeTekParcaOrani, videoAyirmaDurumu, videoMaskeIstegi } from './ui/maskeKarari';
+import { AYIRMA_KAPATMA_ORANI, hizliMaskeKullan, maskeKarari, maskeTekParcaOrani, videoAyirmaDurumu, videoMaskeIstegi } from './ui/maskeKarari';
 import { classifyCategory, type CategoryInput } from './ui/category';
 import { useDarEkran } from './ui/useDarEkran';
 import { ACILIS_BOY, ACILIS_EN, ACILIS_NOTU, acilisDerinligi, BINALAR, GOK, KURE, UFUK_Y, ZEMIN } from './ui/acilisSahnesi';
@@ -989,8 +990,15 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
     let statsAt = performance.now(), statsFrames = 0, totalFrames = 0;
     // `data` is what is applied (the captured mask moved by the image tracker); `captured` never changes.
     let videoMask: { data: Float32Array; captured: Float32Array; width: number; height: number; mediaTime: number;
-      colorFrame: { data: Uint8ClampedArray; width: number; height: number }; job?: VideoMaskJob } | null = null;
+      colorFrame: { data: Uint8ClampedArray; width: number; height: number }; job?: VideoMaskJob; fast?: true } | null = null;
     let maskBusy = false;
+    // ?hizliMaske (off by default): a fast person mask computed on every model depth frame's own
+    // colour frame. Loaded at the first model frame; synchronous per frame, so no queue and no
+    // late result can land on another video/seek. Failure -> IS-Net path only.
+    const fastModel = fastMaskModel(location.search);
+    let fastSegmenter: Awaited<ReturnType<typeof loadPersonSegmenter>> | null = null;
+    let fastRequested = false;
+    let fastActive = false;
     let maskUnavailable = false;
     let maskErrors = 0;
     let invalidMasks = 0;
@@ -1196,9 +1204,39 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
             stopLuminanceLoop();
             say('canlı derinlik: model devraldı (depth-anything-v2-small · fp16)');
           }
+          if (fastModel && !fastRequested) {
+            fastRequested = true;
+            void loadPersonSegmenter(fastModel).then((s) => { if (!iptal) fastSegmenter = s; })
+              .catch((err) => say(`hızlı maske yüklenemedi, IS-Net ile devam: ${err instanceof Error ? err.message : String(err)}`));
+          }
           syncMaskRequest();
+          if (fastSegmenter && fastModel && d.colorFrame && !segmentKapaliRef.current) {
+            const startAt = performance.now();
+            const m = segmentPerson(fastSegmenter, fastModel, d.colorFrame);
+            let foreground = 0;
+            for (const value of m.data) if (value >= 0.5) foreground++;
+            const coverage = foreground / m.data.length;
+            fastActive = hizliMaskeKullan(coverage, fastActive);
+            if (fastActive) {
+              // Drops an IS-Net job in flight: its older frame must not replace this one.
+              maskRevision++;
+              const job = logMaskJob({ reason: 'hizli', startAt, mediaTime: d.mediaTime, doneAt: performance.now(),
+                appliedAt: null, coverage, separation: null, dropped: false });
+              videoMask = { data: m.data, captured: m.data, width: m.width, height: m.height, mediaTime: d.mediaTime,
+                colorFrame: d.colorFrame, job, fast: true };
+              maskLost = false;
+              if (!segmentRef.current) {
+                updateSegment(true);
+                requestedRevision = segmentRevisionRef.current;
+                engineRef.current?.setObjectSeparation(true);
+              }
+              job.separation = segmentRef.current;
+            } else if (videoMask?.fast) {
+              videoMask = null; // no person in this frame: the IS-Net path starts from its first mask
+            }
+          }
           const mask = segmentRef.current ? videoMask : null;
-          if (mask && d.colorFrame) {
+          if (mask && !mask.fast && d.colorFrame) {
             // Align the mask to THIS depth frame's own picture: where did the masked pixels of the
             // mask's capture frame move to? Measured from the capture frame every time, so no drift.
             const captured = { data: mask.captured, width: mask.width, height: mask.height };
@@ -1213,7 +1251,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
             duraklatildi: video.paused, hazirMaskeVar: !!pausedPreparedMask(d.mediaTime),
             ayirmaAcik: segmentRef.current, gecenMs: performance.now() - lastMaskAttempt,
             izKayip: maskLost, sonIsMs: lastJobMs });
-          if (istek) captureMask(istek);
+          if (istek && !fastActive) captureMask(istek);
           else if (videoMask) videoStats.maskGate.interval++;
           // Let the Worker align the new model anchor before replacing a masked flow frame.
           const awaitingMask = segmentRef.current && lastDepth?.flowMask && !d.flowMask
