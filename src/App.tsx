@@ -1119,7 +1119,8 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
           videoMask = { data: result.data, captured: result.data, width: result.width, height: result.height,
             mediaTime: maskMediaTime, colorFrame: maskColorFrame, job };
           maskLost = false;
-          lastJobMs = job.doneAt - job.startAt;
+          // The first job also creates the model session (1.5 s measured): it would set a 6 s period.
+          if (reason !== 'ilk') lastJobMs = job.doneAt - job.startAt;
           invalidMasks = 0;
           maskErrors = 0;
           maskNextRetryAt = 0;

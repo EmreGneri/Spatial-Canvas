@@ -93,6 +93,7 @@ const app = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
 assert.match(app, /const istek = videoMaskeIstegi\(\{ maskeVar: !!videoMask, kullaniciKapatti: segmentKapaliRef\.current,\s*duraklatildi: video\.paused,/);
 assert.match(app, /if \(istek\) captureMask\(istek\);/);
 assert.match(app, /izKayip: maskLost, sonIsMs: lastJobMs \}\);/, 'tracker state and last job cost reach the gate');
+assert.match(app, /if \(reason !== 'ilk'\) lastJobMs = job\.doneAt - job\.startAt;/, 'model load time of the first job does not set the period');
 assert.doesNotMatch(app, /trackLiveMask|kutleMerkezi\(d\.data/, 'depth-centroid shift replaced by the image tracker');
 // No early IS-Net download: measured cold at 100 Mbit/s it delayed the first depth frame by
 // 0.6-3 s for a 0-2 s earlier mask (docs/benchmarks/video-mask-tracking.md).
