@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { register } from 'node:module';
 register('./ts-extension-loader.mjs', import.meta.url);
-const { videoMaskeIstegi, videoAyirmaDurumu, VIDEO_MASKE_TAZELEME_MS, MASKE_UST_ESIK } = await import('../src/ui/maskeKarari.ts');
+const { videoMaskeIstegi, videoMaskeAraligi, videoAyirmaDurumu, VIDEO_MASKE_TAZELEME_MS, VIDEO_MASKE_IS_PAYI, MASKE_UST_ESIK } = await import('../src/ui/maskeKarari.ts');
 const { videoStats, logMaskJob } = await import('../src/engine/vision/videoStats.ts');
 
 // IS-Net coverage of personal clip A every 0.5 s from 0.25 s (production captureLiveMask, sidecar off).
@@ -28,7 +28,7 @@ function simulate({ start, seconds = 60, userOff = false, pausedAt = Infinity, c
       jobs.at(-1).sep = sep;
     }
     const want = videoMaskeIstegi({ maskeVar: mask, kullaniciKapatti: userOff, duraklatildi: now >= pausedAt,
-      hazirMaskeVar: false, ayirmaAcik: sep, gecenMs: (now - last) * 1000 });
+      hazirMaskeVar: false, ayirmaAcik: sep, gecenMs: (now - last) * 1000, sonIsMs: 500 });
     const allowed = want && (refresh || want === 'ilk');
     if (allowed && !pending && now >= nextRetry) { last = now; pending = { c: cov(media) }; busyUntil = now + 0.5; jobs.push({ at: now, why: want, c: pending.c }); }
     if (sep && jobs.at(-1)?.onAt === undefined) jobs.at(-1).onAt = now;
@@ -37,13 +37,25 @@ function simulate({ start, seconds = 60, userOff = false, pausedAt = Infinity, c
 }
 
 // 1. Pure gate.
-const base = { maskeVar: true, kullaniciKapatti: false, duraklatildi: false, hazirMaskeVar: false, ayirmaAcik: true, gecenMs: 1e9 };
-assert.equal(VIDEO_MASKE_TAZELEME_MS, 8000, 'measured period (15/8/4 s sweep)');
+const base = { maskeVar: true, kullaniciKapatti: false, duraklatildi: false, hazirMaskeVar: false, ayirmaAcik: true, gecenMs: 1e9, sonIsMs: 500 };
+assert.equal(VIDEO_MASKE_TAZELEME_MS, 8000, 'upper bound: the measured 8 s period (15/8/4 s sweep)');
+// Cost-bounded period: a job may take at most VIDEO_MASKE_IS_PAYI of the time, never rarer than 8 s.
+assert.equal(VIDEO_MASKE_IS_PAYI, 0.25);
+assert.equal(videoMaskeAraligi(500), 2000, '0.5 s job -> every 2 s');
+assert.equal(videoMaskeAraligi(3000), 8000, 'slow device: capped at the old 8 s');
+assert.equal(videoMaskeAraligi(null), 2400, 'unknown cost (first job pending): 0.6 s assumed');
+assert.equal(videoMaskeAraligi(Number.NaN), 2400);
 assert.equal(videoMaskeIstegi({ ...base, maskeVar: false }), 'ilk', 'no mask (first or after a rejected one) -> capture');
 assert.equal(videoMaskeIstegi({ ...base, maskeVar: false, hazirMaskeVar: true }), null, 'paused prepared mask covers it');
 assert.equal(videoMaskeIstegi(base), 'tazele');
 assert.equal(videoMaskeIstegi({ ...base, ayirmaAcik: false }), 'ayirma-kapali', 'small mask, separation off: still refreshed');
-assert.equal(videoMaskeIstegi({ ...base, gecenMs: 7999 }), null, 'one per period');
+assert.equal(videoMaskeIstegi({ ...base, gecenMs: 1999 }), null, 'one per period');
+assert.equal(videoMaskeIstegi({ ...base, gecenMs: 2000 }), 'tazele');
+// Tracker lost the subject: asked as soon as the cost bound allows, never sooner (no storm).
+assert.equal(videoMaskeIstegi({ ...base, gecenMs: 2000, izKayip: true }), 'kayip');
+assert.equal(videoMaskeIstegi({ ...base, gecenMs: 1999, izKayip: true }), null, 'lost still respects the cost bound');
+assert.equal(videoMaskeIstegi({ ...base, izKayip: true, duraklatildi: true }), null);
+assert.equal(videoMaskeIstegi({ ...base, izKayip: true, kullaniciKapatti: true }), null, 'user-off latch wins over lost');
 assert.equal(videoMaskeIstegi({ ...base, duraklatildi: true }), null, 'paused: no refresh of the same frame');
 for (const m of [true, false]) assert.equal(videoMaskeIstegi({ ...base, maskeVar: m, kullaniciKapatti: true }), null, 'user-off latch');
 
@@ -80,6 +92,8 @@ for (let i = 1; i < busy.length; i++) assert.ok(busy[i].at - busy[i - 1].at >= 0
 const app = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
 assert.match(app, /const istek = videoMaskeIstegi\(\{ maskeVar: !!videoMask, kullaniciKapatti: segmentKapaliRef\.current,\s*duraklatildi: video\.paused,/);
 assert.match(app, /if \(istek\) captureMask\(istek\);/);
+assert.match(app, /izKayip: maskLost, sonIsMs: lastJobMs \}\);/, 'tracker state and last job cost reach the gate');
+assert.doesNotMatch(app, /trackLiveMask|kutleMerkezi\(d\.data/, 'depth-centroid shift replaced by the image tracker');
 assert.doesNotMatch(app, /maskeYenilenmeliMi|VIDEO_MASK_MIN_REFRESH_MS|maskBaseline/, 'drift gate (never fired on personal clip A) removed');
 assert.match(app, /if \(segmentKapaliRef\.current \|\| iptal \|\| maskBusy \|\|/, 'single flight: a busy request is dropped, no queue');
 assert.match(app, /if \(iptal \|\| videoRef\.current !== video \|\| revision !== maskRevision\) \{ job\.dropped = true; return; \}/,

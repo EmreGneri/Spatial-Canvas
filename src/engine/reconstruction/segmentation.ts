@@ -122,15 +122,30 @@ export async function loadSegmentationModel(device: 'wasm' | 'webgpu' = 'webgpu'
   // ilerleme bildirmez — 84 MB boyunca ekranda hiçbir şey değişmez.
   // `ilerlemeliGetir` aynı dosyayı akıtır, yüzdeyi bildirir ve tamponu verir.
   yukleSession ??= onceRetry(async () => {
-    const bayt = await ilerlemeliGetir(MODEL_PATH, 'nesne ayırma modeli');
-    return gpuSirasinaGir(() =>
-      ort.InferenceSession.create(bayt, {
-        executionProviders: device === 'webgpu' ? ['webgpu', 'wasm'] : ['wasm'],
-      }),
-    );
+    const pending = preloadSegmentationBytes();
+    const bayt = await pending;
+    try {
+      return await gpuSirasinaGir(() =>
+        ort.InferenceSession.create(bayt, {
+          executionProviders: device === 'webgpu' ? ['webgpu', 'wasm'] : ['wasm'],
+        }),
+      );
+    } finally { if (isnetDownload === pending) isnetDownload = null; }
   });
   segSession = await yukleSession();
   return segSession;
+}
+
+let isnetDownload: Promise<ArrayBuffer> | null = null;
+/**
+ * IS-Net bytes only (network, no GPU work). The live video path starts this once the depth
+ * model is loaded, so the first mask no longer waits for an 88 MB download that only began
+ * at the first depth frame. GPU session creation stays in `loadSegmentationModel`.
+ */
+export function preloadSegmentationBytes(): Promise<ArrayBuffer> {
+  if (segSession) return Promise.resolve(new ArrayBuffer(0));
+  return isnetDownload ??= ilerlemeliGetir(MODEL_PATH, 'nesne ayırma modeli')
+    .catch(error => { isnetDownload = null; throw error; });
 }
 
 let birefnetSession: ort.InferenceSession | null = null;

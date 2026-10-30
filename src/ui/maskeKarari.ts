@@ -49,28 +49,43 @@ export const MASKE_UST_ESIK = 0.92;
 export const AYIRMA_ACMA_ORANI = 0.08;
 export const AYIRMA_KAPATMA_ORANI = 0.04;
 /**
- * Canlı video maskesinin tazeleme periyodu — ayırma açık da kapalı da
- * (docs/benchmarks/video-mask-refresh.md). Eski kapı (kaçırma oranı tabanı
- * aşarsa, en erken 15 sn) personal clip A'da hiç tetiklenmedi; küçük ilk maskeyle
- * ayırma kapalıysa hiç yeni maske istenmiyordu. 15/8/4 sn denendi.
+ * Canlı video maskesinin tazeleme periyodu — ayırma açık da kapalı da. Sabit 8 sn
+ * (docs/benchmarks/video-mask-refresh.md) uygulanan maskeyi 3–8 sn bayat bırakıyordu
+ * (docs/benchmarks/video-mask-tracking.md). Artık periyot işin KENDİ maliyetinden çıkar:
+ * maske işi zamanın en çok `VIDEO_MASKE_IS_PAYI` kadarını alır (GPU kuyruğu + ana iş
+ * parçacığı derinlikle paylaşılır), ama `VIDEO_MASKE_TAZELEME_MS`'den seyrek olmaz.
+ * Aradaki hareketi görüntü izleyici (`estimateMaskShift`) taşır; izleyici "kayıp" derse
+ * (kesme, örtülme, özne çıktı) tazeleme periyodu beklemeden, yine pay sınırıyla istenir.
  */
 export const VIDEO_MASKE_TAZELEME_MS = 8000;
+export const VIDEO_MASKE_IS_PAYI = 0.25;
+/** İş süresi bilinmezken (ilk iş henüz bitmedi) varsayılan maliyet. */
+const VARSAYILAN_IS_MS = 600;
+
+/** Son iş süresine göre iki istek arasında en az geçmesi gereken süre (ms). */
+export function videoMaskeAraligi(sonIsMs: number | null): number {
+  const is = sonIsMs !== null && Number.isFinite(sonIsMs) && sonIsMs > 0 ? sonIsMs : VARSAYILAN_IS_MS;
+  return Math.min(VIDEO_MASKE_TAZELEME_MS, is / VIDEO_MASKE_IS_PAYI);
+}
 
 /**
  * Bir derinlik karesinde maske işi istenmeli mi (saf; yakalamayı App yapar,
  * uçuşta iş varsa ya da hata geri çekilmesi sürüyorsa yine o reddeder).
  * - kullanıcı ayırmayı kapattıysa: hiç istenmez (mandal);
  * - maske yoksa (ilk kare ya da reddedilen maskeden sonra): 'ilk';
- * - maske varsa: duraklatılmamışsa her periyotta bir; ayırma kapalıyken de
- *   ('ayirma-kapali'), ki küçük ilk maskeden sonraki büyük maske ayırmayı açsın.
+ * - maske varsa ve duraklatılmamışsa: iş payı aralığı dolunca 'tazele' (ayırma kapalıyken
+ *   'ayirma-kapali', ki küçük ilk maskeden sonraki büyük maske ayırmayı açsın); izleyici
+ *   kaybettiyse aynı aralıkla 'kayip' (öncelik ona: sebep loglanır).
  */
 export function videoMaskeIstegi(d: {
   maskeVar: boolean; kullaniciKapatti: boolean; duraklatildi: boolean;
   hazirMaskeVar: boolean; ayirmaAcik: boolean; gecenMs: number;
-}): 'ilk' | 'tazele' | 'ayirma-kapali' | null {
+  izKayip?: boolean; sonIsMs?: number | null;
+}): 'ilk' | 'tazele' | 'ayirma-kapali' | 'kayip' | null {
   if (d.kullaniciKapatti) return null;
   if (!d.maskeVar) return d.hazirMaskeVar ? null : 'ilk';
-  if (d.duraklatildi || d.gecenMs < VIDEO_MASKE_TAZELEME_MS) return null;
+  if (d.duraklatildi || d.gecenMs < videoMaskeAraligi(d.sonIsMs ?? null)) return null;
+  if (d.izKayip) return 'kayip';
   return d.ayirmaAcik ? 'tazele' : 'ayirma-kapali';
 }
 

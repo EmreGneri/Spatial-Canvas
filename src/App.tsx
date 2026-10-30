@@ -7,7 +7,7 @@ import { readExifFocal } from './vendor/splat.js/io/exif.js';
 import { estimateDepth, depthDevice, FOTO_KALITE, loadDepthModel, luminanceHeightMap, resetLuminanceState } from './depth';
 import { segmentForeground, preloadPhotoMaskBytes } from './engine/reconstruction/segmentation';
 import { resampleBilinear } from './engine/reconstruction/silhouette';
-import { captureLiveMask, trackLiveMask } from './engine/vision/liveMask';
+import { captureLiveMask, estimateMaskShift, preloadLiveMaskModel, shiftLiveMask } from './engine/vision/liveMask';
 import { liveInterpolationEnabled, shouldPresentLiveDepth } from './engine/vision/liveDepthFlow';
 import { estimatePreparationSeconds, prepareVideoDepth, videoPreparationPolicy, type VideoDepthHandle, type VideoDepthProgress, type VideoMaskCapture } from './engine/vision/videoPrecompute';
 import { startBufferedVideoPlayback } from './engine/vision/bufferedVideoPlayback';
@@ -60,8 +60,8 @@ import * as THREE from 'three';
 import { type TrackedTarget, type TrackerModu } from './engine/vision/tracker';
 import { TrackerClient } from './engine/vision/trackerClient';
 import {
-  canliGirdiBoyutu, isitLiveModel, kutleMerkezi, liveDepthKullanilabilir, liveGrabSize,
-  startLiveDepth, ustPercentilEsigi, type KutleMerkezi, type LiveDepthResult,
+  canliGirdiBoyutu, isitLiveModel, liveDepthKullanilabilir, liveGrabSize,
+  startLiveDepth, type LiveDepthResult,
 } from './engine/vision/liveDepth';
 import { yetenekRaporu } from './engine/vision/yetenek';
 import {
@@ -93,12 +93,6 @@ const LUMINANCE_SMOOTHING_ALPHA = 0.12;
  * hareketli bölge anında takip eder. |Δ| ≥ ~0.15 → tam takip.
  */
 const LUMINANCE_MOTION_GAIN = 6;
-/**
- * Gerçek tazelemeler ARASINDA maskenin kaydırılabileceği toplam yol (kadraj
- * oranı) — referans yoldaki `MASKE_MAX_KAYMA`. Öteleme dışı değişimler birikir;
- * sınırdan sonra kaydırma durur, periyodik tazeleme (VIDEO_MASKE_TAZELEME_MS) düzeltir.
- */
-const VIDEO_MASK_MAX_SHIFT = 0.25;
 /** Video hazırlanırken canlı V2 çıkarımları arası en az süre (GPU kuyruğu paylaşılır). */
 const PREPARING_LIVE_INFER_MS = 500;
 const VIDEO_STAGE_LABEL: Record<VideoDepthProgress['stage'], string> = {
@@ -987,16 +981,17 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
     setLiveStats({ path: 'loading', hz: 0, inferenceMs: 0, width: 0, height: 0,
       frames: 0, mediaTime: null, geometryAgeMs: null });
     let statsAt = performance.now(), statsFrames = 0, totalFrames = 0;
-    let videoMask: { data: Float32Array; width: number; height: number; mediaTime: number;
+    // `data` is what is applied (the captured mask moved by the image tracker); `captured` never changes.
+    let videoMask: { data: Float32Array; captured: Float32Array; width: number; height: number; mediaTime: number;
       colorFrame: { data: Uint8ClampedArray; width: number; height: number }; job?: VideoMaskJob } | null = null;
     let maskBusy = false;
     let maskUnavailable = false;
     let maskErrors = 0;
     let invalidMasks = 0;
     let maskNextRetryAt = 0;
-    // Kaydırma kolu (referans yol · maskeBayatsaTazele): temel merkez ve birikmiş yol.
-    let shiftBase: KutleMerkezi | null = null;
-    let shiftTotal = 0;
+    // Image tracker: the subject is no longer where the mask says (cut, occlusion, left the frame).
+    let maskLost = false;
+    let lastJobMs: number | null = null;
     let lastMaskAttempt = -Infinity;
     let maskRevision = 0;
     let requestedRevision = segmentRevisionRef.current;
@@ -1121,10 +1116,10 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
             say(`video maskesi güvenilir değil (%${(coverage * 100).toFixed(0)} ön plan); sonra yeniden denenecek`);
             return;
           }
-          videoMask = { data: result.data, width: result.width, height: result.height,
+          videoMask = { data: result.data, captured: result.data, width: result.width, height: result.height,
             mediaTime: maskMediaTime, colorFrame: maskColorFrame, job };
-          shiftBase = null;
-          shiftTotal = 0;
+          maskLost = false;
+          lastJobMs = job.doneAt - job.startAt;
           invalidMasks = 0;
           maskErrors = 0;
           maskNextRetryAt = 0;
@@ -1191,23 +1186,23 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
           }
           syncMaskRequest();
           const mask = segmentRef.current ? videoMask : null;
-          // First mask, retry after a rejected one, and the periodic refresh (also while
-          // separation is off, so a later larger mask can switch it on): maskeKarari.ts.
+          if (mask && d.colorFrame) {
+            // Align the mask to THIS depth frame's own picture: where did the masked pixels of the
+            // mask's capture frame move to? Measured from the capture frame every time, so no drift.
+            const captured = { data: mask.captured, width: mask.width, height: mask.height };
+            const shift = estimateMaskShift(captured, mask.colorFrame, d.colorFrame);
+            maskLost = !!shift?.lost;
+            // Keep object identity: replacing it would invalidate an in-flight depth inference.
+            if (shift && !shift.lost) mask.data = shiftLiveMask(captured, shift);
+          }
+          // First mask, retry after a rejected one, the cost-bounded refresh (also while separation
+          // is off, so a later larger mask can switch it on) and the tracker's "lost": maskeKarari.ts.
           const istek = videoMaskeIstegi({ maskeVar: !!videoMask, kullaniciKapatti: segmentKapaliRef.current,
             duraklatildi: video.paused, hazirMaskeVar: !!pausedPreparedMask(d.mediaTime),
-            ayirmaAcik: segmentRef.current, gecenMs: performance.now() - lastMaskAttempt });
+            ayirmaAcik: segmentRef.current, gecenMs: performance.now() - lastMaskAttempt,
+            izKayip: maskLost, sonIsMs: lastJobMs });
           if (istek) captureMask(istek);
           else if (videoMask) videoStats.maskGate.interval++;
-          if (mask) {
-            const threshold = ustPercentilEsigi(d.data, 25);
-            // Follow small motion before presenting this frame, without another GPU inference.
-            const now = kutleMerkezi(d.data, d.width, d.height, threshold);
-            const tracked = trackLiveMask(mask, shiftBase, now, shiftTotal, VIDEO_MASK_MAX_SHIFT);
-            // Keep object identity: replacing it would invalidate an in-flight depth inference.
-            mask.data = tracked.data;
-            shiftBase = tracked.center;
-            shiftTotal = tracked.distance;
-          }
           // Let the Worker align the new model anchor before replacing a masked flow frame.
           const awaitingMask = segmentRef.current && lastDepth?.flowMask && !d.flowMask
             && !video.paused && d.mediaTime - lastDepth.mediaTime < 0.5;
@@ -1273,8 +1268,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
             if (reason !== 'loop' && !cutTooSoon) {
               maskRevision++;
               videoMask = null;
-              shiftBase = null;
-              shiftTotal = 0;
+              maskLost = false;
               maskUnavailable = false;
               maskErrors = 0;
               invalidMasks = 0;
@@ -1298,6 +1292,8 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
         iptal = true;
         stopDriver();
       };
+      // Mask model bytes download after the depth model's, not at the first depth frame.
+      void isitLiveModel().then(() => { if (!iptal && !segmentKapaliRef.current) return preloadLiveMaskModel(); }).catch(() => {});
     });
   }
 
