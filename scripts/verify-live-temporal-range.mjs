@@ -46,4 +46,20 @@ for (let y = 3; y < 17; y++) for (let x = 4; x < 16; x++) smallSubject[y * width
 assert.ok(liveDepth.canliKirpmaKutusu(smallSubject, width, height, null), 'subject box is produced for video');
 assert.equal(liveDepth.chooseLiveCrop, undefined, 'no video-specific crop veto remains');
 
+// Crop gate hysteresis: a box area hovering around a limit must not switch the crop on and off every refresh
+// (a mask that alternates between one and two people does that). It starts only KIRPMA_HISTEREZIS inside the
+// limits and, once on, keeps the old limits; the lower limit (measured regression zone) is never relaxed.
+{
+  const side = (n) => { const m = new Float32Array(100 * 100); for (let y = 10; y < 10 + n; y++) for (let x = 10; x < 10 + n; x++) m[y * 100 + x] = 1; return m; };
+  const crop = (n, prev) => liveDepth.canliKirpmaKutusu(side(n), 100, 100, prev);
+  const on = crop(57, null); // padded area 0.42: inside by more than the margin
+  assert.ok(on, 'box above lower limit + margin starts the crop');
+  assert.equal(crop(53, null), null, 'area 0.372: inside the margin, does not START the crop');
+  assert.ok(crop(53, on), 'area 0.372 with the crop already on: stays on');
+  assert.equal(crop(49, on), null, 'area 0.325: below the lower limit, off even when on (never relaxed)');
+  assert.equal(crop(77, null), null, 'area 0.72: inside the upper margin, does not start');
+  assert.ok(crop(77, on), 'area 0.72 with the crop on: stays on');
+  assert.equal(crop(80, on), null, 'area 0.77: above the upper limit, off');
+}
+
 console.log('OK live temporal range (per-frame EMA), cut reset, and video crop policy');

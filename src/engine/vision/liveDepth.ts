@@ -340,10 +340,15 @@ export function canliKirpmaKutusu(
   const ny1 = Math.min(1, (y1 + 1) / mh + KIRPMA_PAY);
   const kutu: KirpmaKutusu = { x: nx, y: ny, w: nx1 - nx, h: ny1 - ny };
   const alan = kutu.w * kutu.h;
+  // Kapı HİSTEREZİSİ: kutu alanı eşiğin etrafında gidip gelirse (birkaç kişili sahnede maske bir ↔ iki kişi
+  // arasında değişir) kırpma her yenilemede açılıp kapanır ve model girdisi/normalizasyon her seferinde
+  // sıfırlanır. Kırpma yalnız eşiğin `KIRPMA_HISTEREZIS` İÇİNDEN başlar; açıkken eski eşiklerde kalır. Alt
+  // sınır hiçbir zaman aşağı gevşetilmez (ölçülmüş gerileme bölgesi, bkz. `KIRPMA_MIN_ALAN`).
+  const giris = onceki ? 0 : KIRPMA_HISTEREZIS;
   // ÜST sınır: özne kadrajı zaten dolduruyor, kırpmanın verecek çözünürlüğü yok.
-  if (alan >= KIRPMA_ATLAMA_ALANI) return null;
+  if (alan >= KIRPMA_ATLAMA_ALANI - giris) return null;
   // ALT sınır: ölçülmüş gerileme bölgesi — bkz. `KIRPMA_MIN_ALAN`.
-  if (alan < KIRPMA_MIN_ALAN) return null;
+  if (alan < KIRPMA_MIN_ALAN + giris) return null;
 
   if (
     onceki
