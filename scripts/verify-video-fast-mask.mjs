@@ -49,7 +49,11 @@ assert.match(body, /if \(mask && !mask\.fast && d\.colorFrame\) \{/, 'tracker un
 // await, no queue); taking over drops an IS-Net job in flight; seek / cut / switch reset as before.
 const branch = body.slice(body.indexOf('if (fastSegmenter && fastModel'), body.indexOf('const mask = segmentRef.current ? videoMask : null;'));
 assert.doesNotMatch(branch, /await|\.then\(|setTimeout|queue/i, 'synchronous: nothing can land later');
-assert.match(branch, /const m = segmentPerson\(fastSegmenter, fastModel, d\.colorFrame\);/, 'mask of this depth frame');
+// The segmenter may run early (in the depth model's GPU wait) on the SAME grabbed colour frame;
+// any other frame's result is ignored and the mask is computed here.
+assert.match(branch, /const pending = fastPending\?\.frame === d\.colorFrame \? fastPending : null;\s*fastPending = null;/, 'precomputed mask only for this frame');
+assert.match(branch, /const m = pending\?\.mask \?\? segmentPerson\(fastSegmenter, fastModel, d\.colorFrame\);/, 'mask of this depth frame');
+assert.match(app, /onColorFrame: fastModel \? \(frame\) => \{\s*if \(!fastSegmenter \|\| !fastModel \|\| segmentKapaliRef\.current\) return;/, 'flag off: no colour-frame hook');
 assert.match(branch, /mediaTime: d\.mediaTime,\s*colorFrame: d\.colorFrame, job, fast: true \};/);
 assert.match(branch, /maskRevision\+\+;/, 'in-flight IS-Net job dropped');
 assert.match(branch, /else if \(videoMask\?\.fast\) \{\s*videoMask = null;/, 'no person: a fast mask is never kept stale');

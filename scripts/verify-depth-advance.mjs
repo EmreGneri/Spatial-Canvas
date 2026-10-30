@@ -17,7 +17,7 @@ assert.equal(flow.liveInterpolationEnabled('?derinlikIlerlet=1'), false, 'advanc
 const src = readFileSync(new URL('../src/engine/vision/liveDepth.ts', import.meta.url), 'utf8').replace(/\r/g, '');
 assert.match(src, /const advanceClient = !flowClient && depthAdvanceEnabled\(\) \? new LiveDepthFlowClient\(/);
 assert.match(src, /present\(advanceClient \? advance\(depth\) : depth\);/, 'flag off: the model result is presented as is');
-assert.match(src, /\.\.\.\(advanceClient \? \{ onColorFrame \} : \{\}\),/, 'flag off: estimateDepthLive gets no extra option');
+assert.match(src, /\.\.\.\(advanceClient \|\| opts\.onColorFrame \? \{ onColorFrame: /, 'flags off: estimateDepthLive gets no extra option');
 assert.match(src, /opts\.onColorFrame\?\.\(colorFrame, mediaTime\);/);
 assert.match(src, /const present = \(depth: LiveDepthResult\) => \{\n {4}const uploadStart = performance\.now\(\);\n {4}onDepth\(depth\);\n {4}if \(autoQuality && !video\.paused\) \{\n {6}qualityState = advanceLiveQuality\(qualityState, depth\.inferenceMs \+ performance\.now\(\) - uploadStart\);/);
 assert.equal((src.match(/onDepth\(depth\)/g) ?? []).length, 1, 'model frames reach onDepth only through present()');

@@ -1689,6 +1689,8 @@ export function startLiveDepth(
     onVazgec?: () => void;
     onDiscontinuity?: (reason: 'seek' | 'loop' | 'scene-cut') => void;
     onStaleDrop?: (ageMs: number) => void;
+    /** The model's RGB frame as soon as it is grabbed (before inference); same object as the result's colorFrame. */
+    onColorFrame?: (frame: ImageData, mediaTime: number) => void;
   } = {},
 ): () => void {
   const maxErrors = 3;
@@ -1948,7 +1950,10 @@ export function startLiveDepth(
           girdi: size,
           subjectMask: mask,
           isCurrent,
-          ...(advanceClient ? { onColorFrame } : {}),
+          ...(advanceClient || opts.onColorFrame ? { onColorFrame: (frame: ImageData, mediaTime: number) => {
+            if (advanceClient) onColorFrame(frame, mediaTime);
+            opts.onColorFrame?.(frame, mediaTime);
+          } } : {}),
         });
       } catch (error) {
         if (!isCurrent()) return null;

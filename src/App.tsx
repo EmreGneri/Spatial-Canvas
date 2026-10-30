@@ -999,6 +999,8 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
     let fastSegmenter: Awaited<ReturnType<typeof loadPersonSegmenter>> | null = null;
     let fastRequested = false;
     let fastActive = false;
+    // Fast mask computed during the depth model's GPU wait (keyed by the grabbed colour frame).
+    let fastPending: { frame: ImageData; startAt: number; mask: ReturnType<typeof segmentPerson> } | null = null;
     let maskUnavailable = false;
     let maskErrors = 0;
     let invalidMasks = 0;
@@ -1211,8 +1213,10 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
           }
           syncMaskRequest();
           if (fastSegmenter && fastModel && d.colorFrame && !segmentKapaliRef.current) {
-            const startAt = performance.now();
-            const m = segmentPerson(fastSegmenter, fastModel, d.colorFrame);
+            const pending = fastPending?.frame === d.colorFrame ? fastPending : null;
+            fastPending = null;
+            const startAt = pending?.startAt ?? performance.now();
+            const m = pending?.mask ?? segmentPerson(fastSegmenter, fastModel, d.colorFrame);
             let foreground = 0;
             for (const value of m.data) if (value >= 0.5) foreground++;
             const coverage = foreground / m.data.length;
@@ -1327,6 +1331,15 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
             }
           },
           onStaleDrop: () => { staleDrops++; },
+          // Fast mask off the depth frame's task: the segmenter runs in the next task, while the GPU
+          // runs the depth model on the same frame (docs/benchmarks/video-fast-mask.md).
+          onColorFrame: fastModel ? (frame) => {
+            if (!fastSegmenter || !fastModel || segmentKapaliRef.current) return;
+            setTimeout(() => {
+              if (iptal || !fastSegmenter || !fastModel || segmentKapaliRef.current) return;
+              fastPending = { frame, startAt: performance.now(), mask: segmentPerson(fastSegmenter, fastModel, frame) };
+            }, 0);
+          } : undefined,
           onError: (err, ardisik) =>
             say(`canlı derinlik hatası (${ardisik}/3): ${err instanceof Error ? err.message : String(err)}`),
           onVazgec: () => {
