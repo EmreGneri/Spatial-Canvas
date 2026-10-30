@@ -38,13 +38,11 @@ const root = createRoot(document.querySelector('#controls'));
 const fixture = window.fixture = { video, originalStyle: video.getAttribute('style'), errors: [], qualities: [], url };
 function Harness() {
   const [activeVideo, setVideo] = useState(video);
-  const [quality, setQuality] = useState(154);
   fixture.replaceVideo = async () => {
     fixture.replacement = await makeVideo(null); setVideo(fixture.replacement);
   };
   return React.createElement(LiveVideoControls, {
-    video: activeVideo, quality,
-    onQuality: value => { fixture.qualities.push(value); setQuality(value); },
+    video: activeVideo,
     onError: message => fixture.errors.push(message),
     stats: { path: 'depth', hz: 8, inferenceMs: 75, width: 266, height: 154,
       frames: 12, mediaTime: 0, geometryAgeMs: 100, backend: 'test-provider' },
@@ -88,10 +86,7 @@ try {
     await page.waitForFunction(() => window.fixture.video.paused);
     await page.getByLabel('Video oynatma hızı').selectOption('0.5');
     assert.equal(await page.evaluate(() => window.fixture.video.playbackRate), .5);
-    await page.getByLabel('Canlı derinlik kalitesi').selectOption('378');
-    assert.equal(await page.getByLabel('Canlı derinlik kalitesi').inputValue(), '378');
-    await page.getByLabel('Canlı derinlik kalitesi').selectOption('252');
-    assert.deepEqual(await page.evaluate(() => window.fixture.qualities), [378, 252]);
+    assert.equal(await page.getByLabel('Canlı derinlik kalitesi').count(), 0, 'no quality selector: the live depth input is fixed');
     await page.getByLabel('Video zamanı').focus();
     await page.getByLabel('Video zamanı').press('Home');
     try {
@@ -121,11 +116,11 @@ try {
     assert.ok(!cleanup.replacementStyle, 'unmount leaves no inline styles on the replacement');
     assert.equal(cleanup.elements, 0);
     assert.deepEqual(cleanup.errors, []);
-    return { playPause: true, seek: 0, rate: .5, qualityChanges: [378, 252], replacement: replaced, cleanup };
+    return { playPause: true, seek: 0, rate: .5, replacement: replaced, cleanup };
   })(), new Promise((_, reject) => { timeout = setTimeout(() => reject(Error('Live controls browser check timed out')), 45000); })]);
   assert.deepEqual(pageErrors, []);
   assert.deepEqual(modelRequests, []);
-  console.log('OK React live video controls: actual video play/pause, seek, speed, quality and lifecycle', JSON.stringify(result));
+  console.log('OK React live video controls: actual video play/pause, seek, speed and lifecycle (no quality selector)', JSON.stringify(result));
 } finally {
   clearTimeout(timeout);
   await session.kapat();

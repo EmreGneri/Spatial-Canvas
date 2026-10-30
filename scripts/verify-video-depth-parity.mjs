@@ -80,8 +80,9 @@ assert.doesNotMatch(src, /timedRangeAlpha/, 'range EMA is per frame, as in refer
 // preparation, VDA, flow interpolation and edge cleanup stay off unless asked for.
 const app = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
 assert.match(app, /girdiAl: \(\) => canliGirdiBoyutu\(liveQualityRef\.current, video\.paused\)/, 'manual quality is authoritative while playing and paused');
-assert.match(app, /useState\(154\)/, 'reference fast input is the initial selection');
 assert.match(app, /<LiveVideoControls/, 'reference video playback and quality controls are available');
+assert.match(app, /const liveQualityRef = useRef\(252\);/, 'live depth input is fixed at Dengeli 252 (no quality selector)');
+assert.doesNotMatch(app, /setLiveQuality/, 'no quality state left');
 assert.match(app, /maskeAl: \(\) => segmentRef\.current \? \(videoMask \?\? pausedPreparedMask\(video\.currentTime\)\) : null,/);
 assert.match(app, /if \(segmentKapaliRef\.current \|\| iptal \|\| maskBusy/, 'mask capture is automatic unless the user turned separation off');
 assert.doesNotMatch(app, /localStorage\.getItem\(VIDEO_PROCESSING_KEY\)/, 'old stored preparation settings must not slow the default live path');

@@ -4,10 +4,8 @@ import type { LiveVideoStats } from './liveVideoStats';
 export type { LiveVideoStats } from './liveVideoStats';
 
 /** Controls the actual inference source, never a second decoder or capture map. */
-export function LiveVideoControls({ video, quality, onQuality, stats, onError }: {
+export function LiveVideoControls({ video, stats, onError }: {
   video: HTMLVideoElement;
-  quality: number;
-  onQuality: (size: number) => void;
   stats: LiveVideoStats;
   onError: (message: string) => void;
 }) {
@@ -46,10 +44,6 @@ export function LiveVideoControls({ video, quality, onQuality, stats, onError }:
           }}>
             <option value="0.25">0.25×</option><option value="0.5">0.5×</option><option value="1">1×</option>
           </select></label>
-          <label>3B detay <select aria-label="Canlı derinlik kalitesi" value={quality} onChange={(e) => onQuality(Number(e.target.value))}>
-            <option value="154">Hızlı · 154</option><option value="252">Dengeli · 252</option>
-            <option value="378">Detaylı · 378 (duraklatınca)</option>
-          </select></label>
         </div>
         {seekable && <label style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
           <input aria-label="Video zamanı" type="range" min={0} max={playback.duration} step={0.01} value={Math.min(playback.time, playback.duration)} style={{ flex: 1, minWidth: 80 }} onChange={(e) => {
@@ -65,7 +59,7 @@ export function LiveVideoControls({ video, quality, onQuality, stats, onError }:
             ? `${playback.paused ? 'Duraklatıldı' : `${stats.hz.toFixed(1)} derinlik/sn`} · ${Math.round(stats.inferenceMs)} ms${stats.geometryAgeMs === null ? '' : ` · 3D lag ${stats.geometryAgeMs} ms`} · ${stats.width}×${stats.height} · ${stats.frames} kare${stats.backend ? ` · ${stats.backend}` : ''}`
             : stats.path === 'loading' ? 'Derinlik modeli hazırlanıyor…' : 'Parlaklık yedeği — model derinliği kullanılamıyor'}
         </output>
-        <span style={{ color: '#92a3ad' }}>Detay arttıkça işlem uzar. Çizim FPS’si, derinlik güncelleme hızı değildir.</span>
+        <span style={{ color: '#92a3ad' }}>Çizim FPS’si, derinlik güncelleme hızı değildir.</span>
       </div>
     </section>
   );

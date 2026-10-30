@@ -284,8 +284,8 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
   const [cameraOn, setCameraOn] = useState(false);
   const [videoEdgeCleanup, setVideoEdgeCleanup] = useState(VIDEO_EDGE_CLEANUP_DEFAULT);
   const [liveRates, setLiveRates] = useState({ model: 0, flow: 0 });
-  const liveQualityRef = useRef(154);
-  const [liveQuality, setLiveQuality] = useState(154);
+  // Canlı derinlik girdisi sabit: "Dengeli · 252" (seçici kaldırıldı).
+  const liveQualityRef = useRef(252);
   const [playbackVideo, setPlaybackVideo] = useState<HTMLVideoElement | null>(null);
   const [liveStats, setLiveStats] = useState<LiveVideoStats>({ path: 'loading', hz: 0,
     inferenceMs: 0, width: 0, height: 0, frames: 0, mediaTime: null, geometryAgeMs: null });
@@ -2122,10 +2122,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
         >
           3D eğit
         </button>}
-        {playbackVideo && <LiveVideoControls video={playbackVideo} quality={liveQuality}
-          stats={liveStats} onError={say} onQuality={(size) => {
-            liveQualityRef.current = size; setLiveQuality(size);
-          }} />}
+        {playbackVideo && <LiveVideoControls video={playbackVideo} stats={liveStats} onError={say} />}
         {!!videoDosya && videoPreparationAsk && <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
           <span>uzun video ({(videoPreparationAsk.video.duration / 60).toFixed(1)} dk): derinlik arka planda hazırlansın mı? tahmini ~{Math.ceil(videoPreparationAsk.estimate / 60)} dk</span>
           <button onClick={() => {
