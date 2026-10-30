@@ -86,3 +86,11 @@ metric, 8 frames; the box-area guard's own note says nothing below 0.49 was ever
 
 Open: the mask itself still changes between refreshes with the model's selection (different people), and
 that moves the window. The replay cannot separate that from the rule.
+
+## Known negative example of the far rule
+
+Live check, 12 mask jobs of A and B had parts added by the rule: all but two were a real second person. One
+is wrong: A at 17.8 s, a tall strip at the right frame edge (dark audience area), 0.26 of the main part; one
+is ambiguous: B at 11.1 s, a thin streak below a walker (a shadow or the walker's legs), 0.28 of the main
+part. The area ratio does not separate them from the valid additions (0.095 .. 0.45), so no new threshold was
+introduced; the false part is left as a known limitation of the rule.
