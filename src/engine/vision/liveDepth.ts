@@ -255,6 +255,15 @@ const KIRPMA_HISTEREZIS = 0.05;
  *  `POSITION_TEXTURE_SIZE`). Üstüne çıkmak render'a hiçbir şey taşımaz,
  *  yalnız son-işleme geçişlerini pahalılaştırır. */
 const KIRPMA_IZGARA_TAVANI = 384;
+/** Deney (`?kirpmaTavan=N`, 64..383; yoksa 384 = davranış aynı): geri gömme ızgarasını daha
+ *  düşük bir tavanda tutar. Ölçüldü (60 ardışık canlı kare, üç kesit, aynı dizi iki kez): 256'da
+ *  yalnız dikey çekimde bağlıyor (204x350 → 204x256), son-işleme 24 → 18 ms, ama ızgara
+ *  anizotrop olur; yandan bakışta saç/kol kenarında daha çok basamak, z farkı p95 0.011, örnekleme
+ *  ızgarasında |∇z| −%1.8. Aynı kalite değil: varsayılan değişmedi. */
+export function kirpmaIzgaraTavani(search: string = globalThis.location?.search ?? ''): number {
+  const n = Math.round(Number(new URLSearchParams(search).get('kirpmaTavan')));
+  return n >= 64 && n < KIRPMA_IZGARA_TAVANI ? n : KIRPMA_IZGARA_TAVANI;
+}
 
 /**
  * ÖZNE KIRPMA KUTUSU — modelin özneyi YAKINDAN görmesi için.
@@ -382,9 +391,10 @@ export function kirpmaIzgarasi(
   cw: number,
   ch: number,
   kutu: KirpmaKutusu,
+  tavan: number = KIRPMA_IZGARA_TAVANI,
 ): { data: Float32Array; width: number; height: number } {
-  const width = Math.min(KIRPMA_IZGARA_TAVANI, Math.max(cw, Math.round(cw / kutu.w)));
-  const height = Math.min(KIRPMA_IZGARA_TAVANI, Math.max(ch, Math.round(ch / kutu.h)));
+  const width = Math.min(tavan, Math.max(cw, Math.round(cw / kutu.w)));
+  const height = Math.min(tavan, Math.max(ch, Math.round(ch / kutu.h)));
   const out = new Float32Array(width * height);
   for (let Y = 0; Y < height; Y++) {
     // Tam kare → kutu içi normalize → kırpım pikseli (kenara kelepçeli).
@@ -1631,11 +1641,11 @@ export async function estimateDepthLive(
   // TAM KAREYE GERİ GÖMME — kırpım öznenin dünyadaki yerini değiştirmemeli
   // (`verify-kadraj-degismezligi` canlı yol için de geçerli).
   const gomulu = kutu
-    ? kirpmaIzgarasi(predicted.data, dw, dh, kutu)
+    ? kirpmaIzgarasi(predicted.data, dw, dh, kutu, kirpmaIzgaraTavani())
     : { data: predicted.data, width: dw, height: dh };
   const gw = gomulu.width;
   const gh = gomulu.height;
-  const lum = kutu && kirpimLum ? kirpmaIzgarasi(kirpimLum, dw, dh, kutu).data : kirpimLum;
+  const lum = kutu && kirpimLum ? kirpmaIzgarasi(kirpimLum, dw, dh, kutu, kirpmaIzgaraTavani()).data : kirpimLum;
 
   // Maske RMBG çözünürlüğünde gelir (ör. 791×1024); son-işleme onu derinlikle
   // BİREBİR aynı ızgarada ister — aksi halde stretch/sınırlama yanlış piksellere
