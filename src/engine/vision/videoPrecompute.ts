@@ -13,7 +13,7 @@ import {
 export interface VideoDepthFrame { data: Float32Array; width: number; height: number; mediaTime: number; mask?: Float32Array }
 /** Anahtar kare RGB'sinden derinlik ızgarası boyutunda maske; null = güvenilmez. */
 export type VideoMaskCapture = (frame: LiveDepthFrame) => Promise<Float32Array | null>;
-export interface VideoDepthProgress { stage: 'loading' | 'decoding' | 'processing' | 'ready' | 'fallback' | 'cancelled'; readySeconds: number; totalSeconds: number; processedSeconds?: number; error?: string }
+export interface VideoDepthProgress { stage: 'loading' | 'decoding' | 'processing' | 'finalizing' | 'ready' | 'fallback' | 'cancelled'; readySeconds: number; totalSeconds: number; processedSeconds?: number; error?: string }
 export interface VideoWindowProvider {
   width: number; height: number;
   infer(frames: readonly Uint8ClampedArray[], signal?: AbortSignal, frameIds?: readonly number[]): Promise<Float32Array[]>;
@@ -218,14 +218,16 @@ export async function prepareVideoDepth(file: Blob, options: PrepareOptions = {}
         if (pixels.length !== rgbBytes) throw Error('Çözülen kare boyutu beklenmedik');
         stamps.push(time); await rgbStream.write(pixels);
         processedSeconds = time; progress('decoding');
-        await yieldToPlayback();
+        // Decoder and storage already yield asynchronously. Playback pauses belong
+        // between GPU windows, not here where they multiply by the frame count.
       });
       rgbFile = await rgbStream.close();
       if (!stamps.length || !provider) throw Error('Çözülen video karesi yok');
-      progress('processing');
+      processedSeconds = 0; progress('processing');
       scenes.push(stamps.length);
       for (let scene = 0; scene < scenes.length - 1; scene++) {
         const sceneStart = scenes[scene], sceneEnd = scenes[scene + 1], sceneCount = sceneEnd - sceneStart;
+        processedSeconds = stamps[sceneStart]; progress('processing');
         let previous: number[] | undefined, refs: Float32Array[] = [], tail: Float32Array[] = [], count = sceneStart;
         const samples: number[] = [];
         const floatStream = await stream(`float-${scene}`);
@@ -261,6 +263,7 @@ export async function prepareVideoDepth(file: Blob, options: PrepareOptions = {}
         for (const data of tail) { if (count < sceneEnd) await commit(data, count++); }
         // A shared scene range preserves relative depth over time. Never normalize each frame independently.
         const [min, max] = videoDepthRange(samples);
+        processedSeconds = stamps[sceneStart]; progress('finalizing');
         const floatFile = await floatStream.close();
         const depthStream = await stream(`depth-${scene}`), detailStream = await stream(`detail-${scene}`);
         for (let i = 0; i < sceneCount; i++) {
@@ -268,11 +271,12 @@ export async function prepareVideoDepth(file: Blob, options: PrepareOptions = {}
           await depthStream.write(packed);
           const rgba = new Uint8ClampedArray(await slice(rgbFile!, sceneStart + i, rgbBytes));
           await detailStream.write(detailPreparedDepth(packed, rgba, width, height));
+          processedSeconds = stamps[sceneStart + i]; progress('finalizing');
         }
         depthFiles[scene] = await depthStream.close();
         detailFiles[scene] = await detailStream.close();
         await dir.removeEntry(`float-${scene}`);
-        readySeconds = sceneEnd < stamps.length ? stamps[sceneEnd] : duration; progress('processing');
+        readySeconds = sceneEnd < stamps.length ? stamps[sceneEnd] : duration; progress('finalizing');
       }
       // RGB stays until dispose: an optional mask track (object separation) reads it.
       aborted(signal); ready = true; progress('ready');

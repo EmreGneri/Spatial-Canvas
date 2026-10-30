@@ -1,3 +1,4 @@
+import { maskeBboxPenceresi, type OrneklemePenceresi } from './reconstruction/videoReferenceSampling.ts';
 ﻿import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { inferLayers, applyShellLayerGap, layerShellIndices, type DepthLayers, type LayerId } from './reconstruction/layers.ts';
@@ -68,7 +69,6 @@ const BACKDROP_GORUNUR = false;
 /** true: ayırma kapalıyken arka plan maskeyle kesilip bulanık doldurulur (eski davranış). */
 const BACKDROP_INPAINT = false;
 const DEFAULT_CAMERA_DISTANCE = 3.5;
-const VIDEO_VIEWPORT_FILL = 0.94;
 
 /**
  * Pass sÃ¶zleÅŸmesi (ARCHITECTURE.md): Engine pass iÃ§lerine dokunmaz; her pass
@@ -131,11 +131,15 @@ export class Engine {
    * hizalÄ±dÄ±r. Video yokken null â€” fotoÄŸraf grid'i (imageColorTexture) geÃ§er.
    */
   private videoElement: HTMLVideoElement | null = null;
+  private realtimeVideoColor = true;
+  private stopVideoColorListeners: (() => void) | null = null;
   private videoTexture: THREE.VideoTexture | null = null;
+  private videoSamplingWindow: OrneklemePenceresi | null = null;
   private videoWorldHeight = POINTS_WORLD_HEIGHT;
   private videoAspect = 1;
   /** Canlı renk karesi için yeniden kullanılan RGB tamponu (her setDepth'te ~1 MB çöp olmasın). */
   private videoRgbScratch = new Float32Array(0);
+  private videoColorSize: { width: number; height: number } | null = null;
 
   /**
    * Nesne ayÄ±rma (Tur 12 â€” ÅŸikayet 4): AÃ‡IK iken shader'lar arka plan
@@ -242,6 +246,11 @@ export class Engine {
   setLayerVisible(layer: LayerId, visible: boolean) {
     if (![0,1,2].includes(layer) || typeof visible !== 'boolean') throw new RangeError('Invalid layer visibility');
     this.layerVisible.setComponent(layer, visible ? 1 : 0);
+    if (this.videoTexture && this.currentDepthTexture) {
+      const image = this.currentDepthTexture.image;
+      this.setDepth(image.data as Float32Array, image.width, image.height,
+        this.lastFgMask ?? undefined, image.width, image.height);
+    }
     if (!this.layers && this.layerInput) this.updateLayers();
     if (!this.layerTexture || this.layerTextureDirty) this.updateLayerTexture();
     this.pushSharedUniformsAll();
@@ -975,7 +984,9 @@ setPointsMaterial(material: THREE.Material) {
       THREE.IUniform
     >;
     if (!u?.['uImageTexture']) return;
-    const image = this.imageColorTexture ?? this.videoTexture;
+    const realtime = this.realtimeVideoColor !== false && this.videoElement?.paused === false;
+    const image = realtime && this.videoTexture ? this.videoTexture
+      : this.imageColorTexture ?? this.videoTexture;
     u['uImageTexture'].value = image;
     // three uploads VideoTexture as linear RGBA8 and decodes it only in built-in
     // materials; custom shaders decode the raw-video path themselves (sourceColor.ts).
@@ -1006,21 +1017,31 @@ setPointsMaterial(material: THREE.Material) {
     if (u['uUseTextureColor']) {
       u['uUseTextureColor'].value = this.useTextureColor ? 1 : 0;
     }
+    // Cached video color is already resampled to the geometry ROI. Raw
+    // VideoTexture sampling needs that same ROI, including shell grid UVs.
+    const window = this.videoTexture && image === this.videoTexture ? this.videoSamplingWindow : null;
+    u['uSourceUvTransform'] ??= { value: new THREE.Vector4(0, 0, 1, 1) };
+    u['uSourceUvTransform'].value.set(window?.x0 ?? 0, window ? 1 - window.y1 : 0,
+      window ? window.x1 - window.x0 : 1, window ? window.y1 - window.y0 : 1);
+    if (u['uVideoWorldStep']) {
+      const fraction = this.videoSamplingWindow ? this.videoSamplingWindow.y1 - this.videoSamplingWindow.y0 : 1;
+      u['uVideoWorldStep'].value = POINTS_WORLD_HEIGHT / POSITION_TEXTURE_SIZE * fraction;
+    }
     if (u['uVideoFootprint']) {
       u['uVideoFootprint'].value = this.videoTexture ? 1 : 0;
-      // Blending is render state, not part of the shader program, so this
-      // switch needs no recompile. Photos keep the tuned additive glow.
-      if (u['uSoftness']) { // point cloud only; ascii/neon declare the flag for dimming
-      material.blending = this.videoTexture ? THREE.NormalBlending : THREE.AdditiveBlending;
-      // The grid draws in row order, not depth order, so without depth writes
-      // a far row painted later covers a near one while orbiting. The shader
-      // cuts the video sprite's soft edge so only opaque fragments write.
-      // Additive photos stay depth-free: they would clip the glow behind them.
-      material.depthWrite = Boolean(this.videoTexture);
+      // Match the reference soft additive video appearance. This
+      // intentionally gives up opaque surface occlusion when orbiting.
+      if (u['uSoftness']) {
+        material.blending = THREE.AdditiveBlending;
+        material.depthWrite = false;
       }
     }
     if (u['uViewportHeightPx']) {
-      u['uViewportHeightPx'].value = this.viewportPx.y;
+      const physicalHeight = this.viewportPx?.y ?? 0;
+      // The Reference measures video sprites in CSS viewport pixels.
+      // Derive from the active buffer so offscreen exports retain their size.
+      u['uViewportHeightPx'].value = this.videoTexture
+        ? physicalHeight / Math.max(this.currentDpr || 1, 1) : physicalHeight;
     }
     // Photo/ASCII/neon sizes are physical pixels tuned at the startup ratio.
     // Adaptive DPR ends in resize() -> here, so sprites keep their on-screen
@@ -1028,15 +1049,7 @@ setPointsMaterial(material: THREE.Material) {
     if (u['uDprScale']) {
       u['uDprScale'].value = this.currentDpr / this.initialDpr;
     }
-    if (u['uVideoReferenceDistance']) {
-      u['uVideoReferenceDistance'].value = DEFAULT_CAMERA_DISTANCE;
-    }
-    if (u['uVideoWorldHeight']) {
-      u['uVideoWorldHeight'].value = this.videoWorldHeight;
-    }
-    if (u['uVideoAspect']) {
-      u['uVideoAspect'].value = this.videoAspect;
-    }
+
   }
 
   private pushSharedUniformsAll() {
@@ -1099,10 +1112,18 @@ setPointsMaterial(material: THREE.Material) {
    * (kamera kapatÄ±ldÄ± / kaynak deÄŸiÅŸti); fotoÄŸraf grid'i varsa onunla devam
    * edilir, yoksa uHasImage = 0 â†’ shader'lar derinlik rampasÄ±na dÃ¼ÅŸer.
    */
+  /** Playing reference video uses the latest source color; flow can opt into paired RGB. */
+  setRealtimeVideoColor(on: boolean) {
+    this.realtimeVideoColor = on;
+    this.pushSharedUniformsAll();
+  }
+
   setVideoSource(video: HTMLVideoElement | null) {
     if (video) this.configurePhotoCamera(null);
     if (video) this.metricPhotoGeometry = null;
     if (video === this.videoElement) return;
+    this.stopVideoColorListeners?.();
+    this.stopVideoColorListeners = null;
     this.layers = null;
     this.layerInput = null;
     this.layerTexture?.dispose();
@@ -1112,6 +1133,9 @@ setPointsMaterial(material: THREE.Material) {
     this.gaussiansDirty = true;
     this.videoTexture?.dispose();
     this.videoTexture = null;
+    this.videoSamplingWindow = null;
+    this.videoColorSize = null;
+    this.videoRgbScratch = new Float32Array(0);
     this.videoElement = video;
     if (!video) {
       this.videoWorldHeight = POINTS_WORLD_HEIGHT;
@@ -1126,6 +1150,15 @@ setPointsMaterial(material: THREE.Material) {
       tex.magFilter = THREE.NearestFilter;
       tex.generateMipmaps = false;
       this.videoTexture = tex;
+      const refreshColor = () => {
+        if (this.videoElement === video) this.pushSharedUniformsAll();
+      };
+      video.addEventListener?.('play', refreshColor);
+      video.addEventListener?.('pause', refreshColor);
+      this.stopVideoColorListeners = () => {
+        video.removeEventListener?.('play', refreshColor);
+        video.removeEventListener?.('pause', refreshColor);
+      };
     } else if (this.imageColorTexture) {
       this.releasePhoto();
     }
@@ -1849,13 +1882,15 @@ if (entry && entry.material !== this.pointsMaterial) {
     const source = this.videoTexture?.image as HTMLVideoElement | undefined;
     const sourceAspect = source?.videoWidth && source.videoHeight
       ? source.videoWidth / source.videoHeight : width / height;
-    const videoWorldHeight = this.videoTexture
-      ? 2 * DEFAULT_CAMERA_DISTANCE * Math.tan(THREE.MathUtils.degToRad(this.camera.fov) / 2)
-        * Math.min(1, this.camera.aspect / sourceAspect) * VIDEO_VIEWPORT_FILL
-      : undefined;
-    if (videoWorldHeight !== undefined
-      && (videoWorldHeight !== this.videoWorldHeight || sourceAspect !== this.videoAspect)) {
-      this.videoWorldHeight = videoWorldHeight;
+    const videoWorldHeight = this.videoTexture ? POINTS_WORLD_HEIGHT : undefined;
+    if (this.videoTexture) {
+      // Layer maps use full-source UVs. Keep their existing optional editing
+      // contract by using full-frame sampling while a layer edit is active.
+      const layerEdit = this.layerGap > 0 || this.layerVisible.x !== 1
+        || this.layerVisible.y !== 1 || this.layerVisible.z !== 1;
+      this.videoSamplingWindow = layerEdit ? null
+        : maskeBboxPenceresi(mask, width, height, undefined, undefined, this.videoSamplingWindow);
+      this.videoWorldHeight = POINTS_WORLD_HEIGHT;
       this.videoAspect = sourceAspect;
       if (this.renderModes) this.pushSharedUniformsAll();
     }
@@ -1933,7 +1968,8 @@ if (entry && entry.material !== this.pointsMaterial) {
       // subject in x/y but not z (flat, wide bust). Photo color fills and
       // the shell mesh below use the same off default, so they stay aligned.
       importanceSampling: false,
-      fullFrame: this.videoTexture ? { cameraDistance: DEFAULT_CAMERA_DISTANCE, aspect: sourceAspect } : undefined,
+      referenceVideo: this.videoTexture ? { aspect: sourceAspect } : undefined,
+      samplingWindow: this.videoTexture ? this.videoSamplingWindow : undefined,
       videoEdgeCleanup: this.videoTexture ? this.videoEdgeCleanupStrength : 0,
       videoFlowConfidence: this.videoTexture ? videoFlowConfidence : undefined,
       videoGuideMask: this.videoTexture && foregroundMask && maskWidth && maskHeight
@@ -1977,18 +2013,33 @@ if (this.photoData) {
       if (this.videoRgbScratch?.length !== frameWidth * frameHeight * 3) {
         this.videoRgbScratch = new Float32Array(frameWidth * frameHeight * 3);
       }
+      this.videoColorSize = { width: frameWidth, height: frameHeight };
       const rgb = this.videoRgbScratch;
       for (let i = 0, j = 0; i < rgba.length; i += 4, j += 3) {
         rgb[j] = rgba[i] / 255;
         rgb[j + 1] = rgba[i + 1] / 255;
         rgb[j + 2] = rgba[i + 2] / 255;
       }
+    }
+    if (this.videoTexture && this.videoColorSize && this.videoRgbScratch?.length) {
+      const { width: frameWidth, height: frameHeight } = this.videoColorSize;
+      const rgb = this.videoRgbScratch;
       if (!this.imageColorTexture) {
         this.imageColorTexture = createImageColorTexture();
         this.pushSharedUniformsAll();
       }
       fillImageColorTexture(this.imageColorTexture, rgb, frameWidth, frameHeight,
-        data, width, height, { importanceSampling: false, skipAo: true });
+        data, width, height, { importanceSampling: false, skipAo: true,
+          samplingWindow: this.videoSamplingWindow });
+    }
+    if (this.videoTexture && Engine.usesShellMesh(this.renderModeName)
+      && !(this.renderModeName === 'crystal' && this.splatObject?.ready)) {
+      this.setShellGeometry(buildShellMesh(data, width, height, {
+        gridSize: 96, depthScale: 1, importanceSampling: false,
+        foregroundMask: mask, referenceVideo: { aspect: sourceAspect },
+        samplingWindow: this.videoSamplingWindow,
+        layers: this.layers ?? undefined, layerGap: this.layerGap,
+      }));
     }
     if (this.videoTexture) {
       this.simulation.seedFrom(this.homeTexture);
@@ -2362,6 +2413,8 @@ depth,
   }
 
   dispose() {
+    this.stopVideoColorListeners?.();
+    this.stopVideoColorListeners = null;
     this.layerTexture?.dispose();
     this.renderer.setAnimationLoop(null);
     this.resizeObserver.disconnect();

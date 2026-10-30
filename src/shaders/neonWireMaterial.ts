@@ -39,6 +39,9 @@ export interface NeonWireMaterialUniforms {
   uPointSize: { value: number };
   /** Renderer pixel ratio / startup ratio (Engine). Keeps lines steady under adaptive DPR. */
   uDprScale: { value: number };
+  uVideoFootprint: { value: number };
+  uVideoWorldStep: { value: number };
+  uViewportHeightPx: { value: number };
   /** 0..1 — Sobel eşiği; düşükte çok çizgi, yüksekte az */
   uEdgeThreshold: { value: number };
   /** Engine'in yazdığı fotoğraf kırpma alan oranı; 1 = kırpmasız, eski kenar yolu aynen. */
@@ -66,8 +69,6 @@ export interface NeonWireMaterialUniforms {
   uHasImage: { value: number };
   /** 1 = arka plan parçacıkları atılır (yalnızca özne), 0 = çizilir ve karartılır */
   uObjectSeparation: { value: number };
-  /** 1 = live video source (Engine): backdrop is dimmed via vOpacity, not discarded. */
-  uVideoFootprint: { value: number };
   /** 1 = renk görselden, 0 = doku yok sayılır ve uNeonColor kullanılır */
   uUseTextureColor: { value: number };
   /**
@@ -117,6 +118,9 @@ const VERTEX = /* glsl */ `
   uniform sampler2D uPositions;
   uniform float uPointSize;
   uniform float uDprScale;
+  uniform float uVideoFootprint;
+  uniform float uVideoWorldStep;
+  uniform float uViewportHeightPx;
   uniform float uEdgeThreshold;
   uniform float uCropDensity;
   uniform float uGlowRadius;
@@ -198,7 +202,7 @@ const VERTEX = /* glsl */ `
   /** Görüntünün parlaklığı, konumla AYNI grid uv'sinde (sampler.sampleImageGrid
    *  eşlemesi) — hizalama tanım gereği doğru, ek texture yok. */
   float lumAt(vec2 uv) {
-    vec3 c = decodeSourceColor(texture2D(uImageTexture, clamp(uv, 0.0, 1.0))).rgb;
+    vec3 c = decodeSourceColor(texture2D(uImageTexture, sourceColorUv(clamp(uv, 0.0, 1.0)))).rgb;
     return dot(c, vec3(0.299, 0.587, 0.114));
   }
 
@@ -311,7 +315,12 @@ const VERTEX = /* glsl */ `
     // ekranda hiçbir şey kalmıyordu.
     // Physical pixels: the DPR scale keeps lines from thickening when adaptive
     // DPR lowers the pixel ratio. The 1.5 px floor stays a raster floor.
+    if (uVideoFootprint > 0.5) {
+      gl_PointSize = uPointSize * spriteScale * uVideoWorldStep * projectionMatrix[1][1]
+        * 0.5 * uViewportHeightPx / max(-mv.z, 0.1);
+    } else {
     gl_PointSize = max(uPointSize * spriteScale * uDprScale / max(-mv.z, 0.1), 1.5);
+    }
 
     gl_Position = projectionMatrix * mv;
   }
@@ -389,7 +398,7 @@ const FRAGMENT = /* glsl */ `
     // Diğer iki moddaki koşulun aynısı: doku bağlıysa VE renk modu açıksa
     // parçacık kendi fotoğraf pikselini alır, değilse uNeonColor.
     vec3 base = (uHasImage > 0.5 && uUseTextureColor > 0.5)
-      ? decodeSourceColor(texture2D(uImageTexture, vUv)).rgb
+      ? decodeSourceColor(texture2D(uImageTexture, sourceColorUv(vUv))).rgb
       : uNeonColor;
 
     // NEON TÜPÜ PARLAKLIĞI: fotoğraf rengi kullanılıyorsa TONU korunur ama
@@ -439,6 +448,9 @@ export function createNeonWireMaterial(): NeonWireMaterial {
     uPointSize: { value: 3 },
     // 1 outside Engine: the startup size, unchanged.
     uDprScale: { value: 1 },
+    uVideoFootprint: { value: 0 },
+    uVideoWorldStep: { value: 2 / POSITION_TEXTURE_SIZE },
+    uViewportHeightPx: { value: 0 },
     uEdgeThreshold: { value: 0.1 },
     uCropDensity: { value: 1 },
     uTextureEdge: { value: 0.6 },
@@ -449,7 +461,6 @@ export function createNeonWireMaterial(): NeonWireMaterial {
     uDecodeVideo: { value: 0 },
     uHasImage: { value: 0 },
     uObjectSeparation: { value: 0 },
-    uVideoFootprint: { value: 0 },
     uUseTextureColor: { value: 1 },
     // Yarıçap 0: sprite büyümez, hale yok — eski uGlow davranışıyla aynı.
     uGlowRadius: { value: 0 },

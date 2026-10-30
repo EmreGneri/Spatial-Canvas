@@ -1,3 +1,4 @@
+import type { OrneklemePenceresi } from './reconstruction/videoReferenceSampling.ts';
 import * as THREE from 'three';
 import { sampleAoGrid, sampleImageGrid, sampleVolumePositions } from './reconstruction/index.ts';
 import { applyLayerGap } from './reconstruction/layers.ts';
@@ -112,6 +113,8 @@ export interface PositionFillOptions {
   importanceSampling?: boolean;
   /** Preserve video UVs and depth regardless of segmentation mask. */
   fullFrame?: { cameraDistance: number; aspect?: number };
+  referenceVideo?: { aspect: number };
+  samplingWindow?: OrneklemePenceresi | null;
   /** Video-only disparity edge cleanup, 0 (off) through 4. */
   videoEdgeCleanup?: number;
   videoFlowConfidence?: Float32Array;
@@ -158,6 +161,8 @@ export function fillPositionsFromDepth(
     foregroundMask: opts.foregroundMask,
     importanceSampling: opts.importanceSampling === true,
     fullFrame: opts.fullFrame,
+    referenceVideo: opts.referenceVideo,
+    samplingWindow: opts.samplingWindow,
     videoEdgeCleanup: opts.videoEdgeCleanup,
     videoFlowConfidence: opts.videoFlowConfidence,
     videoGuideMask: opts.videoGuideMask,
@@ -212,6 +217,7 @@ export function createImageColorTexture(): THREE.DataTexture {
 }
 
 export interface ImageColorFillOptions {
+  samplingWindow?: OrneklemePenceresi | null;
   /** Önem tabanlı örnekleme — fillPositionsFromDepth ile AYNI ayar. Varsayılan KAPALI. */
   importanceSampling?: boolean;
   /**
@@ -246,6 +252,7 @@ export function fillImageColorTexture(
   const data = tex.image.data as Uint8Array;
   const sampleOpts = {
     gridSize: n,
+    samplingWindow: opts.samplingWindow,
     importanceSampling: opts.importanceSampling === true,
     foregroundMask: opts.foregroundMask,
     foregroundColorIsolation: opts.foregroundColorIsolation,

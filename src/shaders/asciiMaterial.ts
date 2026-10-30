@@ -1,3 +1,4 @@
+import { POSITION_TEXTURE_SIZE } from '../engine/buffers';
 import * as THREE from 'three';
 import { SOURCE_COLOR_GLSL } from './sourceColor.ts';
 import { POINTS_DEPTH_RANGE } from '../engine/buffers';
@@ -58,6 +59,9 @@ export interface AsciiMaterialUniforms {
   uSizeJitter: { value: number };
   /** Renderer pixel ratio / startup ratio (Engine). Keeps glyphs steady under adaptive DPR. */
   uDprScale: { value: number };
+  uVideoFootprint: { value: number };
+  uVideoWorldStep: { value: number };
+  uViewportHeightPx: { value: number };
   /** karakter rengi */
   uColor: { value: THREE.Color };
   /** hücre arkasındaki dolgu rengi */
@@ -84,8 +88,6 @@ export interface AsciiMaterialUniforms {
    * Değerini Engine.setObjectSeparation yazar.
    */
   uObjectSeparation: { value: number };
-  /** 1 = live video source (Engine): backdrop is dimmed via vOpacity, not discarded. */
-  uVideoFootprint: { value: number };
   /**
    * Renk modu (Tur 12 — şikayet 3): 1 (varsayılan) → karakter ve dolgu
    * rengi doğrudan görselin RGB dokusundan (uImageTexture); 0 → dokular
@@ -165,6 +167,9 @@ const VERTEX = /* glsl */ `
   uniform float uPointSize;
   uniform float uSizeJitter;
   uniform float uDprScale;
+  uniform float uVideoFootprint;
+  uniform float uVideoWorldStep;
+  uniform float uViewportHeightPx;
 
   attribute vec2 aUv;
 
@@ -203,7 +208,12 @@ const VERTEX = /* glsl */ `
     // -mv.z ~ 0 olur, bölme patlar ve dev karakterler ekranı doldurur.
     // Physical pixels: the DPR scale keeps glyphs from growing when adaptive
     // DPR lowers the pixel ratio.
+    if (uVideoFootprint > 0.5) {
+      gl_PointSize = uPointSize * jitter * uVideoWorldStep * projectionMatrix[1][1]
+        * 0.5 * uViewportHeightPx / max(-mv.z, 0.1);
+    } else {
     gl_PointSize = uPointSize * jitter * uDprScale / max(-mv.z, 0.1);
+    }
 
     gl_Position = projectionMatrix * mv;
   }
@@ -272,7 +282,7 @@ const FRAGMENT = /* glsl */ `
     // uColor/uBgColor kullanılır.
     vec3 col;
     if (uHasImage > 0.5 && uUseTextureColor > 0.5) {
-      col = decodeSourceColor(texture2D(uImageTexture, vUv)).rgb;
+      col = decodeSourceColor(texture2D(uImageTexture, sourceColorUv(vUv))).rgb;
     } else {
       col = (uColor * glyph + uBgColor * uBgOpacity * (1.0 - glyph)) / alpha;
     }
@@ -302,6 +312,9 @@ export function createAsciiMaterial(): AsciiMaterial {
     uSizeJitter: { value: 0 },
     // 1 outside Engine: the startup size, unchanged.
     uDprScale: { value: 1 },
+    uVideoFootprint: { value: 0 },
+    uVideoWorldStep: { value: 2 / POSITION_TEXTURE_SIZE },
+    uViewportHeightPx: { value: 0 },
     uColor: { value: new THREE.Color(0.85, 0.95, 0.85) },
     uBgColor: { value: new THREE.Color(0.02, 0.02, 0.04) },
     uBgOpacity: { value: 0 },
@@ -314,7 +327,6 @@ export function createAsciiMaterial(): AsciiMaterial {
     // Tur 12: nesne ayırma kapalı (tüm sahne), renk modu açık (doku) —
     // değerleri Engine yönetir.
     uObjectSeparation: { value: 0 },
-    uVideoFootprint: { value: 0 },
     uUseTextureColor: { value: 1 },
     // Gün A (fog): kapalı başlar — Engine.lookUniforms her karede işler.
     uFogDensity: { value: 0 },

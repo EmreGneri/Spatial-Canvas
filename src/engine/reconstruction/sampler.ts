@@ -1,3 +1,4 @@
+import { computeReferenceVideoBody, pencereyeTasi, type OrneklemePenceresi } from './videoReferenceSampling.ts';
 /**
  * PARÇACIK SAMPLER (veri katmanı, CPU).
  *
@@ -200,6 +201,9 @@ export interface VolumeSampleOptions {
   /** A video is a complete scene; its mask affects opacity but never geometry. */
   /** `aspect`: kaynak video en-boyu (derinlik ızgarasınınki değil). */
   fullFrame?: { cameraDistance: number; aspect?: number };
+  /** Reference anatomical video path; photo behaviour is unchanged. */
+  referenceVideo?: { aspect: number };
+  samplingWindow?: OrneklemePenceresi | null;
   /** Video-only edge cleanup strength (0 = off, 1..4 = 1..2 source pixels). */
   videoEdgeCleanup?: number;
   /** Confidence in propagated video depth, at the input depth resolution. */
@@ -231,7 +235,7 @@ export function sampleVolumePositions(
   const grid = opts.gridSize ?? VOLUME_GRID_SIZE;
   const n = grid * grid;
   const halfH = (opts.worldHeight ?? DEFAULT_WORLD_HEIGHT) / 2;
-  const halfW = (depthWidth / depthHeight) * halfH;
+  const halfW = (opts.referenceVideo?.aspect ?? depthWidth / depthHeight) * halfH;
   const range = opts.depthRange ?? DEFAULT_DEPTH_RANGE;
   const curvature = opts.curvature ?? DEFAULT_CURVATURE;
   const out = new Float32Array(n * 4);
@@ -315,7 +319,9 @@ export function sampleVolumePositions(
   // sönümünün merkezi) her görüntü için siluet geometrisinden hesaplanır —
   // özne neredeyse oraya oturur, önceden sabitlenmiş UV yok. Kafa/insan
   // varsayımı YOKTUR: aynı hesaplama her özne şekline uygulanır.
-  const body = computeBodyGeometry(alpha, depthWidth, depthHeight, halfH);
+  const body = opts.referenceVideo
+    ? computeReferenceVideoBody(alpha, depthWidth, depthHeight, halfH, opts.referenceVideo.aspect)
+    : computeBodyGeometry(alpha, depthWidth, depthHeight, halfH);
   const d1 = body ? BACK_FILL_DEPTH * Math.min(body.rx, body.ry) : 0;
   // Silüet-oranlı z uzamı: derinlik artık bulut yüksekliğine değil ÖZNENİN
   // kendi genişliğine oranlıdır (bkz. ANATOMIC_DEPTH_RATIO). zUnit = zSpan/2
@@ -343,7 +349,9 @@ export function sampleVolumePositions(
   // davranış AYNEN korunur (bölen 1); dikey kadrajda daralma geri alınır.
   // ANATOMIC_DEPTH_RATIO'ya dokunulmaz — düzeltilen şey anatomi değil, kadraj
   // yönünün derinliğe sızmasıdır (yön bir sahne özelliği değildir).
-  const zSpan = zSpanFromBody(body, depthWidth, depthHeight, halfH, range);
+  const zSpan = opts.referenceVideo
+    ? (body ? Math.min(2 / 1.4, 0.42 * 2 * body.rx) : range)
+    : zSpanFromBody(body, depthWidth, depthHeight, halfH, range);
   const zUnit = zSpan / 2;
   // KONTUR DERİNLİK KENARI (fotoğraf; MoGe yolunun KENAR_RTOL ayıklamasının eşdeğeri):
   // maskenin yumuşak saçağı siluetin 1-2 px dışına taşar ve orada arka plan derinliği
@@ -354,15 +362,19 @@ export function sampleVolumePositions(
     for (let i = 0; i < cull.length; i++) if (cull[i]) alpha[i] = 0;
   }
 
+  const referenceEdges = opts.referenceVideo && (opts.videoEdgeCleanup ?? 0) > 0
+    ? resampleVideoDepthEdges(depth, depthWidth, depthHeight, grid,
+      opts.videoEdgeCleanup!, opts.foregroundMask, opts.videoGuideMask) : null;
+  const pen = opts.samplingWindow;
   for (let j = 0; j < grid; j++) {
-    const v = 1 - (j + 0.5) / grid;
-    // Önem remap'i örnekleme KOORDİNATINI büker; grid ve aUv sözleşmesi aynı
-    // kalır. t = (j+0.5)/N: yukarıdan aşağı, CDF de o yönde kurulur.
-    const t = (j + 0.5) / grid;
+    const tg = (j + 0.5) / grid;
+    const t = pen ? pencereyeTasi(tg, pen.y0, pen.y1) : tg;
+    const v = 1 - t;
     const y = remap ? remap.yOf(t) - 0.5 : t * depthHeight - 0.5;
     const ry = (v - 0.5) * 2;
     for (let i = 0; i < grid; i++) {
-      const u = (i + 0.5) / grid;
+      const ug = (i + 0.5) / grid;
+      const u = pen ? pencereyeTasi(ug, pen.x0, pen.x1) : ug;
       const x = remap ? remap.xOf(u) - 0.5 : u * depthWidth - 0.5;
       const o = (j * grid + i) * 4;
       const wx = (u - 0.5) * 2 * halfW;
@@ -378,12 +390,16 @@ export function sampleVolumePositions(
         // nokta taşır — fotoğrafın kendi arka planı (duvar/zemin), öznenin
         // önüne geçmeyecek opaklıkta. Kavis/döküm/kabuk hesabı yapılmaz
         // (düz duvar); z yine [-1, +1] sözleşmesine kırpılır.
-        const d = sampleBilinear(depth, depthWidth, depthHeight, x, y);
+        const d = referenceEdges
+        ? sampleBilinear(referenceEdges.depth, grid, grid, (x + 0.5) * grid / depthWidth - 0.5, (y + 0.5) * grid / depthHeight - 0.5)
+        : sampleBilinear(depth, depthWidth, depthHeight, x, y);
         out[o + 2] = Math.min(1, Math.max(-1, (d - 0.5) * range - BACKDROP_Z_PIN));
-        out[o + 3] = BACKDROP_OPACITY;
+        out[o + 3] = opts.referenceVideo ? VIDEO_BACKDROP_OPACITY : BACKDROP_OPACITY;
         continue;
       }
-      const d = sampleBilinear(depth, depthWidth, depthHeight, x, y);
+      const d = referenceEdges
+        ? sampleBilinear(referenceEdges.depth, grid, grid, (x + 0.5) * grid / depthWidth - 0.5, (y + 0.5) * grid / depthHeight - 0.5)
+        : sampleBilinear(depth, depthWidth, depthHeight, x, y);
       // Depth terimi: (d − 0.5)·zSpan — uzam siluet oranlıdır (range değil);
       // dünya z sözleşmesi [−1, +1] son kırpmada korunur.
       let z = (d - 0.5) * zSpan;
@@ -456,6 +472,18 @@ export function sampleVolumePositions(
       out[o + 3] = a;
     }
   }
+  if (opts.referenceVideo && (referenceEdges || opts.videoFlowConfidence?.length === depth.length)) {
+    for (let j = 0; j < grid; j++) for (let i = 0; i < grid; i++) {
+      const u = pen ? pencereyeTasi((i + 0.5) / grid, pen.x0, pen.x1) : (i + 0.5) / grid;
+      const t = pen ? pencereyeTasi((j + 0.5) / grid, pen.y0, pen.y1) : (j + 0.5) / grid;
+      let confidence = referenceEdges ? sampleBilinear(referenceEdges.confidence, grid, grid, u * grid - 0.5, t * grid - 0.5) : 1;
+      if (opts.videoFlowConfidence?.length === depth.length) {
+        const value = sampleBilinear(opts.videoFlowConfidence, depthWidth, depthHeight, u * depthWidth - 0.5, t * depthHeight - 0.5);
+        confidence *= Number.isFinite(value) ? Math.min(1, Math.max(0, value)) : 0;
+      }
+      out[(j * grid + i) * 4 + 3] *= confidence;
+    }
+  }
   if (opts.layers && opts.layerGap) applyLayerGap(out, grid, opts.layers, opts.layerGap);
   return out;
 }
@@ -475,6 +503,7 @@ export function sampleVolumePositions(
 // ---------------------------------------------------------------------------
 
 export interface ImageSampleOptions {
+  samplingWindow?: OrneklemePenceresi | null;
   /** Grid boyutu (kare). Varsayılan 384 — sampleVolumePositions ile aynı. */
   gridSize?: number;
   /** Önem remap'i — sampleVolumePositions ile BİREBİR aynı ayar (hizalama). */
@@ -518,10 +547,12 @@ export function sampleImageGrid(
   for (let j = 0; j < grid; j++) {
     // t = (j+0.5)/N: yukarıdan aşağı, CDF de o yönde kurulur (konumlarla
     // birebir — texel hizası bozulursa renkler parçacıklardan kayar).
-    const t = (j + 0.5) / grid;
+    const tg = (j + 0.5) / grid;
+    const t = opts.samplingWindow ? pencereyeTasi(tg, opts.samplingWindow.y0, opts.samplingWindow.y1) : tg;
     const y = remap ? remap.yOf(t) * sy - 0.5 : t * imgH - 0.5;
     for (let i = 0; i < grid; i++) {
-      const u = (i + 0.5) / grid;
+      const ug = (i + 0.5) / grid;
+      const u = opts.samplingWindow ? pencereyeTasi(ug, opts.samplingWindow.x0, opts.samplingWindow.x1) : ug;
       const x = remap ? remap.xOf(u) * sx - 0.5 : u * imgW - 0.5;
       const o = (j * grid + i) * 3;
       sampleBilinearRgb(rgb, imgW, imgH, x, y, out, o);
@@ -643,10 +674,12 @@ export function sampleAoGrid(
       ? null
       : buildImportanceRemap(depth, depthW, depthH, opts.foregroundMask ?? null);
   for (let j = 0; j < grid; j++) {
-    const t = (j + 0.5) / grid;
+    const tg = (j + 0.5) / grid;
+    const t = opts.samplingWindow ? pencereyeTasi(tg, opts.samplingWindow.y0, opts.samplingWindow.y1) : tg;
     const y = remap ? remap.yOf(t) - 0.5 : t * depthH - 0.5;
     for (let i = 0; i < grid; i++) {
-      const u = (i + 0.5) / grid;
+      const ug = (i + 0.5) / grid;
+      const u = opts.samplingWindow ? pencereyeTasi(ug, opts.samplingWindow.x0, opts.samplingWindow.x1) : ug;
       const x = remap ? remap.xOf(u) - 0.5 : u * depthW - 0.5;
       out[j * grid + i] = sampleBilinear(ao, depthW, depthH, x, y);
     }

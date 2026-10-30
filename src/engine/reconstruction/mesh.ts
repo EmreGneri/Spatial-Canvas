@@ -1,3 +1,4 @@
+import { computeReferenceVideoBody, pencereyeTasi, type OrneklemePenceresi } from './videoReferenceSampling.ts';
 /**
  * KAPALI KABUK MESH (Gün B — 'solid' render modu, fotoğraf-only).
  *
@@ -82,6 +83,8 @@ const DEFAULT_CURVATURE = 0.1;
 import { applyShellLayerGap, layerShellIndices, type DepthLayers } from './layers.ts';
 
 export interface ShellMeshOptions {
+  referenceVideo?: { aspect: number };
+  samplingWindow?: OrneklemePenceresi | null;
   layers?: DepthLayers;
   layerGap?: number;
   /** Köşe ızgarası boyutu (tek eksen, köşe sayısı = (N+1)²). Varsayılan 128. */
@@ -157,14 +160,16 @@ export function buildShellMesh(
   const depthScale = opts.depthScale ?? 0.7;
   const curvature = opts.curvature ?? DEFAULT_CURVATURE;
   const halfH = (opts.worldHeight ?? DEFAULT_WORLD_HEIGHT) / 2;
-  const halfW = (width / height) * halfH;
+  const halfW = (opts.referenceVideo?.aspect ?? width / height) * halfH;
   const remap =
     opts.importanceSampling !== true
       ? null
       : buildImportanceRemap(depth, width, height, opts.foregroundMask ?? null);
   const sil = buildSilhouette(depth, width, height, opts.foregroundMask ?? null);
   // Kaide geometrisi (döküm sönümü merkezi) — parçacıklarla aynı hesap.
-  const body = computeBodyGeometry(sil.alpha, width, height, halfH);
+  const body = opts.referenceVideo
+    ? computeReferenceVideoBody(sil.alpha, width, height, halfH, opts.referenceVideo.aspect)
+    : computeBodyGeometry(sil.alpha, width, height, halfH);
   const d1 = body ? MESH_BACK_FILL * Math.min(body.rx, body.ry) : 0;
   // Silüet-oranlı z uzamı (sampler.ts ile BİREBİR aynı kural): derinlik uzamı
   // bulut yüksekliğine değil öznenin kendi genişliğine oranlıdır. `depthScale`
@@ -179,7 +184,9 @@ export function buildShellMesh(
   // kadrajın KISA kenarı biriminde ölçülür (yatay/karede bölen 1 — davranış
   // aynen korunur).
   const frameShortHalf = Math.min(halfW, halfH);
-  const zSpan = body ? (ANATOMIC_DEPTH_RATIO * 2 * Math.min(body.rx, body.ry)) / frameShortHalf : range;
+  const zSpan = opts.referenceVideo
+    ? (body ? Math.min(2 / 1.4, 0.42 * 2 * body.rx) : range)
+    : body ? (ANATOMIC_DEPTH_RATIO * 2 * Math.min(body.rx, body.ry)) / frameShortHalf : range;
   const zUnit = zSpan / 2;
   const wallZ = EDGE_WALL_Z * zUnit;
   const thinShellZ = THIN_SHELL_Z * zUnit;
@@ -198,15 +205,17 @@ export function buildShellMesh(
     // verildiği için mesh dikey TERS kuruluyordu: fotoğrafın üstü dünyanın
     // altına düşüyor, doğru yönde boyanan fotoğraf dokusu ters geometriye
     // biniyordu (solid modun "yanlış şekil" sebebi).
-    const t = j / N;
+    const tg = j / N;
+    const t = opts.samplingWindow ? pencereyeTasi(tg, opts.samplingWindow.y0, opts.samplingWindow.y1) : tg;
     const v = 1 - t;
     const yv = remap ? remap.yOf(t) - 0.5 : t * height - 0.5;
     for (let i = 0; i < S; i++) {
-      const u = i / N;
+      const ug = i / N;
+      const u = opts.samplingWindow ? pencereyeTasi(ug, opts.samplingWindow.x0, opts.samplingWindow.x1) : ug;
       const xv = remap ? remap.xOf(u) - 0.5 : u * width - 0.5;
       const c = j * S + i;
-      uvc[c * 2] = u;
-      uvc[c * 2 + 1] = v;
+      uvc[c * 2] = opts.samplingWindow ? ug : u;
+      uvc[c * 2 + 1] = opts.samplingWindow ? 1 - tg : v;
       wx[c] = (u - 0.5) * 2 * halfW;
       wy[c] = (v - 0.5) * 2 * halfH;
       if (bilinear(sil.alpha, width, height, xv, yv) < 0.5) continue;
@@ -264,8 +273,8 @@ export function buildShellMesh(
   // Dünya adımı köşeler arasında SABİTTİR (önem remap'i yalnızca hangi depth
   // pikselinin okunduğunu büker, köşenin dünya konumunu bükmez) — normal
   // türevleri bu adımla ölçeklenir.
-  const stepX = (2 * halfW) / N;
-  const stepY = (2 * halfH) / N;
+  const stepX = (2 * halfW) / N * (opts.samplingWindow ? opts.samplingWindow.x1 - opts.samplingWindow.x0 : 1);
+  const stepY = (2 * halfH) / N * (opts.samplingWindow ? opts.samplingWindow.y1 - opts.samplingWindow.y0 : 1);
   const fIdx = new Int32Array(S * S).fill(-1);
   const positions = new Float32Array(K * 2 * 3);
   const uvs = new Float32Array(K * 2 * 2);

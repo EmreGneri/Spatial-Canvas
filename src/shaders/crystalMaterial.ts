@@ -216,7 +216,7 @@ ${CRYSTAL_SHADING_GLSL}
     vec3 V = normalize(-vViewPos);
     if (dot(N, V) < 0.0) N = -N; // arka yüzler ters normal taşıyabilir
 
-    vec3 base = uHasImage > 0.5 ? decodeSourceColor(texture2D(uImageTexture, vUv)).rgb : vec3(0.55, 0.62, 0.72);
+    vec3 base = uHasImage > 0.5 ? decodeSourceColor(texture2D(uImageTexture, sourceColorUv(vUv))).rgb : vec3(0.55, 0.62, 0.72);
     base *= uTintColor;
 
     vec3 col = crystalShade(N, V, base, max(0.0, -vViewPos.z));

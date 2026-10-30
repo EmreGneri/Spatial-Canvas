@@ -1,5 +1,5 @@
 import { Vector3 as LayerVector3 } from 'three';
-// Raw video colors use linear UVs, so live depth must sample the same UVs.
+// Video colors and reference anatomical geometry use the same source coordinates.
 import assert from 'node:assert/strict';
 import { registerHooks } from 'node:module';
 
@@ -39,13 +39,8 @@ engine.refreshGaussians = () => {};
 engine.setDepth(depth, width, height);
 
 const actual = engine.homeTexture.image.data;
-const fittedHeight = 2 * 3.5 * Math.tan(Math.PI / 6)
-  * Math.min(1, engine.camera.aspect / (width / height)) * 0.94;
 const linear = sampleVolumePositions(depth, width, height, {
-  gridSize: N,
-  importanceSampling: false,
-  fullFrame: { cameraDistance: 3.5 },
-  worldHeight: fittedHeight,
+  gridSize: N, importanceSampling: false, referenceVideo: { aspect: width / height },
 });
 const warped = sampleVolumePositions(depth, width, height, { gridSize: N });
 const near = (a, b) => Math.abs(a - b) < 1e-5;
@@ -56,12 +51,12 @@ for (const [x, y] of [[80, 80], [192, 80], [300, 192], [192, 300]].map((p) => p.
   const offset = z - 2;
   const u = (x + 0.5) / N;
   const v = 1 - (y + 0.5) / N;
-  const baseX = (u - 0.5) * fittedHeight * (width / height);
-  const baseY = (v - 0.5) * fittedHeight;
-  assert.ok(near(actual[offset] / (3.5 - actual[z]), baseX / 3.5),
-    'depth must not move a video pixel horizontally in the initial camera');
-  assert.ok(near(actual[offset + 1] / (3.5 - actual[z]), baseY / 3.5),
-    'depth must not move a video pixel vertically in the initial camera');
+  const baseX = (u - 0.5) * 2 * (width / height);
+  const baseY = (v - 0.5) * 2;
+  assert.ok(near(actual[offset], baseX),
+    'reference geometry and video color use the same horizontal source coordinate');
+  assert.ok(near(actual[offset + 1], baseY),
+    'reference geometry and video color use the same vertical source coordinate');
   if (!near(warped[z], linear[z])) warpedSamples++;
 }
 assert.ok(warpedSamples > 0, 'fixture must reveal the color/depth UV mismatch');
@@ -70,8 +65,8 @@ const emptyScene = new Float32Array(width * height);
 engine.setDepth(emptyScene, width, height);
 for (const [x, y] of [[0, 0], [N >> 1, N >> 1], [N - 1, N - 1]]) {
   const offset = (y * N + x) * 4;
-  assert.equal(actual[offset + 3], 1, 'an unmasked video is a full scene, not a portrait cutout');
-  assert.equal(actual[offset + 2], -1, 'distant video pixels retain their depth without backdrop pinning');
+  assert.equal(actual[offset + 3], Math.fround(0.2), 'empty reference scene keeps low-opacity backdrop samples');
+  assert.equal(actual[offset + 2], -1, 'empty reference scene keeps its distant backdrop depth');
 }
 
 const pixels = new Uint8ClampedArray(width * height * 4);

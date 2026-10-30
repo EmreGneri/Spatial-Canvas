@@ -1,5 +1,21 @@
 import type { DepthEstimateOptions } from '../../depth.ts';
 import type { SegmentationResult } from '../reconstruction/segmentation.ts';
+import { maskeKaydir, type KutleMerkezi } from './liveDepth.ts';
+
+/** Cheap translations follow two-pixel motion; the expensive refresh threshold is unrelated. */
+export function trackLiveMask(
+  mask: { data: Float32Array; width: number; height: number },
+  previous: KutleMerkezi | null, current: KutleMerkezi | null,
+  distance: number, maxDistance: number,
+): { data: Float32Array; center: KutleMerkezi | null; distance: number } {
+  const unchanged = { data: mask.data, center: previous ?? current, distance };
+  if (!previous || !current || previous.oran < 0.02 || current.oran < 0.02) return unchanged;
+  const dx = current.x - previous.x, dy = current.y - previous.y;
+  const step = Math.hypot(dx, dy);
+  if (Math.hypot(dx * mask.width, dy * mask.height) < 2 || distance + step > maxDistance) return unchanged;
+  return { data: maskeKaydir(mask.data, mask.width, mask.height, dx * mask.width, dy * mask.height),
+    center: current, distance: distance + step };
+}
 
 export type LiveMaskResult = {
   data: Float32Array;

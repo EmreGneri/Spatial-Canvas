@@ -9,6 +9,8 @@
     "build": "npm run fetch:assets && node scripts/gen-third-party-notices.mjs && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
+    "verify:video-reference": "node scripts/verify-video-reference-geometry.mjs && node scripts/verify-realtime-video-color.mjs && node scripts/verify-video-depth-parity.mjs && node scripts/verify-live-mask.mjs",
+    "verify:video-controls": "node scripts/verify-live-video-controls-browser.mjs",
     "fetch:assets": "node scripts/fetch-assets.mjs",
     "eval": "node scripts/eval.mjs",
     "verify:browser": "node scripts/verify-browser-smoke.mjs --chrome",

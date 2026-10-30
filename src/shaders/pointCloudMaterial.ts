@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { SOURCE_COLOR_GLSL } from './sourceColor.ts';
-import { POINTS_DEPTH_RANGE, POSITION_TEXTURE_SIZE } from '../engine/buffers';
+import { POINTS_DEPTH_RANGE, POINTS_WORLD_HEIGHT, POSITION_TEXTURE_SIZE } from '../engine/buffers';
 import type { ParamDef } from '../engine/params';
 
 /**
@@ -21,7 +21,7 @@ import type { ParamDef } from '../engine/params';
  *   Değeri veri katmanı yazar (sampler.ts, buffers.ts); shader burada alpha
  *   çarpanı olarak tüketir. Jitter tohumu artık aUv hash'iyle türetilir.
  * - RENK (Tur 11): `uImageTexture` varsa (uHasImage = 1) parçacık rengi
- *   fotoğraftan gelir — `texture2D(uImageTexture, vUv)`; vUv = aUv olduğu
+ *   fotoğraftan gelir — `texture2D(uImageTexture, sourceColorUv(vUv))`; vUv = aUv olduğu
  *   için texel (i,j) konumla birebir aynı fotoğraf pikselini okur. Değerini
  *   Engine.setPhoto yazar (fotoğraf setDepth'te aynı remap ile grid'e
  *   örneklenir). uHasImage = 0 iken (kamera/video) eski derinlik rampası.
@@ -38,14 +38,10 @@ export interface PointCloudMaterialUniforms {
   uPointSize: { value: number };
   /** 1 for live video; keeps photo and synthetic point sizing unchanged at 0. */
   uVideoFootprint: { value: number };
-  /** Drawing-buffer height in physical pixels, including device pixel ratio. */
+  /** Reference video viewport height in CSS pixels (Engine); zero outside Engine. */
   uViewportHeightPx: { value: number };
-  /** Reference distance used by full-frame video perspective compensation. */
-  uVideoReferenceDistance: { value: number };
-  /** Height in world units used by the full-frame video sampler. */
-  uVideoWorldHeight: { value: number };
-  /** Source video width / height; horizontal grid spacing grows for wide video. */
-  uVideoAspect: { value: number };
+  /** Reference renderer grid spacing; only video sizing uses this. */
+  uVideoWorldStep: { value: number };
   /** Renderer pixel ratio / startup ratio (Engine). Keeps photo sprites steady under adaptive DPR. */
   uDprScale: { value: number };
   /** 0..1 — aUv hash tohumuyla boyut saçılması; 0 = hepsi eşit boyutta */
@@ -148,9 +144,7 @@ const VERTEX = /* glsl */ `
   uniform float uPointSize;
   uniform float uVideoFootprint;
   uniform float uViewportHeightPx;
-  uniform float uVideoReferenceDistance;
-  uniform float uVideoWorldHeight;
-  uniform float uVideoAspect;
+  uniform float uVideoWorldStep;
   uniform float uDprScale;
   uniform float uSizeJitter;
   uniform float uExtrusionDepth;
@@ -247,26 +241,13 @@ const VERTEX = /* glsl */ `
     // max() kırpması ZORUNLU: kameranın arkasına/üstüne düşen noktalarda
     // -mv.z ~ 0 olur, bölme patlar ve dev noktalar ekranı beyazlatır.
     // gl_PointSize is physical pixels; the DPR scale keeps the sprite's
-    // on-screen size under adaptive DPR. The video path below already derives
-    // from uViewportHeightPx (physical) and must not be scaled again.
+    // on-screen size under adaptive DPR. The video path intentionally follows
+    // the reference CSS viewport sizing instead.
     float legacySize = uPointSize * jitter * uDprScale / max(-mv.z, 0.1);
-    // Video pixels form a regular grid in screen space. A fixed world-space
-    // point size leaves holes as DPR or zoom changes, especially behind the
-    // camera plane where legacySize shrinks. Match the projected grid pitch
-    // and keep a small rasterization floor for sub-pixel grid spacing.
-    float referenceDistance = max(uVideoReferenceDistance, 0.1);
-    float xyScale = max((referenceDistance - z) / referenceDistance, 0.0);
-    float gridPitchPx = uViewportHeightPx * projectionMatrix[1][1]
-      * max(uVideoWorldHeight, 0.0) * 0.5 * xyScale
-      / (${POSITION_TEXTURE_SIZE}.0 * max(-mv.z, 0.1));
-    // The grid is square but a wide frame has a larger horizontal world step.
-    // Size each sprite to cover the larger projected gap. Video jitter is
-    // deliberately mild so a few small sprites cannot open vertical stripes.
-    float projectedGridPitchPx = gridPitchPx * max(1.0, uVideoAspect);
-    float zoomScale = max(referenceDistance - z, 0.0) / max(-mv.z, 0.1);
-    float videoSize = max(2.5 * zoomScale,
-      2.85 * projectedGridPitchPx * mix(1.0, jitter, 0.2))
-      * (uPointSize / 6.0);
+    // Reference appearance: soft additive sprites use projected
+    // world grid spacing. Keep the photo sizing path above unchanged.
+    float videoSize = uPointSize * jitter * uVideoWorldStep * projectionMatrix[1][1]
+      * 0.5 * uViewportHeightPx / max(-mv.z, 0.1);
     gl_PointSize = mix(legacySize, videoSize, step(0.5, uVideoFootprint));
 
     gl_Position = projectionMatrix * mv;
@@ -301,15 +282,8 @@ const FRAGMENT = /* glsl */ `
 
   /** Arka düzleme oturan parçacık bu oranda karartılır (0.5 = %50 koyu). */
   const float EXTRUSION_SHADE = 0.5;
-  /**
-   * Live video writes depth (Engine), so a fragment either occludes fully or
-   * not at all. The kept disc still reaches the grid cell corner for every
-   * softness/jitter slider value (verify-video-point-footprint).
-   */
-  const float VIDEO_ALPHA_CUTOFF = 0.3;
   /** Grid size the photo look was tuned at (see ENERGY note in main()). */
   const float PHOTO_GRID_ENERGY = ${((PHOTO_TUNED_GRID / POSITION_TEXTURE_SIZE) ** 2).toFixed(4)};
-
   void main() {
     // Tur 12 (şikayet 4): nesne ayırma AÇIK iken arka plan parçacıkları
     // (w = BACKDROP_OPACITY < 0.5) tamamen atılır — ekranda beyaz kağıt/
@@ -329,16 +303,9 @@ const FRAGMENT = /* glsl */ `
 
     // Opaklık (Tur 11): ön plan 1.0, arka plan noktaları 0.4 — iki katman
     // tek buffer'da, tek draw call; mantık hatası yok, w doğrudan alpha.
-    // VIDEO: the sprite's soft edge is still cut on the SHAPE alpha (a
-    // see-through fragment that writes depth would hide the neighbour drawn
-    // after it), then vOpacity attenuates once. vOpacity already holds
-    // VIDEO_BACKDROP_OPACITY (sampler.ts) — this is the only place it applies.
-    if (uVideoFootprint > 0.5) {
-      if (alpha < VIDEO_ALPHA_CUTOFF) discard;
-      alpha = uObjectSeparation < 0.5 ? 1.0 : vOpacity;
-    } else {
-      alpha *= vOpacity;
-    }
+    // VIDEO: vOpacity already holds VIDEO_BACKDROP_OPACITY (sampler.ts); this one
+    // multiply is the only attenuation (no discard, no extra constant).
+    alpha *= vOpacity;
 
     // Additive stacking: per-pixel energy grows with particle density. Photo
     // post-FX (bloom threshold, exposure) was tuned at the 384x384 grid, so the
@@ -350,7 +317,7 @@ const FRAGMENT = /* glsl */ `
     // kendi pikselinin RGB'sini alır (fotoğraf grid'i ya da canlı video);
     // KAPALI ise doku yok sayılır, renk Near/Far derinlik gradyanından gelir.
     // ALPHA kanalı = bakılı oklüzyon (Gün C); doku yokken 1 (nötr).
-    vec4 img = uHasImage > 0.5 ? decodeSourceColor(texture2D(uImageTexture, vUv)) : vec4(0.0, 0.0, 0.0, 1.0);
+    vec4 img = uHasImage > 0.5 ? decodeSourceColor(texture2D(uImageTexture, sourceColorUv(vUv))) : vec4(0.0, 0.0, 0.0, 1.0);
     vec3 col = (uHasImage > 0.5 && uUseTextureColor > 0.5)
       ? img.rgb
       : mix(uFarColor, uNearColor, vDepth);
@@ -399,9 +366,7 @@ const FRAGMENT = /* glsl */ `
     float fogF = 1.0 - exp(-uFogDensity * uFogDensity * vViewDepth * vViewDepth);
     col = mix(col, uFogColor, fogF);
 
-    // Photos use AdditiveBlending (src = SrcAlpha, dst = One): the soft edge
-    // fades naturally. Engine switches live video to NormalBlending, because
-    // its dense full-frame grid would otherwise accumulate to white.
+    // Both sources retain the reference soft additive sprite falloff.
     gl_FragColor = vec4(col, alpha);
   }
 `;
@@ -413,9 +378,7 @@ export function createPointCloudMaterial(): PointCloudMaterial {
     uPointSize: { value: 6 },
     uVideoFootprint: { value: 0 },
     uViewportHeightPx: { value: 0 },
-    uVideoReferenceDistance: { value: 3.5 },
-    uVideoWorldHeight: { value: 2 },
-    uVideoAspect: { value: 1 },
+    uVideoWorldStep: { value: POINTS_WORLD_HEIGHT / POSITION_TEXTURE_SIZE },
     // 1 outside Engine (embed, tests): the startup size, unchanged.
     uDprScale: { value: 1 },
     uSizeJitter: { value: 0.3 },
@@ -455,12 +418,9 @@ export function createPointCloudMaterial(): PointCloudMaterial {
     vertexShader: VERTEX,
     fragmentShader: FRAGMENT,
     transparent: true,
-    // Keep depth writes off: an additive cloud would clip the particles behind
-    // it. Engine.pushSharedUniforms turns them on for live video only, whose
-    // fragment path cuts the soft edge so no see-through fragment writes.
+    // Soft additive sprites must not clip particles rendered behind them.
     depthWrite: false,
-    // Default for photos and presets. Engine.pushSharedUniforms owns the
-    // per-source switch to NormalBlending for live video.
+    // Reference appearance for video; photo appearance unchanged.
     blending: THREE.AdditiveBlending,
   });
 

@@ -45,8 +45,9 @@ const input = noisy(), copy = Float32Array.from(input);
 assert.deepEqual(kareStabilize(input, W, H, lum, fresh), copy);
 assert.deepEqual(input, copy);
 
-// [5] Switch: on by default, ?titremeFiltresi=0 restores the raw reference pipeline output.
-assert.equal(kareStabilAcik(''), true);
+// [5] Keep reference detail by default; stabilization remains an explicit experiment.
+assert.equal(kareStabilAcik(''), false);
+assert.equal(kareStabilAcik('?titremeFiltresi=1'), true);
 assert.equal(kareStabilAcik('?titremeFiltresi=0'), false);
 const src = (await import('node:fs')).readFileSync(new URL('../src/engine/vision/liveDepth.ts', import.meta.url), 'utf8');
 assert.match(src, /canliStabil\.zamansal = zamansalDurumAc\(\);/, 'resetLiveDepthState (seek, loop, cut, size) clears the stabilizer');

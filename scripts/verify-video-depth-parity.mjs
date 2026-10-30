@@ -79,9 +79,12 @@ assert.doesNotMatch(src, /timedRangeAlpha/, 'range EMA is per frame, as in refer
 // App defaults: mask feeds the post-process while playing; masks come by themselves;
 // preparation, VDA, flow interpolation and edge cleanup stay off unless asked for.
 const app = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
+assert.match(app, /girdiAl: \(\) => canliGirdiBoyutu\(liveQualityRef\.current, video\.paused\)/, 'manual quality is authoritative while playing and paused');
+assert.match(app, /useState\(154\)/, 'reference fast input is the initial selection');
+assert.match(app, /<LiveVideoControls/, 'reference video playback and quality controls are available');
 assert.match(app, /maskeAl: \(\) => segmentRef\.current \? \(videoMask \?\? pausedPreparedMask\(video\.currentTime\)\) : null,/);
 assert.match(app, /if \(segmentKapaliRef\.current \|\| iptal \|\| maskBusy/, 'mask capture is automatic unless the user turned separation off');
-assert.match(app, /localStorage\.getItem\(VIDEO_PROCESSING_KEY\) === '1'/, 'offline preparation is opt-in');
+assert.doesNotMatch(app, /localStorage\.getItem\(VIDEO_PROCESSING_KEY\)/, 'old stored preparation settings must not slow the default live path');
 assert.match(app, /get\('videoHazirla'\) === '1'/);
 assert.match(app, /videoAyirmaDurumu\(coverage, segmentRef\.current\)/, 'separation auto-enables at 8% and disables under 4% (hysteresis, maskeKarari.ts)');
 const engine = readFileSync(new URL('../src/engine/Engine.ts', import.meta.url), 'utf8');

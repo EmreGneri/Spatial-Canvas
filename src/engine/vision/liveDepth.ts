@@ -886,9 +886,9 @@ export function kareStabilize(
   return zamansalYumusat(out, durum.zamansal, ayar.taban, ayar.esik, { luminance: lum, width, height, sourceWindow });
 }
 
-/** `?titremeFiltresi=0` referans yoldaki ham görünümü (filtresiz) geri getirir. */
+/** Preserve reference detail by default; smoothing is an explicit experiment. */
 export function kareStabilAcik(search: string = globalThis.location?.search ?? ''): boolean {
-  return new URLSearchParams(search).get('titremeFiltresi') !== '0';
+  return new URLSearchParams(search).get('titremeFiltresi') === '1';
 }
 
 /** Canlı sürücünün stabilizasyon hafızası — `resetLiveDepthState` temizler. */

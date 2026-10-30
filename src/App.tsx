@@ -7,8 +7,8 @@ import { readExifFocal } from './vendor/splat.js/io/exif.js';
 import { estimateDepth, depthDevice, FOTO_KALITE, loadDepthModel, luminanceHeightMap, resetLuminanceState } from './depth';
 import { segmentForeground, preloadPhotoMaskBytes } from './engine/reconstruction/segmentation';
 import { resampleBilinear } from './engine/reconstruction/silhouette';
-import { captureLiveMask } from './engine/vision/liveMask';
-import { shouldPresentLiveDepth } from './engine/vision/liveDepthFlow';
+import { captureLiveMask, trackLiveMask } from './engine/vision/liveMask';
+import { liveInterpolationEnabled, shouldPresentLiveDepth } from './engine/vision/liveDepthFlow';
 import { estimatePreparationSeconds, prepareVideoDepth, videoPreparationPolicy, type VideoDepthHandle, type VideoDepthProgress, type VideoMaskCapture } from './engine/vision/videoPrecompute';
 import { startBufferedVideoPlayback } from './engine/vision/bufferedVideoPlayback';
 import { logMaskJob, videoStats, type VideoMaskJob } from './engine/vision/videoStats';
@@ -29,6 +29,8 @@ import { NodeGraphEditor } from './ui/NodeGraphEditor';
 import { TrackerOverlay } from './ui/TrackerOverlay';
 import { ExportBar } from './ui/ExportBar';
 import { TransportSerit } from './ui/TransportSerit';
+import { LiveVideoControls, type LiveVideoStats } from './ui/LiveVideoControls';
+import { liveGeometryAgeMs } from './ui/liveVideoStats';
 import { KutuphanePaneli } from './ui/KutuphanePaneli';
 import { kaynakBelirle } from './ui/presetOnizleme';
 import { soganAcilisGerekliMi, sunumAcikMi } from './ui/sunumModu';
@@ -58,8 +60,8 @@ import * as THREE from 'three';
 import { type TrackedTarget, type TrackerModu } from './engine/vision/tracker';
 import { TrackerClient } from './engine/vision/trackerClient';
 import {
-  isitLiveModel, kutleMerkezi, liveDepthKullanilabilir, liveGrabSize, maskeBayatMi,
-  maskeKaydir, startLiveDepth, ustPercentilEsigi, type KutleMerkezi, type LiveDepthResult,
+  canliGirdiBoyutu, isitLiveModel, kutleMerkezi, liveDepthKullanilabilir, liveGrabSize,
+  startLiveDepth, ustPercentilEsigi, type KutleMerkezi, type LiveDepthResult,
 } from './engine/vision/liveDepth';
 import { yetenekRaporu } from './engine/vision/yetenek';
 import {
@@ -99,9 +101,9 @@ const LUMINANCE_MOTION_GAIN = 6;
 const VIDEO_MASK_MAX_SHIFT = 0.25;
 /** Video hazırlanırken canlı V2 çıkarımları arası en az süre (GPU kuyruğu paylaşılır). */
 const PREPARING_LIVE_INFER_MS = 500;
-const VIDEO_PROCESSING_KEY = 'arkaPlanVideoIsleme';
 const VIDEO_STAGE_LABEL: Record<VideoDepthProgress['stage'], string> = {
   loading: 'yükleniyor', decoding: 'kareler çözülüyor', processing: 'işleniyor',
+  finalizing: 'derinlik kaydediliyor',
   ready: 'hazır', fallback: 'canlı derinlik', cancelled: 'iptal edildi',
 };
 const LOG_LIMIT = 200;
@@ -286,18 +288,17 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
   const [cameraOn, setCameraOn] = useState(false);
   const [videoEdgeCleanup, setVideoEdgeCleanup] = useState(VIDEO_EDGE_CLEANUP_DEFAULT);
   const [liveRates, setLiveRates] = useState({ model: 0, flow: 0 });
+  const liveQualityRef = useRef(154);
+  const [liveQuality, setLiveQuality] = useState(154);
+  const [playbackVideo, setPlaybackVideo] = useState<HTMLVideoElement | null>(null);
+  const [liveStats, setLiveStats] = useState<LiveVideoStats>({ path: 'loading', hz: 0,
+    inferenceMs: 0, width: 0, height: 0, frames: 0, mediaTime: null, geometryAgeMs: null });
   const [videoPreparation, setVideoPreparation] = useState<VideoDepthProgress | null>(null);
   /** Hazır videonun maske izi ilerlemesi (0..1); null = istenmedi. */
   const [videoMaskProgress, setVideoMaskProgress] = useState<number | null>(null);
-  /**
-   * Ayar: yüklenen videonun derinliği arka planda hazırlansın mı. VARSAYILAN KAPALI:
-   * hazır (VDA) derinlik referans yoldaki canlı görünümü geçiyordu (kullanıcı kararı
-   * 2026-10-25). Ayar tarayıcıda saklanır; `?videoHazirla=1` bu oturumda açar.
-   */
-  const [videoProcessing, setVideoProcessing] = useState(() => {
-    if (new URLSearchParams(location.search).get('videoHazirla') === '1') return true;
-    try { return localStorage.getItem(VIDEO_PROCESSING_KEY) === '1'; } catch { return false; }
-  });
+  // Always start on the reference live path. Preparation is an explicit session choice.
+  const [videoProcessing, setVideoProcessing] = useState(() =>
+    new URLSearchParams(location.search).get('videoHazirla') === '1');
   /** Uzun video: hazırlık için onay bekleniyor (tahmini süreyle). */
   const [videoPreparationAsk, setVideoPreparationAsk] = useState<{ file: File; video: HTMLVideoElement; estimate: number } | null>(null);
   const [segment, setSegment] = useState(false);
@@ -483,6 +484,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
    * durdurur.
    */
   function teardownSource() {
+    setVideoLook(false);
     setPhotoPreview(false);
     engineRef.current?.setSuspended(false);
     // Every pending async source path (photo inference, camera prompt, video
@@ -527,6 +529,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
       video.removeAttribute('src');
       videoRef.current = null;
     }
+    setPlaybackVideo(null);
     if (objectUrlRef.current) {
       URL.revokeObjectURL(objectUrlRef.current);
       objectUrlRef.current = null;
@@ -975,9 +978,15 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
    * GPU cost would make live depth less responsive.
    */
   function startVideoDepth(video: HTMLVideoElement, label: string) {
+    setVideoLook(true);
+    engineRef.current?.setRealtimeVideoColor(!liveInterpolationEnabled());
     const isCurrent = captureGeneration(sourceGenRef);
     startLuminanceLoop(video, label);
     let iptal = false;
+    setPlaybackVideo(video);
+    setLiveStats({ path: 'loading', hz: 0, inferenceMs: 0, width: 0, height: 0,
+      frames: 0, mediaTime: null, geometryAgeMs: null });
+    let statsAt = performance.now(), statsFrames = 0, totalFrames = 0;
     let videoMask: { data: Float32Array; width: number; height: number; mediaTime: number;
       colorFrame: { data: Uint8ClampedArray; width: number; height: number }; job?: VideoMaskJob } | null = null;
     let maskBusy = false;
@@ -1008,6 +1017,15 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
       engineRef.current?.setDepth(d.data, d.width, d.height,
         mask?.data, mask?.width, mask?.height, d.colorFrame, d.flowConfidence);
       if (mask && mask === videoMask && videoMask.job && videoMask.job.appliedAt === null) videoMask.job.appliedAt = performance.now();
+      statsFrames++; totalFrames++;
+      const statsNow = performance.now();
+      if (video.paused || totalFrames === 1 || statsNow - statsAt >= 250) {
+        setLiveStats({ path: 'depth', hz: statsFrames * 1000 / Math.max(1, statsNow - statsAt),
+          inferenceMs: d.inferenceMs, width: d.width, height: d.height, frames: totalFrames,
+          mediaTime: d.mediaTime, geometryAgeMs: liveGeometryAgeMs(video.currentTime,
+            d.mediaTime, video.playbackRate, video.duration, video.loop) });
+        statsFrames = 0; statsAt = statsNow;
+      }
       // Hazır renk karesini en çok beş saniyede bir oku; model/ek kare yakalama yok.
       if (d.colorFrame && performance.now() - lastCategoryAt >= 5000) {
         lastCategoryAt = performance.now();
@@ -1143,6 +1161,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
       // replace the newer source's without ever being called.
       if (iptal || !isCurrent()) return;
       if (!varMi) {
+        setLiveStats(previous => ({ ...previous, path: 'fallback' }));
         liveDepthStopRef.current = null;
         say('canlı derinlik: WebGPU yok; parlaklık vekiliyle devam');
         return;
@@ -1171,13 +1190,6 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
             say('canlı derinlik: model devraldı (depth-anything-v2-small · fp16)');
           }
           syncMaskRequest();
-          // Let the Worker align the new model anchor before replacing a masked flow frame.
-          const awaitingMask = segmentRef.current && lastDepth?.flowMask && !d.flowMask
-            && !video.paused && d.mediaTime - lastDepth.mediaTime < 0.5;
-          if (!awaitingMask && shouldPresentLiveDepth(d.mediaTime, lastDepth?.mediaTime ?? -Infinity)) {
-            lastDepth = d;
-            applyDepth(d);
-          }
           const mask = segmentRef.current ? videoMask : null;
           // First mask, retry after a rejected one, and the periodic refresh (also while
           // separation is off, so a later larger mask can switch it on): maskeKarari.ts.
@@ -1186,21 +1198,22 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
             ayirmaAcik: segmentRef.current, gecenMs: performance.now() - lastMaskAttempt });
           if (istek) captureMask(istek);
           else if (videoMask) videoStats.maskGate.interval++;
-          if (mask && !maskBusy) {
+          if (mask) {
             const threshold = ustPercentilEsigi(d.data, 25);
-            // KAYDIRMA KOLU (~1 ms, referans yol): yakın kütlenin merkezi maske
-            // kurulduğundan beri kaydıysa maske o kadar ötelenir; RMBG/IS-Net koşmaz.
+            // Follow small motion before presenting this frame, without another GPU inference.
             const now = kutleMerkezi(d.data, d.width, d.height, threshold);
-            if (now && !shiftBase) shiftBase = now;
-            if (now && shiftBase && maskeBayatMi(now, shiftBase)) {
-              const dx = now.x - shiftBase.x, dy = now.y - shiftBase.y, path = Math.hypot(dx, dy);
-              if (shiftTotal + path <= VIDEO_MASK_MAX_SHIFT) {
-                // Aynı nesne yerinde güncellenir: sürücü maskeyi yeni sanıp tur iptal etmesin.
-                mask.data = maskeKaydir(mask.data, mask.width, mask.height, dx * mask.width, dy * mask.height);
-                shiftBase = now;
-                shiftTotal += path;
-              }
-            }
+            const tracked = trackLiveMask(mask, shiftBase, now, shiftTotal, VIDEO_MASK_MAX_SHIFT);
+            // Keep object identity: replacing it would invalidate an in-flight depth inference.
+            mask.data = tracked.data;
+            shiftBase = tracked.center;
+            shiftTotal = tracked.distance;
+          }
+          // Let the Worker align the new model anchor before replacing a masked flow frame.
+          const awaitingMask = segmentRef.current && lastDepth?.flowMask && !d.flowMask
+            && !video.paused && d.mediaTime - lastDepth.mediaTime < 0.5;
+          if (!awaitingMask && shouldPresentLiveDepth(d.mediaTime, lastDepth?.mediaTime ?? -Infinity)) {
+            lastDepth = d;
+            applyDepth(d);
           }
           sayac++;
           if (video.currentTime >= d.mediaTime) {
@@ -1221,8 +1234,9 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
           }
         },
         {
+          girdiAl: () => canliGirdiBoyutu(liveQualityRef.current, video.paused),
           shouldInfer: () => {
-            // Duraklatınca tek detaylı kare (V2 378 + tam son işleme), hazır derinlik olsa da.
+            // A paused frame respects the selected quality, as in the reference build.
             if (video.paused) return true;
             const prepared = preparedVideoRef.current;
             if ((!segmentRef.current || prepared?.hasMask(video.currentTime)) && preparedVideoUsableRef.current
@@ -1272,6 +1286,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
           onError: (err, ardisik) =>
             say(`canlı derinlik hatası (${ardisik}/3): ${err instanceof Error ? err.message : String(err)}`),
           onVazgec: () => {
+            setLiveStats(previous => ({ ...previous, path: 'fallback' }));
             say('canlı derinlik: ardışık 3 hata; parlaklık vekiline dönüldü');
             engineRef.current?.clearVideoFrameColor();
             liveDepthStopRef.current = null;
@@ -1403,7 +1418,6 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
 
   function setVideoProcessingSetting(on: boolean) {
     setVideoProcessing(on);
-    try { localStorage.setItem(VIDEO_PROCESSING_KEY, on ? '1' : '0'); } catch { /* yalnız bu oturum */ }
     if (!on) {
       setVideoPreparationAsk(null);
       if (videoPreparingRef.current) {
@@ -1693,6 +1707,17 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
    * bir kez denediği bir ayarı kalıcı hale getirirdi.
    */
   const modHafizaRef = useRef<ModHafizasi>({});
+  const videoModHafizaRef = useRef<ModHafizasi>({});
+  const videoLookRef = useRef(false);
+
+  function setVideoLook(on: boolean) {
+    const engine = engineRef.current;
+    if (!engine || videoLookRef.current === on) return;
+    const activeMode = engine.renderMode as RenderMode;
+    modHafizaYaz(activeMode);
+    videoLookRef.current = on;
+    modKaliteUygula(activeMode);
+  }
 
   /** Post-FX gruplarının canlı uniform sözlükleri — tek yerde toplanır. */
   function kaliteHedefleri(engine: Engine): Record<KaliteGrubu, {
@@ -1732,14 +1757,18 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
         if (d.kind !== 'color' && typeof u?.value === 'number') kayit[g][d.key] = u.value;
       }
     }
-    modHafizaRef.current[m] = kayit;
+    if (videoLookRef.current) videoModHafizaRef.current[m] = kayit;
+    else modHafizaRef.current[m] = kayit;
   }
 
   function modKaliteUygula(m: RenderMode) {
     const engine = engineRef.current;
     if (!engine) return;
     const hedef = kaliteHedefleri(engine);
-    const degerler = girisDegerleri(m, modHafizaRef.current, kaliteVarsayilanlari(engine));
+    const defaults = kaliteVarsayilanlari(engine);
+    // Reference video has no photo-oriented bloom/exposure profile. Keep edits in separate memories.
+    const degerler = videoLookRef.current ? (videoModHafizaRef.current[m] ?? defaults)
+      : girisDegerleri(m, modHafizaRef.current, defaults);
     for (const g of KALITE_GRUPLARI) applyParams(hedef[g].defs, hedef[g].uniforms, degerler[g]);
     refreshPanel();
   }
@@ -1790,11 +1819,12 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
     engine.setPointsMaterial(materials[next]);
     engine.selectRenderMode(next);
     modKaliteUygula(next);
+    // Reuse the accepted frame so paused video can build the newly selected representation.
+    if (videoRef.current) videoDepthRefreshRef.current?.();
     setMode(next);
     setGraphTick((t) => t + 1);
-    // Solid kabuk fotoğraf-only: sessiz fallback yerine sebebi söylenir.
     if (next === 'solid' && !engine.solidAvailable) {
-      say('solid: kabuk yok (fotoğraf gerekir); nokta bulutunda kalındı');
+      say('solid: derinlik bekleniyor; geçici olarak nokta bulutu gösteriliyor');
     }
   }
   changeModeRef.current = changeMode;
@@ -2024,6 +2054,10 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
         >
           3D eğit
         </button>}
+        {playbackVideo && <LiveVideoControls video={playbackVideo} quality={liveQuality}
+          stats={liveStats} onError={say} onQuality={(size) => {
+            liveQualityRef.current = size; setLiveQuality(size);
+          }} />}
         {!!videoDosya && videoPreparationAsk && <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
           <span>uzun video ({(videoPreparationAsk.video.duration / 60).toFixed(1)} dk): derinlik arka planda hazırlansın mı? tahmini ~{Math.ceil(videoPreparationAsk.estimate / 60)} dk</span>
           <button onClick={() => {

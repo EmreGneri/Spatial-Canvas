@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { tarayiciOturumu } from './tarayici-oturumu.mjs';
-const session = await tarayiciOturumu({ chrome: true, basli: true });
+const session = await tarayiciOturumu({ chrome: true, basli: true,
+  vite: { server: { host: '127.0.0.1', port: 0, hmr: false, watch: null } } });
 const real = process.argv.includes('--real');
 try {
   await session.page.route('**/__prepared_video_test', route => route.fulfill({ contentType: 'text/html',
@@ -24,9 +25,15 @@ try {
     }
     source.close(); await muxer.finalize();
     let disposed = false;
+    let decodeStarted = 0, decodeElapsed = 0;
     const progress = [];
     const handle = await prepareVideoDepth(new Blob([target.buffer], { type: 'video/webm' }), {
-      onProgress: value => { progress.push(value); document.querySelector('#result').textContent = JSON.stringify(value); },
+      onProgress: value => {
+        if (value.stage === 'decoding' && !decodeStarted) decodeStarted = performance.now();
+        if (value.stage === 'processing' && !decodeElapsed) decodeElapsed = performance.now() - decodeStarted;
+        progress.push(value); document.querySelector('#result').textContent = JSON.stringify(value);
+      },
+      shouldPause: real ? undefined : () => true,
       provider: real ? undefined : { width: 16, height: 9,
         infer: async frames => frames.map(frame => Float32Array.from({ length: 144 }, (_, i) => frame[0] / 255 + i / 144)),
         dispose: async () => { disposed = true; } },
@@ -37,6 +44,8 @@ try {
     for (let i = 0; i < 8; i++) timestamps.push((await handle.frameAt(i / 10 + 1e-6))?.mediaTime);
     const output = { ready, frame: frame && { width: frame.width, height: frame.height, finite: frame.data.every(Number.isFinite) },
       timestamps,
+      decodeElapsed, finalized: progress.some(p => p.stage === 'finalizing'),
+      processingStart: progress.find(p => p.stage === 'processing')?.processedSeconds,
       mediaTime: frame?.mediaTime, decodedFrames: progress.filter(p => p.stage === 'decoding').length - 1,
       stage: progress.at(-1), providerDisposed: disposed };
     output.maskBefore = handle.hasMask(0.3);
@@ -49,6 +58,9 @@ try {
   }, real), new Promise((_, reject) => { timer = setTimeout(() => reject(Error('Browser integration timed out')), real ? 210_000 : 60_000); })]);
   clearTimeout(timer);
   assert.equal(result.ready, true, JSON.stringify(result));
+  if (!real) assert.ok(result.decodeElapsed < 3000, `playback pressure must not add a second per decoded frame: ${result.decodeElapsed} ms`);
+  assert.equal(result.finalized, true, 'storage finalization has a distinct progress stage');
+  assert.equal(result.processingStart, 0, 'inference must not inherit the final decoder timestamp');
   assert.equal(result.frame.finite, true);
   assert.ok(result.decodedFrames <= 2, 'progress is throttled (F3), not one React update per decoded frame');
   result.timestamps.forEach((time, i) => assert.ok(Math.abs(time - i / 10) < 0.001, `source timestamp ${i} preserved`));

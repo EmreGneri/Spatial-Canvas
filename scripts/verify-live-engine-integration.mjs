@@ -47,18 +47,15 @@ const engine = makeEngine();
 engine.setDepth(depth, width, height);
 const positions = engine.homeTexture.image.data;
 const top = positions[1];
-const viewHeight = 2 * 3.5 * Math.tan(Math.PI / 6);
-const expectedHeight = viewHeight * Math.min(1, engine.camera.aspect / (width / height));
-assert.ok(top > expectedHeight * 0.42,
-  `video should occupy the viewport instead of a fixed 2-unit rectangle: y=${top}, fitted height=${expectedHeight}`);
+assert.ok(top > 0.99 && top < 1, 'reference video uses a fixed two-unit world height');
 
 const before = [positions[0], positions[1], positions[2]];
 const mask = new Float32Array(width * height).fill(1);
 mask[0] = 0;
 engine.setDepth(depth, width, height, mask, width, height);
-for (let i = 0; i < 3; i++) {
+for (let i = 0; i < 2; i++) {
   assert.ok(Math.abs(positions[i] - before[i]) < 1e-6,
-    'mask arrival must not change video XYZ projection');
+    'full-frame mask arrival preserves reference video XY coordinates');
 }
 assert.equal(engine.simulation.seedCount, 2,
   'each video depth frame must synchronize positions and reset spring velocity');
@@ -66,17 +63,6 @@ assert.equal(engine.simulation.homeCount, 0,
   'video geometry must not trail the matching video color through the spring');
 assert.equal(engine.refreshCount, 0,
   'point-cloud video must not rebuild invisible Gaussian textures each frame');
-
-const aspectEngine = makeEngine();
-aspectEngine.pointsMaterial = { uniforms: {
-  uImageTexture: { value: null }, uHasImage: { value: 0 },
-  uVideoAspect: { value: 1 },
-} };
-aspectEngine.renderModes = new Map();
-aspectEngine.viewportPx = new THREE.Vector2(640, 420);
-aspectEngine.setDepth(depth, width, height);
-assert.equal(aspectEngine.pointsMaterial.uniforms.uVideoAspect.value, width / height,
-  'video point footprint must account for wider horizontal grid spacing');
 
 globalThis.window = { devicePixelRatio: 2 };
 const dprEngine = Object.create(Engine.prototype);
@@ -107,25 +93,23 @@ resizeEngine.pushSharedUniformsAll = () => { uniformUpdates++; };
 resizeEngine.resize();
 assert.equal(uniformUpdates, 1, 'video point footprint must follow viewport resize');
 
-// Dense video points need alpha blending, but photos and presets were tuned
-// for the additive glow. The switch must follow the source both ways.
+// Both source types keep the reference soft additive appearance.
 const blendEngine = Object.create(Engine.prototype);
 Object.assign(blendEngine, { layerGap: 0, layerVisible: new LayerVector3(1, 1, 1),
   layers: null, layerTexture: null, layerInput: null });
 blendEngine.pointsMaterial = { blending: THREE.AdditiveBlending, depthWrite: false, uniforms: {
-  uImageTexture: { value: null }, uHasImage: { value: 0 }, uVideoFootprint: { value: 0 }, uSoftness: { value: 0 },
+  uImageTexture: { value: null }, uHasImage: { value: 0 }, uVideoFootprint: { value: 0 },
+  uSoftness: { value: 0.5 },
 } };
 blendEngine.renderModes = new Map();
 blendEngine.viewportPx = new THREE.Vector2(640, 420);
 blendEngine.imageColorTexture = null;
 blendEngine.videoTexture = { image: {} };
 blendEngine.pushSharedUniformsAll();
-assert.equal(blendEngine.pointsMaterial.blending, THREE.NormalBlending,
-  'live video must not accumulate its dense grid additively');
-// The grid draws in row order, not depth order: without depth writes a far
-// row drawn later paints over a near one while orbiting.
-assert.equal(blendEngine.pointsMaterial.depthWrite, true,
-  'live video points must occlude the points behind them');
+assert.equal(blendEngine.pointsMaterial.blending, THREE.AdditiveBlending,
+  'live video keeps the reference additive appearance');
+assert.equal(blendEngine.pointsMaterial.depthWrite, false,
+  'soft additive sprites do not write opaque depth');
 blendEngine.videoTexture = null;
 blendEngine.pushSharedUniformsAll();
 assert.equal(blendEngine.pointsMaterial.blending, THREE.AdditiveBlending,

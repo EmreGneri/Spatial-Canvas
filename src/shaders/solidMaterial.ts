@@ -153,7 +153,7 @@ const FRAGMENT = /* glsl */ `
     // filtre köşe rengini 4 komşu texelin bilinear'ı olarak verir (mesh
     // ön yüzü parçacık yüzeyiyle birebir hizalıdır — Gün B kararı).
     // ALPHA kanalı = bakılı oklüzyon (Gün C, computeAoMap); doku yokken 1.
-    vec4 img = uHasImage > 0.5 ? decodeSourceColor(texture2D(uImageTexture, vUv)) : vec4(0.0, 0.0, 0.0, 1.0);
+    vec4 img = uHasImage > 0.5 ? decodeSourceColor(texture2D(uImageTexture, sourceColorUv(vUv))) : vec4(0.0, 0.0, 0.0, 1.0);
     vec3 col = (uHasImage > 0.5 && uUseTextureColor > 0.5)
       ? img.rgb
       : mix(uFarColor, uNearColor, vDepth);
