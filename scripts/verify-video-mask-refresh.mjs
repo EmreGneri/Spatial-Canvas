@@ -115,6 +115,11 @@ assert.match(app, /const syncMaskRequest = \(\) => \{\s*if \(requestedRevision =
 assert.doesNotMatch(app.slice(app.indexOf('const captureMask'), app.indexOf('videoMaskRequestRef.current = captureMask')), /setTimeout|setInterval/, 'no mask timers to leak');
 assert.match(app, /maskNextRetryAt = performance\.now\(\) \+ Math\.min\(60_000, 15_000 \* 2 \*\* \(invalidMasks - 1\)\)/, 'reject backoff the simulation mirrors');
 
+// 6b. An uploaded video starts with separation off and the user latch set: no mask is computed (and none
+// auto-opens separation) until the button is pressed; toggleSegment clears the latch and requests a mask.
+assert.match(app, /segmentKapaliRef\.current = true;\s*engineRef\.current!\.setObjectSeparation\(false\);\s*engineRef\.current!\.setVideoSource\(video\);\s*say\(`video yüklendi/, 'video starts with separation off and latched');
+assert.match(app, /segmentKapaliRef\.current = !next;/, 'the button clears the latch when turned on');
+
 // 7. Job log is bounded.
 for (let i = 0; i < 520; i++) logMaskJob({ reason: 'tazele', startAt: i, mediaTime: 0, doneAt: null, appliedAt: null, coverage: null, separation: null, dropped: false });
 assert.equal(videoStats.maskLog.length, 500);

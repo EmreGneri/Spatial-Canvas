@@ -1735,10 +1735,13 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
         // Gün 8: fotoğraf maskesi bu kaynakta geçersiz — nesne ayırma canlı
         // shader bayrağıyla birlikte kapatılır (UI "AÇIK" yalanı söylemesin).
         updateSegment(false);
-        segmentKapaliRef.current = false;
+        // Video: nesne ayırma KAPALI başlar ve maske de hesaplanmaz (kullanıcı-kapalı mandalı kurulu); butonla
+        // açılınca toggleSegment mandalı kaldırır ve maske istenir. Otomatik açılan ayırma canlı videoda
+        // maske gecikmesi/yanlış seçim yüzünden kapalı sahneden daha kötü görünüyordu.
+        segmentKapaliRef.current = true;
         engineRef.current!.setObjectSeparation(false);
         engineRef.current!.setVideoSource(video);
-        say(`video yüklendi · ${file.name} · model gelene kadar geçici parlaklık önizlemesi`);
+        say(`video yüklendi · ${file.name} · model gelene kadar geçici parlaklık önizlemesi · nesne ayırma kapalı (butonla açılır)`);
         startVideoDepth(video, 'video');
         startVideoPreparationByPolicy(file, video, videoProcessing);
       } else {
