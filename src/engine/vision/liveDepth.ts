@@ -1904,7 +1904,10 @@ export function startLiveDepth(
       }
       const size = inputSize();
       const mask = opts.maskeAl?.() ?? null;
-      if (mask !== processedMask) {
+      // A refreshed mask (one mask replacing another) keeps the in-flight frame: dropping it
+      // cost one depth frame per mask job (measured ~6 % of frames at a 2 s refresh). Only
+      // gaining or losing the mask changes the post-processing contract.
+      if (!mask !== !processedMask) {
         processedMask = mask;
         processedTime = Number.NaN;
         previousAccepted = null;
@@ -1937,7 +1940,7 @@ export function startLiveDepth(
       // Ordinary playback advancement still accepts completed depth frames.
       const isCurrent = () => active && capturedRevision === revision
         && size === inputSize()
-        && mask === (opts.maskeAl?.() ?? null);
+        && !mask === !(opts.maskeAl?.() ?? null);
       videoStats.liveInfers++;
       try {
         return await estimateDepthLive(video, {

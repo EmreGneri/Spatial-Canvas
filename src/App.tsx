@@ -1136,7 +1136,9 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
           }
           job.separation = segmentRef.current;
           say(`video özne maskesi hazır · ${result.model} · %${(coverage * 100).toFixed(0)} ön plan · nesne ayırma ${segmentRef.current ? 'açık' : 'kapalı (maske küçük)'}`);
-          if (lastDepth) applyDepth(lastDepth);
+          // Paused: show it now. Playing: the next depth frame (~0.15 s) carries it; re-applying
+          // here cost one extra setDepth (~40 ms main thread) per mask job.
+          if (lastDepth && video.paused) applyDepth(lastDepth);
         })
         .catch((err) => {
           if (iptal || revision !== maskRevision) return;

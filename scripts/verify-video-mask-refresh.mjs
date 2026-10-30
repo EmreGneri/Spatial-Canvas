@@ -94,6 +94,11 @@ assert.match(app, /const istek = videoMaskeIstegi\(\{ maskeVar: !!videoMask, kul
 assert.match(app, /if \(istek\) captureMask\(istek\);/);
 assert.match(app, /izKayip: maskLost, sonIsMs: lastJobMs \}\);/, 'tracker state and last job cost reach the gate');
 assert.match(app, /if \(reason !== 'ilk'\) lastJobMs = job\.doneAt - job\.startAt;/, 'model load time of the first job does not set the period');
+// Per-job main-thread waste removed: no extra setDepth while playing, no dropped in-flight depth frame.
+assert.match(app, /if \(lastDepth && video\.paused\) applyDepth\(lastDepth\);/, 'a finished job re-applies the last depth only while paused');
+const live = readFileSync(new URL('../src/engine/vision/liveDepth.ts', import.meta.url), 'utf8');
+assert.match(live, /if \(!mask !== !processedMask\) \{\s*processedMask = mask;/, 'only gaining/losing the mask restarts the in-flight frame');
+assert.match(live, /&& !mask === !\(opts\.maskeAl\?\.\(\) \?\? null\);/);
 assert.doesNotMatch(app, /trackLiveMask|kutleMerkezi\(d\.data/, 'depth-centroid shift replaced by the image tracker');
 // No early IS-Net download: measured cold at 100 Mbit/s it delayed the first depth frame by
 // 0.6-3 s for a 0-2 s earlier mask (docs/benchmarks/video-mask-tracking.md).

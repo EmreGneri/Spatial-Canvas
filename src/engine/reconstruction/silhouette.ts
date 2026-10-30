@@ -324,8 +324,13 @@ function closeHoles(mask: Float32Array, w: number, h: number, r: number) {
   minMaxPass(tmp, mask, w, h, r, false, false); // erode y
 }
 
-/** Ayrılabilir min/max geçişi (kenarlar kelepçeli). */
-function minMaxPass(
+/**
+ * Ayrılabilir min/max geçişi (kenarlar kelepçeli). Kelepçeli dokunuşlar kenar değerini
+ * tekrarlar, o değer zaten pencerede: pencere [max(0,i-r), min(n-1,i+r)] ile AYNI sonuç.
+ * Dikey geçiş satır satır (önbellek dostu). Video maskesi işi başına ~37 ms ölçülmüştü
+ * (576x1024, r=4); çıktı eski uygulamayla bit-bit aynı (scripts/verify-mask-filter-parity.mjs).
+ */
+export function minMaxPass(
   src: Float32Array,
   dst: Float32Array,
   w: number,
@@ -334,28 +339,36 @@ function minMaxPass(
   horizontal: boolean,
   takeMax: boolean,
 ) {
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      let acc = takeMax ? -Infinity : Infinity;
-      if (horizontal) {
-        const row = y * w;
-        for (let d = -r; d <= r; d++) {
-          const v = src[row + Math.min(w - 1, Math.max(0, x + d))];
-          acc = takeMax ? (v > acc ? v : acc) : (v < acc ? v : acc);
-        }
-      } else {
-        for (let d = -r; d <= r; d++) {
-          const v = src[Math.min(h - 1, Math.max(0, y + d)) * w + x];
-          acc = takeMax ? (v > acc ? v : acc) : (v < acc ? v : acc);
-        }
+  if (horizontal) {
+    for (let y = 0; y < h; y++) {
+      const row = y * w;
+      for (let x = 0; x < w; x++) {
+        const lo = row + Math.max(0, x - r), hi = row + Math.min(w - 1, x + r);
+        let acc = takeMax ? -Infinity : Infinity;
+        if (takeMax) for (let k = lo; k <= hi; k++) { const v = src[k]; if (v > acc) acc = v; }
+        else for (let k = lo; k <= hi; k++) { const v = src[k]; if (v < acc) acc = v; }
+        dst[row + x] = acc;
       }
-      dst[y * w + x] = acc;
+    }
+    return;
+  }
+  for (let y = 0; y < h; y++) {
+    const row = y * w, lo = Math.max(0, y - r), hi = Math.min(h - 1, y + r);
+    dst.fill(takeMax ? -Infinity : Infinity, row, row + w);
+    for (let k = lo; k <= hi; k++) {
+      const s = k * w;
+      if (takeMax) for (let x = 0; x < w; x++) { const v = src[s + x]; if (v > dst[row + x]) dst[row + x] = v; }
+      else for (let x = 0; x < w; x++) { const v = src[s + x]; if (v < dst[row + x]) dst[row + x] = v; }
     }
   }
 }
 
-/** Ayrık kutu blur (x sonra y) — kenarlar kelepçeli (Tur 10 maske tüyü). */
-function boxBlur(src: Float32Array, w: number, h: number, radius: number): Float32Array {
+/**
+ * Ayrık kutu blur (x sonra y) — kenarlar kelepçeli (Tur 10 maske tüyü). Toplama sırası eski
+ * uygulamanınkiyle aynı (dokunuş -r..r), yalnız iç piksellerde kelepçe yok ve dikey geçiş
+ * satır satır: çıktı bit-bit aynı.
+ */
+export function boxBlur(src: Float32Array, w: number, h: number, radius: number): Float32Array {
   const tmp = new Float32Array(src.length);
   const out = new Float32Array(src.length);
   const k = radius * 2 + 1;
@@ -363,20 +376,21 @@ function boxBlur(src: Float32Array, w: number, h: number, radius: number): Float
     const row = y * w;
     for (let x = 0; x < w; x++) {
       let s = 0;
-      for (let dx = -radius; dx <= radius; dx++) {
-        s += src[row + Math.min(w - 1, Math.max(0, x + dx))];
-      }
+      if (x >= radius && x < w - radius) for (let i = row + x - radius, e = row + x + radius; i <= e; i++) s += src[i];
+      else for (let dx = -radius; dx <= radius; dx++) s += src[row + Math.min(w - 1, Math.max(0, x + dx))];
       tmp[row + x] = s / k;
     }
   }
+  // Same order as before: s = 0 + t[y-r] + ... + t[y+r], accumulated in float64 like a JS number.
+  const sum = new Float64Array(w);
   for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      let s = 0;
-      for (let dy = -radius; dy <= radius; dy++) {
-        s += tmp[Math.min(h - 1, Math.max(0, y + dy)) * w + x];
-      }
-      out[y * w + x] = s / k;
+    const row = y * w;
+    sum.fill(0);
+    for (let dy = -radius; dy <= radius; dy++) {
+      const s = Math.min(h - 1, Math.max(0, y + dy)) * w;
+      for (let x = 0; x < w; x++) sum[x] += tmp[s + x];
     }
+    for (let x = 0; x < w; x++) out[row + x] = sum[x] / k;
   }
   return out;
 }

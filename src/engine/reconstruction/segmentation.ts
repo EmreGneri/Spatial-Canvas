@@ -247,7 +247,10 @@ export async function segmentForeground(
   // güven marjıyla kapanır; perde koruması (AND eşiği) değişmez.
   // GÜN E (bulgu 12): önce kopuk parçaları düşür (özneye bitişik OLMAYAN model
   // hataları — kapı kasası, zemin), sonra dilate + tüy.
-  const mask = dilateAndFeatherMask(keepMainComponents(raw, lb.w, lb.h), lb.w, lb.h);
+  const main = keepMainComponents(raw, lb.w, lb.h);
+  // Video masks refresh during playback: let a frame render between the two passes.
+  if (kaynak === 'video') await new Promise<void>(resolve => setTimeout(resolve, 0));
+  const mask = dilateAndFeatherMask(main, lb.w, lb.h);
   return { mask, width: lb.w, height: lb.h, model };
 }
 
