@@ -142,9 +142,26 @@ export async function ilerlemeliGetir(
       }
     } catch { /* önbellek erişilemez: indirmeye devam */ }
   }
+  // Same-origin model files (`/models/...`) have no version in the URL and are too large for
+  // Chrome's HTTP cache: measured on the hosted site, a second fetch in the same profile moved
+  // the full 88 MB mask model again. They are kept in Cache Storage too, revalidated by ETag
+  // (one conditional request; 304 -> stored bytes). No ETag -> not stored, so never stale.
+  const yerelOnbellekli = /^\/[^/]/.test(url) && typeof caches !== 'undefined';
+  let saklanan: Response | undefined;
+  if (yerelOnbellekli) {
+    try { saklanan = await (await caches.open(MODEL_ONBELLEGI)).match(url); } catch { /* indirmeye devam */ }
+  }
+  const saklananEtag = saklanan?.headers.get('etag') ?? null;
   let inen = 0;
   try {
-    const yanit = await getir(url);
+    let yanit = await getir(url, saklananEtag ? { headers: { 'If-None-Match': saklananEtag }, cache: 'no-store' } : undefined);
+    if (yanit.status === 304 && saklanan) {
+      try {
+        const buffer = await saklanan.arrayBuffer();
+        record('cache-storage', buffer.byteLength, 'ok');
+        return buffer;
+      } catch { yanit = await getir(url); }
+    }
     if (!yanit.ok) throw new Error(`${ad}: ${yanit.status} ${yanit.statusText}`);
     const uzunluk = Number(yanit.headers.get('content-length') ?? 0);
     // Gövde akıtılamıyorsa (eski tarayıcı, önbellekten dönen yanıt) ilerleme
@@ -178,6 +195,10 @@ export async function ilerlemeliGetir(
     }
     if (onbellekli) {
       try { await (await caches.open(MODEL_ONBELLEGI)).put(url, new Response(hepsi.slice())); } catch { /* kota dolu: sorun değil */ }
+    }
+    const etag = yerelOnbellekli ? yanit.headers.get('etag') : null;
+    if (etag) {
+      try { await (await caches.open(MODEL_ONBELLEGI)).put(url, new Response(hepsi.slice(), { headers: { etag } })); } catch { /* kota dolu */ }
     }
     record('fetch', inen, 'ok');
     return hepsi.buffer;

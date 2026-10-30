@@ -194,4 +194,30 @@ function sahteYanit(bayt, { uzunlukVer = true, parca = 4 } = {}) {
   assert.equal(next.finish('ready').downloads.length, 0, 'old completion leaked into the new photo');
   assert.equal(old.finish('ready').status, 'cancelled');
 }
-console.log('verify-indirme-ilerleme: OK · existing paths, measured fetch/cache/failure/bodyless/stale parity');
+// Same-origin model (`/models/...`): stored with its ETag, revalidated with one conditional request.
+{
+  const previous = globalThis.caches, store = new Map();
+  globalThis.caches = { open: async () => ({ match: async (u) => store.get(u)?.clone(), put: async (u, r) => { store.set(u, r); } }) };
+  const yanit = (bayt, etag) => { const y = sahteYanit(bayt); y.headers = { get: (k) => k === 'content-length' ? String(bayt) : k === 'etag' ? etag : null }; return y; };
+  try {
+    const istekler = [];
+    const sunucu = (bayt, etag) => async (u, init) => { istekler.push(init?.headers?.['If-None-Match'] ?? null);
+      return init?.headers?.['If-None-Match'] === etag ? { ok: false, status: 304, statusText: 'Not Modified' } : yanit(bayt, etag); };
+    const ilk = await ilerlemeliGetir('/models/x.onnx', 'x', sunucu(8, '"v1"'));
+    assert.equal(ilk.byteLength, 8);
+    assert.equal(store.get('/models/x.onnx').headers.get('etag'), '"v1"', 'stored with its ETag');
+    const trace = beginPhotoMeasurement({ generation: 8, width: 8, height: 8 }, true);
+    const ikinci = await ilerlemeliGetir('/models/x.onnx', 'x', sunucu(8, '"v1"'));
+    assert.deepEqual(istekler, [null, '"v1"'], 'second visit: one conditional request');
+    assert.deepEqual([...new Uint8Array(ikinci)], [...new Uint8Array(ilk)], '304 -> the stored bytes');
+    assert.equal(trace.finish('ready').downloads[0].source, 'cache-storage');
+    // New deployment (new ETag): downloaded again and the stored copy replaced, never a stale model.
+    const yeni = await ilerlemeliGetir('/models/x.onnx', 'x', sunucu(12, '"v2"'));
+    assert.equal(yeni.byteLength, 12);
+    assert.equal(store.get('/models/x.onnx').headers.get('etag'), '"v2"');
+    // No ETag: not stored (cannot be revalidated).
+    await ilerlemeliGetir('/models/y.onnx', 'y', async () => sahteYanit(4));
+    assert.equal(store.has('/models/y.onnx'), false);
+  } finally { if (previous === undefined) delete globalThis.caches; else globalThis.caches = previous; }
+}
+console.log('verify-indirme-ilerleme: OK · existing paths, measured fetch/cache/failure/bodyless/stale parity, same-origin ETag cache');
