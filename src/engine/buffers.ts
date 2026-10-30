@@ -151,10 +151,13 @@ export function fillPositionsFromDepth(
 ) {
   const n = POSITION_TEXTURE_SIZE;
   const data = tex.image.data as Float32Array;
+  const blend = opts.blend ?? 1;
   const xyz = opts.metricProjection && !opts.fullFrame
     ? sampleMetricPhotoPositions(opts.metricProjection, n)
     : sampleVolumePositions(depth, depthWidth, depthHeight, {
     gridSize: n,
+    // A full overwrite samples straight into the texture: no 4 MB array and copy per frame.
+    target: blend >= 1 ? data : undefined,
     worldHeight: opts.worldHeight ?? POINTS_WORLD_HEIGHT,
     depthRange: POINTS_DEPTH_RANGE,
     curvature: opts.curvature ?? VOLUME_CURVATURE,
@@ -172,8 +175,9 @@ export function fillPositionsFromDepth(
   });
   if (opts.metricProjection && !opts.fullFrame && opts.layers && opts.layerGap)
     applyLayerGap(xyz, n, opts.layers, opts.layerGap);
-  const blend = opts.blend ?? 1;
-  if (blend >= 1) {
+  if (xyz === data) {
+    // already written in place
+  } else if (blend >= 1) {
     for (let o = 0, k = 0; o < data.length; o += 4, k += 4) {
       data[o] = xyz[k];
       data[o + 1] = xyz[k + 1];

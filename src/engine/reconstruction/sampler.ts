@@ -173,6 +173,8 @@ const FG_IMPORTANCE_WEIGHT = 0.4;
 import { applyLayerGap, type DepthLayers } from './layers.ts';
 
 export interface VolumeSampleOptions {
+  /** Write into this array (length gridSize² × 4) instead of allocating one; it is returned. */
+  target?: Float32Array;
   layers?: DepthLayers;
   layerGap?: number;
   /** Grid boyutu (kare). Varsayılan 384. */
@@ -238,7 +240,7 @@ export function sampleVolumePositions(
   const halfW = (opts.referenceVideo?.aspect ?? depthWidth / depthHeight) * halfH;
   const range = opts.depthRange ?? DEFAULT_DEPTH_RANGE;
   const curvature = opts.curvature ?? DEFAULT_CURVATURE;
-  const out = new Float32Array(n * 4);
+  const out = opts.target?.length === n * 4 ? opts.target : new Float32Array(n * 4);
   if (opts.fullFrame) {
     const cameraDistance = opts.fullFrame.cameraDistance;
     const frameHalfW = (opts.fullFrame.aspect ?? depthWidth / depthHeight) * halfH;
@@ -366,16 +368,36 @@ export function sampleVolumePositions(
     ? resampleVideoDepthEdges(depth, depthWidth, depthHeight, grid,
       opts.videoEdgeCleanup!, opts.foregroundMask, opts.videoGuideMask) : null;
   const pen = opts.samplingWindow;
+  // u, x and the bilinear taps depend only on the column (and v, y on the row): computed once,
+  // with the same arithmetic as sampleBilinear, so every sample is bit-identical.
+  const colU = new Float64Array(grid), colX = new Float64Array(grid), colTx = new Float64Array(grid);
+  const colX0 = new Int32Array(grid), colX1 = new Int32Array(grid);
+  for (let i = 0; i < grid; i++) {
+    const ug = (i + 0.5) / grid;
+    const u = pen ? pencereyeTasi(ug, pen.x0, pen.x1) : ug;
+    const x = remap ? remap.xOf(u) - 0.5 : u * depthWidth - 0.5;
+    const x0 = Math.max(0, Math.floor(x));
+    colU[i] = u; colX[i] = x; colX0[i] = x0; colX1[i] = Math.min(depthWidth - 1, x0 + 1);
+    colTx[i] = Math.min(1, Math.max(0, x - x0));
+  }
   for (let j = 0; j < grid; j++) {
     const tg = (j + 0.5) / grid;
     const t = pen ? pencereyeTasi(tg, pen.y0, pen.y1) : tg;
     const v = 1 - t;
     const y = remap ? remap.yOf(t) - 0.5 : t * depthHeight - 0.5;
     const ry = (v - 0.5) * 2;
+    const y0 = Math.max(0, Math.floor(y));
+    const r0 = y0 * depthWidth, r1 = Math.min(depthHeight - 1, y0 + 1) * depthWidth;
+    const ty = Math.min(1, Math.max(0, y - y0));
+    const bil = (map: Float32Array, i: number) => {
+      const tx = colTx[i], a0 = colX0[i], a1 = colX1[i];
+      const top = map[r0 + a0] * (1 - tx) + map[r0 + a1] * tx;
+      const bot = map[r1 + a0] * (1 - tx) + map[r1 + a1] * tx;
+      return top * (1 - ty) + bot * ty;
+    };
     for (let i = 0; i < grid; i++) {
-      const ug = (i + 0.5) / grid;
-      const u = pen ? pencereyeTasi(ug, pen.x0, pen.x1) : ug;
-      const x = remap ? remap.xOf(u) - 0.5 : u * depthWidth - 0.5;
+      const u = colU[i];
+      const x = colX[i];
       const o = (j * grid + i) * 4;
       const wx = (u - 0.5) * 2 * halfW;
       const wy = (v - 0.5) * halfH * 2;
@@ -383,7 +405,7 @@ export function sampleVolumePositions(
       out[o + 1] = wy;
       // SERT BINARY ön plan kapısı (Tur 9): bilinear örnekleme + 0.5 eşiği —
       // çıktı {0, 1}; siluet sınırındaki alt-piksel kesişimleri temiz kesilir.
-      const a = sampleBilinear(alpha, depthWidth, depthHeight, x, y) >= 0.5 ? 1 : 0;
+      const a = bil(alpha, i) >= 0.5 ? 1 : 0;
       if (a < 0.5) {
         // TUR 11 (tek buffer): arka plan texel'i ÖLÜ DEĞİLDİR. Gerçek arka
         // plan derinliğinde, BACKDROP_Z_PIN arkada, BACKDROP_OPACITY ile bir
@@ -392,14 +414,14 @@ export function sampleVolumePositions(
         // (düz duvar); z yine [-1, +1] sözleşmesine kırpılır.
         const d = referenceEdges
         ? sampleBilinear(referenceEdges.depth, grid, grid, (x + 0.5) * grid / depthWidth - 0.5, (y + 0.5) * grid / depthHeight - 0.5)
-        : sampleBilinear(depth, depthWidth, depthHeight, x, y);
+        : bil(depth, i);
         out[o + 2] = Math.min(1, Math.max(-1, (d - 0.5) * range - BACKDROP_Z_PIN));
         out[o + 3] = opts.referenceVideo ? VIDEO_BACKDROP_OPACITY : BACKDROP_OPACITY;
         continue;
       }
       const d = referenceEdges
         ? sampleBilinear(referenceEdges.depth, grid, grid, (x + 0.5) * grid / depthWidth - 0.5, (y + 0.5) * grid / depthHeight - 0.5)
-        : sampleBilinear(depth, depthWidth, depthHeight, x, y);
+        : bil(depth, i);
       // Depth terimi: (d − 0.5)·zSpan — uzam siluet oranlıdır (range değil);
       // dünya z sözleşmesi [−1, +1] son kırpmada korunur.
       let z = (d - 0.5) * zSpan;
@@ -421,7 +443,7 @@ export function sampleVolumePositions(
       const zFront = z;
       // Siluet sınırına mesafe (piksel): kenar dökümü ve ince kabuk ortak
       // kullanır (dist haritası; kadrajı dolduran ön plan içi INF kalır).
-      const dPx = body ? sampleBilinear(dist, depthWidth, depthHeight, x, y) : 0;
+      const dPx = body ? bil(dist, i) : 0;
       // Kenar dökümü (oval backing): siluet SINIRINA mesafeye (dist)
       // bağlı olarak z arkaya bükülür — sınırda hedefe tam döküm, d1'e
       // ulaşınca etkisiz. Sabit kutu sınırı yerine döküm gücü figürün ağırlık
@@ -544,22 +566,42 @@ export function sampleImageGrid(
   // yalnızca çözünürlük oranı gerekir.
   const sx = imgW / depthW;
   const sy = imgH / depthH;
+  // Column-only terms once per column; same arithmetic as the former per-pixel bilinear (bit-identical).
+  const colX = new Float64Array(grid), colTx = new Float64Array(grid);
+  const colA0 = new Int32Array(grid), colA1 = new Int32Array(grid);
+  for (let i = 0; i < grid; i++) {
+    const ug = (i + 0.5) / grid;
+    const u = opts.samplingWindow ? pencereyeTasi(ug, opts.samplingWindow.x0, opts.samplingWindow.x1) : ug;
+    const x = remap ? remap.xOf(u) * sx - 0.5 : u * imgW - 0.5;
+    const x0 = Math.max(0, Math.floor(x));
+    colX[i] = x; colA0[i] = x0 * 3; colA1[i] = Math.min(imgW - 1, x0 + 1) * 3;
+    colTx[i] = Math.min(1, Math.max(0, x - x0));
+  }
+  const mask = opts.foregroundMask;
+  const isolate = opts.foregroundColorIsolation !== false && !!mask && mask.length === depthW * depthH;
   for (let j = 0; j < grid; j++) {
     // t = (j+0.5)/N: yukarıdan aşağı, CDF de o yönde kurulur (konumlarla
     // birebir — texel hizası bozulursa renkler parçacıklardan kayar).
     const tg = (j + 0.5) / grid;
     const t = opts.samplingWindow ? pencereyeTasi(tg, opts.samplingWindow.y0, opts.samplingWindow.y1) : tg;
     const y = remap ? remap.yOf(t) * sy - 0.5 : t * imgH - 0.5;
+    const y0 = Math.max(0, Math.floor(y));
+    const r0 = y0 * imgW * 3, r1 = Math.min(imgH - 1, y0 + 1) * imgW * 3;
+    const ty = Math.min(1, Math.max(0, y - y0));
     for (let i = 0; i < grid; i++) {
-      const ug = (i + 0.5) / grid;
-      const u = opts.samplingWindow ? pencereyeTasi(ug, opts.samplingWindow.x0, opts.samplingWindow.x1) : ug;
-      const x = remap ? remap.xOf(u) * sx - 0.5 : u * imgW - 0.5;
+      const x = colX[i], tx = colTx[i];
       const o = (j * grid + i) * 3;
-      sampleBilinearRgb(rgb, imgW, imgH, x, y, out, o);
+      const w00 = (1 - tx) * (1 - ty);
+      const w10 = tx * (1 - ty);
+      const w01 = (1 - tx) * ty;
+      const w11 = tx * ty;
+      const i00 = r0 + colA0[i], i10 = r0 + colA1[i], i01 = r1 + colA0[i], i11 = r1 + colA1[i];
+      for (let c = 0; c < 3; c++) {
+        out[o + c] = rgb[i00 + c] * w00 + rgb[i10 + c] * w10 + rgb[i01 + c] * w01 + rgb[i11 + c] * w11;
+      }
       // Only the foreground edge needs a different filter. Interior and
       // background keep the exact original result (including soft masks).
-      const mask = opts.foregroundMask;
-      if (opts.foregroundColorIsolation !== false && mask && mask.length === depthW * depthH) {
+      if (isolate && mask) {
         const alpha = sampleBilinear(mask, depthW, depthH, (x + 0.5) / sx - 0.5, (y + 0.5) / sy - 0.5);
         if (alpha >= 0.5) sampleForegroundRgb(rgb, imgW, imgH, x, y, mask, depthW, depthH, out, o);
       }
@@ -685,35 +727,6 @@ export function sampleAoGrid(
     }
   }
   return out;
-}
-
-/** 3 kanallı (interleaved rgb) bilinear örnekleme; taşmalar kenara kelepçeli. */
-function sampleBilinearRgb(
-  map: Float32Array,
-  w: number,
-  h: number,
-  x: number,
-  y: number,
-  out: Float32Array,
-  o: number,
-) {
-  const x0 = Math.max(0, Math.floor(x));
-  const y0 = Math.max(0, Math.floor(y));
-  const x1 = Math.min(w - 1, x0 + 1);
-  const y1 = Math.min(h - 1, y0 + 1);
-  const tx = Math.min(1, Math.max(0, x - x0));
-  const ty = Math.min(1, Math.max(0, y - y0));
-  const w00 = (1 - tx) * (1 - ty);
-  const w10 = tx * (1 - ty);
-  const w01 = (1 - tx) * ty;
-  const w11 = tx * ty;
-  for (let c = 0; c < 3; c++) {
-    const p00 = map[(y0 * w + x0) * 3 + c];
-    const p10 = map[(y0 * w + x1) * 3 + c];
-    const p01 = map[(y1 * w + x0) * 3 + c];
-    const p11 = map[(y1 * w + x1) * 3 + c];
-    out[o + c] = p00 * w00 + p10 * w10 + p01 * w01 + p11 * w11;
-  }
 }
 
 // ---------------------------------------------------------------------------
