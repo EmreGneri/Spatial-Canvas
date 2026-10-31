@@ -30,7 +30,7 @@ photo path (door frame, floor patches); in a video with two people apart from ea
 ## Fix (video only)
 
 `keepMainComponents(..., farMinFrac)`: a component at least `VIDEO_FAR_MIN_FRAC` (0.10) of the largest one is
-kept however far it is. Photos and the helper path (`kaynak === 'foto'`) pass nothing and keep the old rule.
+kept however far it is. Since the 2026-10-31 audit the photo path keeps big separate parts with the same rule (`MASK_FAR_MIN_FRAC`, `VIDEO_FAR_MIN_FRAC` is an alias); the photo mask decision counts the two largest big parts as the main ones (`maskeTekParcaOrani(..., true)`).
 Test: `scripts/verify-maske-zamansal.mjs` (far second person kept for video, small far part still dropped,
 default unchanged).
 
