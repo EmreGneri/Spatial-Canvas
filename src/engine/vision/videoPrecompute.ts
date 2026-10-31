@@ -22,7 +22,11 @@ export interface VideoWindowProvider {
 export interface VideoDepthHandle {
   done: Promise<void>;
   hasFrame(time: number): boolean;
-  frameAt(time: number): Promise<VideoDepthFrame | null>;
+  /**
+   * `withMask`: nesne ayırma açık. Kapalıyken maske izi hazır olsa da tam sahne (detaylı)
+   * dosya okunur; aç/kapa sonucu önceki tıklama geçmişine bağlı kalmaz.
+   */
+  frameAt(time: number, withMask?: boolean): Promise<VideoDepthFrame | null>;
   /** Maske izi bu kare için hazır mı (nesne ayırma açıkken hazır derinlik kullanılabilir). */
   hasMask(time: number): boolean;
   /**
@@ -47,19 +51,28 @@ const OFFLINE_SIZE = { width: 266, height: 154 };
 const PROGRESS_INTERVAL_MS = 250;
 /** Sahne aralığı yüzdelikleri: tek aykırı piksel tüm sahneyi düzleştirmesin (F8). */
 const RANGE_SAMPLES_PER_FRAME = 512;
-const ownedStores = new Set<string>();
 let staleCleanup: Promise<void> | null = null;
 /**
+ * Her klasörün sahibi, klasörü OLUŞTURMADAN önce aynı adlı Web Lock'u alır ve klasörü
+ * silene dek tutar; sekme kapanınca/çökünce tarayıcı kilidi bırakır. OPFS origin başına
+ * ortak: sekme içi küme başka sekmenin canlı klasörünü sahipsiz sanıp siliyordu.
+ * Resolves with the release function once the lock is held.
+ */
+const holdStoreLock = (id: string) => new Promise<() => void>(granted =>
+  void navigator.locks.request(id, () => new Promise<void>(release => granted(release))));
+/**
  * Yeniden yükleme/çökme/sekme kapanışında `video-depth-*` klasörleri kalıyordu;
- * kota dolunca her hazırlık düşüyordu (F9). Sayfa başına bir kez, bu sekmenin
- * sahip olmadığı tüm klasörler silinir (uygulama tek sekmelik).
+ * kota dolunca her hazırlık düşüyordu (F9). Sayfa başına bir kez, kilidini hiçbir
+ * sekmenin tutmadığı klasörler silinir. Kilit API'si yoksa yalnız kendi klasörü silinir.
  */
 async function removeStaleStores(root: FileSystemDirectoryHandle): Promise<void> {
+  if (!navigator.locks) return;
   const names: string[] = [];
   for await (const name of (root as unknown as { keys(): AsyncIterable<string> }).keys()) {
-    if (name.startsWith('video-depth-') && !ownedStores.has(name)) names.push(name);
+    if (name.startsWith('video-depth-')) names.push(name);
   }
-  await Promise.all(names.map(name => root.removeEntry(name, { recursive: true }).catch(() => {})));
+  await Promise.all(names.map(name => navigator.locks.request(name, { ifAvailable: true },
+    lock => lock && root.removeEntry(name, { recursive: true })).catch(() => {})));
 }
 export function videoDepthRange(samples: ArrayLike<number>): [number, number] {
   if (!samples.length) return [0, 0];
@@ -130,7 +143,7 @@ export async function prepareVideoDepth(file: Blob, options: PrepareOptions = {}
   if (options.signal?.aborted) cancel();
   let root: FileSystemDirectoryHandle | undefined, dir: FileSystemDirectoryHandle | undefined;
   const id = `video-depth-${crypto.randomUUID()}`;
-  ownedStores.add(id);
+  let releaseStoreLock = () => {};
   let provider = options.provider, ready = false, disposed = false, duration = 0;
   const stamps: number[] = [];
   const scenes = [0];
@@ -161,9 +174,9 @@ export async function prepareVideoDepth(file: Blob, options: PrepareOptions = {}
   };
   const slice = async (source: File, index: number, bytes: number) => source.slice(index * bytes, (index + 1) * bytes).arrayBuffer();
   const remove = async () => {
-    ownedStores.delete(id);
     await Promise.all([...open].map(writable => writable.abort().catch(() => {}))); open.clear();
     if (root) await root.removeEntry(id, { recursive: true }).catch(() => {});
+    releaseStoreLock();
   };
   const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
   /** Oynatma takılıyorsa kısa bekle; hazırlık sekmeyi dondurmasın (madde 4). */
@@ -196,6 +209,7 @@ export async function prepareVideoDepth(file: Blob, options: PrepareOptions = {}
       root = await navigator.storage.getDirectory();
       staleCleanup ??= removeStaleStores(root);
       await staleCleanup;
+      if (navigator.locks) releaseStoreLock = await holdStoreLock(id);
       dir = await root.getDirectoryHandle(id, { create: true });
       ({ width, height } = provider ?? OFFLINE_SIZE);
       if (!Number.isInteger(width) || !Number.isInteger(height) || width <= 0 || height <= 0) throw Error('Offline derinlik boyutu geçersiz');
@@ -286,11 +300,11 @@ export async function prepareVideoDepth(file: Blob, options: PrepareOptions = {}
   })();
   return {
     done, cancel, hasFrame: time => indexAt(time) >= 0,
-    async frameAt(time) {
+    async frameAt(time, withMask = false) {
       const index = indexAt(time); if (index < 0) return null;
       try {
         const scene = sceneOf(index);
-        const masked = index < maskReadyFrames && !!maskedFiles[scene];
+        const masked = withMask && index < maskReadyFrames && !!maskedFiles[scene];
         const source = masked ? maskedFiles[scene] : detailFiles[scene];
         if (!source) return null;
         const packed = new Uint16Array(await slice(source, index - scenes[scene], width * height * 2));
@@ -309,7 +323,7 @@ export async function prepareVideoDepth(file: Blob, options: PrepareOptions = {}
         return { data, width, height, mediaTime: stamps[index], mask };
       } catch { return null; }
     },
-    hasMask: time => { const index = indexAt(time); return index >= 0 && index < maskReadyFrames; },
+    hasMask: time => { const index = indexAt(time); return index >= 0 && index < maskReadyFrames && !!maskedFiles[sceneOf(index)]; },
     prepareMasks(capture, onProgress) {
       maskJob ??= (async () => {
         await done;
@@ -322,14 +336,16 @@ export async function prepareVideoDepth(file: Blob, options: PrepareOptions = {}
           for (let i = 0; i < n; i++) out[i] = Math.round(Math.max(0, Math.min(1, mask[i])) * 255);
           return out;
         };
-        let lastValid: Float32Array = new Float32Array(n).fill(1);
-        const keyMask = async (i: number) => {
-          await yieldToPlayback();
-          const mask = await capture(await frame(i)); aborted(signal);
-          if (mask && mask.length === n) lastValid = mask;
-          return lastValid;
-        };
         for (let scene = 0; scene < scenes.length - 1; scene++) {
+          // Sahneye yerel: kesmeden önceki öznenin maskesi yeni sahneye taşınmaz. Sahnede hiç
+          // güvenilir anahtar maske yoksa iz yazılmaz; o sahne tam derinlik + canlı maskeyle kalır.
+          let lastValid: Float32Array = new Float32Array(n).fill(1), trusted = false;
+          const keyMask = async (i: number) => {
+            await yieldToPlayback();
+            const mask = await capture(await frame(i)); aborted(signal);
+            if (mask && mask.length === n) { lastValid = mask; trusted = true; }
+            return lastValid;
+          };
           const keys = maskKeyFrames(scenes[scene], scenes[scene + 1]);
           const out = await stream(`mask-${scene}`), maskedOut = await stream(`masked-${scene}`);
           // Maskeli detay (stretch + sobel + iki bölgeli sınır) sahne içinde sırayla, aralık taşınarak.
@@ -355,8 +371,9 @@ export async function prepareVideoDepth(file: Blob, options: PrepareOptions = {}
             for (let j = 0; j < masks.length - 1; j++) await emit(masks[j]);
             startMask = endMask;
           }
-          maskFiles[scene] = await out.close();
-          maskedFiles[scene] = await maskedOut.close();
+          const maskFile = await out.close(), maskedFile = await maskedOut.close();
+          if (trusted) { maskFiles[scene] = maskFile; maskedFiles[scene] = maskedFile; }
+          else await Promise.all([dir!.removeEntry(`mask-${scene}`), dir!.removeEntry(`masked-${scene}`)]);
           maskReadyFrames = scenes[scene + 1];
           onProgress?.(maskReadyFrames / stamps.length);
         }

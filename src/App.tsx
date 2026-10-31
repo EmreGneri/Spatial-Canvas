@@ -1395,7 +1395,9 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
     }).then(async (handle) => {
       if (!isCurrent() || controller.signal.aborted) { await handle.dispose(); return; }
       preparedVideoRef.current = handle;
-      const beginPlayback = () => startBufferedVideoPlayback(video, handle, {
+      // The separation toggle picks the file per read: off = full-scene depth even after the mask track.
+      const cache = { hasFrame: (time: number) => handle.hasFrame(time), frameAt: (time: number) => handle.frameAt(time, segmentRef.current) };
+      const beginPlayback = () => startBufferedVideoPlayback(video, cache, {
         // Separation needs the mask track for this frame; until then the live mask pipeline runs (F6).
         enabled: () => !segmentRef.current || handle.hasMask(video.currentTime),
         onFrame: (frame) => {
