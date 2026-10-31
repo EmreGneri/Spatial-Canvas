@@ -79,6 +79,28 @@ export async function exportPNG(
   }), { width: canvas.width, height: canvas.height });
 }
 
+/** PNG çıktı boyutu seçimi: 'mevcut' ekrandaki tampon, diğerleri yeniden çizim. */
+export type PngBoyut = 'mevcut' | '1080p' | '2k';
+
+const PNG_UZUN_KENAR: Record<Exclude<PngBoyut, 'mevcut'>, number> = { '1080p': 1920, '2k': 2560 };
+
+/**
+ * Ekrandaki tampon (bw×bh) en-boy oranı KORUNARAK uzun kenarı seçilen değere
+ * oturtulur. Dar ve geniş pencere aynı sahne için aynı kadrajı verir; yalnız
+ * oran pencereye göre değişir.
+ */
+export function pngBoyutu(mod: PngBoyut, bw: number, bh: number): { w: number; h: number } {
+  if (mod === 'mevcut') return { w: bw, h: bh };
+  const k = PNG_UZUN_KENAR[mod] / Math.max(bw, bh, 1);
+  return { w: Math.max(1, Math.round(bw * k)), h: Math.max(1, Math.round(bh * k)) };
+}
+
+/** Çoklu çizim-sonrası kancası: ekler, geri alma işlevi döner (sahiplik = ekleyende). */
+export function tapEkle<T>(kume: Set<T>, tap: T): () => void {
+  kume.add(tap);
+  return () => { kume.delete(tap); };
+}
+
 export interface WebMExportOptions {
   /** Kayıt süresi (saniye). Varsayılan 5. */
   durationSec?: number;
