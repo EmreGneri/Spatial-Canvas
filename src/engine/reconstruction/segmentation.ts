@@ -53,7 +53,7 @@ import { currentPhotoMeasurement, type PhotoMeasurement } from '../photoMeasurem
 // doğrudur ve webgpu yoktur.
 import * as ort from 'onnxruntime-web/webgpu';
 import { ilerlemeliGetir } from '../../indirmeIlerleme.ts';
-import { dilateAndFeatherMask, keepMainComponents, resampleBilinear, VIDEO_FAR_MIN_FRAC } from './silhouette.ts';
+import { dilateAndFeatherMask, keepMainComponents, resampleBilinear } from './silhouette.ts';
 import { localInference, localInferenceAvailable } from '../sidecarClient.ts';
 import { gpuSirasinaGir, onceRetry } from '../../depth.ts';
 
@@ -100,6 +100,10 @@ export type SegmentationResult = {
   height: number;
   /** Maskeyi gerçekte üreten model (yardımcı düşerse 'isnet'). */
   model: 'birefnet' | 'isnet';
+  /** Photo only: the cleaned model confidence BEFORE the geometry dilation (same size as `mask`).
+   * `mask` is the geometry-repair mask; colour decisions should use this one
+   * (sampler `foregroundColorMask`, audit 2026-10-31 item 9). */
+  confidence?: Float32Array;
 };
 
 let segSession: ort.InferenceSession | null = null;
@@ -247,11 +251,12 @@ export async function segmentForeground(
   // güven marjıyla kapanır; perde koruması (AND eşiği) değişmez.
   // GÜN E (bulgu 12): önce kopuk parçaları düşür (özneye bitişik OLMAYAN model
   // hataları — kapı kasası, zemin), sonra dilate + tüy.
-  const main = keepMainComponents(raw, lb.w, lb.h, undefined, undefined, kaynak === 'video' ? VIDEO_FAR_MIN_FRAC : undefined);
+  // Photo and video keep big separate parts alike (another person/object; MASK_FAR_MIN_FRAC).
+  const main = keepMainComponents(raw, lb.w, lb.h);
   // Video masks refresh during playback: let a frame render between the two passes.
   if (kaynak === 'video') await new Promise<void>(resolve => setTimeout(resolve, 0));
   const mask = dilateAndFeatherMask(main, lb.w, lb.h);
-  return { mask, width: lb.w, height: lb.h, model };
+  return { mask, width: lb.w, height: lb.h, model, ...(kaynak === 'foto' ? { confidence: main } : {}) };
 }
 
 /** Kadraj bandını at: 1024² çıktının letterbox iç dikdörtgeni (0..1 olasılık). */

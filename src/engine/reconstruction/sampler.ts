@@ -1,4 +1,5 @@
 import { computeReferenceVideoBody, pencereyeTasi, type OrneklemePenceresi } from './videoReferenceSampling.ts';
+import { MASK_DILATE_RADIUS } from './silhouette.ts';
 /**
  * PARÇACIK SAMPLER (veri katmanı, CPU).
  *
@@ -539,6 +540,11 @@ export interface ImageSampleOptions {
   /** Maske verildiğinde ön plan kenarında arka plan rengi karışmaz (varsayılan
    * açık). Yalnız kenar değişir; iç ve arka plan bit bit aynı kalır. */
   foregroundColorIsolation?: boolean;
+  /** Original model confidence before the geometry dilation (same grid as `foregroundMask`).
+   * Given, it decides which texels carry subject colour; `foregroundMask` still decides which
+   * points are subject. Points admitted only by the dilation then take the nearest subject texel's
+   * colour instead of the wall's (audit 2026-10-31 item 9). Omitted: previous behaviour. */
+  foregroundColorMask?: Float32Array;
 }
 
 /**
@@ -579,6 +585,7 @@ export function sampleImageGrid(
   }
   const mask = opts.foregroundMask;
   const isolate = opts.foregroundColorIsolation !== false && !!mask && mask.length === depthW * depthH;
+  const colorMask = opts.foregroundColorMask?.length === depthW * depthH ? opts.foregroundColorMask : null;
   for (let j = 0; j < grid; j++) {
     // t = (j+0.5)/N: yukarıdan aşağı, CDF de o yönde kurulur (konumlarla
     // birebir — texel hizası bozulursa renkler parçacıklardan kayar).
@@ -603,20 +610,44 @@ export function sampleImageGrid(
       // background keep the exact original result (including soft masks).
       if (isolate && mask) {
         const alpha = sampleBilinear(mask, depthW, depthH, (x + 0.5) / sx - 0.5, (y + 0.5) / sy - 0.5);
-        if (alpha >= 0.5) sampleForegroundRgb(rgb, imgW, imgH, x, y, mask, depthW, depthH, out, o);
+        if (alpha >= 0.5 && !sampleForegroundRgb(rgb, imgW, imgH, x, y, colorMask ?? mask, depthW, depthH, out, o) && colorMask) {
+          nearestForegroundRgb(rgb, imgW, imgH, (x + 0.5) / sx - 0.5, (y + 0.5) / sy - 0.5, colorMask, depthW, depthH, out, o);
+        }
       }
     }
   }
   return out;
 }
 
+/** A point the dilation made subject but whose taps are all background in the original confidence:
+ * colour of the nearest original-foreground texel within MASK_DILATE_RADIUS mask texels (the
+ * dilation's own reach), else the ordinary sample stays. */
+function nearestForegroundRgb(
+  rgb: Float32Array, w: number, h: number, mx: number, my: number,
+  mask: Float32Array, mw: number, mh: number, out: Float32Array, offset: number,
+) {
+  const cx = Math.round(mx), cy = Math.round(my), r = MASK_DILATE_RADIUS;
+  let best = -1, bestD = Infinity;
+  for (let y = Math.max(0, cy - r); y <= Math.min(mh - 1, cy + r); y++) {
+    for (let x = Math.max(0, cx - r); x <= Math.min(mw - 1, cx + r); x++) {
+      const d = (x - mx) ** 2 + (y - my) ** 2;
+      if (d < bestD && mask[y * mw + x] >= 0.5) { bestD = d; best = y * mw + x; }
+    }
+  }
+  if (best < 0) return;
+  const px = Math.min(w - 1, Math.max(0, Math.round((((best % mw) + 0.5) * w) / mw - 0.5)));
+  const py = Math.min(h - 1, Math.max(0, Math.round(((((best / mw) | 0) + 0.5) * h) / mh - 0.5)));
+  const at = (py * w + px) * 3;
+  out[offset] = rgb[at]; out[offset + 1] = rgb[at + 1]; out[offset + 2] = rgb[at + 2];
+}
+
 /** Renormalize the existing four bilinear taps over foreground texels only;
  * never invent colors by searching further. If no tap is foreground, keep
- * the ordinary sample already written to `out`. */
+ * the ordinary sample already written to `out`. Returns whether any tap was foreground. */
 function sampleForegroundRgb(
   rgb: Float32Array, w: number, h: number, x: number, y: number,
   mask: Float32Array, mw: number, mh: number, out: Float32Array, offset: number,
-) {
+): boolean {
   const x0 = Math.max(0, Math.min(w - 1, Math.floor(x)));
   const y0 = Math.max(0, Math.min(h - 1, Math.floor(y)));
   const tx = Math.max(0, Math.min(1, x - x0));
@@ -633,6 +664,7 @@ function sampleForegroundRgb(
   if (total > 0 && total < 1) {
     out[offset] = red / total; out[offset + 1] = green / total; out[offset + 2] = blue / total;
   }
+  return total > 0;
 }
 
 // ---------------------------------------------------------------------------

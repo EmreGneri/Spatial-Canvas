@@ -22,17 +22,21 @@ assert.equal(say(yeni), 3200 + 280 + 60, 'gövde + kol + el');
 assert.equal(yeni[20 * w + 110], 0, 'uzak parça düşer');
 assert.equal(yeni[81 * w + 53], 0, 'minik benek düşer');
 assert.equal(yeni[40 * w + 60], 1, 'kol kalır');
-// video: yeterince büyük (>= %10) ayrı parça başka bir kişidir, uzak olsa da kalır; küçük uzak parça yine düşer
-const { VIDEO_FAR_MIN_FRAC } = await import('../src/engine/reconstruction/silhouette.ts');
+// yeterince büyük (>= %10) ayrı parça başka bir kişidir, uzak olsa da kalır; küçük uzak parça yine düşer.
+// Foto (varsayılan) ve video aynı kural (denetim 2026-10-31 madde 12: fotoğraf ikinci kişiyi siliyordu).
+const { VIDEO_FAR_MIN_FRAC, MASK_FAR_MIN_FRAC } = await import('../src/engine/reconstruction/silhouette.ts');
 const iki = bos();
 dikdortgen(iki, 10, 10, 50, 90);   // ana kişi 3200
 dikdortgen(iki, 70, 20, 90, 80);   // ikinci kişi, 20 px uzakta: 1200 = %37,5
 dikdortgen(iki, 105, 10, 115, 40); // 300 px = %9,4: eşiğin altı (kapı kasası)
-assert.equal(say(keepMainComponents(iki, w, h)), 3200, 'varsayılan (foto): uzak kişi düşer');
+const foto = keepMainComponents(iki, w, h);
+assert.equal(say(foto), 3200 + 1200, 'varsayılan (foto): uzak ikinci kişi kalır');
+assert.equal(foto[20 * w + 110], 0, 'foto: küçük uzak parça yine düşer');
 const video = keepMainComponents(iki, w, h, undefined, undefined, VIDEO_FAR_MIN_FRAC);
-assert.equal(say(video), 3200 + 1200, 'video: uzak ikinci kişi kalır');
-assert.equal(video[20 * w + 110], 0, 'video: küçük uzak parça yine düşer');
+assert.deepEqual(video, foto, 'video: aynı kural');
 assert.equal(VIDEO_FAR_MIN_FRAC, 0.1);
+assert.equal(MASK_FAR_MIN_FRAC, VIDEO_FAR_MIN_FRAC);
+assert.equal(say(keepMainComponents(iki, w, h, undefined, undefined, Infinity)), 3200, 'Infinity: eski tek-özne kuralı');
 // tek parça: aynı nesne döner
 const tek = dikdortgen(bos(), 10, 10, 50, 90);
 assert.equal(keepMainComponents(tek, w, h), tek);
@@ -43,6 +47,20 @@ assert.equal(keepMainComponents(b, w, h), b);
 const z = bos();
 dikdortgen(z, 10, 10, 50, 90); dikdortgen(z, 58, 30, 70, 50); dikdortgen(z, 78, 30, 90, 50);
 assert.equal(say(keepMainComponents(z, w, h)), 3200 + 240 + 240);
+
+// yumuşak kenar (saç, < 0.5): uzak bir benek atılırken tutulan öznenin yumuşak bandı aynen kalır;
+// atılan beneğin kendi yumuşak çevresi ve hiçbir tutulan parçaya yakın olmayan pus temizlenir
+const sac = dikdortgen(bos(), 10, 10, 50, 90);
+for (let y = 4; y < 10; y++) for (let x = 15; x < 45; x++) sac[y * w + x] = 0.49;
+const benekli = sac.slice();
+dikdortgen(benekli, 100, 80, 102, 82);
+benekli[79 * w + 100] = 0.3; // beneğin yumuşak çevresi
+benekli[50 * w + 80] = 0.2;  // her şeyden uzak pus
+const temiz = keepMainComponents(benekli, w, h);
+for (let i = 0; i < w * h; i++) if (i !== 79 * w + 100 && i !== 50 * w + 80 && !(benekli[i] === 1 && sac[i] === 0)) assert.equal(temiz[i], sac[i], `piksel ${i}`);
+assert.equal(temiz[81 * w + 101], 0, 'benek düşer');
+assert.equal(temiz[79 * w + 100], 0, 'beneğin yumuşak çevresi düşer');
+assert.equal(temiz[50 * w + 80], 0, 'uzak pus düşer');
 
 // zamansal: titreyen kenar piksel ortalanır
 const s = createMaskSmoother(3);
