@@ -33,4 +33,45 @@ assert.deepEqual(sampleImageGrid(rgb,w,h,depth,w,h,{...opts,foregroundMask:new F
   for(const x of [2,15])assert.equal(c(yeni,x),c(eski,x),`x=${x} unchanged`);
   assert.deepEqual(sampleImageGrid(col,n,n,d,n,n,{...o,foregroundColorMask:geo}),eski,'same mask as colour mask = previous result');
 }
+// Plumbing (Engine.setDepth): the colour mask is cropped with the SAME rect as the geometry mask and
+// handed to the colour fill. Pure helpers only (an Engine needs WebGL); Engine wiring is source-asserted.
+{
+  const { dilateAndFeatherMask } = await import('../src/engine/reconstruction/silhouette.ts');
+  const { applySeparationCrop } = await import('../src/engine/reconstruction/crop.ts');
+  const { readFileSync } = await import('node:fs');
+  const n=64,raw=new Float32Array(n*n),rgb=new Float32Array(n*n*3).fill(1),d=new Float32Array(n*n).fill(.6);
+  for(let y=20;y<44;y++)for(let x=26;x<38;x++){raw[y*n+x]=1;rgb.fill(.1,(y*n+x)*3,(y*n+x)*3+3);}
+  const geo=dilateAndFeatherMask(raw,n,n);
+  const base={depth:d,depthWidth:n,depthHeight:n,mask:geo,rgb,rgbWidth:n,rgbHeight:n};
+  const plainCrop=applySeparationCrop(base,true);
+  assert.ok(!('colorMask' in plainCrop),'no colour mask in -> no colorMask key out (previous crop result)');
+  const cc=applySeparationCrop({...base,colorMask:raw},true);
+  assert.ok(cc.depthWidth<n&&cc.depthHeight<n,'fixture actually crops');
+  assert.equal(cc.colorMask.length,cc.mask.length,'colour mask cropped to the mask size');
+  assert.deepEqual(cc.mask,plainCrop.mask,'geometry mask unchanged by the extra channel');
+  assert.deepEqual(cc.depth,plainCrop.depth);
+  assert.equal(applySeparationCrop({...base,colorMask:raw},false).colorMask,raw,'separation off: input passed through');
+  const o={gridSize:n,importanceSampling:false,foregroundMask:cc.mask};
+  const run=(extra)=>sampleImageGrid(cc.rgb,cc.rgbWidth,cc.rgbHeight,cc.depth,cc.depthWidth,cc.depthHeight,{...o,...extra});
+  const eski=run({}),yeni=run({foregroundColorMask:cc.colorMask});
+  // band = first geometry column outside the real subject, in cropped texels
+  let band=-1;const cw=cc.depthWidth,row=Math.floor(cc.depthHeight/2);
+  for(let x=0;x<cw;x++)if(cc.mask[row*cw+x]>=.5&&cc.colorMask[row*cw+x]<.5){band=x;break;}
+  assert.ok(band>=0,'dilated band exists in the cropped grid');
+  const g=(a,x)=>a[((row*n/cc.depthHeight|0)*n+Math.floor((x+.5)*n/cw))*3];
+  console.log(`crop plumbing: band texel ${band}/${cw}, RGB ${g(eski,band).toFixed(4)} -> ${g(yeni,band).toFixed(4)}`);
+  assert.ok(g(eski,band)>.1+1e-3,'before: band is wall-tinted');
+  assert.ok(Math.abs(g(yeni,band)-.1)<1e-3,'after: band takes subject colour');
+  assert.deepEqual(run({foregroundColorMask:undefined}),eski,'no colour mask = bit-identical');
+  const eng=readFileSync(new URL('../src/engine/Engine.ts',import.meta.url),'utf8');
+  assert.match(eng,/colorConfidence\?: Float32Array/,'setDepth takes the optional colour confidence');
+  assert.match(eng,/resampleBilinear\(colorConfidence/,'resampled like the mask');
+  assert.match(eng,/mask,\s+colorMask: this\.objectSeparation \? colorMask : undefined,\s+rgb: this\.photoData/,'cropped with the mask');
+  assert.match(eng,/foregroundColorMask: crop\.colorMask/,'handed to the photo colour fill');
+  const app=readFileSync(new URL('../src/App.tsx',import.meta.url),'utf8');
+  assert.match(app,/maskConfidence = seg\.confidence/,'photo path keeps the confidence');
+  assert.match(app,/maskW, maskH, undefined, undefined, maskConfidence\)/,'photo path passes it to setDepth');
+  assert.match(app,/seg\.height, undefined, undefined, seg\.confidence\)/,'toggleSegment passes it to setDepth');
+  assert.match(eng,/colorMask: this\.objectSeparation \? colorMask : undefined/,'only with separation on');
+}
 console.log('OK photo edge colors: mask-aware edge, unchanged interior/background, empty/full mask, dilated band.');

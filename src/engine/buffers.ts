@@ -234,6 +234,8 @@ export interface ImageColorFillOptions {
   skipAo?: boolean;
   /** Mask-aware edge colors (sampleImageGrid); on by default when a mask is given. */
   foregroundColorIsolation?: boolean;
+  /** Photo: original model confidence (same grid as `foregroundMask`); see sampleImageGrid. */
+  foregroundColorMask?: Float32Array;
 }
 
 /**
@@ -260,6 +262,7 @@ export function fillImageColorTexture(
     importanceSampling: opts.importanceSampling === true,
     foregroundMask: opts.foregroundMask,
     foregroundColorIsolation: opts.foregroundColorIsolation,
+    foregroundColorMask: opts.foregroundColorMask,
   };
   const grid = sampleImageGrid(rgb, imgWidth, imgHeight, depth, depthWidth, depthHeight, sampleOpts);
   // ALPHA = bakılı oklüzyon (Gün C): aynı remap, aynı hizalama. Render

@@ -201,6 +201,7 @@ export class Engine {
    * kurar ve renkler parÃ§acÄ±klardan kayar (GÃ¼n B).
    */
   private lastFgMask: Float32Array | null = null;
+  private lastColorMask: Float32Array | null = null;
   /** Fotoğraf kırpmasının gerçek alan oranı (tam / kırpık); ayırma düğmesinden tahmin edilmez. */
   private neonCropDensity = 1;
   private lastFrameTime = 0;
@@ -237,7 +238,8 @@ export class Engine {
     const d = this.currentDepthTexture;
     if (d) {
       this.setDepth(d.image.data as Float32Array, d.image.width, d.image.height,
-        this.lastFgMask ?? undefined, d.image.width, d.image.height);
+        this.lastFgMask ?? undefined, d.image.width, d.image.height,
+        undefined, undefined, this.lastColorMask ?? undefined);
       if (!this.videoTexture) this.yenidenTohumla();
     }
   }
@@ -1091,6 +1093,9 @@ setPointsMaterial(material: THREE.Material) {
         this.lastFgMask ?? undefined,
         img.width,
         img.height,
+        undefined,
+        undefined,
+        this.lastColorMask ?? undefined,
       );
     }
   }
@@ -1822,6 +1827,8 @@ if (entry && entry.material !== this.pointsMaterial) {
     maskHeight?: number,
     videoFrame?: { data: Uint8ClampedArray; width: number; height: number },
     videoFlowConfidence?: Float32Array,
+    /** Photo only: model confidence before dilation, maskWidth x maskHeight. Follows `foregroundMask` exactly. */
+    colorConfidence?: Float32Array,
   ) {
     if (this.videoTexture) this.metricPhotoGeometry = null;
     // Nesne maskesi (segmentation.ts) depth ile aynÄ± boyutta deÄŸilse (letterbox
@@ -1860,6 +1867,14 @@ if (entry && entry.material !== this.pointsMaterial) {
     // GÃ¼n B: renk grid'inin remap'i konum grid'ininkiyle birebir aynÄ± olmalÄ±
     // (mask-aware); setPhoto sonradan gelirse buraya yazÄ±lan maske kullanÄ±lÄ±r.
     this.lastFgMask = mask ?? null;
+    // Colour confidence: same resample as the mask; kept even while separation is off so a later
+    // toggle can use it, but only applied for photo + separation + mask (see crop / setPhoto).
+    const colorMask = !this.videoTexture && mask && colorConfidence && maskWidth && maskHeight
+      && colorConfidence.length === maskWidth * maskHeight
+      ? (maskWidth === width && maskHeight === height
+        ? colorConfidence : resampleBilinear(colorConfidence, maskWidth, maskHeight, width, height))
+      : undefined;
+    this.lastColorMask = colorMask ?? null;
     if (!this.videoTexture && this.photoData) this.updatePhotoBackdrop(data, width, height, mask);
     const current = this.currentDepthTexture;
     // CanlÄ± kamera saniyede ~10 kez Ã§aÄŸÄ±rÄ±r; boyut aynÄ±ysa texture'Ä± yeniden
@@ -1909,6 +1924,7 @@ if (entry && entry.material !== this.pointsMaterial) {
         depthWidth: width,
         depthHeight: height,
         mask,
+        colorMask: this.objectSeparation ? colorMask : undefined,
         rgb: this.photoData ?? undefined,
         rgbWidth: this.photoData ? this.photoWidth : undefined,
         rgbHeight: this.photoData ? this.photoHeight : undefined,
@@ -1989,7 +2005,7 @@ if (this.photoData) {
         crop.depth,
         crop.depthWidth,
         crop.depthHeight,
-        { foregroundMask: crop.mask },
+        { foregroundMask: crop.mask, foregroundColorMask: crop.colorMask },
       );
       // GÜN B ('solid' modu, fotoğraf-only): depth değiştiğinde kabuk mesh'i
       // yeniden kur — aynı siluet + remap + z formülleri (parçacık yüzeyi
@@ -2116,7 +2132,8 @@ if (this.photoData) {
 depth,
         this.currentDepthTexture.image.width,
         this.currentDepthTexture.image.height,
-        { foregroundMask: this.lastFgMask ?? undefined },
+        { foregroundMask: this.lastFgMask ?? undefined,
+          foregroundColorMask: this.objectSeparation && this.lastFgMask ? this.lastColorMask ?? undefined : undefined },
       );
       this.updatePhotoBackdrop(
         depth,
