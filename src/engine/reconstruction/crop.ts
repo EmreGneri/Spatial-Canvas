@@ -117,6 +117,8 @@ export interface SeparationCropInput {
   depthWidth: number;
   depthHeight: number;
   mask?: Float32Array;
+  /** Photo colour confidence (same grid as `mask`); cropped with the same rect. */
+  colorMask?: Float32Array;
   rgb?: Float32Array;
   rgbWidth?: number;
   rgbHeight?: number;
@@ -143,6 +145,9 @@ export function applySeparationCrop(
     depthHeight: d.height,
     mask: m.data,
   };
+  if (input.colorMask?.length === input.mask.length) {
+    out.colorMask = cropChannels(input.colorMask, input.depthWidth, input.depthHeight, 1, rect).data;
+  }
   if (input.rgb && input.rgbWidth && input.rgbHeight) {
     const rgbRect = scaleRect(rect, input.depthWidth, input.depthHeight, input.rgbWidth, input.rgbHeight);
     const r = cropChannels(input.rgb, input.rgbWidth, input.rgbHeight, 3, rgbRect);

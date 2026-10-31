@@ -614,6 +614,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
       let mask: Float32Array | undefined;
       let maskW = 0;
       let maskH = 0;
+      let maskConfidence: Float32Array | undefined; // seg.confidence (pre-dilation), seg.width x seg.height
       let categoryMask: CategoryInput = {};
       lastPhotoRef.current = source;
       lastPhotoCameraRef.current = undefined;
@@ -657,6 +658,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
             if (karar.sebep) say(karar.sebep);
             if (karar.tip === 'kullan') {
               mask = seg.mask;
+              maskConfidence = seg.confidence;
               maskW = seg.width;
               maskH = seg.height;
               maskLoadedRef.current = true;
@@ -776,8 +778,11 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
       // Deliği kapatılmış maske (derinlik ızgarasında) varsa motor da onu kullanır:
       // siluet aynı maskeden çıkar, yoksa yüz/karındaki delikler 3B'de boş kalır.
       olcSync('geometry.depth-points-shell', () => {
-        if (depth.subjectMask) engineRef.current!.setDepth(depth.data, depth.width, depth.height, depth.subjectMask, depth.width, depth.height);
-        else engineRef.current!.setDepth(depth.data, depth.width, depth.height, mask, maskW, maskH);
+        // Colour confidence stays the model's own (not intersected with DAViD / hole-filled mask):
+        // wider than the final mask is harmless, texels it lacks fall back to the nearest-texel rule.
+        if (depth.subjectMask) engineRef.current!.setDepth(depth.data, depth.width, depth.height, depth.subjectMask, depth.width, depth.height,
+          undefined, undefined, maskConfidence && resampleBilinear(maskConfidence, maskW, maskH, depth.width, depth.height));
+        else engineRef.current!.setDepth(depth.data, depth.width, depth.height, mask, maskW, maskH, undefined, undefined, maskConfidence);
       });
       if (maskOverlayOnRef.current) drawMaskOverlay();
       // KAYNAK DEĞİŞTİ: parçacıklar yeni sahneye OTURTULUR. Yumuşak geçiş
@@ -1533,8 +1538,9 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
       });
       lastDepthRef.current = { data: d.data, width: d.width, height: d.height };
       engineRef.current!.setMetricPhotoGeometry(d.metricGeometry ?? null);
-      if (d.subjectMask) engineRef.current!.setDepth(d.data, d.width, d.height, d.subjectMask, d.width, d.height);
-      else engineRef.current!.setDepth(d.data, d.width, d.height, seg.mask, seg.width, seg.height);
+      if (d.subjectMask) engineRef.current!.setDepth(d.data, d.width, d.height, d.subjectMask, d.width, d.height,
+        undefined, undefined, seg.confidence && resampleBilinear(seg.confidence, seg.width, seg.height, d.width, d.height));
+      else engineRef.current!.setDepth(d.data, d.width, d.height, seg.mask, seg.width, seg.height, undefined, undefined, seg.confidence);
       if (maskOverlayOnRef.current) drawMaskOverlay();
       maskLoadedRef.current = true;
     } catch (err) {
