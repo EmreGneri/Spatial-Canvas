@@ -737,7 +737,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
           `çıkarım                  ${Math.round(performance.now() - t1)} ms  (${depth.width}x${depth.height})` +
             (depth.sourceModel ? ` · ${depth.sourceModel}` : '') +
             (mask ? ' · özne maskesi kullanıldı' : ' · maskesiz') +
-            (depth.davidMaske ? ` · DAViD maskesi (${depth.davidMaske.arkaUc}, ${Math.round(depth.davidMaske.sureMs)} ms)` : ''),
+            (depth.davidMaske ? (depth.davidMaske.reddedildi ? ' · DAViD maskesi reddedildi (özne korundu)' : ` · DAViD maskesi (${depth.davidMaske.arkaUc}, ${Math.round(depth.davidMaske.sureMs)} ms)`) : ''),
         );
       }
       lastDepthRef.current = { data: depth.data, width: depth.width, height: depth.height };
