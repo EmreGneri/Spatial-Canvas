@@ -22,7 +22,11 @@ export interface VideoWindowProvider {
 export interface VideoDepthHandle {
   done: Promise<void>;
   hasFrame(time: number): boolean;
-  frameAt(time: number): Promise<VideoDepthFrame | null>;
+  /**
+   * `withMask`: nesne ayırma açık. Kapalıyken maske izi hazır olsa da tam sahne (detaylı)
+   * dosya okunur; aç/kapa sonucu önceki tıklama geçmişine bağlı kalmaz.
+   */
+  frameAt(time: number, withMask?: boolean): Promise<VideoDepthFrame | null>;
   /** Maske izi bu kare için hazır mı (nesne ayırma açıkken hazır derinlik kullanılabilir). */
   hasMask(time: number): boolean;
   /**
@@ -286,11 +290,11 @@ export async function prepareVideoDepth(file: Blob, options: PrepareOptions = {}
   })();
   return {
     done, cancel, hasFrame: time => indexAt(time) >= 0,
-    async frameAt(time) {
+    async frameAt(time, withMask = false) {
       const index = indexAt(time); if (index < 0) return null;
       try {
         const scene = sceneOf(index);
-        const masked = index < maskReadyFrames && !!maskedFiles[scene];
+        const masked = withMask && index < maskReadyFrames && !!maskedFiles[scene];
         const source = masked ? maskedFiles[scene] : detailFiles[scene];
         if (!source) return null;
         const packed = new Uint16Array(await slice(source, index - scenes[scene], width * height * 2));

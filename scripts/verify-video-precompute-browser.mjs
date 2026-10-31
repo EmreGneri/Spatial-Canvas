@@ -50,7 +50,7 @@ try {
       stage: progress.at(-1), providerDisposed: disposed };
     output.maskBefore = handle.hasMask(0.3);
     await handle.prepareMasks(async f => new Float32Array(f.width * f.height).fill(0.75));
-    const masked = await handle.frameAt(0.3);
+    const masked = await handle.frameAt(0.3, true);
     output.mask = { ready: handle.hasMask(0.3), value: masked?.mask?.[0], length: masked?.mask?.length };
     await handle.dispose(); output.disposed = !handle.hasFrame(0.2);
     document.querySelector('#result').textContent = JSON.stringify(output, null, 2);
@@ -102,6 +102,7 @@ async function regressions(session) {
     const { prepareVideoDepth } = await import('/src/engine/vision/videoPrecompute.ts');
     const handle = await prepareVideoDepth(window.testClip(), { provider: window.testProvider() });
     await handle.done;
+    window.fullBeforeMasks = await handle.frameAt(0.2, false);
     let rejected = 0;
     // The second (light) scene's segmentation is rejected at every key frame.
     await handle.prepareMasks(async frame => {
@@ -112,6 +113,11 @@ async function regressions(session) {
     const first = await handle.frameAt(0.2, true), second = await handle.frameAt(0.8, true);
     const out = { rejected, firstMask: handle.hasMask(0.2), firstCoverage: coverage(first),
       secondMask: handle.hasMask(0.8), secondCoverage: coverage(second), secondReadable: !!second };
+    // #6 Separation on/off/on after the mask track: off returns the original full-scene file.
+    const diff = (a, b) => a.data.reduce((s, v, i) => s + Math.abs(v - b.data[i]), 0) / a.data.length;
+    const off = await handle.frameAt(0.2, false), on = await handle.frameAt(0.2, true);
+    out.toggle = { offDiff: diff(window.fullBeforeMasks, off), offMask: !!off.mask,
+      onDiff: diff(window.fullBeforeMasks, on), onMask: !!on.mask, defaultMask: !!(await handle.frameAt(0.2)).mask };
     await handle.dispose();
     return out;
   });
@@ -122,6 +128,11 @@ async function regressions(session) {
   assert.equal(masks.secondCoverage, null, 'the rejected scene reads full-scene depth without a mask');
   assert.equal(masks.secondReadable, true);
   console.log('OK #4 scene-local mask fallback', JSON.stringify(masks));
+  assert.equal(masks.toggle.offDiff, 0, `#6 separation off must read the full-scene depth again: ${JSON.stringify(masks.toggle)}`);
+  assert.equal(masks.toggle.offMask, false);
+  assert.ok(masks.toggle.onDiff > 0.05 && masks.toggle.onMask, `separation on reads the mask-stretched track: ${JSON.stringify(masks.toggle)}`);
+  assert.equal(masks.toggle.defaultMask, false, 'the mask track is opt-in per read');
+  console.log('OK #6 mask mode chosen at cache read', JSON.stringify(masks.toggle));
 
   // #7 Model download/compile happens inside the metadata callback: the decoder's 30 s idle
   // timer (shortened to 10 ms here) must not run during it. Slow model prep, healthy video.
