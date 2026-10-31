@@ -324,13 +324,57 @@ export function buildSilhouette(
   return { alpha, isForeground, dist };
 }
 
-/** Dilate → erode (ayrılabilir min/max geçişleri). Sert yüzey deliklerini kapatır. */
+/**
+ * Dilate → erode (ayrılabilir min/max geçişleri). Sert yüzey deliklerini kapatır.
+ * Maske burada yalnız {0, 1} taşır: kelepçeli pencerenin max'ı "pencerede 1 var mı",
+ * min'i "pencerenin hepsi 1 mi" demektir. Kayan sayaçla O(n), yarıçaptan bağımsız;
+ * minMaxPass ile bit-bit aynı çıktı (verify-depth-cycle-parity). Her video karesinde koşar.
+ */
 function closeHoles(mask: Float32Array, w: number, h: number, r: number) {
   const tmp = new Float32Array(mask.length);
-  minMaxPass(mask, tmp, w, h, r, true, true); // dilate x
-  minMaxPass(tmp, mask, w, h, r, false, true); // dilate y
-  minMaxPass(mask, tmp, w, h, r, true, false); // erode x
-  minMaxPass(tmp, mask, w, h, r, false, false); // erode y
+  binaryWindowPass(mask, tmp, w, h, r, true, true); // dilate x
+  binaryWindowPass(tmp, mask, w, h, r, false, true); // dilate y
+  binaryWindowPass(mask, tmp, w, h, r, true, false); // erode x
+  binaryWindowPass(tmp, mask, w, h, r, false, false); // erode y
+}
+
+/** minMaxPass for a {0, 1} map: counts the ones in the clamped window. */
+function binaryWindowPass(
+  src: Float32Array,
+  dst: Float32Array,
+  w: number,
+  h: number,
+  r: number,
+  horizontal: boolean,
+  dilate: boolean,
+) {
+  if (horizontal) {
+    for (let y = 0; y < h; y++) {
+      const row = y * w;
+      let count = 0;
+      for (let k = 0; k <= r && k < w; k++) count += src[row + k];
+      for (let x = 0; x < w; x++) {
+        // window [x - r, x + r] clamped to the row
+        const size = Math.min(w - 1, x + r) - Math.max(0, x - r) + 1;
+        dst[row + x] = dilate ? (count > 0 ? 1 : 0) : count === size ? 1 : 0;
+        if (x + r + 1 < w) count += src[row + x + r + 1];
+        if (x - r >= 0) count -= src[row + x - r];
+      }
+    }
+    return;
+  }
+  const counts = new Float64Array(w);
+  for (let k = 0; k <= r && k < h; k++) {
+    const s = k * w;
+    for (let x = 0; x < w; x++) counts[x] += src[s + x];
+  }
+  for (let y = 0; y < h; y++) {
+    const row = y * w;
+    const size = Math.min(h - 1, y + r) - Math.max(0, y - r) + 1;
+    for (let x = 0; x < w; x++) dst[row + x] = dilate ? (counts[x] > 0 ? 1 : 0) : counts[x] === size ? 1 : 0;
+    if (y + r + 1 < h) { const s = (y + r + 1) * w; for (let x = 0; x < w; x++) counts[x] += src[s + x]; }
+    if (y - r >= 0) { const s = (y - r) * w; for (let x = 0; x < w; x++) counts[x] -= src[s + x]; }
+  }
 }
 
 /**
@@ -454,7 +498,10 @@ function keepForeground(
   const touchT: boolean[] = [];
   const touchB: boolean[] = [];
   const boxes: { minX: number; maxX: number; minY: number; maxY: number }[] = [];
-  const pixels: number[][] = [];
+  // Component c's pixels are order[start[c] .. start[c + 1]) (flood order).
+  const order = new Int32Array(n);
+  const start: number[] = [];
+  let filledCount = 0;
   const stack = new Int32Array(n);
   let nextId = 0;
 
@@ -477,7 +524,7 @@ function keepForeground(
     let sp = 0;
     stack[sp++] = i;
     compId[i] = nextId;
-    const list: number[] = [];
+    start.push(filledCount);
     let size = 0;
     let l = false;
     let r = false;
@@ -490,7 +537,7 @@ function keepForeground(
     while (sp > 0) {
       const p = stack[--sp];
       size++;
-      list.push(p);
+      order[filledCount++] = p;
       const x = p % w;
       const y = (p / w) | 0;
       if (x === 0) l = true;
@@ -524,9 +571,9 @@ function keepForeground(
     touchT.push(t);
     touchB.push(b);
     boxes.push({ minX, maxX, minY, maxY });
-    pixels.push(list);
     nextId++;
   }
+  start.push(filledCount);
 
   if (nextId === 0) return; // tamamen arka plan
 
@@ -579,33 +626,35 @@ function keepForeground(
   // Gradyan sürekliliği denetimi: adayın çekirdeğe maskede DOĞRUDAN bitişik
   // olup olmadığını ve bitişiklik noktalarında |Δd| ≤ 0.15 sürekliliği
   // bulunup bulunmadığını piksel listesi üzerinden tarar.
-  const contactCheck = (c: number) => {
+  // Sonuç yalnız c'ye bağlıdır (core ve compId birleştirme boyunca sabit): bileşen
+  // başına bir kez, yalnız diğer katılım koşulu tutunca hesaplanır. Komşu tarama
+  // sırası sonucu değiştirmez (var/yok sorusu).
+  const severedCache = new Int8Array(nextId).fill(-1);
+  const isSevered = (c: number) => {
+    if (severedCache[c] >= 0) return severedCache[c] === 1;
     let touching = false;
-    for (let k = 0; k < pixels[c].length; k++) {
-      const p = pixels[c][k];
+    let continuous = false;
+    for (let k = start[c], e = start[c + 1]; k < e && !continuous; k++) {
+      const p = order[k];
       const x = p % w;
       const y = (p / w) | 0;
-      const qs: number[] = [];
-      if (x > 0) qs.push(p - 1);
-      if (x < w - 1) qs.push(p + 1);
-      if (y > 0) qs.push(p - w);
-      if (y < h - 1) qs.push(p + w);
-      for (const q of qs) {
-        if (compId[q] !== core) continue;
-        touching = true;
-        if (connected(p, q)) return { touching: true, continuous: true };
-      }
+      if (x > 0 && compId[p - 1] === core) { touching = true; if (connected(p, p - 1)) continuous = true; }
+      if (x < w - 1 && compId[p + 1] === core) { touching = true; if (connected(p, p + 1)) continuous = true; }
+      if (y > 0 && compId[p - w] === core) { touching = true; if (connected(p, p - w)) continuous = true; }
+      if (y < h - 1 && compId[p + w] === core) { touching = true; if (connected(p, p + w)) continuous = true; }
     }
-    return { touching, continuous: false };
+    severedCache[c] = touching && !continuous ? 1 : 0;
+    return severedCache[c] === 1;
   };
 
   // Gövde birleştirme (iteratif).
-  const keepIds = new Set<number>([core]);
+  const keep = new Uint8Array(nextId);
+  keep[core] = 1;
   let bx = boxes[core];
   for (let iter = 0; iter < 5; iter++) {
     let changed = false;
     for (let c = 0; c < nextId; c++) {
-      if (keepIds.has(c)) continue;
+      if (keep[c]) continue;
       const b = boxes[c];
       const xO = overlapsX(b, bx);
       const yO = overlapsY(b, bx);
@@ -621,17 +670,15 @@ function keepForeground(
       // temas noktasında süreklilik taşımayan bileşen ("severed contact")
       // hiçbir kurala başvuramaz — önünde duran duvar/zemin gövdeye
       // yapışamaz. filled köprüler (iç delik kapanışı) süreklilik sayılır.
-      const { touching, continuous } = contactCheck(c);
-      const severed = touching && !continuous;
       const joins =
-        !severed &&
         ((xO && yO) ||
           (yO && gX <= NEAR_PX) ||
           (xO && gY <= NEAR_PX) ||
           (bottomOnly(c) && yO && gX <= NEAR_PX) ||
-          (upperQuarter && gX <= PROXIMITY_BRIDGE_PX && gY <= PROXIMITY_BRIDGE_PX));
+          (upperQuarter && gX <= PROXIMITY_BRIDGE_PX && gY <= PROXIMITY_BRIDGE_PX)) &&
+        !isSevered(c);
       if (!joins) continue;
-      keepIds.add(c);
+      keep[c] = 1;
       bx = {
         minX: Math.min(bx.minX, b.minX),
         maxX: Math.max(bx.maxX, b.maxX),
@@ -645,7 +692,7 @@ function keepForeground(
 
   // Seçilen bileşenleri maskede tut, gerisini temizle.
   for (let p = 0; p < n; p++) {
-    if (compId[p] < 0 || !keepIds.has(compId[p])) mask[p] = 0;
+    if (compId[p] < 0 || !keep[compId[p]]) mask[p] = 0;
   }
 
   // Satır boşluk dolgusu (yerel gap-fill): satır içinde iki parça ARASINDA
