@@ -74,4 +74,52 @@ try {
   assert.equal(result.frame.height, real ? 154 : 9);
   if (!real) assert.equal(result.providerDisposed, true);
   console.log(`OK ${real ? 'actual offline32 model +' : ''} real browser video decoder, timestamps, OPFS Uint16 readback and cleanup`, JSON.stringify(result));
+  if (!real) await regressions(session);
 } finally { await session.kapat(); }
+
+/** Audit 2026-10-31 items 4-7, deterministic provider and synthetic masks in real Chrome/WebCodecs/OPFS. */
+async function regressions(session) {
+  // Two-scene synthetic clip (6 dark frames, hard cut, 6 light frames) and a 40x23 provider
+  // whose squeezed subject box covers 32.6 % of the grid.
+  const clip = await session.page.evaluate(async () => {
+    const mb = await import('/src/vendor/splat.js/vendor/mediabunny.min.mjs');
+    const canvas = document.createElement('canvas'); canvas.width = 160; canvas.height = 90;
+    const context = canvas.getContext('2d');
+    const target = new mb.BufferTarget(), muxer = new mb.Output({ format: new mb.WebMOutputFormat(), target });
+    const source = new mb.CanvasSource(canvas, { codec: 'vp9', bitrate: 100_000 });
+    muxer.addVideoTrack(source, { frameRate: 10 }); await muxer.start();
+    for (let i = 0; i < 12; i++) { context.fillStyle = i < 6 ? '#282828' : '#eeeeee'; context.fillRect(0, 0, 160, 90); await source.add(i / 10, 0.1); }
+    source.close(); await muxer.finalize();
+    const box = i => i % 40 >= 10 && i % 40 < 30 && Math.floor(i / 40) >= 4 && Math.floor(i / 40) < 19;
+    window.subjectMask = () => Float32Array.from({ length: 920 }, (_, i) => box(i) ? 1 : 0);
+    window.testProvider = () => ({ width: 40, height: 23, dispose: async () => {},
+      infer: async frames => frames.map(() => Float32Array.from({ length: 920 }, (_, i) => box(i) ? 0.7 + 0.04 * (i % 40) / 40 : 0.2)) });
+    window.testClip = () => new Blob([target.buffer], { type: 'video/webm' });
+    return Array.from(new Uint8Array(target.buffer));
+  });
+
+  const masks = await session.page.evaluate(async () => {
+    const { prepareVideoDepth } = await import('/src/engine/vision/videoPrecompute.ts');
+    const handle = await prepareVideoDepth(window.testClip(), { provider: window.testProvider() });
+    await handle.done;
+    let rejected = 0;
+    // The second (light) scene's segmentation is rejected at every key frame.
+    await handle.prepareMasks(async frame => {
+      if (frame.data[0] > 100) { rejected++; return null; }
+      return window.subjectMask();
+    });
+    const coverage = f => f?.mask ? f.mask.reduce((s, v) => s + (v >= 0.5), 0) / 920 : null;
+    const first = await handle.frameAt(0.2, true), second = await handle.frameAt(0.8, true);
+    const out = { rejected, firstMask: handle.hasMask(0.2), firstCoverage: coverage(first),
+      secondMask: handle.hasMask(0.8), secondCoverage: coverage(second), secondReadable: !!second };
+    await handle.dispose();
+    return out;
+  });
+  assert.equal(masks.rejected, 2, JSON.stringify(masks));
+  assert.equal(masks.firstMask, true, 'the first scene keeps its trusted mask');
+  assert.ok(Math.abs(masks.firstCoverage - 0.326087) < 1e-4, JSON.stringify(masks));
+  assert.equal(masks.secondMask, false, `#4 a rejected scene must not inherit the previous scene's mask: ${JSON.stringify(masks)}`);
+  assert.equal(masks.secondCoverage, null, 'the rejected scene reads full-scene depth without a mask');
+  assert.equal(masks.secondReadable, true);
+  console.log('OK #4 scene-local mask fallback', JSON.stringify(masks));
+}

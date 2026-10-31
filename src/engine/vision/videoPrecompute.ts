@@ -309,7 +309,7 @@ export async function prepareVideoDepth(file: Blob, options: PrepareOptions = {}
         return { data, width, height, mediaTime: stamps[index], mask };
       } catch { return null; }
     },
-    hasMask: time => { const index = indexAt(time); return index >= 0 && index < maskReadyFrames; },
+    hasMask: time => { const index = indexAt(time); return index >= 0 && index < maskReadyFrames && !!maskedFiles[sceneOf(index)]; },
     prepareMasks(capture, onProgress) {
       maskJob ??= (async () => {
         await done;
@@ -322,14 +322,16 @@ export async function prepareVideoDepth(file: Blob, options: PrepareOptions = {}
           for (let i = 0; i < n; i++) out[i] = Math.round(Math.max(0, Math.min(1, mask[i])) * 255);
           return out;
         };
-        let lastValid: Float32Array = new Float32Array(n).fill(1);
-        const keyMask = async (i: number) => {
-          await yieldToPlayback();
-          const mask = await capture(await frame(i)); aborted(signal);
-          if (mask && mask.length === n) lastValid = mask;
-          return lastValid;
-        };
         for (let scene = 0; scene < scenes.length - 1; scene++) {
+          // Sahneye yerel: kesmeden önceki öznenin maskesi yeni sahneye taşınmaz. Sahnede hiç
+          // güvenilir anahtar maske yoksa iz yazılmaz; o sahne tam derinlik + canlı maskeyle kalır.
+          let lastValid: Float32Array = new Float32Array(n).fill(1), trusted = false;
+          const keyMask = async (i: number) => {
+            await yieldToPlayback();
+            const mask = await capture(await frame(i)); aborted(signal);
+            if (mask && mask.length === n) { lastValid = mask; trusted = true; }
+            return lastValid;
+          };
           const keys = maskKeyFrames(scenes[scene], scenes[scene + 1]);
           const out = await stream(`mask-${scene}`), maskedOut = await stream(`masked-${scene}`);
           // Maskeli detay (stretch + sobel + iki bölgeli sınır) sahne içinde sırayla, aralık taşınarak.
@@ -355,8 +357,9 @@ export async function prepareVideoDepth(file: Blob, options: PrepareOptions = {}
             for (let j = 0; j < masks.length - 1; j++) await emit(masks[j]);
             startMask = endMask;
           }
-          maskFiles[scene] = await out.close();
-          maskedFiles[scene] = await maskedOut.close();
+          const maskFile = await out.close(), maskedFile = await maskedOut.close();
+          if (trusted) { maskFiles[scene] = maskFile; maskedFiles[scene] = maskedFile; }
+          else await Promise.all([dir!.removeEntry(`mask-${scene}`), dir!.removeEntry(`masked-${scene}`)]);
           maskReadyFrames = scenes[scene + 1];
           onProgress?.(maskReadyFrames / stamps.length);
         }
