@@ -100,6 +100,10 @@ export type SegmentationResult = {
   height: number;
   /** Maskeyi gerçekte üreten model (yardımcı düşerse 'isnet'). */
   model: 'birefnet' | 'isnet';
+  /** Photo only: the cleaned model confidence BEFORE the geometry dilation (same size as `mask`).
+   * `mask` is the geometry-repair mask; colour decisions should use this one
+   * (sampler `foregroundColorMask`, audit 2026-10-31 item 9). */
+  confidence?: Float32Array;
 };
 
 let segSession: ort.InferenceSession | null = null;
@@ -252,7 +256,7 @@ export async function segmentForeground(
   // Video masks refresh during playback: let a frame render between the two passes.
   if (kaynak === 'video') await new Promise<void>(resolve => setTimeout(resolve, 0));
   const mask = dilateAndFeatherMask(main, lb.w, lb.h);
-  return { mask, width: lb.w, height: lb.h, model };
+  return { mask, width: lb.w, height: lb.h, model, ...(kaynak === 'foto' ? { confidence: main } : {}) };
 }
 
 /** Kadraj bandını at: 1024² çıktının letterbox iç dikdörtgeni (0..1 olasılık). */

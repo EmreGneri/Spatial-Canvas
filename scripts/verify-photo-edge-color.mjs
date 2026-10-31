@@ -18,4 +18,19 @@ assert.equal(at(isolated,0),at(plain,0),'Background is still available when sepa
 assert.deepEqual(sampleImageGrid(rgb,w,h,depth,w,h,{...opts,foregroundColorIsolation:false}),plain,'Live color-grid sampling must be able to retain the original filter.');
 assert.deepEqual(sampleImageGrid(rgb,w,h,depth,w,h,{...opts,foregroundMask:new Float32Array(w*h).fill(1)}),plain,'A full-frame foreground preserves the original filter.');
 assert.deepEqual(sampleImageGrid(rgb,w,h,depth,w,h,{...opts,foregroundMask:new Float32Array(w*h)}),plain,'An empty mask cannot blacken the image.');
-console.log('OK photo edge colors: mask-aware edge, unchanged interior/background, empty/full mask.');
+
+// Audit 2026-10-31 item 9: the 4 px dilation makes x=8 geometry although the wall is there.
+// With the original confidence given as the colour mask, the band takes the subject colour.
+{
+  const { dilateAndFeatherMask } = await import('../src/engine/reconstruction/silhouette.ts');
+  const n=32,raw=new Float32Array(n*n),col=new Float32Array(n*n*3).fill(1),d=new Float32Array(n*n).fill(.6);
+  for(let y=0;y<n;y++)for(let x=10;x<22;x++){raw[y*n+x]=1;col.fill(.1,(y*n+x)*3,(y*n+x)*3+3);}
+  const geo=dilateAndFeatherMask(raw,n,n),o={gridSize:n,importanceSampling:false,foregroundMask:geo};
+  const eski=sampleImageGrid(col,n,n,d,n,n,o),yeni=sampleImageGrid(col,n,n,d,n,n,{...o,foregroundColorMask:raw});
+  const c=(a,x)=>a[(16*n+x)*3];
+  console.log(`dilated band x=8: mask ${raw[16*n+8]}->${geo[16*n+8]}, RGB ${c(eski,8)} -> ${c(yeni,8)}`);
+  for(const x of [6,7,8,9])assert.ok(Math.abs(c(yeni,x)-.1)<1e-6,`band x=${x} takes the subject colour (${c(yeni,x)})`);
+  for(const x of [2,15])assert.equal(c(yeni,x),c(eski,x),`x=${x} unchanged`);
+  assert.deepEqual(sampleImageGrid(col,n,n,d,n,n,{...o,foregroundColorMask:geo}),eski,'same mask as colour mask = previous result');
+}
+console.log('OK photo edge colors: mask-aware edge, unchanged interior/background, empty/full mask, dilated band.');
