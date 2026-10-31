@@ -1,3 +1,4 @@
+import { MASK_FAR_MIN_FRAC } from '../engine/reconstruction/silhouette.ts';
 /**
  * NESNE AYIRMA KARARI — maske üretildikten sonra ne yapılacağının saf
  * mantığı. DOM'suz tutulur ki Node'dan doğrulanabilsin
@@ -121,7 +122,7 @@ const PARCA_MIN_ORAN = 0.01;
  * gövdedir (~1); manzarada model gökyüzü, köprü, bina gibi kopuk yamaları
  * seçer (düşük). Parçalar yalnız 4-komşulukla ve küçültülmüş ızgarada sayılır.
  */
-export function maskeTekParcaOrani(mask: Float32Array, w: number, h: number): number {
+export function maskeTekParcaOrani(mask: Float32Array, w: number, h: number, ikiParca = false): number {
   const s = Math.max(1, Math.floor(Math.max(w, h) / 128));
   const gw = Math.ceil(w / s);
   const gh = Math.ceil(h / s);
@@ -152,7 +153,15 @@ export function maskeTekParcaOrani(mask: Float32Array, w: number, h: number): nu
   }
   const sayilan = boyutlar.filter((b) => b >= toplam * PARCA_MIN_ORAN);
   const say = sayilan.reduce((a, b) => a + b, 0);
-  return say ? Math.max(...sayilan) / say : 1;
+  if (!say) return 1;
+  const buyuk = Math.max(...sayilan);
+  if (ikiParca) {
+    // Fotoğraf: iki büyük parça (iki kişi/nesne) 'ana' sayılır; üçüncü bir büyük parça varsa maske dağınıktır.
+    // 'Büyük' = en büyüğün MASK_FAR_MIN_FRAC'i (silhouette.ts'in fotoğrafta da koruduğu ayrı parça kuralı).
+    const buyukler = sayilan.filter((b) => b >= buyuk * MASK_FAR_MIN_FRAC).sort((a, b) => b - a);
+    if (buyukler.length <= 2) return (buyukler[0] + (buyukler[1] ?? 0)) / say;
+  }
+  return buyuk / say;
 }
 
 export function maskeKarari(fgOran: number, tekParca: number = 1): MaskeKarari {
@@ -198,7 +207,7 @@ export function maskeKarariniVer(mask: Float32Array, w: number, h: number) {
   let say = 0;
   for (let i = 0; i < mask.length; i++) if (mask[i] >= 0.5) say++;
   const oran = say / mask.length;
-  const tekParca = maskeTekParcaOrani(mask, w, h);
+  const tekParca = maskeTekParcaOrani(mask, w, h, true);
   return { karar: maskeKarari(oran, tekParca), oran, tekParca };
 }
 

@@ -108,4 +108,19 @@ assert.match(dag.sebep ?? '', /dağınık/);
   assert.equal(davidKesisiminiDogrula(kucuk, new Float32Array(W * H), W, H).maske, kucuk);
 }
 
+
+// Photo group masks (audit #12): two comparable people are two main parts, a third big part makes the mask scattered.
+{
+  const { maskeKarariniVer, maskeTekParcaOrani } = await import('../src/ui/maskeKarari.ts');
+  const w = 200, h = 100;
+  const rect = (m, x0, y0, x1, y1) => { for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) m[y * w + x] = 1; return m; };
+  const iki = rect(rect(new Float32Array(w * h), 10, 20, 70, 80), 110, 20, 170, 80); // two equal people
+  const uc = rect(rect(rect(new Float32Array(w * h), 5, 20, 55, 80), 75, 20, 125, 80), 145, 20, 195, 80); // three equal patches
+  const ikiVeBenek = rect(rect(rect(new Float32Array(w * h), 10, 20, 70, 80), 110, 20, 170, 80), 85, 5, 92, 12); // + a tiny speck
+  assert.ok(maskeTekParcaOrani(iki, w, h) < 0.6, 'single-part ratio of two equal people is ~0.5 (unchanged)');
+  assert.equal(maskeKarariniVer(iki, w, h).karar.tip, 'kullan', 'two comparable people are accepted by the photo decision');
+  assert.equal(maskeKarariniVer(ikiVeBenek, w, h).karar.tip, 'kullan', 'two people and a speck are accepted');
+  assert.equal(maskeKarariniVer(uc, w, h).karar.tip, 'atla', 'three comparable big parts stay scattered');
+  console.log('OK photo group masks: two main parts accepted, three scattered');
+}
 console.log('OK maske kararı: küçük maske ekranı boşaltmıyor, meşru kadrajda eski davranış duruyor');
