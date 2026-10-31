@@ -174,12 +174,15 @@ export const MASK_SECONDARY_MIN_FRAC = 0.002;
 /** İkincil parçanın ana kütleye en fazla uzaklığı (piksel) — dilate yarıçapının 3 katı. */
 export const MASK_SECONDARY_NEAR_PX = 3 * MASK_DILATE_RADIUS;
 /**
- * Video: a separate component at least this big (relative to the largest one) is another person, not a
- * door frame or floor patch, so it stays however far it is. On the three test clips the model's raw mask
- * had every one of these (8 parts >= 0.10 of the main, a second dancer or walker each time) and the
- * near-only rule removed them; photos keep the old rule (no far kept, `Infinity`).
+ * A separate component at least this big (relative to the largest one) is another person or object, not
+ * a door frame or floor patch, so it stays however far it is. On the three video test clips the model's
+ * raw mask had every one of these (8 parts >= 0.10 of the main, a second dancer or walker each time) and
+ * the near-only rule removed them. Photos use the same rule since audit 2026-10-31 item 12 (a group
+ * photo silently lost its second person); pass `Infinity` for the old single-subject rule.
  */
-export const VIDEO_FAR_MIN_FRAC = 0.1;
+export const MASK_FAR_MIN_FRAC = 0.1;
+/** Former name, kept for video callers and scripts. */
+export const VIDEO_FAR_MIN_FRAC = MASK_FAR_MIN_FRAC;
 
 /**
  * `keepLargestComponent`'in uzuv dostu hali: en büyük bileşene EK OLARAK ona
@@ -192,7 +195,7 @@ export const VIDEO_FAR_MIN_FRAC = 0.1;
 export function keepMainComponents(
   mask: Float32Array, w: number, h: number,
   nearPx: number = MASK_SECONDARY_NEAR_PX, minFrac: number = MASK_SECONDARY_MIN_FRAC,
-  farMinFrac: number = Infinity,
+  farMinFrac: number = MASK_FAR_MIN_FRAC,
 ): Float32Array {
   const n = w * h;
   const id = new Int32Array(n).fill(-1);
