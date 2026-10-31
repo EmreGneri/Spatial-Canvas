@@ -68,15 +68,47 @@ let kapali = false;
 let maskeKapali = false;
 let yardimciKapali = false;
 
+/** Maske baytları: önceden getirme ile oturum kurulumu AYNI indirmeyi paylaşır; oturum kurulunca bırakılır. */
+let maskeBaytlari: Promise<ArrayBuffer> | null = null;
+let maskeOturumuVar = false;
+function maskeBaytlariniGetir(getir?: typeof fetch) {
+  const al = (url: string, ad: string) => ilerlemeliGetir(url, ad, getir);
+  return maskeBaytlari ??= (FP32_MASKE ? al(KOK + DAVID_DOSYALARI.maske, 'DAViD maske') : loadDavidMaskBytes(al))
+    .catch((err) => { maskeBaytlari = null; throw err; });
+}
+
 /** Oturumlar tembel ve ayrı: maske yolu derinlik modelini (449 MB) hiç indirmez. */
 function oturumlariHazirla({ gpuSirasinaGir, onceRetry }: DavidAraclari) {
-  const oturum = (ad: keyof typeof DAVID_DOSYALARI) => onceRetry(async () => {
-    const bayt = ad === 'maske' && !FP32_MASKE
-      ? await loadDavidMaskBytes()
-      : await ilerlemeliGetir(KOK + DAVID_DOSYALARI[ad], `DAViD ${ad}`);
-    return gpuSirasinaGir(() => ort.InferenceSession.create(bayt, { executionProviders: ['webgpu'] }));
-  });
-  return oturumlar ??= { derinlik: oturum('derinlik'), maske: oturum('maske') };
+  const kur = (bayt: ArrayBuffer) => gpuSirasinaGir(() => ort.InferenceSession.create(bayt, { executionProviders: ['webgpu'] }));
+  return oturumlar ??= {
+    derinlik: onceRetry(async () => kur(await ilerlemeliGetir(KOK + DAVID_DOSYALARI.derinlik, 'DAViD derinlik'))),
+    maske: onceRetry(async () => {
+      const bekleyen = maskeBaytlariniGetir();
+      try {
+        const s = await kur(await bekleyen);
+        maskeOturumuVar = true;
+        return s;
+      } finally { if (maskeBaytlari === bekleyen) maskeBaytlari = null; } // 180 MB tutulmasın
+    }),
+  };
+}
+
+/** Save-Data ya da yavaş bağlantı: 180 MB önceden indirilmez (son yol gerekirse yine indirir). */
+function agKisitli() {
+  const c = (globalThis.navigator as { connection?: { saveData?: boolean; effectiveType?: string } } | undefined)?.connection;
+  return c?.saveData === true || ['slow-2g', '2g', '3g'].includes(c?.effectiveType ?? '');
+}
+
+/**
+ * Yalnız maske BAYTLARI (fetch + Cache Storage), düşük öncelikle: oturum/çıkarım yok, GPU sırası değişmez.
+ * inferDavidMaske'nin tarayıcı yoluna gideceği bekleniyorsa indirir (plan, yardımcı, WebGPU, önceki hata, ağ);
+ * hata çağırana döner, son yol baytları kendisi yeniden ister.
+ */
+export async function preloadDavidMaskBytes({ tarayici }: { tarayici: boolean }, araclar: Pick<DavidAraclari, 'webgpuKullanilabilir'>): Promise<void> {
+  if (!tarayici || maskeKapali || maskeOturumuVar || agKisitli()) return;
+  if (!yardimciKapali && await localModelAvailable('david-mask')) return;
+  if (!await araclar.webgpuKullanilabilir()) return;
+  await maskeBaytlariniGetir((url, init) => fetch(url, { ...init, priority: 'low' }));
 }
 
 function maskeyiKirp(maske: Float32Array) {

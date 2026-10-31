@@ -755,6 +755,9 @@ export async function estimateDepth(
     await opts.onPreview({ data: normalizeDepth(data, opts.percentile ?? 1),
       width: outWidth, height: outHeight, sourceModel: photoModel });
   }
+  // DAViD maske baytları önizlemede başlar: maske/ayrıntı GPU işleriyle örtüşür (audit 13; ölçüm docs/benchmarks/david-prefetch.md).
+  // VARSAYIM: prepareSubjectMask varsa özne maskesinin GELECEĞİ kabul edilir; reddedilirse baytlar boşa iner.
+  void davidMaskesiniOnceIndir(opts.insanMaskesi, opts.prepareSubjectMask ? true : !!opts.subjectMask);
   const subjectMask = opts.prepareSubjectMask ? await opts.prepareSubjectMask() : opts.subjectMask;
 
   // GÜN E (bulgu 1): özne maskesi verildiyse depth uzayına örnekle. Boyutlar
@@ -888,6 +891,16 @@ export async function applyDavidMask(
     console.warn('DAViD maskesi atlandı; eski özne maskesi kullanılıyor.', err);
     return null;
   }
+}
+
+/** applyDavidMask'in planı tarayıcı indirmesi gerektirecekse yalnız baytları getirir (önizleme noktası). Asla fırlatmaz. */
+export async function davidMaskesiniOnceIndir(secim: DepthEstimateOptions['insanMaskesi'], ozneBekleniyor: boolean): Promise<void> {
+  try {
+    const plan = davidPlani(secim, ozneBekleniyor, secim === 'otomatik' && ozneBekleniyor && await localModelAvailable('david-mask'));
+    if (!plan) return;
+    const { preloadDavidMaskBytes } = await import('./engine/vision/davidDepth.ts');
+    await preloadDavidMaskBytes(plan, { webgpuKullanilabilir });
+  } catch { /* son yol indirmeyi kendisi dener ya da eski maskeye düşer */ }
 }
 
 /**
