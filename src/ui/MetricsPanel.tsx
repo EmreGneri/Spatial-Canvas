@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useState } from 'react';
 import type { CSSProperties } from 'react';
 import type { EvalReport, MetricColumn } from '../engine/vision/types';
 import { parseEvalReport } from './metricsReport';
@@ -12,11 +12,12 @@ import { parseEvalReport } from './metricsReport';
  *
  * ── KAYNAK ─────────────────────────────────────────────────────────────────
  * `eval-out/` GITIGNORE'DADIR ve `public/` altında değildir — yani üretim
- * derlemesinde SERVİS EDİLMEZ. Bu yüzden panel iki yolu birden sunar:
- *   1. dev sunucusunda `/eval-out/report.json` denenir (Vite kök dizinden
- *      servis eder; `npm run eval` çalıştırıldıysa gelir),
- *   2. gelmezse kullanıcı dosyayı elle yükler.
- * Sessizce boş kalmaz: hangi yolun neden başarısız olduğunu yazar.
+ * derlemesinde SERVİS EDİLMEZ. Bu yüzden panel hiçbir şeyi KENDİLİĞİNDEN
+ * istemez (üretimde her ilk açılışta 404 üretirdi); iki açık eylem sunar:
+ *   1. yalnız geliştirme sunucusunda "yerel raporu yenile": `/eval-out/report.json`
+ *      (Vite kök dizinden servis eder; `npm run eval` çalıştırıldıysa gelir),
+ *   2. her ortamda kullanıcı `report.json` dosyasını elle yükler.
+ * Başarısız bir eylem nedenini yazar; hiçbir şey açılışta kendiliğinden denenmez.
  *
  * ── DÜRÜSTLÜK ──────────────────────────────────────────────────────────────
  * Panel raporu YORUMLAMAZ ve "iyi/kötü" demez — D.5'in ablasyon kuralı gereği
@@ -54,7 +55,7 @@ const COLUMN_ORDER: MetricColumn[] = ['depth', 'seg', 'pose', 'timing'];
 
 export function MetricsPanel() {
   const [report, setReport] = useState<EvalReport | null>(null);
-  const [note, setNote] = useState<string>('yükleniyor…');
+  const [note, setNote] = useState<string>('');
   const [source, setSource] = useState('');
 
   const load = useCallback(async () => {
@@ -74,10 +75,6 @@ export function MetricsPanel() {
     }
   }, []);
 
-  useEffect(() => {
-    void load();
-  }, [load]);
-
   const grouped = new Map<MetricColumn, EvalReport['results']>();
   if (report) {
     for (const row of report.results) {
@@ -95,15 +92,18 @@ export function MetricsPanel() {
       </div>
 
       <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
-        <button type="button" style={buttonStyle} onClick={() => void load()}>
-          yerel raporu yenile
-        </button>
+        {import.meta.env.DEV && (
+          <button type="button" style={buttonStyle} onClick={() => void load()}>
+            yerel raporu yenile
+          </button>
+        )}
         <label style={{ ...buttonStyle, display: 'inline-block' }}>
           dosya yükle
           <input
             type="file"
             accept="application/json,.json"
-            style={{ display: 'none' }}
+            className="gizli-dosya"
+            onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); e.currentTarget.click(); } }}
             onChange={async (e) => {
               const f = e.target.files?.[0];
               e.target.value = '';
@@ -123,6 +123,11 @@ export function MetricsPanel() {
       </div>
 
       {note && <div style={{ color: '#dc6', lineHeight: 1.4 }}>{note}</div>}
+      {!report && !note && (
+        <div style={{ color: '#667', lineHeight: 1.4 }}>
+          Henüz rapor yüklenmedi. Bir report.json dosyası yükleyin{import.meta.env.DEV ? ' ya da yerel raporu yenileyin' : ''}.
+        </div>
+      )}
 
       {report && (
         <>

@@ -119,6 +119,11 @@
       button:active:not(:disabled) { transform: translateY(1px); }
       button:disabled { opacity: 0.4; cursor: not-allowed; }
       :focus-visible { outline: 2px solid #d9873f; outline-offset: 2px; }
+      /* Dosya seçiciler: input görsel olarak gizli ama KLAVYEYLE ODAKLANABİLİR (display:none Tab'dan çıkarırdı);
+         odak halkası etiketin üstünde görünür, Enter/Space seçiciyi açar. */
+      label:has(> input.gizli-dosya) { position: relative; }
+      input.gizli-dosya { position: absolute; left: 0; top: 0; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+      label:has(> input.gizli-dosya:focus-visible) { outline: 2px solid #d9873f; outline-offset: 2px; }
 
       /* Çalışma göstergesinin nabzı (tasarim-kurallari.md · Doherty). */
       @keyframes sc-nabiz {

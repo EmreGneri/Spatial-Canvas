@@ -262,7 +262,8 @@ export function CapturePanel({
           type="file"
           accept="video/*"
           disabled={running || disabled}
-          style={{ display: 'none' }}
+          className="gizli-dosya"
+            onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); e.currentTarget.click(); } }}
           onChange={(e) => {
             const f = e.target.files?.[0];
             if (f) void run(f);

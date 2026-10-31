@@ -2071,7 +2071,8 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
             type="file"
             accept="image/*,video/*"
             disabled={busy || !!egitimDosya}
-            style={{ display: 'none' }}
+            className="gizli-dosya"
+            onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); e.currentTarget.click(); } }}
             onChange={(e) => {
               const file = e.target.files?.[0];
               // Reset first: picking the same file again must fire onChange
@@ -2556,7 +2557,8 @@ function PresetControls({
         <input
           type="file"
           accept="application/json,.json"
-          style={{ display: 'none' }}
+          className="gizli-dosya"
+            onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); e.currentTarget.click(); } }}
           onChange={(e) => {
             const f = e.target.files?.[0];
             if (f) importFile(f);
