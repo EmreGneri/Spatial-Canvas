@@ -1837,14 +1837,66 @@ export function limitDepthSlope(
   passes = 4,
   oppositePairs = false,
 ): Float32Array {
-  let src = Float32Array.from(depth);
+  let src = depth.slice();
   let dst = new Float32Array(depth.length);
   const R = SLOPE_NEIGHBOR_RADIUS;
+  // Interior pixels of the majority rule: all 8 neighbours exist, so the bounds
+  // tests and loop index math are dropped. Count, min and cap are order-free, so
+  // the result is bit-identical (verify-depth-cycle-parity). Runs on every live frame.
+  const off = [-R * width - R, -R * width, -R * width + R, -R, R, R * width - R, R * width, R * width + R];
   for (let p = 0; p < passes; p++) {
     dst.set(src);
     for (let y = 0; y < height; y++) {
+      const inner = !oppositePairs && y >= R && y < height - R;
       for (let x = 0; x < width; x++) {
         const i = y * width + x;
+        if (inner && !mask && x >= R && x < width - R) {
+          // No mask: 8 neighbours, unrolled.
+          const current = src[i];
+          let lowerCount = 0;
+          let lowestLower = Infinity;
+          let v = src[i + off[0]];
+          if (current > v + maxStep) { lowerCount++; if (v < lowestLower) lowestLower = v; }
+          v = src[i + off[1]];
+          if (current > v + maxStep) { lowerCount++; if (v < lowestLower) lowestLower = v; }
+          v = src[i + off[2]];
+          if (current > v + maxStep) { lowerCount++; if (v < lowestLower) lowestLower = v; }
+          v = src[i + off[3]];
+          if (current > v + maxStep) { lowerCount++; if (v < lowestLower) lowestLower = v; }
+          v = src[i + off[4]];
+          if (current > v + maxStep) { lowerCount++; if (v < lowestLower) lowestLower = v; }
+          v = src[i + off[5]];
+          if (current > v + maxStep) { lowerCount++; if (v < lowestLower) lowestLower = v; }
+          v = src[i + off[6]];
+          if (current > v + maxStep) { lowerCount++; if (v < lowestLower) lowestLower = v; }
+          v = src[i + off[7]];
+          if (current > v + maxStep) { lowerCount++; if (v < lowestLower) lowestLower = v; }
+          if (lowerCount <= 4) continue;
+          const cap = lowestLower + maxStep;
+          if (current > cap) dst[i] = cap;
+          continue;
+        }
+        if (inner && x >= R && x < width - R) {
+          if (mask && mask[i] < 0.5) continue;
+          const current = src[i];
+          let neighborCount = 0;
+          let lowerCount = 0;
+          let lowestLower = Infinity;
+          for (let k = 0; k < 8; k++) {
+            const ni = i + off[k];
+            if (mask && mask[ni] < 0.5) continue;
+            neighborCount++;
+            const neighbor = src[ni];
+            if (current > neighbor + maxStep) {
+              lowerCount++;
+              if (neighbor < lowestLower) lowestLower = neighbor;
+            }
+          }
+          if (lowerCount <= neighborCount / 2) continue;
+          const cap = lowestLower + maxStep;
+          if (current > cap) dst[i] = cap;
+          continue;
+        }
         if (mask && mask[i] < 0.5) continue;
         const current = src[i];
         if (oppositePairs) {
