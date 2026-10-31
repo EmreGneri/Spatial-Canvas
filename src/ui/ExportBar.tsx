@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import type { Engine } from '../engine';
-import { exportPly, exportPNG, exportWebM } from '../engine/export';
+import { exportPly, exportPNG, exportWebM, pngBoyutu, type PngBoyut } from '../engine/export';
 import { SPLAT_FLATTEN } from '../shaders/splatMaterial';
 import { imzaCiz } from './imzaCiz';
 import { dugme as temaDugme, renk, SANS, yaricap, yazi } from './tema';
@@ -33,6 +33,7 @@ type Durum =
 export function ExportBar({ engine, say, preparing = false }: { engine: Engine | null; say: (mesaj: string) => void; preparing?: boolean }) {
   const [sure, setSure] = useState<number>(5);
   const [imza, setImza] = useState(true);
+  const [pngBoyut, setPngBoyut] = useState<PngBoyut>('mevcut');
   const [durum, setDurum] = useState<Durum>({ tip: 'bos' });
   const sayacRef = useRef<number | null>(null);
 
@@ -56,7 +57,13 @@ export function ExportBar({ engine, say, preparing = false }: { engine: Engine |
     setDurum({ tip: 'calisiyor', etiket: 'PNG hazırlanıyor' });
     try {
       const canvas = engine.renderer.domElement;
-      if (imza) {
+      if (pngBoyut !== 'mevcut') {
+        // Aynı kameradan seçilen boyutta YENİDEN çizim (2B büyütme değil).
+        const { w, h } = pngBoyutu(pngBoyut, canvas.width, canvas.height);
+        const kopya = engine.renderAtSize(w, h);
+        if (imza) imzaCiz(kopya.getContext('2d')!, kopya.width, kopya.height);
+        await exportPNG(kopya, 'spatial-canvas');
+      } else if (imza) {
         // İmzalı yol: motorun karesi 2D kopyaya alınır, imza üstüne çizilir.
         // WebGL tamponu compositing sonrası geçersiz olduğu için kopyalamadan
         // HEMEN ÖNCE bir kare çizdirilir (export.ts'in onBeforeCapture ile
@@ -141,6 +148,18 @@ export function ExportBar({ engine, say, preparing = false }: { engine: Engine |
       <button type="button" style={dugme} disabled={!engine || mesgul} onClick={pngIndir} title="tek kareyi PNG olarak indir">
         PNG
       </button>
+      <select
+        value={pngBoyut}
+        disabled={mesgul}
+        onChange={(e) => setPngBoyut(e.target.value as PngBoyut)}
+        title="PNG boyutu: seçilen boyutta sahne yeniden çizilir (en-boy oranı korunur)"
+        aria-label="PNG boyutu"
+        style={{ ...dugme, padding: '0 6px' }}
+      >
+        <option value="mevcut">mevcut</option>
+        <option value="1080p">1080p</option>
+        <option value="2k">2K</option>
+      </select>
 
       <span style={grupStyle}>
         <button

@@ -1763,6 +1763,60 @@ if (entry && entry.material !== this.pointsMaterial) {
     return tapEkle(this.frameTaps, tap);
   }
 
+  /**
+   * PNG için: sahneyi AYNI kameradan w×h boyutunda YENİDEN çizer (gerçek ek
+   * ayrıntı, 2B büyütme değil) ve 2B bir canvas kopyası döner. Ekran boyutu,
+   * DPR ve composer boyutu `finally`'de birebir geri yüklenir.
+   */
+  renderAtSize(w: number, h: number): HTMLCanvasElement {
+    const eskiBoyut = new THREE.Vector2();
+    this.renderer.getSize(eskiBoyut);
+    const eskiDpr = this.renderer.getPixelRatio();
+    const eskiCurrentDpr = this.currentDpr;
+    try {
+      this.renderer.setPixelRatio(1);
+      this.renderer.setSize(w, h, false);
+      this.composer.setPixelRatio(1);
+      this.composer.setSize(w, h);
+      // Sprite boyutları fiziksel piksel (uDprScale = currentDpr/initialDpr):
+      // tampon büyüdükçe orantılı büyütülür, yoksa nokta bulutu ekrandakinden
+      // seyrek/soluk çıkar. Mantıksal değerdir, finally'de geri yüklenir.
+      this.currentDpr = eskiCurrentDpr * h / Math.max(1, eskiBoyut.y * eskiDpr);
+      this.renderer.getDrawingBufferSize(this.grainPass.uniforms.uResolution.value);
+      this.renderer.getDrawingBufferSize(this.viewportPx);
+      this.pushSharedUniformsAll();
+      const uPositions = (this.pointsMaterial as THREE.ShaderMaterial).uniforms?.['uPositions'];
+      if (uPositions) uPositions.value = this.simulation.positionTexture;
+      this.pushLookUniforms();
+      if (this.splatObject?.mesh.visible) {
+        this.camera.updateMatrixWorld();
+        this.splatObject.update(
+          this.camera,
+          this.splatSortModeName,
+          splatOpacityGate(this.splatMinOpacity, this.objectSeparation, this.gaussianSource),
+          new THREE.Vector2(w, h),
+          this.splatObject.mesh.material as THREE.Material,
+        );
+      }
+      this.composer.render();
+      // Tampon yalnız bu görevde geçerli: hemen kopyala.
+      const ara = document.createElement('canvas');
+      ara.width = w;
+      ara.height = h;
+      ara.getContext('2d')!.drawImage(this.renderer.domElement, 0, 0, w, h);
+      return ara;
+    } finally {
+      this.renderer.setPixelRatio(eskiDpr);
+      this.renderer.setSize(eskiBoyut.x, eskiBoyut.y);
+      this.composer.setPixelRatio(eskiDpr);
+      this.composer.setSize(eskiBoyut.x, eskiBoyut.y);
+      this.currentDpr = eskiCurrentDpr;
+      this.renderer.getDrawingBufferSize(this.grainPass.uniforms.uResolution.value);
+      this.renderer.getDrawingBufferSize(this.viewportPx);
+      this.pushSharedUniformsAll();
+      this.renderer.setRenderTarget(null);
+    }
+  }
 
   /**
    * "Canlı fotoğraf" paralaks sway aç/kapat. AÇILDIĞI ANDAKI kamera pozu
