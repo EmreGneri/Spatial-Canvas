@@ -214,10 +214,69 @@ function sahteYanit(bayt, { uzunlukVer = true, parca = 4 } = {}) {
     // New deployment (new ETag): downloaded again and the stored copy replaced, never a stale model.
     const yeni = await ilerlemeliGetir('/models/x.onnx', 'x', sunucu(12, '"v2"'));
     assert.equal(yeni.byteLength, 12);
+    await new Promise((r) => setTimeout(r, 0)); // the cache write is no longer awaited by the download
     assert.equal(store.get('/models/x.onnx').headers.get('etag'), '"v2"');
     // No ETag: not stored (cannot be revalidated).
     await ilerlemeliGetir('/models/y.onnx', 'y', async () => sahteYanit(4));
+    await new Promise((r) => setTimeout(r, 0));
     assert.equal(store.has('/models/y.onnx'), false);
+  } finally { if (previous === undefined) delete globalThis.caches; else globalThis.caches = previous; }
+}
+// ── DURMUŞ İNDİRME: hareketsizlik zaman aşımı + iptal (denetim bulgusu 2) ──────────────────────────────────
+{
+  const bekle = (ms) => new Promise((r) => setTimeout(r, ms));
+  // (a) Gövde akışı bir parçadan sonra durur ve hiç dönmez: kontrollü hatayla biter, satır takılı kalmaz.
+  {
+    const satirlar = [];
+    const birak = indirmeDinle((x) => satirlar.push(x));
+    let iptalEdildi = false, imzaAlindi = false;
+    const durmus = async (_u, init) => {
+      imzaAlindi = !!init?.signal;
+      let verildi = false;
+      return { ok: true, status: 200, headers: { get: (k) => (k === 'content-length' ? '100' : null) },
+        body: { getReader: () => ({ read: () => (verildi ? new Promise(() => {}) : (verildi = true, Promise.resolve({ done: false, value: new Uint8Array(10) }))), cancel: async () => { iptalEdildi = true; } }) } };
+    };
+    const t0 = performance.now();
+    await assert.rejects(() => ilerlemeliGetir('/durmus.onnx', 'model', durmus, 40), /40|ilerlemedi/, 'durmuş indirme kontrollü bitmeli');
+    birak();
+    assert.ok(performance.now() - t0 < 1000, 'süresiz beklememeli');
+    assert.ok(imzaAlindi, 'fetch AbortSignal almalı');
+    assert.ok(iptalEdildi, 'gövde okuyucusu iptal edilmeli');
+    assert.equal(satirlar.at(-1), null, 'hata sonrası satır kalmamalı');
+  }
+  // (b) Bağlantı açılmıyor (fetch hiç dönmüyor): aynı sınırla biter.
+  await assert.rejects(() => ilerlemeliGetir('/acilmaz.onnx', 'model', () => new Promise(() => {}), 40), /ilerlemedi/);
+  // (c) Yavaş ama İLERLEYEN indirme kesilmez: toplam süre sınırı aşsa da her parça sayacı yeniler.
+  {
+    const veri = new Uint8Array(6).map((_, i) => i + 1); let k = 0;
+    const yavas = async () => ({ ok: true, status: 200, headers: { get: () => '6' },
+      body: { getReader: () => ({ read: async () => { if (k >= 6) return { done: true, value: undefined }; await bekle(25); return { done: false, value: veri.slice(k, ++k) }; } }) } });
+    const buf = await ilerlemeliGetir('/yavas.onnx', 'model', yavas, 60); // toplam ~150 ms > 60 ms, ama her parça 25 ms
+    assert.deepEqual([...new Uint8Array(buf)], [1, 2, 3, 4, 5, 6]);
+  }
+}
+
+// ── ÖNBELLEK YAZISI ÇIKARIM YOLUNU BEKLETMEZ + KOPYA YOK (bulgu 14) ───────────────────────────────────────
+{
+  const previous = globalThis.caches;
+  try {
+    const log = [];
+    const yavasOnbellek = (ms, hata = false) => ({ open: async () => ({ match: async () => undefined,
+      put: async (u) => { await new Promise((r) => setTimeout(r, ms)); if (hata) throw new Error('quota'); log.push('put:' + u); } }) });
+    // https model: yazı 150 ms sürse de indirme hemen döner; Response baytları senkron kopyaladığı için dönen tampon güvenli.
+    globalThis.caches = yavasOnbellek(150);
+    const t0 = performance.now();
+    const buf = await ilerlemeliGetir('https://example.test/model.onnx', 'model', async () => sahteYanit(24));
+    assert.ok(performance.now() - t0 < 100, 'cache.put çıkarımı beklememeli');
+    assert.equal(buf.byteLength, 24);
+    new Uint8Array(buf).fill(0); // çağıran tamponu kullanabilir/değiştirebilir; önbellek kopyası etkilenmez
+    await new Promise((r) => setTimeout(r, 200));
+    assert.deepEqual(log, ['put:https://example.test/model.onnx'], 'yazı arka planda tamamlanmalı');
+    // Kota hatası: yalıtılır (indirme başarılı, işlenmemiş red yok).
+    globalThis.caches = yavasOnbellek(10, true);
+    const buf2 = await ilerlemeliGetir('https://example.test/b.onnx', 'model', async () => sahteYanit(8));
+    assert.equal(buf2.byteLength, 8);
+    await new Promise((r) => setTimeout(r, 40));
   } finally { if (previous === undefined) delete globalThis.caches; else globalThis.caches = previous; }
 }
 console.log('verify-indirme-ilerleme: OK · existing paths, measured fetch/cache/failure/bodyless/stale parity, same-origin ETag cache');

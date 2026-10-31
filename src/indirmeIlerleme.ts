@@ -115,11 +115,32 @@ export function indirmeSifirla(): void {
  */
 export const MODEL_ONBELLEGI = 'spatial-canvas-modeller-v1';
 
+/**
+ * Gelen her parçayla yenilenen hareketsizlik sınırı: bağlantı açılıp veri akışı durursa (`fetch` ya da
+ * `reader.read()` hiç dönmezse) indirme bu sürede kontrollü bir hatayla biter; arayüz sonsuz beklemez ve
+ * çağıranın mevcut hata/kurtarma yolu çalışır. Yavaş ama ilerleyen indirme (parça geliyorsa) kesilmez.
+ */
+export const INDIRME_HAREKETSIZLIK_MS = 30_000;
+
 export async function ilerlemeliGetir(
   url: string,
   ad: string,
   getir: typeof fetch = fetch,
+  hareketsizlikMs: number = INDIRME_HAREKETSIZLIK_MS,
 ): Promise<ArrayBuffer> {
+  // Hareketsizlik bekçisi: her ilerlemede yenilenir; dolunca fetch/gövde okuması iptal edilir.
+  const kontrol = new AbortController();
+  let zamanlayici: ReturnType<typeof setTimeout> | undefined;
+  const hata = () => new Error(`${ad}: indirme ${Math.round(hareketsizlikMs / 1000)} sn boyunca ilerlemedi (bağlantı durmuş olabilir)`);
+  const kur = () => {
+    clearTimeout(zamanlayici);
+    zamanlayici = setTimeout(() => kontrol.abort(hata()), hareketsizlikMs);
+  };
+  const iptalSozu = new Promise<never>((_, reddet) => {
+    kontrol.signal.addEventListener('abort', () => reddet(kontrol.signal.reason), { once: true });
+  });
+  iptalSozu.catch(() => {}); // iptal edilmezse yutulan red uyarısı çıkmasın
+  const al = (adres: string, init?: RequestInit) => Promise.race([getir(adres, { ...init, signal: kontrol.signal }), iptalSozu]);
   // Oturumu await öncesinde yakala: geç biten eski kaynak yeni rapora yazılmasın.
   const trace = currentPhotoMeasurement();
   const startedAt = trace ? performance.now() : 0;
@@ -154,13 +175,14 @@ export async function ilerlemeliGetir(
   const saklananEtag = saklanan?.headers.get('etag') ?? null;
   let inen = 0;
   try {
-    let yanit = await getir(url, saklananEtag ? { headers: { 'If-None-Match': saklananEtag }, cache: 'no-store' } : undefined);
+    kur();
+    let yanit = await al(url, saklananEtag ? { headers: { 'If-None-Match': saklananEtag }, cache: 'no-store' } : undefined);
     if (yanit.status === 304 && saklanan) {
       try {
         const buffer = await saklanan.arrayBuffer();
         record('cache-storage', buffer.byteLength, 'ok');
         return buffer;
-      } catch { yanit = await getir(url); }
+      } catch { yanit = await al(url); }
     }
     if (!yanit.ok) throw new Error(`${ad}: ${yanit.status} ${yanit.statusText}`);
     const uzunluk = Number(yanit.headers.get('content-length') ?? 0);
@@ -176,13 +198,17 @@ export async function ilerlemeliGetir(
     const parcalar: Uint8Array[] = [];
     try {
       for (;;) {
-        const { done, value } = await okuyucu.read();
+        const { done, value } = await Promise.race([okuyucu.read(), iptalSozu]);
         if (done) break;
         if (!value) continue;
+        kur();
         parcalar.push(value);
         inen += value.byteLength;
         indirmeBildir(url, { ad, inen, toplam: uzunluk > 0 ? uzunluk : undefined });
       }
+    } catch (error) {
+      try { void Promise.resolve(okuyucu.cancel?.()).catch(() => {}); } catch { /* akış zaten kapalı */ } // iptalde gövde akışı da bırakılır
+      throw error;
     } finally {
       indirmeBitti(url);
     }
@@ -193,17 +219,21 @@ export async function ilerlemeliGetir(
       hepsi.set(p, konum);
       konum += p.byteLength;
     }
-    if (onbellekli) {
-      try { await (await caches.open(MODEL_ONBELLEGI)).put(url, new Response(hepsi.slice())); } catch { /* kota dolu: sorun değil */ }
-    }
+    parcalar.length = 0; // parça referansları bırakılır: tepe bellek `hepsi` + (varsa) önbellek kopyası
+    // Önbellek yazısı çıkarım kritik yolunda BEKLENMEZ: `new Response(bayt)` baytları senkron kopyalar, yani
+    // aşağıdaki Response'lar burada oluşturulur ve dönen `hepsi.buffer` serbestçe kullanılabilir. Yazma hatası
+    // (kota dolu vb.) yalıtılır: model yine kullanılır, yalnız bir sonraki ziyarette yeniden iner.
     const etag = yerelOnbellekli ? yanit.headers.get('etag') : null;
-    if (etag) {
-      try { await (await caches.open(MODEL_ONBELLEGI)).put(url, new Response(hepsi, { headers: { etag } })); /* Response copies the bytes */ } catch { /* kota dolu */ }
+    const yazilacak = onbellekli ? new Response(hepsi) : etag ? new Response(hepsi, { headers: { etag } }) : null;
+    if (yazilacak) {
+      void caches.open(MODEL_ONBELLEGI).then((c) => c.put(url, yazilacak)).catch(() => { /* kota dolu: sorun değil */ });
     }
     record('fetch', inen, 'ok');
     return hepsi.buffer;
   } catch (error) {
     record('fetch', inen, 'failed');
     throw error;
+  } finally {
+    clearTimeout(zamanlayici);
   }
 }

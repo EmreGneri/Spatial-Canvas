@@ -158,12 +158,15 @@ function freshSegmentation() {
     return 'devam';
   });
   await assert.rejects(slow, /GPU işi/);
-  assert.equal(await next, 'devam');
+  // Takılan işin ARKASINDA bekleyen iş artık süresiz beklemez: hızlı ve açıklayıcı hatayla reddedilir ve
+  // bayat iş olarak hiç başlatılmaz (verify-gpu-kuyrugu-takili.mjs); kaynak yine gerçek iş bitene kadar tutulur.
+  await assert.rejects(next, /GPU sırası takılı/);
   assert.equal(peak, 1, 'zaman aşımı kaynak sahipliğini bırakmamalı');
-  assert.deepEqual(events, ['first-end', 'second-start']);
+  await new Promise((r) => setTimeout(r, 150)); // gerçek iş biter
+  assert.deepEqual(events, ['first-end'], 'reddedilen bekleyen iş başlatılmamalı');
   await assert.rejects(gpuSirasinaGir(() => { throw new Error('sync'); }), /sync/);
   assert.equal(await gpuSirasinaGir(async () => 'recovered'), 'recovered');
-  console.log('[4] zaman aşımından sonra gerçek iş bitmeden yeni iş başlamıyor ✓');
+  console.log('[4] zaman aşımından sonra kaynak gerçek iş bitene kadar tutuluyor, bekleyen iş reddediliyor ✓');
 }
 
 console.log('OK segmentasyon GPU sirasi + kurulum tekillestirme');

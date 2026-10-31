@@ -133,18 +133,43 @@ let gpuKuyrugu: Promise<unknown> = Promise.resolve();
  */
 export const GPU_ZAMAN_ASIMI_MS = 180_000;
 
+/**
+ * Zaman aşımına uğrayıp HÂLÂ bitmemiş işler. Bu iş sırayı ve Web Lock'u tutmaya devam ettiği için arkasına
+ * gelen iş kendi zamanlayıcısını ancak sırası gelince kurardı ve süresiz beklerdi. Takılmış bir iş varken:
+ *  - sıraya YENİ giren iş hemen açıklayıcı bir hatayla reddedilir,
+ *  - o ana kadar sırada BEKLEYEN işler de reddedilir ve sıraları gelince çalıştırılmaz.
+ * Kilit gerçek iş bitmeden bırakılmaz; iş sonunda biterse takılma durumu kalkar.
+ */
+const takilanIsler = new Set<symbol>();
+const bekleyenIsler = new Set<{ reddet: (reason: unknown) => void; iptal: boolean }>();
+
+function takiliHatasi(zamanAsimiMs: number) {
+  return new Error(`GPU sırası takılı: önceki bir GPU işi ${Math.round(zamanAsimiMs / 1000)} sn içinde bitmedi (sürücü takılmış olabilir); bu iş başlatılmadı. Sayfayı yenileyip tekrar deneyin`);
+}
+
 export function gpuSirasinaGir<T>(is: () => Promise<T>, zamanAsimiMs = GPU_ZAMAN_ASIMI_MS): Promise<T> {
   let coz!: (value: T) => void;
   let reddet!: (reason: unknown) => void;
   const sonuc = new Promise<T>((resolve, reject) => { coz = resolve; reddet = reject; });
+  if (takilanIsler.size > 0) {
+    reddet(takiliHatasi(zamanAsimiMs));
+    return sonuc;
+  }
+  const bekleyen = { reddet: reddet as (reason: unknown) => void, iptal: false };
+  bekleyenIsler.add(bekleyen);
   const gercekIs = async () => {
-    const zamanlayici = setTimeout(
-      () => reddet(new Error(`GPU işi ${Math.round(zamanAsimiMs / 1000)} sn içinde bitmedi (sürücü takılmış olabilir); sıra gerçek işin bitmesini bekliyor`)),
-      zamanAsimiMs,
-    );
+    bekleyenIsler.delete(bekleyen);
+    if (bekleyen.iptal) return; // çağıran zaten hata aldı: bayat iş başlatılmaz
+    const kimlik = Symbol('gpu-is');
+    const zamanlayici = setTimeout(() => {
+      takilanIsler.add(kimlik);
+      for (const b of bekleyenIsler) { b.iptal = true; b.reddet(takiliHatasi(zamanAsimiMs)); }
+      bekleyenIsler.clear();
+      reddet(new Error(`GPU işi ${Math.round(zamanAsimiMs / 1000)} sn içinde bitmedi (sürücü takılmış olabilir); sıra gerçek işin bitmesini bekliyor`));
+    }, zamanAsimiMs);
     try { coz(await is()); }
     catch (error) { reddet(error); }
-    finally { clearTimeout(zamanlayici); }
+    finally { clearTimeout(zamanlayici); takilanIsler.delete(kimlik); }
   };
   const siraliIs = () => {
     // Web Locks share one queue across the page and the tracker worker.
