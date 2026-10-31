@@ -79,6 +79,12 @@ export async function exportPNG(
   }), { width: canvas.width, height: canvas.height });
 }
 
+/** Çoklu çizim-sonrası kancası: ekler, geri alma işlevi döner (sahiplik = ekleyende). */
+export function tapEkle<T>(kume: Set<T>, tap: T): () => void {
+  kume.add(tap);
+  return () => { kume.delete(tap); };
+}
+
 export interface WebMExportOptions {
   /** Kayıt süresi (saniye). Varsayılan 5. */
   durationSec?: number;

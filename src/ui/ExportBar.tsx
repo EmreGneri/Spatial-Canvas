@@ -86,20 +86,19 @@ export function ExportBar({ engine, say, preparing = false }: { engine: Engine |
     // İmzalı yolda kaydedilen yüzey ara canvas'tır: her karede motorun
     // görüntüsü kopyalanır, imza üstüne çizilir. `captureStream` bu canvas'tan
     // alınır, motorun kendi tamponu değişmez.
-    let raf = 0;
+    // Kare, motorun kendi döngüsünün çizdiğinden kopyalanır (çizim-sonrası
+    // kanca, canvas yalnız o an geçerli): ikinci bir composer çizimi YOK.
+    let birak: (() => void) | null = null;
     let hedef = canvas;
     if (imza) {
       const ara = document.createElement('canvas');
       ara.width = canvas.width;
       ara.height = canvas.height;
       const ctx = ara.getContext('2d')!;
-      const pompa = () => {
-        raf = requestAnimationFrame(pompa);
-        engine.renderFrame();
-        ctx.drawImage(canvas, 0, 0);
+      birak = engine.addFrameTap((view) => {
+        ctx.drawImage(view, 0, 0);
         imzaCiz(ctx, ara.width, ara.height);
-      };
-      pompa();
+      });
       hedef = ara;
     }
 
@@ -109,7 +108,7 @@ export function ExportBar({ engine, say, preparing = false }: { engine: Engine |
     } catch (e) {
       hata('WebM HATA', e);
     } finally {
-      if (raf) cancelAnimationFrame(raf);
+      birak?.();
       if (sayacRef.current !== null) {
         clearInterval(sayacRef.current);
         sayacRef.current = null;

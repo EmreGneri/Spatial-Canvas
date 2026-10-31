@@ -18,6 +18,7 @@ import {
   POSITION_TEXTURE_SIZE,
 } from './buffers';
 import { createPointsCloud } from './points';
+import { tapEkle } from './export.ts';
 import { createVideoOcclusionMaterial, videoOcclusionMode, VIDEO_OCCLUSION_DEFAULTS, type VideoOcclusionMode, type VideoOcclusionTuning } from './videoOcclusion.ts';
 import { SplatObject, fillGaussiansFromPointCloud, uploadGaussianData } from './splats';
 import type { GaussianBufferData } from '../shaders/splatFixture';
@@ -398,6 +399,8 @@ export class Engine {
 
   /** Çizim sonrası kanca (tracker HUD). Bkz. `setFrameTap`. */
   private frameTap: ((view: HTMLCanvasElement) => void) | null = null;
+  /** Ek kancalar (kayıt pompası); tracker'ın `frameTap`'ine dokunmaz. */
+  private frameTaps = new Set<(view: HTMLCanvasElement) => void>();
 
   /** DÜZ VİDEO: kaynağı 3B'ye çevirmeden gösteren, kameraya bağlı düzlem.
    *  Bkz. `setFlatVideo`. Kapalıyken hiç kurulmaz. */
@@ -565,6 +568,7 @@ export class Engine {
       // geçerlidir (export.ts'teki aynı kural). Kanca dışarıdan bir rAF
       // döngüsünde çağrılsaydı boş kare okurdu.
       this.frameTap?.(this.renderer.domElement);
+      for (const t of this.frameTaps) t(this.renderer.domElement);
       this.countFps();
     });
   }
@@ -1749,6 +1753,16 @@ if (entry && entry.material !== this.pointsMaterial) {
   setFrameTap(tap: ((view: HTMLCanvasElement) => void) | null) {
     this.frameTap = tap;
   }
+
+  /**
+   * `setFrameTap` ile AYNI an sözleşmesi, ama tek-sahipli yuvayı ezmez: kayıt
+   * gibi geçici tüketiciler buradan ekler, dönen işlevle bırakır. Tracker'ın
+   * kancası etkilenmez.
+   */
+  addFrameTap(tap: (view: HTMLCanvasElement) => void): () => void {
+    return tapEkle(this.frameTaps, tap);
+  }
+
 
   /**
    * "Canlı fotoğraf" paralaks sway aç/kapat. AÇILDIĞI ANDAKI kamera pozu
