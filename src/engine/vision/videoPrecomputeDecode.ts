@@ -20,7 +20,11 @@ export async function decodeVideoDepthSource(file: Blob, width: number, height: 
     const sourceWidth = await track.getSquarePixelWidth(), sourceHeight = await track.getSquarePixelHeight();
     const aspect = rotation % 180 ? sourceHeight / sourceWidth : sourceWidth / sourceHeight;
     if (Math.abs(aspect / (width / height) - 1) > 0.15) throw Error('Bu en-boy oranı offline derinlik modelinde desteklenmiyor; canlı derinlik kullanılıyor.');
+    // The callback downloads/compiles the model (its own cancel policy): no decoder idle
+    // timer while it runs, otherwise a slow first load disposes a valid input.
+    clearTimeout(timeout);
     await metadata(duration);
+    arm();
     const scratch = new OffscreenCanvas(width, height);
     const context = scratch.getContext('2d', { willReadFrequently: true });
     if (!context) throw Error('Video tuvali kullanılamıyor');

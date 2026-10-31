@@ -122,4 +122,20 @@ async function regressions(session) {
   assert.equal(masks.secondCoverage, null, 'the rejected scene reads full-scene depth without a mask');
   assert.equal(masks.secondReadable, true);
   console.log('OK #4 scene-local mask fallback', JSON.stringify(masks));
+
+  // #7 Model download/compile happens inside the metadata callback: the decoder's 30 s idle
+  // timer (shortened to 10 ms here) must not run during it. Slow model prep, healthy video.
+  const slowModel = await session.page.evaluate(async () => {
+    const { decodeVideoDepthSource } = await import('/src/engine/vision/videoPrecomputeDecode.ts');
+    const native = window.setTimeout;
+    window.setTimeout = (callback, ms, ...args) => native(callback, ms === 30_000 ? 10 : ms, ...args);
+    let frames = 0;
+    try {
+      await decodeVideoDepthSource(window.testClip(), 40, 23, new AbortController().signal,
+        () => new Promise(resolve => native(resolve, 50)), async () => { frames++; });
+      return { frames };
+    } catch (error) { return { frames, error: String(error) }; } finally { window.setTimeout = native; }
+  });
+  assert.deepEqual(slowModel, { frames: 12 }, `#7 slow model preparation must not dispose a valid video: ${JSON.stringify(slowModel)}`);
+  console.log('OK #7 decoder idle timer paused during model preparation', JSON.stringify(slowModel));
 }
