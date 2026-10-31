@@ -51,19 +51,28 @@ const OFFLINE_SIZE = { width: 266, height: 154 };
 const PROGRESS_INTERVAL_MS = 250;
 /** Sahne aralığı yüzdelikleri: tek aykırı piksel tüm sahneyi düzleştirmesin (F8). */
 const RANGE_SAMPLES_PER_FRAME = 512;
-const ownedStores = new Set<string>();
 let staleCleanup: Promise<void> | null = null;
 /**
+ * Her klasörün sahibi, klasörü OLUŞTURMADAN önce aynı adlı Web Lock'u alır ve klasörü
+ * silene dek tutar; sekme kapanınca/çökünce tarayıcı kilidi bırakır. OPFS origin başına
+ * ortak: sekme içi küme başka sekmenin canlı klasörünü sahipsiz sanıp siliyordu.
+ * Resolves with the release function once the lock is held.
+ */
+const holdStoreLock = (id: string) => new Promise<() => void>(granted =>
+  void navigator.locks.request(id, () => new Promise<void>(release => granted(release))));
+/**
  * Yeniden yükleme/çökme/sekme kapanışında `video-depth-*` klasörleri kalıyordu;
- * kota dolunca her hazırlık düşüyordu (F9). Sayfa başına bir kez, bu sekmenin
- * sahip olmadığı tüm klasörler silinir (uygulama tek sekmelik).
+ * kota dolunca her hazırlık düşüyordu (F9). Sayfa başına bir kez, kilidini hiçbir
+ * sekmenin tutmadığı klasörler silinir. Kilit API'si yoksa yalnız kendi klasörü silinir.
  */
 async function removeStaleStores(root: FileSystemDirectoryHandle): Promise<void> {
+  if (!navigator.locks) return;
   const names: string[] = [];
   for await (const name of (root as unknown as { keys(): AsyncIterable<string> }).keys()) {
-    if (name.startsWith('video-depth-') && !ownedStores.has(name)) names.push(name);
+    if (name.startsWith('video-depth-')) names.push(name);
   }
-  await Promise.all(names.map(name => root.removeEntry(name, { recursive: true }).catch(() => {})));
+  await Promise.all(names.map(name => navigator.locks.request(name, { ifAvailable: true },
+    lock => lock && root.removeEntry(name, { recursive: true })).catch(() => {})));
 }
 export function videoDepthRange(samples: ArrayLike<number>): [number, number] {
   if (!samples.length) return [0, 0];
@@ -134,7 +143,7 @@ export async function prepareVideoDepth(file: Blob, options: PrepareOptions = {}
   if (options.signal?.aborted) cancel();
   let root: FileSystemDirectoryHandle | undefined, dir: FileSystemDirectoryHandle | undefined;
   const id = `video-depth-${crypto.randomUUID()}`;
-  ownedStores.add(id);
+  let releaseStoreLock = () => {};
   let provider = options.provider, ready = false, disposed = false, duration = 0;
   const stamps: number[] = [];
   const scenes = [0];
@@ -165,9 +174,9 @@ export async function prepareVideoDepth(file: Blob, options: PrepareOptions = {}
   };
   const slice = async (source: File, index: number, bytes: number) => source.slice(index * bytes, (index + 1) * bytes).arrayBuffer();
   const remove = async () => {
-    ownedStores.delete(id);
     await Promise.all([...open].map(writable => writable.abort().catch(() => {}))); open.clear();
     if (root) await root.removeEntry(id, { recursive: true }).catch(() => {});
+    releaseStoreLock();
   };
   const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
   /** Oynatma takılıyorsa kısa bekle; hazırlık sekmeyi dondurmasın (madde 4). */
@@ -200,6 +209,7 @@ export async function prepareVideoDepth(file: Blob, options: PrepareOptions = {}
       root = await navigator.storage.getDirectory();
       staleCleanup ??= removeStaleStores(root);
       await staleCleanup;
+      if (navigator.locks) releaseStoreLock = await holdStoreLock(id);
       dir = await root.getDirectoryHandle(id, { create: true });
       ({ width, height } = provider ?? OFFLINE_SIZE);
       if (!Number.isInteger(width) || !Number.isInteger(height) || width <= 0 || height <= 0) throw Error('Offline derinlik boyutu geçersiz');

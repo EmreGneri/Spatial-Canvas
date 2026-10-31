@@ -135,18 +135,65 @@ async function regressions(session) {
   console.log('OK #6 mask mode chosen at cache read', JSON.stringify(masks.toggle));
 
   // #7 Model download/compile happens inside the metadata callback: the decoder's 30 s idle
-  // timer (shortened to 10 ms here) must not run during it. Slow model prep, healthy video.
+  // timer (shortened to 300 ms, still far above a 40x23 frame gap) must not run during it.
+  // Slow model prep (1 s), healthy video.
   const slowModel = await session.page.evaluate(async () => {
     const { decodeVideoDepthSource } = await import('/src/engine/vision/videoPrecomputeDecode.ts');
     const native = window.setTimeout;
-    window.setTimeout = (callback, ms, ...args) => native(callback, ms === 30_000 ? 10 : ms, ...args);
+    window.setTimeout = (callback, ms, ...args) => native(callback, ms === 30_000 ? 300 : ms, ...args);
     let frames = 0;
     try {
       await decodeVideoDepthSource(window.testClip(), 40, 23, new AbortController().signal,
-        () => new Promise(resolve => native(resolve, 50)), async () => { frames++; });
+        () => new Promise(resolve => native(resolve, 1000)), async () => { frames++; });
       return { frames };
     } catch (error) { return { frames, error: String(error) }; } finally { window.setTimeout = native; }
   });
   assert.deepEqual(slowModel, { frames: 12 }, `#7 slow model preparation must not dispose a valid video: ${JSON.stringify(slowModel)}`);
   console.log('OK #7 decoder idle timer paused during model preparation', JSON.stringify(slowModel));
+
+  // #5 OPFS is shared per origin: a second tab must not delete the first tab's live store,
+  // but still removes stores nobody holds (orphan, closed tab).
+  const stores = page => page.evaluate(async () => {
+    const names = [];
+    for await (const name of (await navigator.storage.getDirectory()).keys()) if (name.startsWith('video-depth-')) names.push(name);
+    return names.sort();
+  });
+  const tab = async () => {
+    // Same browser context as the first tab (the default context opens pages only as popups).
+    const popup = session.page.waitForEvent('popup');
+    await session.page.evaluate(() => window.open('about:blank', '_blank'));
+    const page = await popup;
+    await page.route('**/__prepared_video_test', route => route.fulfill({ contentType: 'text/html', body: '<!doctype html><h1>Second tab</h1>' }));
+    await page.goto(session.url('/__prepared_video_test'));
+    return page;
+  };
+  const prepareIn = (page, bytes) => page.evaluate(async bytes => {
+    const { prepareVideoDepth } = await import('/src/engine/vision/videoPrecompute.ts');
+    const progress = [];
+    window.tabHandle = await prepareVideoDepth(new Blob([new Uint8Array(bytes)], { type: 'video/webm' }), { onProgress: p => progress.push(p.stage),
+      provider: { width: 40, height: 23, infer: async frames => frames.map(() => new Float32Array(920).fill(0.5)), dispose: async () => {} } });
+    await window.tabHandle.done;
+    return progress.at(-1);
+  }, bytes);
+  const readable = page => page.evaluate(async () => ({ hasFrame: window.tabHandle.hasFrame(0.2), readable: !!await window.tabHandle.frameAt(0.2) }));
+  assert.equal(await prepareIn(session.page, clip), 'ready');
+  const storeA = await stores(session.page);
+  await session.page.evaluate(async () => (await navigator.storage.getDirectory()).getDirectoryHandle('video-depth-orphan', { create: true }));
+  const tabB = await tab();
+  assert.equal(await prepareIn(tabB, clip), 'ready');
+  const afterB = await stores(tabB), storeB = afterB.filter(name => !storeA.includes(name));
+  const tabs = { storeA: storeA.length, afterB, first: await readable(session.page) };
+  assert.deepEqual(tabs.first, { hasFrame: true, readable: true }, `#5 the first tab keeps its store: ${JSON.stringify(tabs)}`);
+  assert.ok(storeA.length === 1 && storeB.length === 1 && afterB.length === 2 && !afterB.includes('video-depth-orphan'), JSON.stringify(tabs));
+  // Closing a tab releases its lease: the next tab's cleanup removes that store only.
+  await tabB.close();
+  const tabC = await tab();
+  assert.equal(await prepareIn(tabC, clip), 'ready');
+  const afterC = await stores(tabC);
+  tabs.afterC = afterC; tabs.firstAfterC = await readable(session.page);
+  assert.ok(afterC.length === 2 && afterC.includes(storeA[0]) && !afterC.includes(storeB[0]), `closed tab's store is reclaimed: ${JSON.stringify(tabs)}`);
+  assert.deepEqual(tabs.firstAfterC, { hasFrame: true, readable: true });
+  await tabC.evaluate(() => window.tabHandle.dispose()); await session.page.evaluate(() => window.tabHandle.dispose());
+  assert.deepEqual(await stores(session.page), [], 'each tab deletes its own store on dispose');
+  console.log('OK #5 cross-tab store ownership', JSON.stringify(tabs));
 }
