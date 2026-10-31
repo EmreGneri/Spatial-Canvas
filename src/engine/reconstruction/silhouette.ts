@@ -237,8 +237,14 @@ export function keepMainComponents(
     }
     if (!eklendi) break;
   }
+  // Soft (< 0.5) pixels have no label: keep the original probability within nearPx of a kept part
+  // (hair/fur band, same reach as the near rule), clear it elsewhere (a dropped part's halo, far haze).
+  // Zeroing every soft pixel made the main subject's edge depend on whether a far speck existed.
+  const cur = new Uint8Array(n);
+  for (let i = 0; i < n; i++) if (id[i] >= 0 && kept[id[i]]) cur[i] = 1;
+  const near = dilateBinary(cur, w, h, nearPx);
   const out = new Float32Array(n);
-  for (let i = 0; i < n; i++) out[i] = id[i] >= 0 && kept[id[i]] ? mask[i] : 0;
+  for (let i = 0; i < n; i++) out[i] = (id[i] >= 0 ? kept[id[i]] : near[i]) ? mask[i] : 0;
   return out;
 }
 

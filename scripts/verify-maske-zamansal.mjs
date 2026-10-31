@@ -44,6 +44,20 @@ const z = bos();
 dikdortgen(z, 10, 10, 50, 90); dikdortgen(z, 58, 30, 70, 50); dikdortgen(z, 78, 30, 90, 50);
 assert.equal(say(keepMainComponents(z, w, h)), 3200 + 240 + 240);
 
+// yumuşak kenar (saç, < 0.5): uzak bir benek atılırken tutulan öznenin yumuşak bandı aynen kalır;
+// atılan beneğin kendi yumuşak çevresi ve hiçbir tutulan parçaya yakın olmayan pus temizlenir
+const sac = dikdortgen(bos(), 10, 10, 50, 90);
+for (let y = 4; y < 10; y++) for (let x = 15; x < 45; x++) sac[y * w + x] = 0.49;
+const benekli = sac.slice();
+dikdortgen(benekli, 100, 80, 102, 82);
+benekli[79 * w + 100] = 0.3; // beneğin yumuşak çevresi
+benekli[50 * w + 80] = 0.2;  // her şeyden uzak pus
+const temiz = keepMainComponents(benekli, w, h);
+for (let i = 0; i < w * h; i++) if (i !== 79 * w + 100 && i !== 50 * w + 80 && !(benekli[i] === 1 && sac[i] === 0)) assert.equal(temiz[i], sac[i], `piksel ${i}`);
+assert.equal(temiz[81 * w + 101], 0, 'benek düşer');
+assert.equal(temiz[79 * w + 100], 0, 'beneğin yumuşak çevresi düşer');
+assert.equal(temiz[50 * w + 80], 0, 'uzak pus düşer');
+
 // zamansal: titreyen kenar piksel ortalanır
 const s = createMaskSmoother(3);
 const a = dikdortgen(bos(), 10, 10, 50, 50);
