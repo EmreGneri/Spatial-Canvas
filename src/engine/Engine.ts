@@ -55,7 +55,7 @@ import { applyParams, collectParams, type ParamDef, type ParamValues } from './p
 import { activeNodes, createDefaultGraph, topologicalOrder, validateGraph, type Graph } from './graph';
 import { buildSilhouette, resampleBilinear } from './reconstruction/silhouette.ts';
 import { buildShellMesh, type ShellMeshData } from './reconstruction/mesh.ts';
-import { applySeparationCrop, computeMaskCropRect, cropChannels } from './reconstruction/crop.ts';
+import { applySeparationCrop, computeMaskCropRect, cropChannels, kabukMaskesi } from './reconstruction/crop.ts';
 import { buildMetricPhotoShell, createMetricPhotoProjection, cropMetricPhotoGeometry, metrikYuzRolyefi, updateMetricPhotoSplatGeometry, type MetricPhotoGeometry } from './reconstruction/metricPhotoGeometry.ts';
 import { photoReferenceCamera } from './reconstruction/photoPerspective.ts';
 import { subjectZSpan } from './reconstruction/sampler.ts';
@@ -1998,7 +1998,8 @@ if (this.photoData) {
       // Aynı kırpma (crop) burada da uygulanır — mesh, parçacık bulutuyla
       // aynı bbox'ı görmezse 'solid' modunda yüzey hizası kayar.
       const shellData = metricProjection ? buildMetricPhotoShell(metricProjection) : buildShellMesh(crop.depth, crop.depthWidth, crop.depthHeight, {
-          foregroundMask: crop.mask,
+          // Ayırma KAPALIYKEN kabuk maskeyle kesilmez ("tüm sahne"); toggle setDepth'i yeniden çağırır.
+          foregroundMask: kabukMaskesi(crop.mask, this.objectSeparation),
           layers: this.layers ?? undefined,
           layerGap: this.layerGap,
         });
@@ -2036,7 +2037,7 @@ if (this.photoData) {
       && !(this.renderModeName === 'crystal' && this.splatObject?.ready)) {
       this.setShellGeometry(buildShellMesh(data, width, height, {
         gridSize: 96, depthScale: 1, importanceSampling: false,
-        foregroundMask: mask, referenceVideo: { aspect: sourceAspect },
+        foregroundMask: kabukMaskesi(mask, this.objectSeparation), referenceVideo: { aspect: sourceAspect },
         samplingWindow: this.videoSamplingWindow,
         layers: this.layers ?? undefined, layerGap: this.layerGap,
       }));
