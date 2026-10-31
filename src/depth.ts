@@ -1437,7 +1437,6 @@ function foregroundStretchTarget(t: number): number {
 }
 
 const DEPTH_SMOOTHING_DEFAULT = true;
-const SMOOTH_RADIUS = 1;
 const SMOOTH_SIGMA_S = 1.2;
 const SMOOTH_SIGMA_R = 0.02;
 
@@ -1450,43 +1449,67 @@ const SMOOTH_SIGMA_R = 0.02;
  * sözleşmesinde kalır.
  */
 export function smoothDepthSteps(depth: Float32Array, w: number, h: number) {
-  const weights: { d: number; g: number }[] = [];
-  for (let dx = -SMOOTH_RADIUS; dx <= SMOOTH_RADIUS; dx++) {
-    weights.push({ d: dx, g: Math.exp(-(dx * dx) / (2 * SMOOTH_SIGMA_S * SMOOTH_SIGMA_S)) });
-  }
+  // Taps -1, 0, +1 (radius 1). The range weight of a neighbour pair is
+  // symmetric ((a-b)^2 === (b-a)^2 exactly), so each pair's exp is computed ONCE
+  // and shared by both pixels; the centre tap is exp(-0) = 1 and a clamped edge
+  // tap reads the centre itself (weight g). Every sum keeps the old order
+  // (-1, 0, +1) and arithmetic: bit-identical (verify-depth-cycle-parity), ~1/3
+  // of the exp calls. Runs on every live video frame.
+  const gl = Math.exp(-(-1 * -1) / (2 * SMOOTH_SIGMA_S * SMOOTH_SIGMA_S));
+  const g0 = Math.exp(-(0 * 0) / (2 * SMOOTH_SIGMA_S * SMOOTH_SIGMA_S));
+  const gr = Math.exp(-(1 * 1) / (2 * SMOOTH_SIGMA_S * SMOOTH_SIGMA_S));
+  const rw0 = g0 * Math.exp(-0);
+  const k = 2 * SMOOTH_SIGMA_R * SMOOTH_SIGMA_R;
   const tmp = new Float32Array(depth.length);
   // yatay geçiş → tmp (kenarlar kelepçeli)
   for (let y = 0; y < h; y++) {
     const row = y * w;
+    let eLeft = 1; // exp term of the (x-1, x) pair; exp(-0) at the clamped edge
     for (let x = 0; x < w; x++) {
       const c = depth[row + x];
+      const vl = x > 0 ? depth[row + x - 1] : c;
+      const vr = x < w - 1 ? depth[row + x + 1] : c;
+      const eRight = x < w - 1 ? Math.exp(-((vr - c) * (vr - c)) / k) : 1;
+      const rwl = gl * eLeft;
+      const rwr = gr * eRight;
       let s = 0;
       let ws = 0;
-      for (const { d, g } of weights) {
-        const xn = Math.min(w - 1, Math.max(0, x + d));
-        const v = depth[row + xn];
-        const rw = g * Math.exp(-((v - c) * (v - c)) / (2 * SMOOTH_SIGMA_R * SMOOTH_SIGMA_R));
-        s += v * rw;
-        ws += rw;
-      }
+      s += vl * rwl; ws += rwl;
+      s += c * rw0; ws += rw0;
+      s += vr * rwr; ws += rwr;
       tmp[row + x] = ws > 0 ? s / ws : c;
+      eLeft = eRight;
     }
   }
-  // dikey geçiş → depth (kenarlar kelepçeli)
+  // dikey geçiş → depth (kenarlar kelepçeli), satır satır: eUp/eDown hold the
+  // exp terms of the (y-1, y) and (y, y+1) pairs for the whole row.
+  let eUp = new Float64Array(w).fill(1);
+  let eDown = new Float64Array(w);
   for (let y = 0; y < h; y++) {
+    const row = y * w;
+    const up = y > 0 ? row - w : row;
+    const down = y < h - 1 ? row + w : row;
     for (let x = 0; x < w; x++) {
-      const c = tmp[y * w + x];
+      const c = tmp[row + x];
+      const vd = tmp[down + x];
+      eDown[x] = y < h - 1 ? Math.exp(-((vd - c) * (vd - c)) / k) : 1;
+    }
+    for (let x = 0; x < w; x++) {
+      const c = tmp[row + x];
+      const vu = tmp[up + x];
+      const vd = tmp[down + x];
+      const rwu = gl * eUp[x];
+      const rwd = gr * eDown[x];
       let s = 0;
       let ws = 0;
-      for (const { d, g } of weights) {
-        const yn = Math.min(h - 1, Math.max(0, y + d));
-        const v = tmp[yn * w + x];
-        const rw = g * Math.exp(-((v - c) * (v - c)) / (2 * SMOOTH_SIGMA_R * SMOOTH_SIGMA_R));
-        s += v * rw;
-        ws += rw;
-      }
-      depth[y * w + x] = ws > 0 ? s / ws : c;
+      s += vu * rwu; ws += rwu;
+      s += c * rw0; ws += rw0;
+      s += vd * rwd; ws += rwd;
+      depth[row + x] = ws > 0 ? s / ws : c;
     }
+    const swap = eUp;
+    eUp = eDown;
+    eDown = swap;
   }
 }
 

@@ -204,7 +204,12 @@ assert.equal(Object.keys(results).length, Object.keys(GOLDEN).length);
   const w = 448, h = 252;
   seed = 9;
   const { depth, lum } = scene(w, h);
-  const time = (f) => { for (let i = 0; i < 3; i++) f(); const t0 = performance.now(); for (let i = 0; i < 10; i++) f(); return ((performance.now() - t0) / 10).toFixed(2); };
+  const time = (f) => {
+    for (let i = 0; i < 5; i++) f();
+    const ms = [];
+    for (let i = 0; i < 21; i++) { const t0 = performance.now(); f(); ms.push(performance.now() - t0); }
+    return ms.sort((a, b) => a - b)[10].toFixed(2); // median
+  };
   const st = live.zamansalDurumAc();
   live.zamansalYumusat(depth.slice(), st, undefined, undefined, { luminance: lum, width: w, height: h });
   console.log(`448x252 ms: smoothDepthSteps ${time(() => smoothDepthSteps(depth.slice(), w, h))}`
