@@ -22,6 +22,7 @@ import { localInference, localInferenceAvailable, localModelAvailable, type RawT
 import type { MetricPhotoGeometry } from './engine/reconstruction/metricPhotoGeometry.ts';
 import { relativePhotoGeometry, type PhotoCameraInput } from './engine/reconstruction/photoPerspective.ts';
 import { davidCiktisiniCoz, davidFuzyon } from './engine/vision/davidFuzyon.ts';
+import { davidKesisiminiDogrula } from './ui/maskeKarari.ts';
 
 /**
  * GÜN D/1 (M6 düzeltmesi) — transformers TEMBEL yüklenir.
@@ -288,7 +289,7 @@ export type DepthResult = {
   /** Yalnız DAViD füzyonu GERÇEKTEN uygulandıysa (tanı/ölçüm). */
   david?: { olcek: number; kayma: number; korelasyon: number; cekirdekOrani: number; yuklemeMs: number; cikarimMs: number };
   /** Yalnız DAViD maskesi GERÇEKTEN uygulandıysa (subjectMask = DAViD ∩ özne). */
-  davidMaske?: { arkaUc: 'sidecar' | 'webgpu'; sureMs: number };
+  davidMaske?: { arkaUc: 'sidecar' | 'webgpu'; sureMs: number; reddedildi?: string };
   /** Delikleri kapatılmış özne maskesi (depth ızgarasında, width×height). Yalnız `delikDoldur: true` ve maske verildiyse. */
   subjectMask?: Float32Array;
   /** Maskedeki kapalı deliklerin ölçümü (alan, derinlik farkı, doldu mu). */
@@ -879,8 +880,10 @@ export async function applyDavidMask(
     const rgba = lb.canvas.getContext('2d', { willReadFrequently: true })!.getImageData(0, 0, DAVID_BOYUT, DAVID_BOYUT).data;
     const ham = await inferDavidMaske(rgba, { gpuSirasinaGir, onceRetry, webgpuKullanilabilir }, plan, trace);
     if (!ham) return null;
-    const maske = davidMaskeKesisimi(ozne,davidCiktisiniCoz(ham.maske, ham.boyut, lb, w, h));
-    return { maske, tani: { arkaUc: ham.arkaUc, sureMs: ham.sureMs } };
+    // Kesişim doğrulanır: boş/yıkıcı sonuç kabul edilmiş özneyi silemez (ui/maskeKarari.ts).
+    const { maske, sebep } = davidKesisiminiDogrula(ozne, davidMaskeKesisimi(ozne, davidCiktisiniCoz(ham.maske, ham.boyut, lb, w, h)), w, h);
+    if (sebep) console.warn(sebep);
+    return { maske, tani: { arkaUc: ham.arkaUc, sureMs: ham.sureMs, ...(sebep ? { reddedildi: sebep } : {}) } };
   } catch (err) {
     console.warn('DAViD maskesi atlandı; eski özne maskesi kullanılıyor.', err);
     return null;

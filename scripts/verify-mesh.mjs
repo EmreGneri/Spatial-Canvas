@@ -295,4 +295,32 @@ assert.equal(JSON.stringify(again.indices), JSON.stringify(masked.indices), 'det
   );
 }
 
+// --- #11: nesne ayırma KAPALIYKEN kabuk maskeyle kesilmez (arka plan geometrisi geri gelir) ---
+{
+  const { kabukMaskesi } = await import('../src/engine/reconstruction/crop.ts');
+  const d = new Float32Array(W * H).fill(0.6);
+  const m = new Float32Array(W * H);
+  for (let y = 16; y < 48; y++) for (let x = 28; x < 36; x++) m[y * W + x] = 1; // dar özne (~%12 yatay)
+  const xAralik = (mask) => {
+    const g = buildShellMesh(d, W, H, { foregroundMask: mask });
+    let lo = Infinity, hi = -Infinity;
+    for (let i = 0; i < g.positions.length; i += 3) { lo = Math.min(lo, g.positions[i]); hi = Math.max(hi, g.positions[i]); }
+    return [lo, hi];
+  };
+  const acik = xAralik(kabukMaskesi(m, true));
+  const kapali = xAralik(kabukMaskesi(m, false));
+  const tam = xAralik(undefined);
+  assert.ok(acik[1] - acik[0] < 0.5, 'ayırma açık: kabuk özneye kesilmeli: ' + acik);
+  assert.ok(kapali[1] - kapali[0] > 1.8 && kapali[0] < -0.9 && kapali[1] > 0.9, 'ayırma kapalı: arka plan geometrisi geri gelmeli: ' + kapali);
+  assert.deepEqual(kapali, tam, 'kapalı kabuk maskesiz kabukla aynı olmalı');
+  assert.equal(kabukMaskesi(m, true), m);
+  assert.equal(kabukMaskesi(null, true), undefined);
+  // Engine kabuğu gerçekten bu kapıdan kurar (WebGL'siz kaynak denetimi) ve toggle setDepth'i yeniden çağırır.
+  const { readFileSync } = await import('node:fs');
+  const eng = readFileSync(new URL('../src/engine/Engine.ts', import.meta.url), 'utf8');
+  assert.match(eng, /foregroundMask: kabukMaskesi\(crop\.mask, this\.objectSeparation\)/, 'foto kabuğu ayırma anahtarına bağlı değil');
+  assert.match(eng, /foregroundMask: kabukMaskesi\(mask, this\.objectSeparation\)/, 'video kabuğu ayırma anahtarına bağlı değil');
+  assert.doesNotMatch(eng, /buildShellMesh\(crop\.depth[^)]*\{\s*(\/\/[^\n]*\n\s*)?foregroundMask: crop\.mask/, 'foto kabuğu hâlâ koşulsuz maskeli');
+}
+
 console.log('OK · kapalı kabuk mesh (köşe ızgarası + front/back + duvar şeridi, su geçirmezlik, DIŞA yönlü sarım, dikey hiza, köşe normalleri + shell, z/uv sözleşmesi, maske + remap hizası, determinizm)');

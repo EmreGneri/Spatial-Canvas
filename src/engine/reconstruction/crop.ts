@@ -152,3 +152,11 @@ export function applySeparationCrop(
   }
   return out;
 }
+
+/**
+ * Solid kabuğunun üçgen maskesi: nesne ayırma KAPALIYKEN maske kabuğu kesmez
+ * (kapalı = "tüm sahne"; arka plan geometrisi geri gelir), AÇIKKEN foreground maskesi kalır.
+ */
+export function kabukMaskesi<T>(mask: T | null | undefined, separationOn: boolean): T | undefined {
+  return separationOn && mask ? mask : undefined;
+}

@@ -188,3 +188,36 @@ export function maskeKarari(fgOran: number, tekParca: number = 1): MaskeKarari {
   }
   return { tip: 'kullan', ayirmaAcik: true, sebep: null };
 }
+
+/**
+ * Fotoğraf maskesinin TEK karar noktası: otomatik yol (App.tsx ön hazırlık) ve elle
+ * "nesne ayırma" yeniden denemesi aynı fonksiyonu çağırır; aynı maske iki yolda aynı
+ * kararı alır (boş / çok dolu / dağınık reddedilir).
+ */
+export function maskeKarariniVer(mask: Float32Array, w: number, h: number) {
+  let say = 0;
+  for (let i = 0; i < mask.length; i++) if (mask[i] >= 0.5) say++;
+  const oran = say / mask.length;
+  const tekParca = maskeTekParcaOrani(mask, w, h);
+  return { karar: maskeKarari(oran, tekParca), oran, tekParca };
+}
+
+/**
+ * DAViD ∩ özne sonucu doğrulanır: kabul edilmiş maske (`ozne`) boş/çok dolu/dağınık bir
+ * kesişimle ya da otomatik ayırma eşiğinin (MASKE_ALT_ESIK) altına düşürülerek yok edilemez.
+ * Yeni yüzde yok: ölçüt `maskeKarari`nın kendisi — kesişim 'atla' olursa ya da özne
+ * ayırmayı açarken kesişim açamıyorsa (kaybın sınırı = MASKE_ALT_ESIK) önceki maske kalır.
+ * Dönen `sebep` doluysa kesişim reddedilmiş, `maske` === `ozne`.
+ */
+export function davidKesisiminiDogrula(ozne: Float32Array, kesisim: Float32Array, w: number, h: number):
+  { maske: Float32Array; sebep: string | null } {
+  const once = maskeKarariniVer(ozne, w, h);
+  if (once.karar.tip === 'atla') return { maske: kesisim, sebep: null };
+  const sonra = maskeKarariniVer(kesisim, w, h);
+  const yok = sonra.karar.tip === 'atla';
+  if (!yok && !(once.karar.ayirmaAcik && !sonra.karar.ayirmaAcik)) return { maske: kesisim, sebep: null };
+  return {
+    maske: ozne,
+    sebep: `DAViD maskesi atlandı: kesişim özneyi ${yok ? 'tümüyle sildi' : `%${(100 * sonra.oran).toFixed(1)}'e düşürdü (kabul edilen %${(100 * once.oran).toFixed(0)})`}; önceki özne maskesi korundu`,
+  };
+}

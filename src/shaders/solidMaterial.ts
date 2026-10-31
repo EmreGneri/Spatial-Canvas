@@ -144,7 +144,8 @@ const FRAGMENT = /* glsl */ `
 
   void main() {
     // uObjectSeparation uniform uyum için mevcut; solid'de KULLANILMAZ —
-    // mesh geometrisi zaten silüet/maskeyle kesilmiştir, atılacak texel yok.
+    // geometri Engine'de kurulur: ayırma AÇIKKEN silüet/maskeyle kesilir, KAPALIYKEN
+    // maske kullanılmaz (kabukMaskesi) ve arka plan üçgenleri geri gelir; atılacak texel yok.
     // (Eskiden burada discard vardı; otomatik segmentasyonda objectSeparation
     // hep AÇIK gelince mesh tamamen siliniyordu — Gün B temizlik düzeltmesi.)
 
