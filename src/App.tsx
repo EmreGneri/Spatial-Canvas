@@ -37,7 +37,7 @@ import { KutuphanePaneli } from './ui/KutuphanePaneli';
 import { kaynakBelirle } from './ui/presetOnizleme';
 import { soganAcilisGerekliMi, sunumAcikMi } from './ui/sunumModu';
 import { serializeRenderState } from './shaders/renderPreset';
-import { AYIRMA_KAPATMA_ORANI, hizliMaskeKullan, maskeKarari, maskeTekParcaOrani, videoAyirmaDurumu, videoMaskeIstegi } from './ui/maskeKarari';
+import { AYIRMA_KAPATMA_ORANI, hizliMaskeKullan, maskeKarari, maskeKarariniVer, maskeTekParcaOrani, videoAyirmaDurumu, videoMaskeIstegi } from './ui/maskeKarari';
 import { classifyCategory, type CategoryInput } from './ui/category';
 import { useDarEkran } from './ui/useDarEkran';
 import { ACILIS_BOY, ACILIS_EN, ACILIS_NOTU, acilisDerinligi, BINALAR, GOK, KURE, UFUK_Y, ZEMIN } from './ui/acilisSahnesi';
@@ -647,17 +647,13 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
             // sıkışır) ve siluet AND'i arka planı elemez. Eşik %92: gerçek bir
             // özne kadrajı tamamen doldursa bile RMBG kenarlarda 0 bırakır;
             // %92 üstü pratikte "model pes etti" demektir.
-            let fgCount = 0;
-            for (let q = 0; q < seg.mask.length; q++) {
-              if (seg.mask[q] >= 0.5) fgCount++;
-            }
             // GÜN 25 (düzeltme): karar ÜÇ uçlu. Alt uç eskiden yoktu ve IS-Net'e
             // geçince sentetik görselde maske kadrajın %4,7'sini seçip sahnenin
             // gerisini siliyordu — ekran pratikte siyahtı, sebebi de yazmıyordu.
             // Eşiklerin ölçümü: ui/maskeKarari.ts başlığı.
-            const mainComponent = maskeTekParcaOrani(seg.mask, seg.width, seg.height);
-            const karar = maskeKarari(fgCount / seg.mask.length, mainComponent);
-            categoryMask = { maskCoverage: fgCount / seg.mask.length, maskMainComponent: mainComponent, maskAccepted: karar.tip === 'kullan' };
+            // Elle yeniden deneme (toggleSegment) AYNI fonksiyonu kullanır.
+            const { karar, oran: fgOran, tekParca: mainComponent } = maskeKarariniVer(seg.mask, seg.width, seg.height);
+            categoryMask = { maskCoverage: fgOran, maskMainComponent: mainComponent, maskAccepted: karar.tip === 'kullan' };
             if (karar.sebep) say(karar.sebep);
             if (karar.tip === 'kullan') {
               mask = seg.mask;
@@ -1517,7 +1513,16 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
     try {
       const t2 = performance.now();
       const seg = await segmentForeground(lastPhotoRef.current, 'webgpu', 'foto');
+      // Otomatik yolla AYNI güvenlik kararı: boş / çok dolu / dağınık maske geometriye verilmez.
+      const { karar } = maskeKarariniVer(seg.mask, seg.width, seg.height);
+      if (karar.tip === 'atla') {
+        say(karar.sebep);
+        engineRef.current!.setObjectSeparation(false);
+        updateSegment(false);
+        return;
+      }
       say(`nesne ayırma (${seg.model === 'birefnet' ? 'BiRefNet' : 'IS-Net'})  ${Math.round(performance.now() - t2)} ms  (${seg.width}x${seg.height})`);
+      if (karar.sebep) say(karar.sebep);
       // GÜN E (bulgu 1): önbellekteki depth MASKE-KÖR hesaplandı (buton o an
       // kapalıydı). Maske geldiğine göre depth yeniden çıkarılır — yoksa bu
       // yolda stretch/eğim aşamaları düzeltmeden yararlanamazdı.
