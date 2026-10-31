@@ -2422,6 +2422,12 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
           eval raporu, preset yönetimi, kuvvet kolları, ham log. Sunum
           modunda MOUNT EDİLMEZ (ui/sunumModu.ts · SUNUM_DISI); mount
           edilmediği için kurulum maliyeti de oluşmaz. */}
+      {!sunum && engine && (
+        <details style={{ ...yuzey(1), padding: bosluk.m, maxWidth: 'min(960px, 100%)', boxSizing: 'border-box', width: '100%' }}>
+          <summary style={{ cursor: 'pointer', color: renk.metinSolgun, fontFamily: MONO, fontSize: 12 }}>
+            ileri araçlar · düğüm grafiği, ayrı video haritası, değerlendirme raporu, preset yönetimi, kuvvetler, log
+          </summary>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginTop: 12 }}>
       {!sunum && engine && <NodeGraphEditor engine={engine} graphTick={graphTick} onRenderModeChange={changeMode} onParamsApplied={refreshPanel} />}
       {/* GÜN 6-7 (render şeridi): capture akışı + metrik paneli. İkisi de
           kendi durumunu tutar; Engine'e yalnızca imzalı API'den yazarlar
@@ -2451,6 +2457,9 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
           fontFamily: MONO, fontSize: 11, lineHeight: 1.6, maxHeight: 180, overflowY: 'auto',
           ...yuzey(1), padding: bosluk.m,
         }}>{log.join('\n')}</pre>
+      )}
+          </div>
+        </details>
       )}
     </div>
   );

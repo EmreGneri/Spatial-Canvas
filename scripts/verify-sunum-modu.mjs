@@ -110,7 +110,9 @@ function sunumBloklari(kaynak) {
   return araliklar;
 }
 const gizliAraliklar = sunumBloklari(app);
-assert.ok(gizliAraliklar.length >= 6, `beklenenden az {!sunum} bloğu: ${gizliAraliklar.length}`);
+// The instrument layer (graph, capture, metrics, presets, forces, log) is ONE `{!sunum && engine && (<details>…)}` block now
+// ("ileri araçlar"), so the count is the top-bar blocks + that one.
+assert.ok(gizliAraliklar.length >= 4, `beklenenden az {!sunum} bloğu: ${gizliAraliklar.length}`);
 const gizlendiMi = (etiket) => {
   const i = app.indexOf(etiket);
   assert.ok(i > 0, `${etiket} bulunamadı`);
