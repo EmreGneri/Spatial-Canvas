@@ -5,7 +5,7 @@ import { createAsciiMaterial, ASCII_PARAMS } from './shaders/asciiMaterial';
 import { createNeonWireMaterial, NEON_PARAMS } from './shaders/neonWireMaterial';
 import { createSolidMaterial, SOLID_PARAMS } from './shaders/solidMaterial';
 import { createDefaultGraph } from './engine/graph';
-import type { Preset } from './engine/preset';
+import { assertPreset } from './engine/preset';
 import {
   createSignatureElement,
   createSkeletonElement,
@@ -264,7 +264,8 @@ class SpatialCanvasElement extends HTMLElement {
   private applyPreset(presetJson: string | null) {
     if (!presetJson || !this.engine) return;
     try {
-      const preset = JSON.parse(presetJson) as Preset;
+      const preset: unknown = JSON.parse(presetJson);
+      assertPreset(preset);
       // Preset uygulama: graf + kamera + parametreler
       this.engine.setGraph(preset.graph);
       this.engine.setCameraPose(preset.camera);

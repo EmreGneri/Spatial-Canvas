@@ -46,6 +46,33 @@ export interface PresetV1 {
 
 export type Preset = PresetV1;
 
+/** Reject malformed external data before any graph or camera mutation. Unknown fields stay compatible. */
+export function assertPreset(value: unknown): asserts value is Preset {
+  const record = (v: unknown): v is Record<string, unknown> =>
+    v !== null && typeof v === 'object' && !Array.isArray(v);
+  const vector = (v: unknown) =>
+    Array.isArray(v) && v.length === 3 && v.every(n => typeof n === 'number' && Number.isFinite(n));
+  if (!record(value)) throw new Error('Invalid preset: expected an object');
+  if (value.version !== PRESET_VERSION) {
+    throw new Error(`preset sürümü uyuşmuyor: ${value.version} (beklenen ${PRESET_VERSION}) — açılmadı`);
+  }
+  if (typeof value.name !== 'string' || typeof value.mediaType !== 'string' ||
+      !['synthetic', 'upload', 'camera'].includes(value.mediaType) ||
+      !Number.isSafeInteger(value.gridSize) || (value.gridSize as number) <= 0) {
+    throw new Error('Invalid preset: name, mediaType or gridSize');
+  }
+  if (!record(value.camera) || !vector(value.camera.position) || !vector(value.camera.target)) {
+    throw new Error('Invalid preset: camera requires two finite three-component vectors');
+  }
+  const graph = value.graph;
+  if (!record(graph) || !Array.isArray(graph.nodes) || !Array.isArray(graph.edges) ||
+      !graph.nodes.every(node => record(node) && typeof node.id === 'string' &&
+        typeof node.type === 'string' && record(node.params)) ||
+      !graph.edges.every(edge => record(edge) && typeof edge.from === 'string' && typeof edge.to === 'string')) {
+    throw new Error('Invalid preset: graph requires valid nodes, parameters and edges');
+  }
+}
+
 /**
  * toPreset'ün okuduğu engine yüzeyi — dar tutulur ki Node tarafında WebGL'siz
  * sahte engine ile round-trip testi yapılabilsin (scripts/verify-preset.mjs).
@@ -120,11 +147,7 @@ export function toPreset(source: PresetSource, name: string): Preset {
  * sahneye hiç dokunulmaz; alan düzeyindeki bilinmeyenler atlasılır.
  */
 export function applyPreset(target: PresetTarget, preset: Preset): ApplyResult {
-  if (preset.version !== PRESET_VERSION) {
-    throw new Error(
-      `preset sürümü uyuşmuyor: ${preset.version} (beklenen ${PRESET_VERSION}) — açılmadı`,
-    );
-  }
+  assertPreset(preset);
   const warnings: string[] = [];
   if (preset.gridSize !== POSITION_TEXTURE_SIZE) {
     warnings.push(
@@ -178,8 +201,9 @@ export function loadSlot(name: string): Preset | null {
   const raw = store.getItem(STORAGE_PREFIX + name);
   if (!raw) return null;
   try {
-    const parsed = JSON.parse(raw) as Preset;
-    return parsed.version === PRESET_VERSION ? parsed : null;
+    const parsed: unknown = JSON.parse(raw);
+    assertPreset(parsed);
+    return parsed;
   } catch {
     return null; // bozuk JSON — slotu açmaya kalkışıp patlamak yok
   }
@@ -220,13 +244,8 @@ export function parsePresetFile(file: File): Promise<Preset> {
     reader.onerror = () => reject(new Error('dosya okunamadı'));
     reader.onload = () => {
       try {
-        const parsed = JSON.parse(String(reader.result)) as Preset;
-        if (parsed.version !== PRESET_VERSION) {
-          reject(
-            new Error(`preset sürümü ${parsed.version}, beklenen ${PRESET_VERSION}`),
-          );
-          return;
-        }
+        const parsed: unknown = JSON.parse(String(reader.result));
+        assertPreset(parsed);
         resolve(parsed);
       } catch (err) {
         reject(err instanceof Error ? err : new Error('bozuk JSON'));

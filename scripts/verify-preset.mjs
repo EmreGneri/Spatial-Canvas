@@ -13,7 +13,7 @@ register('./ts-extension-loader.mjs', import.meta.url);
 
 const { Color } = await import('three');
 const { POSITION_TEXTURE_SIZE } = await import('../src/engine/buffers.ts');
-const { toPreset, applyPreset, PRESET_VERSION } = await import('../src/engine/preset.ts');
+const { toPreset, applyPreset, parsePresetFile, loadSlot, PRESET_VERSION } = await import('../src/engine/preset.ts');
 const {
   createDefaultGraph,
   activeNodes,
@@ -198,6 +198,46 @@ assert.equal(c.pointsUniforms.uPointSize.value, 13);
 const d = makeStub('d');
 assert.throws(() => applyPreset(d, { ...preset, version: 99 }), /sürümü uyuşmuyor/);
 assert.equal(d.simUniforms.uStiffness.value, SIM_PARAMS[0].default, 'hata sonrası sahne değişmemeli');
+
+// Malformed v1 data must be rejected before either scene mutation.
+for (const bad of [{ ...preset, camera: undefined }, null, {},
+  { ...preset, camera: { position: [0, 0], target: [0, 0, 0] } },
+  { ...preset, camera: { position: [0, Infinity, 1], target: [0, 0, 0] } },
+  { ...preset, camera: { position: [0, 0, 1], target: null } },
+  { ...preset, graph: { nodes: null, edges: [] } },
+  { ...preset, graph: { nodes: [null], edges: [] } },
+  { ...preset, graph: { nodes: [{ id: 'media', type: 'media', params: null }], edges: [] } },
+  { ...preset, graph: { nodes: [], edges: [{ from: 'media', to: null }] } },
+]) {
+  let mutations = 0;
+  const target = { setGraph() { mutations++; return { active: new Set(), warnings: [] }; }, setCameraPose() { mutations++; } };
+  assert.throws(() => applyPreset(target, bad), /preset/i);
+  assert.equal(mutations, 0, 'invalid input must leave graph and camera intact');
+}
+// Unknown fields, node types and parameter keys retain forward compatibility.
+const future = structuredClone(preset);
+future.extraField = { ignored: true };
+future.graph.nodes.push({ id: 'future', type: 'future', params: { future: { nested: true } } });
+assert.doesNotThrow(() => applyPreset(makeStub('future'), future));
+
+// File and storage boundaries must use the same structural validation.
+{
+  const savedReader = globalThis.FileReader, savedStorage = globalThis.localStorage;
+  let content;
+  globalThis.FileReader = class { readAsText() { this.result = content; this.onload(); } };
+  globalThis.localStorage = { getItem: () => content };
+  try {
+    content = JSON.stringify({ ...preset, camera: null });
+    await assert.rejects(parsePresetFile({}), /preset/i);
+    assert.equal(loadSlot('broken'), null);
+    content = JSON.stringify(preset);
+    assert.deepEqual(await parsePresetFile({}), JSON.parse(content));
+    assert.deepEqual(loadSlot('valid'), JSON.parse(content));
+  } finally {
+    if (savedReader === undefined) delete globalThis.FileReader; else globalThis.FileReader = savedReader;
+    if (savedStorage === undefined) delete globalThis.localStorage; else globalThis.localStorage = savedStorage;
+  }
+}
 
 // --- 5. graf: aktiflik ve sıralama ---
 const def = createDefaultGraph();
