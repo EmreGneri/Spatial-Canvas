@@ -134,7 +134,8 @@ async function main() {
       }).getAttribute('aria-pressed'), 'false', 'Previous mode must be deselected');
     }
     await page.getByRole('button', { name: 'PLY', exact: true }).click();
-    const exportStatus = page.getByRole('status').filter({ hasText: 'PLY: sahnede splat yok' });
+    // The opening synthetic scene has splats, so PLY really exports here.
+    const exportStatus = page.getByRole('status').filter({ hasText: /PLY indirildi · [\d.]+ splat/ });
     await exportStatus.waitFor({ state: 'visible' });
     assert.equal(await exportStatus.getAttribute('aria-atomic'), 'true', 'Export results must be announced as a complete status');
     await page.getByTitle('sahneyi duraklat (GPU boşa çalışmaz)', { exact: true }).click();
