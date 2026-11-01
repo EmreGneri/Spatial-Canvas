@@ -122,6 +122,23 @@ export const MODEL_ONBELLEGI = 'spatial-canvas-modeller-v1';
  */
 export const INDIRME_HAREKETSIZLIK_MS = 30_000;
 
+async function storageDeadline<T>(operation: Promise<T>, limitMs: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([operation, new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error('Model cache read timed out')), limitMs);
+    })]);
+  } finally { clearTimeout(timer); }
+}
+
+/** Cache Storage is optional and has no AbortSignal; a late lookup must not block network recovery. */
+export async function readModelCacheResponse(url: string, limitMs = INDIRME_HAREKETSIZLIK_MS): Promise<Response | undefined> {
+  if (typeof caches === 'undefined') return undefined;
+  try {
+    return await storageDeadline(caches.open(MODEL_ONBELLEGI).then(cache => cache.match(url)), limitMs);
+  } catch { return undefined; }
+}
+
 export async function ilerlemeliGetir(
   url: string,
   ad: string,
@@ -153,10 +170,10 @@ export async function ilerlemeliGetir(
   const onbellekli = /^https:\/\//.test(url) && typeof caches !== 'undefined';
   if (onbellekli) {
     try {
-      const kayit = await (await caches.open(MODEL_ONBELLEGI)).match(url);
+      const kayit = await readModelCacheResponse(url, hareketsizlikMs);
       if (kayit) {
         try {
-          const buffer = await kayit.arrayBuffer();
+          const buffer = await storageDeadline(kayit.arrayBuffer(), hareketsizlikMs);
           record('cache-storage', buffer.byteLength, 'ok');
           return buffer;
         } catch { record('cache-storage', 0, 'failed'); }
@@ -170,7 +187,7 @@ export async function ilerlemeliGetir(
   const yerelOnbellekli = /^\/[^/]/.test(url) && typeof caches !== 'undefined';
   let saklanan: Response | undefined;
   if (yerelOnbellekli) {
-    try { saklanan = await (await caches.open(MODEL_ONBELLEGI)).match(url); } catch { /* indirmeye devam */ }
+    saklanan = await readModelCacheResponse(url, hareketsizlikMs);
   }
   const saklananEtag = saklanan?.headers.get('etag') ?? null;
   let inen = 0;
@@ -178,18 +195,19 @@ export async function ilerlemeliGetir(
     kur();
     let yanit = await al(url, saklananEtag ? { headers: { 'If-None-Match': saklananEtag }, cache: 'no-store' } : undefined);
     if (yanit.status === 304 && saklanan) {
+      clearTimeout(zamanlayici);
       try {
-        const buffer = await saklanan.arrayBuffer();
+        const buffer = await storageDeadline(saklanan.arrayBuffer(), hareketsizlikMs);
         record('cache-storage', buffer.byteLength, 'ok');
         return buffer;
-      } catch { yanit = await al(url); }
+      } catch { kur(); yanit = await al(url); }
     }
     if (!yanit.ok) throw new Error(`${ad}: ${yanit.status} ${yanit.statusText}`);
     const uzunluk = Number(yanit.headers.get('content-length') ?? 0);
     // Gövde akıtılamıyorsa (eski tarayıcı, önbellekten dönen yanıt) ilerleme
     // yok ama indirme ÇALIŞMALI: sessizce tam okumaya düşülür.
     if (!yanit.body) {
-      const buffer = await yanit.arrayBuffer();
+      const buffer = await Promise.race([yanit.arrayBuffer(), iptalSozu]);
       record('fetch', buffer.byteLength, 'ok');
       return buffer;
     }

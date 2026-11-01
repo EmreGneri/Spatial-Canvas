@@ -279,4 +279,32 @@ function sahteYanit(bayt, { uzunlukVer = true, parca = 4 } = {}) {
     await new Promise((r) => setTimeout(r, 40));
   } finally { if (previous === undefined) delete globalThis.caches; else globalThis.caches = previous; }
 }
+// Optional storage must not prevent the model's network fallback from starting.
+{
+  const previous = globalThis.caches;
+  const never = () => new Promise(() => {});
+  try {
+    for (const [label, cache] of [
+      ['open', { open: never }],
+      ['match', { open: async () => ({ match: never }) }],
+      ['cached body', { open: async () => ({ match: async () => ({ arrayBuffer: never }) }) }],
+    ]) {
+      globalThis.caches = cache;
+      const result = await Promise.race([
+        ilerlemeliGetir('https://models.invalid/storage-hang.onnx', label, async () => sahteYanit(4), 20),
+        new Promise(resolve => setTimeout(() => resolve('storage watchdog'), 300)),
+      ]);
+      assert.equal(result.byteLength, 4, `${label}: optional cache must fall back to network`);
+    }
+    // A stalled cache body after HTTP 304 must trigger a fresh network download.
+    globalThis.caches = { open: async () => ({ match: async () => ({ headers: { get: () => '"v1"' }, arrayBuffer: never }) }) };
+    let requests = 0;
+    const result = await ilerlemeliGetir('/models/revalidated.onnx', '304 cache body', async () =>
+      requests++ === 0 ? { status: 304 } : sahteYanit(4), 20);
+    assert.equal(result.byteLength, 4);
+    assert.equal(requests, 2);
+  } finally { if (previous === undefined) delete globalThis.caches; else globalThis.caches = previous; }
+  const response = { ...sahteYanit(0), body: null, arrayBuffer: never };
+  await assert.rejects(ilerlemeliGetir('/bodyless-hang.onnx', 'bodyless', async () => response, 20), /ilerlemedi/);
+}
 console.log('verify-indirme-ilerleme: OK · existing paths, measured fetch/cache/failure/bodyless/stale parity, same-origin ETag cache');
