@@ -126,39 +126,55 @@ export function exportWebM(
     return Promise.reject(new Error('canvas.captureStream desteklenmiyor'));
   }
 
-  const stream = canvas.captureStream(60);
-  const mimeType = MediaRecorder.isTypeSupported('video/webm;codecs=vp9')
-    ? 'video/webm;codecs=vp9'
-    : MediaRecorder.isTypeSupported('video/webm;codecs=vp8')
-      ? 'video/webm;codecs=vp8'
-      : 'video/webm';
-
-  const recorder = new MediaRecorder(stream, {
-    mimeType,
-    videoBitsPerSecond,
-  });
-
-  const chunks: Blob[] = [];
-  recorder.ondataavailable = (e) => {
-    if (e.data.size > 0) chunks.push(e.data);
-  };
-
-  // captureStream track'i canvas'ı kare kare çekmeye DEVAM eder; kayıt bitince
-  // bırakılmazsa her export bir track daha ekler (görünmez CPU maliyeti).
-  const stopStream = () => stream.getTracks().forEach((t) => t.stop());
-
   return measureOutput('webm.recording', () => new Promise<void>((resolve, reject) => {
-    recorder.onerror = (e) => {
-      stopStream();
-      reject(new Error(`MediaRecorder: ${e.error?.message ?? 'bilinmeyen'}`));
+    const stream = canvas.captureStream(60);
+    let recorder: MediaRecorder | undefined;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let finished = false;
+    const chunks: Blob[] = [];
+    const cleanup = () => {
+      clearTimeout(timer);
+      if (recorder) {
+        recorder.ondataavailable = null;
+        recorder.onerror = null;
+        recorder.onstop = null;
+      }
+      stream.getTracks().forEach((track) => track.stop());
     };
-    recorder.onstop = () => {
-      stopStream();
-      downloadBlob(new Blob(chunks, { type: 'video/webm' }), `spatial-canvas-${Date.now()}.webm`);
-      resolve();
+    const fail = (error: unknown) => {
+      if (finished) return;
+      finished = true;
+      cleanup();
+      reject(error);
     };
-    recorder.start();
-    setTimeout(() => recorder.stop(), durationSec * 1000);
+    try {
+      const mimeType = MediaRecorder.isTypeSupported('video/webm;codecs=vp9')
+        ? 'video/webm;codecs=vp9'
+        : MediaRecorder.isTypeSupported('video/webm;codecs=vp8')
+          ? 'video/webm;codecs=vp8'
+          : 'video/webm';
+      recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond });
+      recorder.ondataavailable = (e) => {
+        if (!finished && e.data.size > 0) chunks.push(e.data);
+      };
+      recorder.onerror = (e) => fail(new Error(`MediaRecorder: ${e.error?.message ?? 'bilinmeyen'}`));
+      recorder.onstop = () => {
+        // An encoder error can be followed by data and stop events.
+        if (finished) return;
+        finished = true;
+        cleanup();
+        try {
+          downloadBlob(new Blob(chunks, { type: 'video/webm' }), `spatial-canvas-${Date.now()}.webm`);
+          resolve();
+        } catch (error) { reject(error); }
+      };
+      recorder.start();
+      timer = setTimeout(() => {
+        try {
+          if (recorder?.state !== 'inactive') recorder?.stop();
+        } catch (error) { fail(error); }
+      }, durationSec * 1000);
+    } catch (error) { fail(error); }
   }), { durationSec, videoBitsPerSecond, includesRealtimeWait: true });
 }
 
