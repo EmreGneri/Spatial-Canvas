@@ -17,7 +17,7 @@ const sonuc = async (p) => { try { return { ok: await p }; } catch (e) { return 
   let acik; const kapi = new Promise((r) => { acik = r; });
   let ikinciBasladi = false;
   const ilk = gpuSirasinaGir(async () => { await kapi; return 'ilk'; }, 20);
-  const ikinci = gpuSirasinaGir(async () => { ikinciBasladi = true; return 'ikinci'; }, 20);
+  const ikinci = gpuSirasinaGir(async () => { ikinciBasladi = true; return 'ikinci'; }, 60);
   const t0 = performance.now();
   const [a, b] = await Promise.all([sonuc(ilk), sonuc(ikinci)]);
   assert.match(a.hata, /20 sn|bitmedi/, 'ilk iş zaman aşımına uğramalı');
@@ -34,6 +34,68 @@ const sonuc = async (p) => { try { return { ok: await p }; } catch (e) { return 
   assert.equal(ikinciBasladi, false, 'reddedilen bayat iş başlatılmamalı');
   const sonra = await sonuc(gpuSirasinaGir(async () => 'tamam', 20));
   assert.equal(sonra.ok, 'tamam', 'takılan iş bitince sıra yeniden çalışmalı');
+}
+
+// Waiting for another realm's Web Lock is bounded too; a timed-out waiter never runs later.
+{
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+  let releaseLock, acquired = false, started = false, aborted = false;
+  Object.defineProperty(globalThis, 'navigator', { configurable: true, value: { locks: {
+    request: (_name, options, callback) => {
+      if (typeof options === 'function') { callback = options; options = {}; }
+      if (acquired) return callback();
+      return new Promise((resolve, reject) => {
+        releaseLock = () => { acquired = true; if (!options.signal?.aborted) resolve(callback()); };
+        options.signal?.addEventListener('abort', () => { aborted = true; reject(options.signal.reason); }, { once: true });
+      });
+    },
+  } } });
+  try {
+    const result = await Promise.race([
+      sonuc(gpuSirasinaGir(async () => { started = true; }, 20)),
+      bekle(300).then(() => ({ hata: 'test watchdog: still waiting' })),
+    ]);
+    assert.match(result.hata, /GPU.*bekle/i, 'Web Lock acquisition must have its own wait deadline');
+    assert.equal(aborted, true, 'the pending lock request must be removed');
+    releaseLock();
+    await bekle(0);
+    assert.equal(started, false, 'expired lock waiter must not run after the other realm releases');
+    assert.equal(await gpuSirasinaGir(async () => 'recovered', 100), 'recovered');
+  } finally {
+    if (descriptor) Object.defineProperty(globalThis, 'navigator', descriptor);
+    else delete globalThis.navigator;
+  }
+}
+
+// A short local queue deadline is not a driver failure: the running job keeps its lock and budget.
+{
+  let release, started = false;
+  const gate = new Promise(resolve => { release = resolve; });
+  const running = gpuSirasinaGir(() => gate, 1000);
+  const result = await sonuc(gpuSirasinaGir(async () => { started = true; }, 20));
+  assert.match(result.hata, /GPU.*bekle/i);
+  assert.doesNotMatch(result.hata, /sürücü takılmış/);
+  release('running completed');
+  assert.equal(await running, 'running completed');
+  await bekle(0);
+  assert.equal(started, false, 'expired local waiter must not run');
+  assert.equal(await gpuSirasinaGir(async () => 'healthy', 100), 'healthy');
+}
+
+// Native Web Locks: an independent holder models another tab/Worker on the same origin.
+if (globalThis.navigator?.locks?.request) {
+  let release, ready, started = false;
+  const held = new Promise(resolve => { ready = resolve; });
+  const gate = new Promise(resolve => { release = resolve; });
+  const holder = navigator.locks.request('spatial-canvas-gpu-model', async () => { ready(); await gate; });
+  await held;
+  try {
+    const result = await sonuc(gpuSirasinaGir(async () => { started = true; }, 20));
+    assert.match(result.hata, /GPU.*bekle/i);
+    assert.equal(started, false);
+  } finally { release(); await holder; }
+  assert.equal(await gpuSirasinaGir(async () => 'native recovered', 100), 'native recovered');
+  assert.equal(started, false, 'native lock must discard the aborted waiter');
 }
 
 // 4. Yavaş ama biten iş takılma sayılmaz (süre içinde biter).

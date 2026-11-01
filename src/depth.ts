@@ -158,7 +158,17 @@ export function gpuSirasinaGir<T>(is: () => Promise<T>, zamanAsimiMs = GPU_ZAMAN
   }
   const bekleyen = { reddet: reddet as (reason: unknown) => void, iptal: false };
   bekleyenIsler.add(bekleyen);
+  const kilitKontrol = new AbortController();
+  // Queue/lock contention is not a stuck driver: expire only this waiter, never the running job.
+  const beklemeZamanlayici = setTimeout(() => {
+    bekleyen.iptal = true;
+    bekleyenIsler.delete(bekleyen);
+    const error = new Error(`GPU sırası bekleme süresi doldu (${Math.round(zamanAsimiMs / 1000)} sn); başka bir sekme veya model GPU kullanıyor olabilir. Bu iş başlatılmadı, tekrar deneyin`);
+    reddet(error);
+    kilitKontrol.abort(error);
+  }, zamanAsimiMs);
   const gercekIs = async () => {
+    clearTimeout(beklemeZamanlayici);
     bekleyenIsler.delete(bekleyen);
     if (bekleyen.iptal) return; // çağıran zaten hata aldı: bayat iş başlatılmaz
     const kimlik = Symbol('gpu-is');
@@ -173,15 +183,16 @@ export function gpuSirasinaGir<T>(is: () => Promise<T>, zamanAsimiMs = GPU_ZAMAN
     finally { clearTimeout(zamanlayici); takilanIsler.delete(kimlik); }
   };
   const siraliIs = () => {
+    if (bekleyen.iptal) { clearTimeout(beklemeZamanlayici); return; }
     // Web Locks share one queue across the page and the tracker worker.
     // Serializing only each realm's promise chain would let two ORT WebGPU
     // sessions initialize or infer on the same device at the same time.
     if (typeof navigator !== 'undefined' && navigator.locks?.request) {
-      return navigator.locks.request('spatial-canvas-gpu-model', gercekIs);
+      return navigator.locks.request('spatial-canvas-gpu-model', { signal: kilitKontrol.signal }, gercekIs);
     }
     return gercekIs();
   };
-  const tamamlanma = gpuKuyrugu.then(siraliIs, siraliIs);
+  const tamamlanma = gpuKuyrugu.then(siraliIs, siraliIs).finally(() => clearTimeout(beklemeZamanlayici));
   gpuKuyrugu = tamamlanma.then(
     () => undefined,
     (error) => { reddet(error); },
