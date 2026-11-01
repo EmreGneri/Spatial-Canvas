@@ -202,13 +202,18 @@ export function ExportBar({ engine, say, preparing = false }: { engine: Engine |
         imza
       </label>
 
-      <span style={durumStyle(durum)}>{durumMetni(durum)}</span>
+      <span style={durumStyle(durum)}>
+        <span role="status" aria-atomic="true">{durumMetni(durum)}</span>
+        {durum.tip === 'calisiyor' && durum.kalanSn !== undefined && (
+          <span aria-hidden="true"> · {durum.kalanSn} sn</span>
+        )}
+      </span>
     </div>
   );
 }
 
 function durumMetni(d: Durum): string {
-  if (d.tip === 'calisiyor') return d.kalanSn !== undefined ? `● ${d.etiket} · ${d.kalanSn} sn` : `● ${d.etiket}…`;
+  if (d.tip === 'calisiyor') return d.kalanSn !== undefined ? `● ${d.etiket}` : `● ${d.etiket}…`;
   if (d.tip === 'bitti') return `✓ ${d.mesaj}`;
   if (d.tip === 'hata') return `✕ ${d.mesaj}`;
   return '';
