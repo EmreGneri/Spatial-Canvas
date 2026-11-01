@@ -1,5 +1,5 @@
 import { createReadStream, createWriteStream } from 'node:fs';
-import { mkdir, stat, rename, rm, readdir } from 'node:fs/promises';
+import { mkdir, stat, lstat, rename, rm, readdir } from 'node:fs/promises';
 import { dirname, join, relative, sep } from 'node:path';
 import { createHash } from 'node:crypto';
 import { Readable, Transform } from 'node:stream';
@@ -37,13 +37,16 @@ export async function downloadAsset({ url, dest, size, sha256 }, fetchImpl = fet
   }
 }
 
-// Yerel deneysel modelleri silme; build çıktısına da kopyalanacaklarını açıkça bildir.
+// Preserve local experiments while making their exclusion from the deployment explicit.
 export async function warnUnknownAssets(dir, keep, warn = console.warn) {
   const entries = await readdir(dir, { recursive: true, withFileTypes: true }).catch(() => []);
   for (const entry of entries) {
     if (entry.isDirectory()) continue;
     const path = join(entry.parentPath, entry.name);
     const rel = relative(dir, path).split(sep).join('/');
-    if (!keep.has(rel)) warn(`  WARNING  ${path} is not in the fetch list; preserved locally and may ship in the build.`);
+    if (!keep.has(rel)) {
+      const metadata = await lstat(path).catch(() => null);
+      warn(`  OMIT  ${path} (${metadata ? metadata.size + ' bytes' : 'unknown size'}): not in the active fetch list; preserved locally, excluded from build.`);
+    }
   }
 }

@@ -3,6 +3,7 @@ import react from '@vitejs/plugin-react';
 import { readFileSync } from 'fs';
 import { resolve } from 'path';
 import { yardimciEklentisi } from './sidecar/vite-eklentisi.ts';
+import { allowlistedPublicAssetsPlugin } from './scripts/public-assets-plugin.mjs';
 
 /**
  * SÜRÜM TEK KAYNAKTAN. Arayüz kendi sürümünü göstermiyordu; başlıkta aylar
@@ -18,7 +19,7 @@ export default defineConfig({
   define: {
     __APP_VERSION__: JSON.stringify(pkg.version),
   },
-  plugins: [react(), yardimciEklentisi()],
+  plugins: [react(), yardimciEklentisi(), allowlistedPublicAssetsPlugin()],
   // Ajan çalışma kopyaları (.claude/worktrees) ve ölçüm çıktıları izlenmez: içlerindeki
   // dev model dosyaları/dist klasörleri izleyiciyi EBUSY ile çökertiyordu; .bench-tmp'deki
   // Python dışa aktarım ortamı da her dosya değişiminde sayfayı yeniden yüklüyordu.

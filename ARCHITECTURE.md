@@ -1167,10 +1167,16 @@ ayrıca bir sözleşme değişikliği gerekmez.
 
 - Depth Anything V2 Small, YOLOS Tiny, IS-Net ve ORT runtime dosyaları
   `public/` içindedir; CDN yok. `npm run fetch:assets` ile yeniden üretilir.
-- **`public/` = yayınlanan dosyalar (2026-09-24).** Vite `public/`'i olduğu gibi
-  `dist/`'e kopyalar. `npm run build` önce `fetch:assets` çalıştırır; betik
-  `public/models` ve `public/ort`'u listesinin birebir aynası yapar (listede
-  olmayan ağırlık silinir, lisansı kapalı eski modeller dağıtıma sızmaz) ve
+- **Yayın varlık listesi (2026-11-01).** `npm run build` önce `fetch:assets`
+  çalıştırır. İndirme ve yayın izin listesi tek kaynaktan, aynı env bayraklarıyla
+  üretilir. `public/models`, `public/ort` ve `public/mediapipe-wasm` içindeki
+  yerel dosyalar silinmez; dev sunucusu bunları kullanmaya devam eder. Build
+  bu üç dizinin tamamını kopyalamaz: en baştan yalnız etkin listedeki dosyaları
+  `dist` içindeki karşılıklarına kopyalar. Liste dışındakiler yol ve bayt
+  boyutuyla loglanır; build'i durdurmaz. `VITE_DAVID_PHOTO` kapalıysa DAViD
+  fp32, `VITE_MOGE2_PHOTO` kapalıysa MoGe yayın listesine girmez. Bu ayrım
+  kişisel deney dosyalarını korurken yerel production çıktısıyla temiz Vercel
+  çıktısının aynı etkin listeyi kullanmasını sağlar. Varlık hazırlığı ayrıca
   `public/` içinde video varsa build'i durdurur. Test klipleri
   `assets/test-clips/` altındadır.
 - Gerçek 3DGS eğitim kodu `src/vendor/splat.js/` altında sabitlenmiştir;

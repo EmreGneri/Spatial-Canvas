@@ -100,9 +100,18 @@ npm run dev
 
 Model ve runtime CDN'den gelmez; tamamen yereldir. `public/models` ve `public/ort` silinirse `npm run fetch:assets` ile yeniden üretilir.
 
-`public/` build'de olduğu gibi `dist/`'e kopyalanıp yayınlanır. Bu yüzden `fetch:assets` onu listenin birebir aynası tutar: listede olmayan model dosyalarını siler, `public/` içinde video bulursa durur. Test klipleri `assets/test-clips/`'e konur (gitignore'lı; dev sunucusu `/assets/test-clips/...` yolundan verir).
+`fetch:assets` yerel deney dosyalarını silmez. İndirme ve yayın listesi tek kaynaktır: [asset-manifest.mjs](scripts/asset-manifest.mjs). Build, `public/models`, `public/ort` ve `public/mediapipe-wasm` içinden yalnız etkin listedeki dosyaları `dist/`'e kopyalar; diğerlerini yol ve bayt boyutuyla loglar. Dev sunucusu yerel dosyaları sunmaya devam eder. Diğer `public/` dosyaları aynen yayınlanır. `public/` içinde video varsa hazırlık durur; test klipleri `assets/test-clips/`'e konur (gitignore'lı; dev sunucusu `/assets/test-clips/...` yolundan verir).
 
-**Deploy (Vercel):** `vercel.json` `npm run build` çalıştırır; build önce `fetch:assets` ile modelleri HuggingFace'ten indirir (~180 MB; bu makinede temiz kopyada 1 dk 19 sn sürdü).
+`VITE_DAVID_PHOTO=1` fp32 DAViD'yi, `VITE_MOGE2_PHOTO=1` MoGe'yi, `VITE_FAST_MASK=1` hızlı kişi maskelerini hem indirme hem yayın listesine ekler. Bayraklar kapalıysa bu modeller yerelde bulunsa da yayınlanmaz. Sabit revizyonlu DAViD int8 maskesi etkin listede kalır. Yerel VDA dışa aktarımları fetch listesinde bulunmaz: dev'de kullanılabilir, production build'e girmez.
+
+Standart production hazırlığı Vite ile aynı `.env`, `.env.local`, `.env.production`, `.env.production.local` önceliğini kullanır; shell ortamındaki bayraklar dosyalardakileri ezer.
+
+**Deploy (Vercel):** `vercel.json` `npm run build` çalıştırır; build önce
+`fetch:assets` ile etkin modelleri hazırlar. Opsiyonel bayraklar kapalıyken
+güncel manifest 14 indirilebilir dosya için 487.059.481 bayt tanımlar;
+8 runtime dosyası kurulu npm paketlerinden kopyalanır. Bu, indirme süresi
+veya her ziyaretçinin aktaracağı bayt sayısı değildir; önbellek ve kullanılan
+model yolları tarayıcı aktarımını belirler. Opsiyonel bayraklar toplamı artırır.
 
 ## Scripts
 
@@ -111,7 +120,7 @@ Model ve runtime CDN'den gelmez; tamamen yereldir. `public/models` ve `public/or
 | `npm run dev` | Vite dev server |
 | `npm run build` / `preview` | `fetch:assets` + lisans bildirimi + production build / önizleme |
 | `npm run typecheck` | `tsc --noEmit` |
-| `npm run fetch:assets` | Model + ORT dosyalarını vendor eder; listede olmayanları siler |
+| `npm run fetch:assets` | Etkin model + runtime listesini hazırlar; yerel deneyleri korur |
 | `npm run verify` | Fotoğraf, video, render, export ve 3DGS kamera matematiği dahil sözleşme kontrolleri |
 | `npm run verify:browser` | Kurulu Chrome'da uygulama açılışı, WebGL çizimi, mod düğmeleri ve duraklat/devam smoke testi |
 
@@ -129,7 +138,7 @@ Model ve runtime CDN'den gelmez; tamamen yereldir. `public/models` ve `public/or
 
 `fetch:assets` fotoğraf/canlı derinlik için `depth-anything-v2-small`, nesne
 tespiti için `yolos-tiny`, nesne ayırma için `isnet-general-onnx` indirir.
-Etkin model listesi ve dosya adları [fetch-assets.mjs](scripts/fetch-assets.mjs)
+Etkin model listesi ve dosya adları [asset-manifest.mjs](scripts/asset-manifest.mjs)
 içindedir. `depth-anything-v2-base` ve `RMBG-1.4` dağıtım listesinden
 çıkarılmıştır. `3D eğit` SfM ve Gaussian eğitimi için vendored `splat.js`
 kullanır; isteğe bağlı “Yalnız özneyi eğit” seçeneği ayrıca IS-Net kullanır.
