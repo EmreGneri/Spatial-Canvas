@@ -3,6 +3,45 @@
 Sözleşmeye dokunan her değişiklik buraya yazılır (`ARCHITECTURE.md` kuralı: sessiz sapma yok).
 En yeni üstte.
 
+## 2026-11-01 — Model beklemeleri, kaynak ömrü ve yayın listesi
+
+- GPU kuyruğunda yerel bekleme ve Web Lock edinimi de zaman aşımına girer;
+  süresi dolan iş sonradan başlamaz, çalışan GPU işi gerçek bitişine kadar
+  kilidini korur. Cache Storage araması/gövdesi takılırsa model yüklemesi
+  ağa döner; indirme akışının ilerleme temelli zaman aşımı korunur.
+- Fotoğraf işi bittiğinde kullanılmayan DAViD öngetirme tamponu bırakılır;
+  eşzamanlı fotoğraf ve oturum kurulumu aynı indirmeyi paylaşabilir.
+- WebM constructor/start/runtime hataları capture track, timer ve olay
+  dinleyicilerini bırakır; hata sonrası geç stop olayı bozuk dosya indirmez.
+  Çıktı durumu erişilebilir status bölgesidir; saniyelik sayaç ayrı tutulur.
+- Duraklatılmış hazır videoda maske değişimi aynı zamanın doğru varyantını
+  yeniden okur. Maske hazırlığındaki hata yalnız yarım sahnenin yazıcılarını
+  ve dosyalarını temizler; bitmiş sahneler korunur, tekrar deneme yapılabilir.
+- Embed eski fotoğrafın geç sonucunu yeni kaynağa/Engine'e uygulamaz;
+  URL'den kaynak yükleme tek observed-attribute kapısından geçer. Dosya,
+  slot ve embed preset'leri sahne değişmeden önce ortak v1 yapı denetiminden
+  geçer; bilinmeyen alan toleransı korunur.
+- İndirme ve yayın varlık listesi tek kaynağa taşındı. Yerel `public`
+  deneyleri ve dev erişimi korunur; build üç yönetilen dizine yalnız etkin
+  env listesi dosyalarını baştan kopyalar. Dışlananlar yol ve bayt boyutuyla
+  loglanır. Sözleşme uygulamadan önce bu davranışa göre güncellendi.
+- Dev sunucusu dosya izleyicisi `sidecar/.venv`, `output/` ve `.superpowers/`
+  dizinlerini taramaz. Yeni sunucunun ilk sayfası ~12 sn yerine ~0,5 sn'de
+  gelir (izlenen girdi 5.892 → 739); `verify:browser` ve
+  `verify:video-cache` artık sayfa açılışında zaman aşımına düşmez.
+- Tarayıcı smoke testi açılış sahnesinde gerçek PLY çıktısının status
+  bölgesini doğrular (açılış sahnesinde 262.144 splat vardır).
+
+Mantık düzeltmeleri mevcut verify betiklerinde hata önce yakalanarak
+doğrulanır; embed kaynak testi standart zincire eklendi. Her commit öncesi
+yalnız o commit'in ağacında `npm run typecheck` ve tam `npm run verify`
+geçti; son ağaçta `npm run build` geçti (`dist/models`: 14 dosya,
+487.059.481 bayt; `public/models` yol/boyut/mtime aynı). Commit'ler:
+`b83bba4`, `cd01ae2`, `8ea6af3`, `2f13bbf`, `74ed1d5`, `bdc5244`,
+`d0b3d74`, `c13ebf7`, `7e523c4`, `09b93ab`, `efdc02c`, `bb2a0ed`. Gerçek GPU hızı,
+tepe RAM, telefon ve ekran okuyucu kabulü ayrı ölçüm gerektirir; bu
+değişiklikler yeni model veya daha düşük canlı girdi çözünürlüğü getirmez.
+
 ## 2026-09-27 — Gezilebilir 3DGS ölçümü ve deneysel derinlik sınırı
 
 Kamera çözümünde yenilik seçimi, sıralı çift grafiği ve odak alt örneklemesi
