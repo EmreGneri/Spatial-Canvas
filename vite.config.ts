@@ -23,7 +23,10 @@ export default defineConfig({
   // Ajan çalışma kopyaları (.claude/worktrees) ve ölçüm çıktıları izlenmez: içlerindeki
   // dev model dosyaları/dist klasörleri izleyiciyi EBUSY ile çökertiyordu; .bench-tmp'deki
   // Python dışa aktarım ortamı da her dosya değişiminde sayfayı yeniden yüklüyordu.
-  server: { watch: { ignored: ['**/.claude/**', '**/olcum-out/**', '**/dist/**', '**/.bench-tmp/**', '**/public/models/**'] } },
+  // sidecar/.venv (~9 bin dosya), output/ ve .superpowers/ taraması yeni sunucunun ilk
+  // sayfasını ~12 sn bekletiyor, tarayıcı smoke testini 30 sn sınırında düşürüyordu.
+  server: { watch: { ignored: ['**/.claude/**', '**/olcum-out/**', '**/dist/**', '**/.bench-tmp/**', '**/public/models/**',
+    '**/sidecar/.venv/**', '**/output/**', '**/.superpowers/**'] } },
   build: {
     rollupOptions: {
       input: {
