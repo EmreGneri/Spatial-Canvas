@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { registerHooks } from 'node:module';
 import { videoWindowIndices, alignVideoWindow, blendVideoSeam, quantizeVideoDepth } from '../src/engine/vision/videoPrecomputeWindow.ts';
 import { detailPreparedDepth, prepareVideoDepth, videoDepthRange, videoPreparationPolicy, estimatePreparationSeconds, AUTO_PREPARE_MAX_SECONDS } from '../src/engine/vision/videoPrecompute.ts';
 
@@ -72,4 +73,77 @@ await cancelledHandle.done;
 assert.deepEqual(cancelled, ['loading', 'cancelled']);
 assert.equal(cancelledHandle.hasFrame(0), false);
 await cancelledHandle.dispose();
+
+// Use real preparation/mask lifecycle with deterministic decode and an in-memory OPFS sink.
+// Failure must release only the unfinished scene, then a second request can finish it.
+for (const failure of ['capture', 'close']) {
+  const decoder = `export async function decodeVideoDepthSource(_f,w,h,signal,metadata,save) {
+    await metadata(0.6);
+    for (let i=0;i<6;i++) { signal.throwIfAborted(); await save(i/10,new Uint8ClampedArray(w*h*4).fill(i<3?20:230)); }
+  }`;
+  const hook = registerHooks({ resolve(specifier, context, next) {
+    if (context.parentURL?.endsWith('?mask-retry-test') && specifier === './videoPrecomputeDecode.ts') {
+      return { url: `data:text/javascript,${encodeURIComponent(decoder)}`, shortCircuit: true };
+    }
+    return next(specifier, context);
+  } });
+  const savedNavigator = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+  const files = new Map(), active = new Set();
+  let abortedWriters = 0;
+  let failClose = failure === 'close';
+  const directory = {
+    async getFileHandle(name) {
+      if (!files.has(name)) files.set(name, new Blob());
+      return { getFile: async () => files.get(name), async createWritable() {
+        const chunks = [], writer = {
+          async write(data) { chunks.push(new Uint8Array(data.buffer, data.byteOffset, data.byteLength).slice()); },
+          async close() {
+            if (failClose && name === 'masked-1') { failClose = false; throw Error('temporary close failure'); }
+            files.set(name, new Blob(chunks)); active.delete(writer);
+          },
+          async abort() { abortedWriters++; active.delete(writer); },
+        };
+        active.add(writer); return writer;
+      } };
+    },
+    async removeEntry(name) { files.delete(name); },
+  };
+  Object.defineProperty(globalThis, 'navigator', { configurable: true, value: { storage: {
+    getDirectory: async () => ({ getDirectoryHandle: async () => directory, removeEntry: async () => files.clear() }),
+    estimate: async () => ({ quota: 1e9, usage: 0 }),
+  } } });
+  let prepared;
+  try {
+    const { prepareVideoDepth: prepare } = await import('../src/engine/vision/videoPrecompute.ts?mask-retry-test');
+    prepared = await prepare(new Blob(), { provider: { width: 8, height: 8, dispose: async () => {},
+      infer: async frames => frames.map(() => Float32Array.from({ length: 64 }, (_, i) => i / 64)) } });
+    await prepared.done;
+    assert.ok(prepared.hasFrame(0.4), 'both scenes have prepared full-scene depth');
+    const original = await prepared.frameAt(0.4);
+    await assert.rejects(prepared.prepareMasks(async frame => {
+      if (failure === 'capture' && frame.data[0] > 100) throw Error('temporary mask failure');
+      return new Float32Array(64).fill(0.75);
+    }), /temporary (mask|close) failure/);
+    assert.equal(prepared.hasMask(0.1), true, 'completed first scene survives the failure');
+    assert.equal(prepared.hasMask(0.4), false, 'partial second scene never publishes');
+    assert.equal(active.size, 0, 'failed mask preparation releases its two writers');
+    assert.equal(abortedWriters, failure === 'capture' ? 2 : 1);
+    assert.equal(files.has('mask-1'), false, 'unfinished scene files are removed');
+    assert.deepEqual((await prepared.frameAt(0.4)).data, original.data, 'full-scene depth stays readable');
+    let captures = 0;
+    await prepared.prepareMasks(async frame => {
+      captures++;
+      assert.ok(frame.data[0] > 100, 'retry does not replace the committed first scene');
+      return new Float32Array(64).fill(0.75);
+    });
+    assert.equal(captures, 2, 'retry captures only the unfinished scene endpoints');
+    assert.equal(prepared.hasMask(0.4), true, 'retry completes the mask track');
+    assert.equal(active.size, 0);
+  } finally {
+    await prepared?.dispose();
+    hook.deregister();
+    if (savedNavigator) Object.defineProperty(globalThis, 'navigator', savedNavigator);
+    else delete globalThis.navigator;
+  }
+}
 console.log('video precompute: official anchors, padding, affine alignment, seam endpoints, shared Uint16 range, fallback, cancellation passed');

@@ -169,7 +169,11 @@ export async function prepareVideoDepth(file: Blob, options: PrepareOptions = {}
     open.add(writable);
     return {
       async write(data: ArrayBufferView) { aborted(signal); await writable.write(data as unknown as BufferSource); },
-      async close() { open.delete(writable); await writable.close(); return handle.getFile(); },
+      async close() { await writable.close(); open.delete(writable); return handle.getFile(); },
+      async abort() {
+        if (!open.has(writable)) return;
+        await writable.abort().catch(() => {}); open.delete(writable);
+      },
     };
   };
   const slice = async (source: File, index: number, bytes: number) => source.slice(index * bytes, (index + 1) * bytes).arrayBuffer();
@@ -337,6 +341,7 @@ export async function prepareVideoDepth(file: Blob, options: PrepareOptions = {}
           return out;
         };
         for (let scene = 0; scene < scenes.length - 1; scene++) {
+          if (scenes[scene + 1] <= maskReadyFrames) continue;
           // Sahneye yerel: kesmeden önceki öznenin maskesi yeni sahneye taşınmaz. Sahnede hiç
           // güvenilir anahtar maske yoksa iz yazılmaz; o sahne tam derinlik + canlı maskeyle kalır.
           let lastValid: Float32Array = new Float32Array(n).fill(1), trusted = false;
@@ -347,37 +352,47 @@ export async function prepareVideoDepth(file: Blob, options: PrepareOptions = {}
             return lastValid;
           };
           const keys = maskKeyFrames(scenes[scene], scenes[scene + 1]);
-          const out = await stream(`mask-${scene}`), maskedOut = await stream(`masked-${scene}`);
-          // Maskeli detay (stretch + sobel + iki bölgeli sınır) sahne içinde sırayla, aralık taşınarak.
-          const stretch = yeniStretchAraligi();
-          let written = scenes[scene];
-          const emit = async (mask: Float32Array) => {
-            const bytes = toBytes(mask), index = written++;
-            await out.write(bytes);
-            const quantized = Float32Array.from(bytes, v => v / 255);
-            const local = index - scenes[scene];
-            stretch.alpha = local === 0 ? 1 : stretchAlpha(stamps[index] - stamps[index - 1]);
-            const packed = new Uint16Array(await slice(depthFiles[scene], local, n * 2));
-            await maskedOut.write(detailPreparedDepth(packed, (await frame(index)).data, width, height, quantized, stretch));
-          };
-          let startMask = await keyMask(keys[0]);
-          for (let k = 0; k < keys.length; k++) {
-            const a = keys[k], b = keys[k + 1];
-            if (b === undefined) { await emit(startMask); break; }
-            const endMask = await keyMask(b);
-            const frames = await Promise.all(Array.from({ length: b - a + 1 }, (_, j) => frame(a + j)));
-            const masks = await propagateMaskInterval(frames, startMask, endMask, width, height, () => sleep(0));
-            aborted(signal);
-            for (let j = 0; j < masks.length - 1; j++) await emit(masks[j]);
-            startMask = endMask;
+          let out: Awaited<ReturnType<typeof stream>> | undefined;
+          let maskedOut: Awaited<ReturnType<typeof stream>> | undefined;
+          let maskFile: File, maskedFile: File;
+          try {
+            out = await stream(`mask-${scene}`); maskedOut = await stream(`masked-${scene}`);
+            // Maskeli detay (stretch + sobel + iki bölgeli sınır) sahne içinde sırayla, aralık taşınarak.
+            const stretch = yeniStretchAraligi();
+            let written = scenes[scene];
+            const emit = async (mask: Float32Array) => {
+              const bytes = toBytes(mask), index = written++;
+              await out!.write(bytes);
+              const quantized = Float32Array.from(bytes, v => v / 255);
+              const local = index - scenes[scene];
+              stretch.alpha = local === 0 ? 1 : stretchAlpha(stamps[index] - stamps[index - 1]);
+              const packed = new Uint16Array(await slice(depthFiles[scene], local, n * 2));
+              await maskedOut!.write(detailPreparedDepth(packed, (await frame(index)).data, width, height, quantized, stretch));
+            };
+            let startMask = await keyMask(keys[0]);
+            for (let k = 0; k < keys.length; k++) {
+              const a = keys[k], b = keys[k + 1];
+              if (b === undefined) { await emit(startMask); break; }
+              const endMask = await keyMask(b);
+              const frames = await Promise.all(Array.from({ length: b - a + 1 }, (_, j) => frame(a + j)));
+              const masks = await propagateMaskInterval(frames, startMask, endMask, width, height, () => sleep(0));
+              aborted(signal);
+              for (let j = 0; j < masks.length - 1; j++) await emit(masks[j]);
+              startMask = endMask;
+            }
+            maskFile = await out.close(); maskedFile = await maskedOut.close();
+          } catch (error) {
+            // A failed scene owns only these writers; completed depth and mask scenes stay usable.
+            await Promise.all([out?.abort(), maskedOut?.abort()]);
+            await Promise.all([`mask-${scene}`, `masked-${scene}`].map(name => dir!.removeEntry(name).catch(() => {})));
+            throw error;
           }
-          const maskFile = await out.close(), maskedFile = await maskedOut.close();
           if (trusted) { maskFiles[scene] = maskFile; maskedFiles[scene] = maskedFile; }
           else await Promise.all([dir!.removeEntry(`mask-${scene}`), dir!.removeEntry(`masked-${scene}`)]);
           maskReadyFrames = scenes[scene + 1];
           onProgress?.(maskReadyFrames / stamps.length);
         }
-      })();
+      })().catch(error => { maskJob = null; throw error; });
       return maskJob;
     },
     async dispose() { disposed = true; cancel(); await done; await remove(); },
