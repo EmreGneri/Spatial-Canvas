@@ -102,14 +102,14 @@ Model ve runtime CDN'den gelmez; tamamen yereldir. `public/models` ve `public/or
 
 `fetch:assets` yerel deney dosyalarını silmez. İndirme ve yayın listesi tek kaynaktır: [asset-manifest.mjs](scripts/asset-manifest.mjs). Build, `public/models`, `public/ort` ve `public/mediapipe-wasm` içinden yalnız etkin listedeki dosyaları `dist/`'e kopyalar; diğerlerini yol ve bayt boyutuyla loglar. Dev sunucusu yerel dosyaları sunmaya devam eder. Diğer `public/` dosyaları aynen yayınlanır. `public/` içinde video varsa hazırlık durur; test klipleri `assets/test-clips/`'e konur (gitignore'lı; dev sunucusu `/assets/test-clips/...` yolundan verir).
 
-`VITE_DAVID_PHOTO=1` fp32 DAViD'yi, `VITE_MOGE2_PHOTO=1` MoGe'yi, `VITE_FAST_MASK=1` hızlı kişi maskelerini hem indirme hem yayın listesine ekler. Bayraklar kapalıysa bu modeller yerelde bulunsa da yayınlanmaz. Sabit revizyonlu DAViD int8 maskesi etkin listede kalır. Yerel VDA dışa aktarımları fetch listesinde bulunmaz: dev'de kullanılabilir, production build'e girmez.
+`VITE_DAVID_PHOTO=1` fp32 DAViD'yi, `VITE_MOGE2_PHOTO=1` MoGe'yi, `VITE_FAST_MASK=1` büyük çok sınıflı kişi maskesini (`?hizliMaske=multiclass`) hem indirme hem yayın listesine ekler. Küçük `selfie_segmenter` (249.537 bayt) varsayılan listededir: nesne ayırma açık canlı videoda her derinlik karesinin kişi maskesini bir Worker'da üretir ve yalnız ayırma açılınca yüklenir; `?hizliMaske=isnet` yalnız IS-Net yoluna döner. Bayraklar kapalıysa bu modeller yerelde bulunsa da yayınlanmaz. Sabit revizyonlu DAViD int8 maskesi etkin listede kalır. Yerel VDA dışa aktarımları fetch listesinde bulunmaz: dev'de kullanılabilir, production build'e girmez.
 
 Standart production hazırlığı Vite ile aynı `.env`, `.env.local`, `.env.production`, `.env.production.local` önceliğini kullanır; shell ortamındaki bayraklar dosyalardakileri ezer.
 
 **Deploy (Vercel):** `vercel.json` `npm run build` çalıştırır; build önce
 `fetch:assets` ile etkin modelleri hazırlar. Opsiyonel bayraklar kapalıyken
-güncel manifest 14 indirilebilir dosya için 487.059.481 bayt tanımlar;
-8 runtime dosyası kurulu npm paketlerinden kopyalanır. Bu, indirme süresi
+güncel manifest 15 indirilebilir dosya için 487.309.018 bayt tanımlar;
+10 runtime dosyası kurulu npm paketlerinden kopyalanır. Bu, indirme süresi
 veya her ziyaretçinin aktaracağı bayt sayısı değildir; önbellek ve kullanılan
 model yolları tarayıcı aktarımını belirler. Opsiyonel bayraklar toplamı artırır.
 

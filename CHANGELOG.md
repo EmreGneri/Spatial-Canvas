@@ -3,6 +3,23 @@
 Sözleşmeye dokunan her değişiklik buraya yazılır (`ARCHITECTURE.md` kuralı: sessiz sapma yok).
 En yeni üstte.
 
+## 2026-11-01 — Canlı videoda Worker'da hızlı kişi maskesi (varsayılan)
+
+- Nesne ayırma açıkken canlı video ve kamera, her derinlik karesinin kendi
+  renk karesinde MediaPipe `selfie_segmenter` maskesini kullanır; kişi
+  kapsamı %8 altındaysa IS-Net yolu aynen sürer. `?hizliMaske=isnet` eski
+  yolu, `?hizliMaske=multiclass` büyük modeli seçer.
+- Segmentasyon modül Worker'ında (`personMaskWorker.ts`). Aynı klipte, soğuk
+  profilde, ayırma açıldıktan sonraki en uzun ana iş parçacığı görevi
+  5,3–7,1 sn → 0,59–0,65 sn (yalnız IS-Net: 0,54–0,67 sn); 50 ms üstü kare
+  sayısı IS-Net düzeyinde; maske yaşı ~3,8 sn → ~0,3 sn. Ayrıntı:
+  `docs/benchmarks/video-fast-mask.md`.
+- Model ve Worker yalnız kullanıcı-kapalı mandalı kalkınca yüklenir. Varsayılan
+  yayın listesine `selfie_segmenter.tflite` (249.537 bayt) ve MediaPipe modül
+  çalışma zamanı (`vision_wasm_module_internal.js/.wasm`) eklendi; multiclass
+  yalnız `VITE_FAST_MASK=1` ile yayınlanır. Sözleşme (`ARCHITECTURE.md`
+  "Model ve Runtime") koddan önce güncellendi.
+
 ## 2026-11-01 — Model beklemeleri, kaynak ömrü ve yayın listesi
 
 - GPU kuyruğunda yerel bekleme ve Web Lock edinimi de zaman aşımına girer;

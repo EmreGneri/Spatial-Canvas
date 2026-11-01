@@ -97,10 +97,12 @@ try {
   const defaults = assetManifest({}).map(asset => asset.path);
   assert.ok(defaults.some(path => /microsoft-david\/[a-f0-9]{40}\/.*int8\.onnx$/.test(path)), 'default int8 DAViD mask must still ship');
   assert.ok(!defaults.some(path => /microsoft-david\/(depth|foreground)-.*\.onnx$/.test(path)), 'fp32 DAViD must require its build flag');
-  assert.ok(!defaults.some(path => /moge-2|selfie_.*\.tflite|video-depth-anything/.test(path)), 'optional local models must not leak into the default build');
+  assert.ok(!defaults.some(path => /moge-2|selfie_multiclass|video-depth-anything/.test(path)), 'optional local models must not leak into the default build');
+  assert.ok(defaults.includes('models/mediapipe/selfie_segmenter.tflite'), 'separation-on live video uses the selfie mask by default');
+  assert.ok(defaults.includes('mediapipe-wasm/vision_wasm_module_internal.wasm'), 'the person-mask Worker needs the module runtime');
   assert.equal(assetManifest({ VITE_DAVID_PHOTO: '1' }).length - defaults.length, 2);
   assert.equal(assetManifest({ VITE_MOGE2_PHOTO: '1' }).length - defaults.length, 1);
-  assert.equal(assetManifest({ VITE_FAST_MASK: '1' }).length - defaults.length, 2);
+  assert.equal(assetManifest({ VITE_FAST_MASK: '1' }).length - defaults.length, 1, 'the flag adds only the multiclass model');
   assert.deepEqual(assetManifest(Object.fromEntries(Object.keys(allFlags).map(key => [key, '0']))).map(asset => asset.path), defaults);
   assert.equal(new Set(allAssets.map(asset => asset.path)).size, allAssets.length, 'manifest paths must be unique');
   for (const asset of allAssets) {

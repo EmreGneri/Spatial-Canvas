@@ -1179,6 +1179,18 @@ ayrıca bir sözleşme değişikliği gerekmez.
   çıktısının aynı etkin listeyi kullanmasını sağlar. Varlık hazırlığı ayrıca
   `public/` içinde video varsa build'i durdurur. Test klipleri
   `assets/test-clips/` altındadır.
+- **Canlı video hızlı kişi maskesi (2026-11-01).** Nesne ayırma açıkken canlı
+  video ve kamera, her model derinlik karesinin kendi renk karesinde MediaPipe
+  `selfie_segmenter` (249.537 bayt, Apache-2.0) maskesini kullanır. Kişi
+  kapsamı %8'in altındaysa IS-Net yolu aynen sürer. Segmentasyon bir modül
+  Worker'ında çalışır; sonuç yalnız hesaplandığı derinlik karesine uygulanır.
+  Model ve Worker yalnız kullanıcı-kapalı mandalı kalkınca yüklenir: ayırmayı
+  açmayan video ziyaretçisi bunları indirmez. Worker, MediaPipe'ın modül
+  çalışma zamanını (`vision_wasm_module_internal.js/.wasm`) kullanır; bu iki
+  dosya `mediapipe-wasm` listesindedir. `selfie_segmenter` varsayılan listede,
+  `selfie_multiclass_256x256` yalnız `VITE_FAST_MASK=1` ile listeye girer.
+  `?hizliMaske=isnet` hızlı maskeyi kapatır, `?hizliMaske=multiclass` büyük
+  modeli seçer. Ölçüm: `docs/benchmarks/video-fast-mask.md`.
 - Gerçek 3DGS eğitim kodu `src/vendor/splat.js/` altında sabitlenmiştir;
   görüntü kareleri kullanıcının yerel dosyasından gelir.
 - **Önbellek (vercel.json):** URL'si içerik değişince değişmeyen `/ort/*` ve

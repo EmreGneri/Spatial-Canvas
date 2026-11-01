@@ -2,8 +2,50 @@
 
 Browser-only path (sidecar blocked), same harness and clip sections as
 `docs/benchmarks/video-mask-tracking.md` (A1, A2, B1, B2, C1). Local Vite dev builds, nothing deployed.
-Default behaviour is unchanged: the new mask source is behind `?hizliMaske=multiclass|selfie` and
-stays **off**.
+**Update 2026-11-01: `selfie` runs in a module Worker and is the default while separation is on**
+(`?hizliMaske=isnet` turns it off, `?hizliMaske=multiclass` picks the large model). The rest of this
+file is the original main-thread experiment, when the mask was off by default.
+
+## 2026-11-01: Worker, then default
+
+The segmenter moved to `personMaskWorker.ts` (MediaPipe module runtime, GPU delegate on the Worker's
+own `OffscreenCanvas`, delegate warm-up before `ready`). The page sends each depth frame's grabbed
+colour frame (copy) and uses a result only for that same depth frame. One job runs, the newest waiting
+frame replaces the older one, an error or a 2 s job stops the fast path and the IS-Net path takes over.
+The model and Worker load only when the user-off latch is released: a video visitor who never turns
+separation on downloads none of it (checked on the production build: no request in 25 s of playback).
+
+Same clip and harness for every cell: `test-canli.mp4` (540x720, 30 fps, one seated person, curly hair),
+live input 252, `?inference=browser`, sidecar and remote HTTPS blocked, headed installed Chrome,
+viewport 1280x720, WebGPU adapter `nvidia / blackwell` recorded in every run, fresh browser profile per
+run (cold model and delegate), separation switched on after the first depth result, 25 s warm-up,
+2 x 10 s windows, 3 runs per cell. Long tasks come from `PerformanceObserver('longtask')`. Other local
+dev servers were running, so the absolute rates are noisy; the cells were run back to back.
+
+| | main-thread selfie (before) | Worker selfie (now default) | IS-Net only (`?hizliMaske=isnet`) |
+|---|---|---|---|
+| worst main-thread task in the 20 s after separation on | 5283-7134 ms | 589-654 ms | 541-668 ms |
+| long-task time in those 20 s | 12.8-14.1 s | 9.7-10.1 s | 10.2-10.6 s |
+| first fast mask after separation on | 7.0-8.2 s | 9.1-9.5 s | - |
+| long tasks /min (steady) | 275-379 | 336-345 | 244-282 |
+| long tasks >100 ms /min | 160-203 | 204-226 | 201-208 |
+| frames >50 ms /min | 406-497 | 401-435 | 390-425 |
+| frame p99 ms | 170-218 | 152-182 | 164-182 |
+| depth updates /s | 2.66-3.39 | 3.40-3.97 | 3.39-3.47 |
+| applied mask age p50 | 299-404 ms | 284-352 ms | 3770-3898 ms |
+| static depth flicker p50 | 0.022-0.029 | 0.017-0.024 | 0.025-0.030 |
+| depth edges without a colour edge | 0.003-0.009 | 0.005-0.006 | 0.014-0.022 |
+
+No Worker result missed its depth frame (`fastMaskMisses` 0 in all runs). The cold multi-second freeze
+is gone; long frames are at the IS-Net level. Steady long tasks stay ~25 % above IS-Net (mostly 50-100 ms:
+a new mask, window and crop on every depth frame). The first fast mask now comes later because the
+load starts at the click instead of at the first depth frame; the IS-Net mask covers that gap.
+Production build (`vite preview` of `dist`, same Chrome): Worker `ready` on the GPU delegate after
+6.3 s, 55-57 masks in 25 s, no errors, no fallback message.
+
+Raw data and scripts: local `output/quality-2026-11-01/` (`worker-before.json`, `worker-after.json`,
+`measure-video-quality.mjs`, `prod-fast-mask.mjs`). Not measured: fast motion, several people,
+iGPU, other browsers, a phone.
 
 ## Step 0: the lighter region in the reported screenshot
 

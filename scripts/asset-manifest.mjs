@@ -24,12 +24,15 @@ export function assetManifest(env = process.env) {
   ];
 
   // MediaPipe tasks-vision çalışma zamanı: tarayıcı SIMD'li ya da SIMD'siz
-  // (nosimd) derlemeden birini yükler; module_internal kullanılmaz.
+  // (nosimd) derlemeden birini yükler. Canlı video kişi maskesi Worker'ı (personMaskWorker.ts)
+  // importScripts kullanamadığı için modül derlemesini yükler.
   const MP_WASM_FILES = [
     'vision_wasm_internal.js',
     'vision_wasm_internal.wasm',
     'vision_wasm_nosimd_internal.js',
     'vision_wasm_nosimd_internal.wasm',
+    'vision_wasm_module_internal.js',
+    'vision_wasm_module_internal.wasm',
   ];
 
   // src/engine/vision/yuzTespit.ts — yüz landmark modeli. HF deposu değil, Google
@@ -74,11 +77,11 @@ export function assetManifest(env = process.env) {
     { file: 'foreground-segmentation-model-vitb16_384.onnx', size: 449231719 },
   ].map((m) => ({ ...m, url: DAVID_URL + m.file, dest: join(modelRoot, 'microsoft-david', m.file) }));
   const URL_MODELS = env.VITE_DAVID_PHOTO === '1' ? DAVID : [];
-  // ?hizliMaske=selfie|multiclass (video fast person mask, off by default; docs/benchmarks/video-fast-mask.md).
+  // Live video fast person mask (docs/benchmarks/video-fast-mask.md): selfie is the default while
+  // separation is on; ?hizliMaske=multiclass is published only with VITE_FAST_MASK=1.
   // LİSANS: Apache-2.0 — model kartları "Model Card MediaPipe Selfie Segmentation" ve "Model Card
   // Multiclass Segmentation", ikisi de "LICENSED UNDER Apache License, Version 2.0". Sürümlü URL (1).
-  // Yalnız VITE_FAST_MASK=1 ile iner: temiz build'de yoktur, bayrak IS-Net'e düşer.
-  const FAST_MASK = [
+  const [SELFIE_MASK, MULTICLASS_MASK] = [
     { url: 'https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter/float16/1/selfie_segmenter.tflite',
       dest: join(modelRoot, 'mediapipe/selfie_segmenter.tflite'), size: 249537,
       sha256: '191ac9529ae506ee0beefa6b2c945a172dab9d07d1e802a290a4e4038226658b' },
@@ -91,7 +94,7 @@ export function assetManifest(env = process.env) {
     ...MODEL_REPOS.flatMap(({ repo, rev, files }) => files.map(model => ({ ...model,
       path: join(modelRoot, repo, model.file), url: `https://huggingface.co/${repo}/resolve/${rev}/${model.file}`,
     }))),
-    ...[FACE_LANDMARKER, ...EXTRA_MODELS, ...URL_MODELS, ...(env.VITE_FAST_MASK === '1' ? FAST_MASK : [])].map(model => ({
+    ...[FACE_LANDMARKER, SELFIE_MASK, ...EXTRA_MODELS, ...URL_MODELS, ...(env.VITE_FAST_MASK === '1' ? [MULTICLASS_MASK] : [])].map(model => ({
       ...model, path: model.dest, url: model.url ?? `https://huggingface.co/${model.repo}/resolve/${model.rev}/${model.file}`,
     })),
     ...ORT_FILES.map(file => ({ path: `ort/${file}`, source: `node_modules/onnxruntime-web/dist/${file}` })),

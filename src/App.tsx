@@ -8,7 +8,7 @@ import { estimateDepth, depthDevice, FOTO_KALITE, loadDepthModel, luminanceHeigh
 import { segmentForeground, preloadPhotoMaskBytes } from './engine/reconstruction/segmentation';
 import { resampleBilinear } from './engine/reconstruction/silhouette';
 import { captureLiveMask, estimateMaskShift, shiftLiveMask } from './engine/vision/liveMask';
-import { fastMaskModel, loadPersonSegmenter, segmentPerson } from './engine/vision/personMask';
+import { fastMaskModel, loadPersonMaskWorker, type PersonMask, type PersonMaskWorker } from './engine/vision/personMask';
 import { liveInterpolationEnabled, shouldPresentLiveDepth } from './engine/vision/liveDepthFlow';
 import { estimatePreparationSeconds, prepareVideoDepth, videoPreparationPolicy, type VideoDepthHandle, type VideoDepthProgress, type VideoMaskCapture } from './engine/vision/videoPrecompute';
 import { startBufferedVideoPlayback } from './engine/vision/bufferedVideoPlayback';
@@ -993,15 +993,23 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
     let videoMask: { data: Float32Array; captured: Float32Array; width: number; height: number; mediaTime: number;
       colorFrame: { data: Uint8ClampedArray; width: number; height: number }; job?: VideoMaskJob; fast?: true } | null = null;
     let maskBusy = false;
-    // ?hizliMaske (off by default): a fast person mask computed on every model depth frame's own
-    // colour frame. Loaded at the first model frame; synchronous per frame, so no queue and no
-    // late result can land on another video/seek. Failure -> IS-Net path only.
+    // Fast person mask (default selfie; ?hizliMaske=isnet turns it off): computed in a Worker on
+    // every model depth frame's own colour frame while separation is on. Loaded only once the
+    // user-off latch is released, so videos without separation download nothing. A result is used
+    // only for the depth frame it was computed from. Failure -> IS-Net path only.
     const fastModel = fastMaskModel(location.search);
-    let fastSegmenter: Awaited<ReturnType<typeof loadPersonSegmenter>> | null = null;
+    let fastWorker: PersonMaskWorker | null = null;
     let fastRequested = false;
     let fastActive = false;
-    // Fast mask computed during the depth model's GPU wait (keyed by the grabbed colour frame).
-    let fastPending: { frame: ImageData; startAt: number; mask: ReturnType<typeof segmentPerson> } | null = null;
+    // Worker result for a grabbed colour frame, computed during the depth model's GPU wait.
+    let fastReady: { frame: ImageData; startAt: number; doneAt: number; mask: PersonMask } | null = null;
+    const stopFastMask = (err: unknown) => {
+      fastWorker = null;
+      fastActive = false;
+      fastReady = null;
+      if (videoMask?.fast) videoMask = null;
+      say(`hızlı maske durdu, IS-Net ile devam: ${err instanceof Error ? err.message : String(err)}`);
+    };
     let maskUnavailable = false;
     let maskErrors = 0;
     let invalidMasks = 0;
@@ -1207,17 +1215,17 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
             stopLuminanceLoop();
             say('canlı derinlik: model devraldı (depth-anything-v2-small · fp16)');
           }
-          if (fastModel && !fastRequested) {
+          if (fastModel && !fastRequested && !segmentKapaliRef.current) {
             fastRequested = true;
-            void loadPersonSegmenter(fastModel).then((s) => { if (!iptal) fastSegmenter = s; })
+            void loadPersonMaskWorker(fastModel).then((w) => { if (!iptal) fastWorker = w; })
               .catch((err) => say(`hızlı maske yüklenemedi, IS-Net ile devam: ${err instanceof Error ? err.message : String(err)}`));
           }
           syncMaskRequest();
-          if (fastSegmenter && fastModel && d.colorFrame && !segmentKapaliRef.current) {
-            const pending = fastPending?.frame === d.colorFrame ? fastPending : null;
-            fastPending = null;
-            const startAt = pending?.startAt ?? performance.now();
-            const m = pending?.mask ?? segmentPerson(fastSegmenter, fastModel, d.colorFrame);
+          const fast = fastWorker && d.colorFrame && !segmentKapaliRef.current && fastReady?.frame === d.colorFrame ? fastReady : null;
+          if (fastWorker && d.colorFrame && !segmentKapaliRef.current && !fast) videoStats.fastMaskMisses++;
+          if (fast) {
+            fastReady = null;
+            const { startAt, mask: m } = fast;
             let foreground = 0;
             for (const value of m.data) if (value >= 0.5) foreground++;
             const coverage = foreground / m.data.length;
@@ -1225,10 +1233,10 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
             if (fastActive) {
               // Drops an IS-Net job in flight: its older frame must not replace this one.
               maskRevision++;
-              const job = logMaskJob({ reason: 'hizli', startAt, mediaTime: d.mediaTime, doneAt: performance.now(),
+              const job = logMaskJob({ reason: 'hizli', startAt, mediaTime: d.mediaTime, doneAt: fast.doneAt,
                 appliedAt: null, coverage, separation: null, dropped: false });
               videoMask = { data: m.data, captured: m.data, width: m.width, height: m.height, mediaTime: d.mediaTime,
-                colorFrame: d.colorFrame, job, fast: true };
+                colorFrame: fast.frame, job, fast: true };
               maskLost = false;
               if (!segmentRef.current) {
                 updateSegment(true);
@@ -1332,14 +1340,15 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
             }
           },
           onStaleDrop: () => { staleDrops++; },
-          // Fast mask off the depth frame's task: the segmenter runs in the next task, while the GPU
-          // runs the depth model on the same frame (docs/benchmarks/video-fast-mask.md).
+          // The Worker segments the depth frame's colour frame while the GPU runs the depth model on it
+          // (docs/benchmarks/video-fast-mask.md). A replaced frame resolves null.
           onColorFrame: fastModel ? (frame) => {
-            if (!fastSegmenter || !fastModel || segmentKapaliRef.current) return;
-            setTimeout(() => {
-              if (iptal || !fastSegmenter || !fastModel || segmentKapaliRef.current) return;
-              fastPending = { frame, startAt: performance.now(), mask: segmentPerson(fastSegmenter, fastModel, frame) };
-            }, 0);
+            const worker = fastWorker;
+            if (!worker || segmentKapaliRef.current) return;
+            const startAt = performance.now();
+            worker.segment(frame).then((mask) => {
+              if (!iptal && mask && fastWorker === worker) fastReady = { frame, startAt, doneAt: performance.now(), mask };
+            }, (err) => { if (!iptal && fastWorker === worker) stopFastMask(err); });
           } : undefined,
           onError: (err, ardisik) =>
             say(`canlı derinlik hatası (${ardisik}/3): ${err instanceof Error ? err.message : String(err)}`),
