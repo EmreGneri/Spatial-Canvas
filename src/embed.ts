@@ -46,6 +46,7 @@ class SpatialCanvasElement extends HTMLElement {
   private loaded = false;
   private skeleton: HTMLElement | null = null;
   private skeletonTimer = 0;
+  private sourceGeneration = 0;
   /** Render modu material'ları — burada üretilir, burada bırakılır. */
   private materials: {
     points: THREE.Material;
@@ -110,6 +111,7 @@ class SpatialCanvasElement extends HTMLElement {
   }
 
   disconnectedCallback() {
+    this.sourceGeneration++;
     this.observer?.disconnect();
     this.observer = null;
     clearInterval(this.skeletonTimer);
@@ -212,7 +214,9 @@ class SpatialCanvasElement extends HTMLElement {
       this.applyMode(this.getAttribute('mode'));
 
       const src = this.getAttribute('src');
+      const engine = this.engine;
       if (src) await this.loadSource(src);
+      if (this.engine !== engine) return;
 
       const preset = this.getAttribute('preset');
       if (preset) this.applyPreset(preset);
@@ -230,16 +234,24 @@ class SpatialCanvasElement extends HTMLElement {
   }
 
   private async loadSource(src: string | null) {
-    if (!src || !this.engine) return;
+    const generation = ++this.sourceGeneration;
+    const engine = this.engine;
+    if (!src || !engine) return;
+    // Model work cannot be cancelled; obsolete results must not reach a new source or connection.
+    const current = () => generation === this.sourceGeneration && this.engine === engine;
     try {
       const img = await loadImage(src);
+      if (!current()) return;
       // Depth modeli lazy: yalnızca fotoğraf varsa yüklenir
       const { estimateDepth, FOTO_KALITE } = await import('./depth');
+      if (!current()) return;
       const depth = await estimateDepth(img, FOTO_KALITE);
-      this.engine.setPhoto(img);
-      this.engine.setMetricPhotoGeometry(depth.metricGeometry ?? null);
-      this.engine.setDepth(depth.data, depth.width, depth.height);
+      if (!current()) return;
+      engine.setPhoto(img);
+      engine.setMetricPhotoGeometry(depth.metricGeometry ?? null);
+      engine.setDepth(depth.data, depth.width, depth.height);
     } catch (err) {
+      if (!current()) return;
       this.showFallback(`Görsel yüklenemedi: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
@@ -253,7 +265,6 @@ class SpatialCanvasElement extends HTMLElement {
     const src = params.get('src');
     if (src && !this.getAttribute('src')) {
       this.setAttribute('src', src);
-      if (this.engine) this.loadSource(src);
     }
     const preset = params.get('preset');
     if (preset && !this.getAttribute('preset')) {
