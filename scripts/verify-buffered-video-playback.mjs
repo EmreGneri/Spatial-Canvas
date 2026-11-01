@@ -84,6 +84,38 @@ function playbackFixture() {
   };
 }
 
+test('refresh replaces paused prepared depth at the same timestamp after a mask toggle', async () => {
+  const p = playbackFixture();
+  try {
+    p.video.paused = true;
+    p.requests[0].resolve({ ...frame(1), mask: new Float32Array([1]) });
+    await tick();
+    assert.equal(p.published.length, 1);
+    p.stop.refresh?.();
+    assert.equal(p.requests.length, 2, 'refresh reads the paused frame without a new decoded timestamp');
+    p.requests[1].resolve(frame(1));
+    await tick();
+    assert.equal(p.published.length, 2);
+    assert.equal(p.published[1].mask, undefined, 'the unmasked variant replaces the paused masked frame');
+  } finally { p.stop(); }
+});
+
+test('refresh invalidates an old mask read without overlapping disk work', async () => {
+  const p = playbackFixture();
+  try {
+    p.stop.refresh?.();
+    assert.equal(p.requests.length, 1, 'the old read remains the only disk request');
+    p.requests[0].resolve({ ...frame(1), mask: new Float32Array([1]) });
+    await tick();
+    assert.equal(p.published.length, 0, 'the old mask variant cannot publish');
+    assert.equal(p.requests.length, 2, 'the refreshed read starts when the old read settles');
+    p.requests[1].resolve(frame(1));
+    await tick();
+    assert.equal(p.published.length, 1);
+    assert.equal(p.published[0].mask, undefined);
+  } finally { p.stop(); }
+});
+
 for (const newTick of [false, true]) test(`disable invalidates a deferred read ${newTick ? 'with' : 'without'} a new video tick`, async () => {
   const p = playbackFixture();
   try {

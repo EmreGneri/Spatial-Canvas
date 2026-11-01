@@ -245,7 +245,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
   const videoDepthRefreshRef = useRef<(() => void) | null>(null);
   const preparedVideoRef = useRef<VideoDepthHandle | null>(null);
   const preparedVideoAbortRef = useRef<AbortController | null>(null);
-  const preparedVideoStopRef = useRef<(() => void) | null>(null);
+  const preparedVideoStopRef = useRef<ReturnType<typeof startBufferedVideoPlayback> | null>(null);
   const preparedVideoUsableRef = useRef(false);
   /** Hazırlık sürüyor: canlı çıkarım kısılır (F4), V2 zorlanır (F11). */
   const videoPreparingRef = useRef(false);
@@ -1443,7 +1443,10 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
         void handle.prepareMasks(capture, (fraction) => {
           if (isCurrent() && !controller.signal.aborted) setVideoMaskProgress(fraction);
         }).finally(() => { if (isCurrent()) maskPreparingRef.current = false; }).then(() => {
-          if (isCurrent()) say(`video maske izi hazır · ${((performance.now() - started) / 1000).toFixed(1)} sn`);
+          if (isCurrent() && !controller.signal.aborted) {
+            preparedVideoStopRef.current?.refresh();
+            say(`video maske izi hazır · ${((performance.now() - started) / 1000).toFixed(1)} sn`);
+          }
         }).catch((error) => {
           if (!isCurrent() || controller.signal.aborted) return;
           setVideoMaskProgress(null);
@@ -1508,6 +1511,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
     if (next && !liveDepthStopRef.current && !luminanceActiveRef.current && videoRef.current) startLuminanceLoop(videoRef.current, 'video');
     updateSegment(next);
     engineRef.current!.setObjectSeparation(next);
+    preparedVideoStopRef.current?.refresh();
     if (next) preparedMaskRequestRef.current?.();
     say(`nesne ayırma: ${next ? 'AÇIK (arka plan parçacıkları atılır, sadece büst)' : 'kapalı (tüm sahne, arka plan karartılır)'}`);
     if (!next) return;

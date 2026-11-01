@@ -83,7 +83,7 @@ export function startBufferedVideoPlayback(video: HTMLVideoElement, cache: Depth
   onError?: (error: unknown) => void;
   /** False (ör. nesne ayırma açık, maske izi yok) iken okuma yok, canlı derinliğe dönülür. */
   enabled?: () => boolean;
-}): () => void {
+}): (() => void) & { refresh(): void } {
   let active = true, callback: number | null = null, animation: number | null = null, previousTime = -Infinity;
   const reader = createBufferedDepthReader({ cache, ...options, currentTime: () => video.currentTime,
     enabled: () => {
@@ -120,10 +120,12 @@ export function startBufferedVideoPlayback(video: HTMLVideoElement, cache: Depth
     };
     animation = requestAnimationFrame(tick);
   }
-  return () => {
+  const stop = () => {
     active = false; reader.dispose(); video.removeEventListener('seeking', reset);
     video.removeEventListener('seeked', seeked);
     if (callback !== null) video.cancelVideoFrameCallback(callback);
     if (animation !== null) cancelAnimationFrame(animation);
   };
+  // Settings can replace the cached variant while a paused video presents no new frame.
+  return Object.assign(stop, { refresh() { reset(); present(video.currentTime); } });
 }
