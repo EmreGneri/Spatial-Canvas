@@ -1,6 +1,9 @@
 // DAViD mask bytes prefetch (audit item 13): bytes only, one download, plan + network gates, isolated failure (fake fetch; no GPU).
 //   node scripts/verify-david-prefetch.mjs
 import { execFileSync } from 'node:child_process';
+import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+import { stripTypeScriptTypes } from 'node:module';
 
 // Each case in its own process: davidDepth/sidecarClient keep module state and read `location` at import.
 const kos = (ad, kod, hostname = 'example.com') => {
@@ -95,4 +98,89 @@ kos('cache hit: prefetch + use read Cache Storage once, no network', `
   assert.deepEqual(model, []);
   assert.equal(okunan, 1);
 `);
-console.log('OK DAViD mask prefetch: single download, Save-Data/slow-network and plan gates, isolated failure, cache hit');
+kos('discarded source releases completed bytes; stale release does not clear a later source', `
+  const d = await import('./src/engine/vision/davidDepth.ts');
+  const old = {}, next = {};
+  await d.preloadDavidMaskBytes({ tarayici: true }, araclar, old);
+  const releaseOld = old.release;
+  old.released = true; old.release?.();
+  await d.preloadDavidMaskBytes({ tarayici: true }, araclar, next);
+  assert.equal(model.length, 2, 'unused completed bytes must not stay memoized after source finishes');
+  releaseOld?.();
+  assert.equal((await d.inferDavidMaske(rgba, araclar, { tarayici: true })).arkaUc, 'webgpu');
+  assert.equal(model.length, 2, 'an old source cannot discard a newer source download');
+  next.released = true; next.release?.();
+`);
+
+kos('concurrent rejected and accepted sources keep one download and one session', `
+  const d = await import('./src/engine/vision/davidDepth.ts');
+  const rejected = {}, accepted = {};
+  await Promise.all([d.preloadDavidMaskBytes({ tarayici: true }, araclar, rejected), d.preloadDavidMaskBytes({ tarayici: true }, araclar, accepted)]);
+  rejected.released = true; rejected.release?.();
+  await Promise.all([d.inferDavidMaske(rgba, araclar, { tarayici: true }), d.inferDavidMaske(rgba, araclar, { tarayici: true })]);
+  accepted.released = true; accepted.release?.();
+  assert.equal(model.length, 1, 'discarding one source must preserve another source lease');
+  assert.equal(olusan, 1);
+`);
+
+kos('pending download completes without abort; a concurrent accepted source reuses it', `
+  const d = await import('./src/engine/vision/davidDepth.ts');
+  const rejected = {}, accepted = {};
+  const originalFetch = fetch;
+  let complete, opened;
+  const started = new Promise(resolve => { opened = resolve; });
+  const gate = new Promise(resolve => { complete = resolve; });
+  globalThis.fetch = async (...args) => { const response = await originalFetch(...args); opened(); await gate; return response; };
+  const first = d.preloadDavidMaskBytes({ tarayici: true }, araclar, rejected);
+  await started;
+  rejected.released = true; rejected.release?.();
+  const second = d.preloadDavidMaskBytes({ tarayici: true }, araclar, accepted);
+  complete(); await Promise.all([first, second]);
+  assert.equal((await d.inferDavidMaske(rgba, araclar, { tarayici: true })).arkaUc, 'webgpu');
+  accepted.released = true; accepted.release?.();
+  assert.equal(model.length, 1);
+  assert.equal(olusan, 1);
+`);
+
+kos('source released during capability check never starts an unused download', `
+  const d = await import('./src/engine/vision/davidDepth.ts');
+  const lease = {};
+  let finish;
+  const gate = new Promise(resolve => { finish = resolve; });
+  const pending = d.preloadDavidMaskBytes({ tarayici: true }, { webgpuKullanilabilir: () => gate }, lease);
+  lease.released = true;
+  finish(true); await pending;
+  assert.equal(model.length, 0);
+`);
+
+// Exercise the real photo orchestration: source completion/error owns cleanup, not the model consumer.
+{
+  const source = await readFile(new URL('../src/depth.ts', import.meta.url), 'utf8');
+  const start = source.indexOf('export async function estimateDepth(');
+  const end = source.indexOf('\n/** DAViD ön plan maskesi', start);
+  const code = stripTypeScriptTypes(source.slice(start, end).replace('export async', 'async'));
+  const leases = [];
+  let releases = 0;
+  const bindings = {
+    currentPhotoMeasurement: () => null, loadDepthModel: async () => ({}), sidecarEstimators: new WeakSet(),
+    tarayiciCihazi: 'webgpu', depthDevice: 'webgpu', MODEL_INPUT_SIZE: 518,
+    loadTransformers: async () => ({ RawImage: { fromCanvas: async () => ({}) } }),
+    toCanvas: x => x, scaleCanvasTo: x => x,
+    DETAIL_STRENGTH_DEFAULT: 0, FOREGROUND_STRETCH_DEFAULT: false, SOBEL_RELIEF_DEFAULT: 0, DEPTH_SMOOTHING_DEFAULT: false,
+    runPhotoModel: async () => ({ predicted_depth: { data: new Float32Array(4), dims: [1, 2, 2] }, photoModel: 'v2-small' }),
+    normalizeDepth: data => Float32Array.from(data), limitDepthSlope: data => data,
+    davidMaskesiniOnceIndir: async (_selection, _expected, lease) => { leases.push(lease); lease.release = () => { releases++; }; },
+    applyDavidMask: async () => null,
+  };
+  const estimate = new Function(...Object.keys(bindings), `${code}; return estimateDepth;`)(...Object.values(bindings));
+  await estimate({}, { aspect: 'distort', prepareSubjectMask: async () => undefined });
+  assert.equal(releases, 1, 'rejected mask must release its source lease');
+  assert.equal(leases[0].released, true);
+  const error = new Error('source changed during mask preparation');
+  await assert.rejects(estimate({}, { aspect: 'distort', prepareSubjectMask: async () => { throw error; } }), e => e === error);
+  assert.equal(releases, 2, 'source cancellation/error must release its own lease');
+  assert.equal(leases[1].released, true);
+  assert.notEqual(leases[0], leases[1], 'each photo owns a separate lease');
+  console.log('  ✓ estimateDepth releases its source lease after rejected mask and preparation error');
+}
+console.log('OK DAViD mask prefetch: single download, Save-Data/slow-network and plan gates, isolated failure, cache hit, source leases');

@@ -71,10 +71,15 @@ let yardimciKapali = false;
 /** Maske baytları: önceden getirme ile oturum kurulumu AYNI indirmeyi paylaşır; oturum kurulunca bırakılır. */
 let maskeBaytlari: Promise<ArrayBuffer> | null = null;
 let maskeOturumuVar = false;
+let maskeOturumuKuruluyor = false;
+export interface DavidMaskPrefetchLease { released?: boolean; release?: () => void }
+const prefetchLeases = new Set<DavidMaskPrefetchLease>();
 function maskeBaytlariniGetir(getir?: typeof fetch) {
   const al = (url: string, ad: string) => ilerlemeliGetir(url, ad, getir);
-  return maskeBaytlari ??= (FP32_MASKE ? al(KOK + DAVID_DOSYALARI.maske, 'DAViD maske') : loadDavidMaskBytes(al))
-    .catch((err) => { maskeBaytlari = null; throw err; });
+  if (maskeBaytlari) return maskeBaytlari;
+  const pending = (FP32_MASKE ? al(KOK + DAVID_DOSYALARI.maske, 'DAViD maske') : loadDavidMaskBytes(al))
+    .catch((err) => { if (maskeBaytlari === pending) maskeBaytlari = null; throw err; });
+  return maskeBaytlari = pending;
 }
 
 /** Oturumlar tembel ve ayrı: maske yolu derinlik modelini (449 MB) hiç indirmez. */
@@ -83,12 +88,16 @@ function oturumlariHazirla({ gpuSirasinaGir, onceRetry }: DavidAraclari) {
   return oturumlar ??= {
     derinlik: onceRetry(async () => kur(await ilerlemeliGetir(KOK + DAVID_DOSYALARI.derinlik, 'DAViD derinlik'))),
     maske: onceRetry(async () => {
+      maskeOturumuKuruluyor = true;
       const bekleyen = maskeBaytlariniGetir();
       try {
         const s = await kur(await bekleyen);
         maskeOturumuVar = true;
         return s;
-      } finally { if (maskeBaytlari === bekleyen) maskeBaytlari = null; } // 180 MB tutulmasın
+      } finally {
+        maskeOturumuKuruluyor = false;
+        if (maskeBaytlari === bekleyen) maskeBaytlari = null;
+      } // 180 MB tutulmasın
     }),
   };
 }
@@ -104,11 +113,33 @@ function agKisitli() {
  * inferDavidMaske'nin tarayıcı yoluna gideceği bekleniyorsa indirir (plan, yardımcı, WebGPU, önceki hata, ağ);
  * hata çağırana döner, son yol baytları kendisi yeniden ister.
  */
-export async function preloadDavidMaskBytes({ tarayici }: { tarayici: boolean }, araclar: Pick<DavidAraclari, 'webgpuKullanilabilir'>): Promise<void> {
-  if (!tarayici || maskeKapali || maskeOturumuVar || agKisitli()) return;
-  if (!yardimciKapali && await localModelAvailable('david-mask')) return;
-  if (!await araclar.webgpuKullanilabilir()) return;
-  await maskeBaytlariniGetir((url, init) => fetch(url, { ...init, priority: 'low' }));
+export async function preloadDavidMaskBytes({ tarayici }: { tarayici: boolean }, araclar: Pick<DavidAraclari, 'webgpuKullanilabilir'>, lease?: DavidMaskPrefetchLease): Promise<void> {
+  if (!tarayici || maskeKapali || maskeOturumuVar || maskeOturumuKuruluyor || agKisitli() || lease?.released) return;
+  let pending: Promise<ArrayBuffer> | null = null;
+  let settled = false;
+  if (lease) {
+    prefetchLeases.add(lease);
+    lease.release = () => {
+      lease.released = true;
+      lease.release = undefined;
+      prefetchLeases.delete(lease);
+      if (!pending) return;
+      const bytes = pending;
+      // Finish an in-flight download for another source; discard only this completed promise's cache.
+      const discard = () => {
+        if (!prefetchLeases.size && !maskeOturumuKuruluyor && maskeBaytlari === bytes) maskeBaytlari = null;
+      };
+      if (settled) discard();
+      else void bytes.then(discard, discard);
+    };
+  }
+  try {
+    if (!yardimciKapali && await localModelAvailable('david-mask')) return;
+    if (!await araclar.webgpuKullanilabilir() || lease?.released) return;
+    pending = maskeBaytlariniGetir((url, init) => fetch(url, { ...init, priority: 'low' }));
+    void pending.then(() => { settled = true; }, () => { settled = true; });
+    await pending;
+  } finally { if (!pending || lease?.released) lease?.release?.(); }
 }
 
 function maskeyiKirp(maske: Float32Array) {
