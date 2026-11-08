@@ -3,6 +3,22 @@
 Sözleşmeye dokunan her değişiklik buraya yazılır (`ARCHITECTURE.md` kuralı: sessiz sapma yok).
 En yeni üstte.
 
+## 2026-11-08 — Canlı videoda daha hızlı kişi maskesi
+
+- Hızlı maske: `selfie` Worker'da CPU delegesiyle (ısınma 92 ms, GPU'da 2,67 sn). IS-Net hızlı
+  yolun ilk kararını bekler (`isNetErtelensinMi`; duraklatma, Worker hatası, 2 sn iş, yükleme
+  hatası, WebGPU yokluğu veya 5 sn görünür bütçede hemen başlar). Kullanılan Worker maskesi
+  derinlik karesini beklemeden point shader'ında opaklık olarak uygulanır (`uLiveMask`).
+  `fastMaskMisses` yalnız Worker'a verilmiş kareyi sayar. Boyutu uymayan maske reddedilir;
+  kaynak değişince bütçe zamanlayıcısı ve dinleyicileri kaldırılır.
+- Ölçüm (üretim, 3 tur art arda, RTX): ilk hızlı maske 4,1 → 2,0 sn, uygulanan maske yaşı
+  145 → 36 ms, kişili klipte IS-Net isteği 1 → 0 (indirme 156,5 → 72,4 MB), ayırma açıkken kare
+  p50 6,1 → 6,2 ms. Ayırma açıkken flicker, desteksiz kenar ve p95 sıkı eşiği geçmiyor; aynı
+  koşudaki değişmeyen F yolunun gürültüsüyle aynı mertebede, ayrıştırılmadı
+  (`docs/benchmarks/video-fast-mask.md`).
+- 640 ızgara ve detay kapısı denemesi geri alındı (mahkeme RET: nokta artışı tutarsız, ayırma
+  açıkken p50 gerilemesinin kaynağı oydu).
+
 ## 2026-11-01 — Canlı videoda Worker'da hızlı kişi maskesi (varsayılan)
 
 - Nesne ayırma açıkken canlı video ve kamera, her derinlik karesinin kendi

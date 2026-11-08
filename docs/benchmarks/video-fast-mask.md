@@ -168,3 +168,45 @@ frames on a quieter machine.
 
 Production build, the iGPU path, other browsers; selfie_segmenter in the app (spike only); hair
 segmenter / DeepLab not evaluated.
+
+
+## 2026-11-08: CPU delegate, IS-Net deferral, live mask in the shader
+
+Separated from the 640-grid experiment (court verdict RET; grid, detail gate and 336 input
+removed). Changes: `selfie` runs on the Worker's CPU delegate (warm-up 92 ms against 2.67 s on
+GPU, 11-15 ms a frame; multiclass keeps the GPU); IS-Net waits for the fast path's first verdict
+(`isNetErtelensinMi`, 5 s visible-time budget, starts at once on pause, Worker error, 2 s job,
+load failure or no WebGPU); the Worker mask in use reaches the points shader as opacity
+(`uLiveMask`) without waiting for the depth frame; `fastMaskMisses` counts only frames the Worker
+received. A mask of the wrong size is refused; a source change drops the budget's timer and
+listeners.
+
+Production build, `?inference=browser`, headed Chrome, clean profile, nvidia/blackwell, test-canli.mp4,
+10 s after 8 s warm-up; 3 rounds, before (5a91ed2) and after back to back; all 12 runs rAF p50 ≤ 20 ms.
+Median [runs]. F = separation off, S = on.
+
+| | F before | F after | S before | S after |
+|---|---|---|---|---|
+| first fast mask (ms) | - | - | 4111 [6266, 4111, 4008] | 1969 [1901, 1977, 1969] |
+| applied mask age (ms) | - | - | 145 [163, 145, 145] | 36 [41, 33, 36] |
+| fastMaskMisses / IS-Net requests | 0 / 0 | 0 / 0 | 0 [0, 1, 0] / 1 ×3 | 0 ×3 / 0 ×3 |
+| download (MB) | 72.0 | 72.0 | 156.5 | 72.4 |
+| frame p50 (ms) | 6.2 | 6.2 [6.2, 6.2, 12.0] | 6.1 | 6.2 |
+| frame p95 (ms) | 42.4 [36.5-54.5] | 48.5 [36.6-48.6] | 84.8 [78.8-84.8] | 90.9 [84.8-96.9] |
+| depth Hz | 11.7 | 10.1 | 7.0 | 6.9 |
+| frames > 50 ms / min | 78 [48-192] | 156 [42-161] | 442 | 437 |
+| static depth flicker | 0.0112 [0.0096-0.0124] | 0.0142 [0.0106-0.0146] | 0.0136 [0.0129-0.0177] | 0.0179 [0.0172-0.0215] |
+| unsupported depth edge | 0.0003 | 0.0000 | 0.0024 [0.0020-0.0061] | 0.0031 [0.0016-0.0041] |
+| open / first frame (ms) | 1221 / 299 | 1047 / 320 | 1134 / 307 | 1714 / 347 |
+| separation on / off (ms) | - | - | 416 / 275 | 341 / 151 |
+
+Mask latency: the first mask after separation is switched on dominated (4.1 s, GPU delegate
+warm-up), the applied age was 145 ms; now 2.0 s and 36 ms. The S frame p50 regression seen in
+court (6 → 12-18 ms) came from the 640 grid: with this change alone S p50 is 6.1 → 6.2.
+
+F runs no code this change touches (no Worker, no IS-Net, live mask off), so F before/after is an
+A/A pair for this harness: its flicker +27 %, frames > 50 ms ×2, first frame +7 %. The S shifts in
+p95 (+7 %), flicker (+32 %), unsupported edge (+0.0007) and open/first frame (measured before
+separation is clicked) are of the same order. Not separated from that noise; strict thresholds
+(≤ base × 1.10) are not met for S flicker, unsupported edge, p95, open and first frame. Raw data:
+`%TEMP%\claude\mahkeme-split\out\`.

@@ -19,8 +19,14 @@ async function load(model: FastMaskModel, bytes: ArrayBuffer, wasmBase: string) 
     // GPU delegate: the worker's own canvas, never the engine's WebGL context.
     ...(delegate === 'GPU' ? { canvas: new OffscreenCanvas(1, 1) } : {}),
   });
-  let delegate: 'GPU' | 'CPU' = 'GPU';
-  const loaded = await create('GPU').catch(() => { delegate = 'CPU'; return create('CPU'); });
+  // selfie on the CPU delegate: warm-up 92 ms against 2.67 s on GPU, 11-15 ms a frame in this Worker
+  // (docs/benchmarks/video-fast-mask.md). Multiclass needs the GPU (190 ms a frame on CPU).
+  let delegate: 'GPU' | 'CPU' = model === 'selfie' ? 'CPU' : 'GPU';
+  const loaded = await create(delegate).catch((error) => {
+    if (delegate === 'CPU') throw error;
+    delegate = 'CPU';
+    return create('CPU');
+  });
   // The first segment() compiles the delegate's shaders; pay it here, not on a live frame.
   loaded.segment(new ImageData(16, 16)).close();
   invert = model === 'multiclass';

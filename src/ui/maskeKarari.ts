@@ -99,6 +99,20 @@ export function hizliMaskeKullan(fgOran: number, oncekiKullanildi: boolean): boo
   return fgOran <= MASKE_UST_ESIK && videoAyirmaDurumu(fgOran, oncekiKullanildi);
 }
 
+/** How long IS-Net (88 MB) waits for the fast path's first verdict. */
+export const HIZLI_MASKE_BUTCE_MS = 5000;
+
+/**
+ * IS-Net waits while the fast path has not decided yet, so a person video never downloads it. A
+ * paused video makes no new frame to decide on; failures set kararVerildi at the call site. A
+ * hidden tab waits past the budget: the call site restarts gecenMs once the tab is visible again.
+ */
+export function isNetErtelensinMi(d: {
+  hizliYol: boolean; kararVerildi: boolean; duraklatildi: boolean; gizli?: boolean; gecenMs: number;
+}): boolean {
+  return d.hizliYol && !d.kararVerildi && !d.duraklatildi && (!!d.gizli || d.gecenMs < HIZLI_MASKE_BUTCE_MS);
+}
+
 /** Histerezisli sonraki ayırma durumu (kullanıcı-kapalı mandalı çağıranda). */
 export function videoAyirmaDurumu(fgOran: number, acik: boolean): boolean {
   return acik ? fgOran >= AYIRMA_KAPATMA_ORANI : fgOran >= AYIRMA_ACMA_ORANI;

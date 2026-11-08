@@ -6,7 +6,7 @@ import { readFileSync } from 'node:fs';
 import { register } from 'node:module';
 register('./ts-extension-loader.mjs', import.meta.url);
 const { fastMaskModel, PersonMaskWorker, loadPersonMaskWorker, PERSON_MASK_TIMEOUT_MS } = await import('../src/engine/vision/personMask.ts');
-const { hizliMaskeKullan } = await import('../src/ui/maskeKarari.ts');
+const { hizliMaskeKullan, isNetErtelensinMi, HIZLI_MASKE_BUTCE_MS } = await import('../src/ui/maskeKarari.ts');
 
 // 1. Selection: selfie by default, multiclass on request, ?hizliMaske=isnet keeps the IS-Net-only path.
 for (const s of ['', '?', '?hizliMaske', '?hizliMaske=1', '?hizliMaske=selfie', '?maske=isnet']) assert.equal(fastMaskModel(s), 'selfie', s);
@@ -20,6 +20,22 @@ assert.equal(hizliMaskeKullan(0.05, true), true, 'kept while above 4 %');
 assert.equal(hizliMaskeKullan(0.03, true), false, 'person left: IS-Net path takes over');
 assert.equal(hizliMaskeKullan(0, true), false, 'people-free frame');
 assert.equal(hizliMaskeKullan(0.95, true), false, 'near-full-frame mask rejected like IS-Net (92 %)');
+
+// 2b. IS-Net deferral: waits for the fast verdict, never while paused, never past the budget.
+{
+  const d = (o) => isNetErtelensinMi({ hizliYol: true, kararVerildi: false, duraklatildi: false, gecenMs: 0, ...o });
+  assert.equal(HIZLI_MASKE_BUTCE_MS, 5000);
+  assert.equal(d({}), true, 'no verdict yet: IS-Net waits');
+  assert.equal(d({ gecenMs: 4999 }), true);
+  assert.equal(d({ gecenMs: 5000 }), false, 'budget spent: IS-Net starts');
+  assert.equal(d({ duraklatildi: true }), false, 'paused: no new frame can decide, IS-Net starts');
+  assert.equal(d({ kararVerildi: true }), false, 'verdict reached or fast path failed');
+  assert.equal(d({ hizliYol: false }), false, '?hizliMaske=isnet never waits');
+  // Hidden tab: few depth frames to decide on, so the budget waits for the tab to be visible.
+  assert.equal(d({ gizli: true, gecenMs: 60000 }), true, 'hidden tab: IS-Net waits past the budget');
+  assert.equal(d({ gizli: true, duraklatildi: true }), false, 'hidden and paused: IS-Net starts');
+  assert.equal(d({ gizli: true, kararVerildi: true }), false);
+}
 
 // 3. Worker client against a fake Worker.
 class FakeWorker {
@@ -99,6 +115,8 @@ const frame = (v) => ({ width: 2, height: 1, data: new Uint8ClampedArray(8).fill
 const worker = readFileSync(new URL('../src/engine/vision/personMaskWorker.ts', import.meta.url), 'utf8');
 assert.match(worker, /FilesetResolver\.forVisionTasks\(wasmBase, true\)/, 'module runtime: no importScripts in a module Worker');
 assert.match(worker, /loaded\.segment\(new ImageData\(16, 16\)\)\.close\(\);[\s\S]*segmenter = loaded;/, 'shader compile happens during set-up');
+assert.match(worker, /let delegate: 'GPU' \| 'CPU' = model === 'selfie' \? 'CPU' : 'GPU';/, 'selfie on CPU, multiclass keeps the GPU delegate');
+assert.match(worker, /canvas: new OffscreenCanvas\(1, 1\)/, 'GPU delegate keeps its own canvas');
 assert.match(worker, /if \(invert\) for \(let i = 0; i < data\.length; i\+\+\) data\[i\] = 1 - data\[i\];/);
 assert.match(worker, /finally \{ result\.close\(\); \}/);
 
@@ -109,14 +127,39 @@ assert.match(body, /const fastModel = fastMaskModel\(location\.search\);/);
 assert.match(body, /if \(fastModel && !fastRequested && !segmentKapaliRef\.current\) \{/, 'nothing is downloaded until the user-off latch is released');
 assert.match(body, /void loadPersonMaskWorker\(fastModel\)\.then\(\(w\) => \{ if \(!iptal\) fastWorker = w; \}\)/, 'a load finishing after a video switch is ignored');
 assert.match(body, /fastReady\?\.frame === d\.colorFrame \? fastReady : null;/, 'a Worker result only for its own depth frame');
-assert.match(body, /if \(istek && !fastActive\) captureMask\(istek\);/, 'IS-Net requests unchanged when the fast mask is not in use');
+assert.match(body, /if \(istek && !fastActive && !isNetWaits\(\)\) captureMask\(istek\);/, 'IS-Net requests unchanged once the fast path has decided');
+// Everything that ends the wait starts IS-Net at once, also without a new depth frame.
+assert.match(body, /let fastSettled = !fastModel;/, '?hizliMaske=isnet never waits');
+assert.match(body, /const stopFastMask = [\s\S]*?releaseIsNet\(\);\s*\};/, 'Worker error or a 2 s job starts IS-Net');
+assert.match(body, /hızlı maske yüklenemedi[^\n]*\n\s*releaseIsNet\(\);/, 'load failure starts IS-Net');
+assert.match(body, /budgetTimer = setTimeout\(budgetSpent, HIZLI_MASKE_BUTCE_MS\);\s*video\.addEventListener\('pause', releaseIsNet, \{ once: true, signal: budgetStop\.signal \}\);/, 'budget and pause start IS-Net');
+assert.match(body, /const budgetSpent = \(\) => \{\s*if \(document\.visibilityState !== 'hidden'\) \{ releaseIsNet\(\); return; \}\s*document\.addEventListener\('visibilitychange', \(\) => \{\s*fastBudgetFrom = performance\.now\(\);\s*budgetTimer = setTimeout\(budgetSpent, HIZLI_MASKE_BUTCE_MS\);\s*\}, \{ once: true, signal: budgetStop\.signal \}\);/, 'hidden tab: the budget restarts once visible');
+// A source change drops the budget's timer and listeners, on both stop functions.
+assert.equal((app.match(/clearTimeout\(budgetTimer\);\s*budgetStop\.abort\(\);/g) ?? []).length, 2, 'budget cleaned up on stop');
+// Engine: a Worker mask of the wrong size is refused, not thrown.
+const engine = readFileSync(new URL('../src/engine/Engine.ts', import.meta.url), 'utf8');
+assert.match(engine, /const on = !!mask && mask\.data\.length === mask\.width \* mask\.height/, 'mask size checked');
+assert.match(body, /gizli: document\.visibilityState === 'hidden',/, 'the frame path waits in a hidden tab too');
+assert.match(body, /if \(!varMi\) \{\s*releaseIsNet\(\);/, 'no WebGPU: no driver will ever decide');
+assert.match(body, /if \(fast\) \{\s*fastReady = null;\s*fastSettled = true;/, 'the first fast result is the verdict, person or not');
+assert.match(body, /const releaseIsNet = \(\) => \{\s*if \(fastSettled\) return;\s*fastSettled = true;\s*captureMask\('ilk'\);/);
+assert.match(body, /if \(!fastActive \|\| video\.paused\) captureMask\(\);/, 'separation back on with the fast path running: no IS-Net download');
+// Miss counter: only a frame the Worker really received can miss its depth frame.
+assert.match(body, /if \(fastWorker && d\.colorFrame === fastSentFrame && !segmentKapaliRef\.current && !fast\) videoStats\.fastMaskMisses\+\+;/);
 assert.match(body, /if \(mask && !mask\.fast && d\.colorFrame\) \{/, 'tracker unchanged for IS-Net masks');
 const branch = body.slice(body.indexOf('if (fast) {'), body.indexOf('const mask = segmentRef.current ? videoMask : null;'));
 assert.match(branch, /maskRevision\+\+;/, 'in-flight IS-Net job dropped');
 assert.match(branch, /colorFrame: fast\.frame, job, fast: true \};/);
 assert.match(branch, /else if \(videoMask\?\.fast\) \{\s*videoMask = null;/, 'no person: a fast mask is never kept stale');
-assert.match(app, /onColorFrame: fastModel \? \(frame\) => \{\s*const worker = fastWorker;\s*if \(!worker \|\| segmentKapaliRef\.current\) return;/, 'latch on: no Worker job');
-assert.match(app, /if \(!iptal && mask && fastWorker === worker\) fastReady = /, 'a result from a replaced Worker or an old video is dropped');
+assert.match(app, /onColorFrame: fastModel \? \(frame, mediaTime\) => \{\s*const worker = fastWorker;\s*if \(!worker \|\| segmentKapaliRef\.current\) return;/, 'latch on: no Worker job');
+assert.match(app, /if \(iptal \|\| !mask \|\| fastWorker !== worker\) return;/, 'a result from a replaced Worker or an old video is dropped');
+assert.match(app, /fastSentFrame = frame;\s*worker\.segment\(frame\)/);
+// Live mask: only while in use, separation on, and not from before a seek; off on every way out.
+assert.match(app, /if \(job && fastActive && segmentRef\.current && epoch === fastEpoch && engineRef\.current\?\.setVideoLiveMask\(mask\)\)/);
+assert.match(body, /if \(!fastActive\) engineRef\.current\?\.setVideoLiveMask\(null\);/, 'person left');
+assert.match(body, /const stopFastMask = [\s\S]*?setVideoLiveMask\(null\);/, 'Worker stopped');
+const onDiscontinuity = app.slice(app.indexOf('onDiscontinuity: (reason)'), app.indexOf('onStaleDrop'));
+assert.match(onDiscontinuity, /fastEpoch\+\+;\s*engineRef\.current\?\.setVideoLiveMask\(null\);/, 'seek or cut');
 assert.match(app, /\(err\) => \{ if \(!iptal && fastWorker === worker\) stopFastMask\(err\); \}/, 'Worker failure: IS-Net path takes over');
 assert.match(body, /const stopFastMask = [\s\S]*?fastActive = false;[\s\S]*?if \(videoMask\?\.fast\) videoMask = null;/);
 assert.match(body, /if \(reason !== 'loop' && !cutTooSoon\) \{\s*maskRevision\+\+;\s*videoMask = null;/, 'seek / cut clears the mask (next depth frame recomputes)');

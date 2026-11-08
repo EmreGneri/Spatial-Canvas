@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { SOURCE_COLOR_GLSL } from './sourceColor.ts';
 import { POINTS_DEPTH_RANGE, POINTS_WORLD_HEIGHT, POSITION_TEXTURE_SIZE } from '../engine/buffers';
+import { VIDEO_BACKDROP_OPACITY } from '../engine/reconstruction/sampler';
 import type { ParamDef } from '../engine/params';
 
 /**
@@ -42,6 +43,12 @@ export interface PointCloudMaterialUniforms {
   uViewportHeightPx: { value: number };
   /** Reference renderer grid spacing; only video sizing uses this. */
   uVideoWorldStep: { value: number };
+  /**
+   * Live video: newest Worker person mask (R32F, full source frame, Engine.setVideoLiveMask).
+   * While on it replaces the opacity written with the last depth frame; position stays depth-timed.
+   */
+  uLiveMask: { value: THREE.Texture | null };
+  uLiveMaskOn: { value: number };
   /** Renderer pixel ratio / startup ratio (Engine). Keeps photo sprites steady under adaptive DPR. */
   uDprScale: { value: number };
   /** 0..1 — aUv hash tohumuyla boyut saçılması; 0 = hepsi eşit boyutta */
@@ -145,6 +152,9 @@ const VERTEX = /* glsl */ `
   uniform float uVideoFootprint;
   uniform float uViewportHeightPx;
   uniform float uVideoWorldStep;
+  uniform sampler2D uLiveMask;
+  uniform float uLiveMaskOn;
+  uniform vec4 uSourceUvTransform;
   uniform float uDprScale;
   uniform float uSizeJitter;
   uniform float uExtrusionDepth;
@@ -182,6 +192,12 @@ const VERTEX = /* glsl */ `
     // w = parçacık opaklığı (α): 1 ön plan, 0.4 arka plan (Tur 11 — tek
     // buffer). Veri katmanı yazar, simülasyon korur.
     vOpacity = clamp(pos.w, 0.0, 1.0);
+    // Live video: same threshold and dim level as sampler.ts, from the mask that is newer than
+    // the depth frame. aUv covers the sampling window, the mask the whole source frame.
+    if (uLiveMaskOn > 0.5) {
+      vOpacity = texture2D(uLiveMask, uSourceUvTransform.xy + aUv * uSourceUvTransform.zw).r >= 0.5
+        ? 1.0 : ${VIDEO_BACKDROP_OPACITY.toFixed(1)};
+    }
 
     // Tohum artık aUv hash'i: parçacık başına sabit, 0..1, boyut saçılması.
     // DİKKAT: pos.w BURADA KULLANILAMAZ — o opaklık ve yalnızca iki değeri var
@@ -379,6 +395,8 @@ export function createPointCloudMaterial(): PointCloudMaterial {
     uVideoFootprint: { value: 0 },
     uViewportHeightPx: { value: 0 },
     uVideoWorldStep: { value: POINTS_WORLD_HEIGHT / POSITION_TEXTURE_SIZE },
+    uLiveMask: { value: null },
+    uLiveMaskOn: { value: 0 },
     // 1 outside Engine (embed, tests): the startup size, unchanged.
     uDprScale: { value: 1 },
     uSizeJitter: { value: 0.3 },

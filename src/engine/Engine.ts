@@ -299,6 +299,9 @@ export class Engine {
   /** Aktif render modlarÄ±: ad â†’ { material, parametre tanÄ±mlarÄ± }. */
   private renderModes = new Map<string, { material: THREE.Material; params: ParamDef[] }>();
   private renderModeName = 'points';
+  /** Newest Worker person mask for the points shader (setVideoLiveMask). */
+  private videoLiveMask: THREE.DataTexture | null = null;
+  private videoLiveMaskOn = false;
   /**
    * GÃœN 7+8: 'feedback' graf dÃ¼ÄŸÃ¼mÃ¼ post-pass zincirinin tamamÄ±nÄ± yÃ¶netir â€”
    * feedback birikimi â†’ chromatic â†’ bloom â†’ grain/vignette, FXAA ile birlikte
@@ -1033,6 +1036,10 @@ setPointsMaterial(material: THREE.Material) {
       const fraction = this.videoSamplingWindow ? this.videoSamplingWindow.y1 - this.videoSamplingWindow.y0 : 1;
       u['uVideoWorldStep'].value = POINTS_WORLD_HEIGHT / POSITION_TEXTURE_SIZE * fraction;
     }
+    if (u['uLiveMask']) {
+      u['uLiveMask'].value = this.videoLiveMask;
+      u['uLiveMaskOn'].value = this.videoLiveMaskOn ? 1 : 0;
+    }
     if (u['uVideoFootprint']) {
       u['uVideoFootprint'].value = this.videoTexture ? 1 : 0;
       // Match the reference soft additive video appearance. This
@@ -1079,6 +1086,7 @@ setPointsMaterial(material: THREE.Material) {
   /** Nesne ayÄ±rma (Tur 12 â€” ÅŸikayet 4): shader'lara canlÄ± iÅŸlenir. */
   setObjectSeparation(on: boolean) {
     this.objectSeparation = on;
+    if (!on) this.setVideoLiveMask(null);
     this.pushSharedUniformsAll();
     // The splat gate reads separation on the CPU, so the draw order is stale.
     this.splatObject?.forceResort();
@@ -1124,13 +1132,47 @@ setPointsMaterial(material: THREE.Material) {
   /** Playing reference video uses the latest source color; flow can opt into paired RGB. */
   setRealtimeVideoColor(on: boolean) {
     this.realtimeVideoColor = on;
+    if (!on) this.setVideoLiveMask(null);
     this.pushSharedUniformsAll();
+  }
+
+  /**
+   * Live video only: the points shader takes opacity from this mask right away, position stays
+   * with the last depth frame. null, a paused or non-realtime video, edge cleanup (which writes
+   * per-point opacity) or a mask whose size does not match turn it off; the depth frame's own
+   * opacity is then in force. Returns whether the mask is in use.
+   */
+  setVideoLiveMask(mask: { data: Float32Array; width: number; height: number } | null): boolean {
+    const on = !!mask && mask.data.length === mask.width * mask.height
+      && !!this.videoTexture && this.realtimeVideoPlaying() && !this.videoEdgeCleanupStrength;
+    if (on) {
+      const texture = this.videoLiveMask;
+      if (texture?.image.width === mask.width && texture.image.height === mask.height) {
+        (texture.image.data as Float32Array).set(mask.data);
+        texture.needsUpdate = true;
+      } else {
+        texture?.dispose();
+        this.videoLiveMask = createDepthTexture(Float32Array.from(mask.data), mask.width, mask.height);
+      }
+    }
+    if (on || this.videoLiveMaskOn) {
+      this.videoLiveMaskOn = on;
+      this.pushSharedUniforms(this.pointsMaterial);
+    }
+    return on;
+  }
+
+  private realtimeVideoPlaying(): boolean {
+    return this.realtimeVideoColor !== false && this.videoElement?.paused === false;
   }
 
   setVideoSource(video: HTMLVideoElement | null) {
     if (video) this.configurePhotoCamera(null);
     if (video) this.metricPhotoGeometry = null;
     if (video === this.videoElement) return;
+    this.videoLiveMaskOn = false;
+    this.videoLiveMask?.dispose();
+    this.videoLiveMask = null;
     this.stopVideoColorListeners?.();
     this.stopVideoColorListeners = null;
     this.layers = null;
@@ -1160,7 +1202,10 @@ setPointsMaterial(material: THREE.Material) {
       tex.generateMipmaps = false;
       this.videoTexture = tex;
       const refreshColor = () => {
-        if (this.videoElement === video) this.pushSharedUniformsAll();
+        if (this.videoElement !== video) return;
+        // Pause switches the shader back to depth-timed opacity.
+        if (video.paused) this.setVideoLiveMask(null);
+        this.pushSharedUniformsAll();
       };
       video.addEventListener?.('play', refreshColor);
       video.addEventListener?.('pause', refreshColor);
@@ -2536,6 +2581,7 @@ depth,
     this.currentDepthTexture?.dispose();
     this.homeTexture.dispose();
     this.imageColorTexture?.dispose();
+    this.videoLiveMask?.dispose();
     this.photoBackdrop?.geometry.dispose();
     (this.photoBackdrop?.material as THREE.Material | undefined)?.dispose();
     this.photoBackdropTexture?.dispose();

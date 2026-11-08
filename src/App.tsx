@@ -37,7 +37,7 @@ import { KutuphanePaneli } from './ui/KutuphanePaneli';
 import { kaynakBelirle } from './ui/presetOnizleme';
 import { soganAcilisGerekliMi, sunumAcikMi } from './ui/sunumModu';
 import { serializeRenderState } from './shaders/renderPreset';
-import { AYIRMA_KAPATMA_ORANI, hizliMaskeKullan, maskeKarari, maskeKarariniVer, maskeTekParcaOrani, videoAyirmaDurumu, videoMaskeIstegi } from './ui/maskeKarari';
+import { AYIRMA_KAPATMA_ORANI, HIZLI_MASKE_BUTCE_MS, hizliMaskeKullan, isNetErtelensinMi, maskeKarari, maskeKarariniVer, maskeTekParcaOrani, videoAyirmaDurumu, videoMaskeIstegi } from './ui/maskeKarari';
 import { classifyCategory, type CategoryInput } from './ui/category';
 import { useDarEkran } from './ui/useDarEkran';
 import { ACILIS_BOY, ACILIS_EN, ACILIS_NOTU, acilisDerinligi, BINALAR, GOK, KURE, UFUK_Y, ZEMIN } from './ui/acilisSahnesi';
@@ -1002,13 +1002,22 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
     let fastRequested = false;
     let fastActive = false;
     // Worker result for a grabbed colour frame, computed during the depth model's GPU wait.
-    let fastReady: { frame: ImageData; startAt: number; doneAt: number; mask: PersonMask } | null = null;
+    let fastReady: { frame: ImageData; startAt: number; doneAt: number; mask: PersonMask; coverage: number; job: VideoMaskJob | null } | null = null;
+    // Only a frame the Worker really received can miss its depth frame (videoStats.fastMaskMisses).
+    let fastSentFrame: ImageData | null = null;
+    // A Worker result from before a seek must not reach the shader.
+    let fastEpoch = 0;
+    // IS-Net waits for the fast path's first verdict (isNetErtelensinMi).
+    let fastSettled = !fastModel;
+    let fastBudgetFrom: number | null = null;
     const stopFastMask = (err: unknown) => {
       fastWorker = null;
       fastActive = false;
       fastReady = null;
       if (videoMask?.fast) videoMask = null;
+      engineRef.current?.setVideoLiveMask(null);
       say(`hızlı maske durdu, IS-Net ile devam: ${err instanceof Error ? err.message : String(err)}`);
+      releaseIsNet();
     };
     let maskUnavailable = false;
     let maskErrors = 0;
@@ -1178,15 +1187,49 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
         })
         .finally(() => { maskBusy = false; });
     };
-    videoMaskRequestRef.current = captureMask;
+    const isNetWaits = () => isNetErtelensinMi({ hizliYol: !!fastModel, kararVerildi: fastSettled, duraklatildi: video.paused,
+      gizli: document.visibilityState === 'hidden',
+      gecenMs: fastBudgetFrom === null ? 0 : performance.now() - fastBudgetFrom });
+    const captureMaskUnlessDeferred = () => {
+      if (isNetWaits()) { armIsNetFallback(); return; }
+      // Separation switched back on with the fast path running: the next depth frame brings its mask.
+      if (!fastActive || video.paused) captureMask();
+    };
+    videoMaskRequestRef.current = captureMaskUnlessDeferred;
+    const releaseIsNet = () => {
+      if (fastSettled) return;
+      fastSettled = true;
+      captureMask('ilk');
+    };
+    // No depth frame may come to decide on (paused, no WebGPU), hence not only the frame path. The
+    // budget counts visible time only: a hidden tab gets a depth frame every few seconds.
+    // A source change drops the budget's timer and listeners (liveDepthStopRef).
+    const budgetStop = new AbortController();
+    let budgetTimer: ReturnType<typeof setTimeout> | undefined;
+    const budgetSpent = () => {
+      if (document.visibilityState !== 'hidden') { releaseIsNet(); return; }
+      document.addEventListener('visibilitychange', () => {
+        fastBudgetFrom = performance.now();
+        budgetTimer = setTimeout(budgetSpent, HIZLI_MASKE_BUTCE_MS);
+      }, { once: true, signal: budgetStop.signal });
+    };
+    const armIsNetFallback = () => {
+      if (fastBudgetFrom !== null) return;
+      fastBudgetFrom = performance.now();
+      budgetTimer = setTimeout(budgetSpent, HIZLI_MASKE_BUTCE_MS);
+      video.addEventListener('pause', releaseIsNet, { once: true, signal: budgetStop.signal });
+    };
     liveDepthStopRef.current = () => {
       iptal = true;
+      clearTimeout(budgetTimer);
+      budgetStop.abort();
     };
     void liveDepthKullanilabilir().then((varMi) => {
       // A stale start must not install a driver: its stop function would
       // replace the newer source's without ever being called.
       if (iptal || !isCurrent()) return;
       if (!varMi) {
+        releaseIsNet();
         setLiveStats(previous => ({ ...previous, path: 'fallback' }));
         liveDepthStopRef.current = null;
         say('canlı derinlik: WebGPU yok; parlaklık vekiliyle devam');
@@ -1217,23 +1260,26 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
           }
           if (fastModel && !fastRequested && !segmentKapaliRef.current) {
             fastRequested = true;
+            armIsNetFallback();
             void loadPersonMaskWorker(fastModel).then((w) => { if (!iptal) fastWorker = w; })
-              .catch((err) => say(`hızlı maske yüklenemedi, IS-Net ile devam: ${err instanceof Error ? err.message : String(err)}`));
+              .catch((err) => {
+                say(`hızlı maske yüklenemedi, IS-Net ile devam: ${err instanceof Error ? err.message : String(err)}`);
+                releaseIsNet();
+              });
           }
           syncMaskRequest();
           const fast = fastWorker && d.colorFrame && !segmentKapaliRef.current && fastReady?.frame === d.colorFrame ? fastReady : null;
-          if (fastWorker && d.colorFrame && !segmentKapaliRef.current && !fast) videoStats.fastMaskMisses++;
+          if (fastWorker && d.colorFrame === fastSentFrame && !segmentKapaliRef.current && !fast) videoStats.fastMaskMisses++;
           if (fast) {
             fastReady = null;
-            const { startAt, mask: m } = fast;
-            let foreground = 0;
-            for (const value of m.data) if (value >= 0.5) foreground++;
-            const coverage = foreground / m.data.length;
+            fastSettled = true;
+            const { startAt, mask: m, coverage } = fast;
             fastActive = hizliMaskeKullan(coverage, fastActive);
+            if (!fastActive) engineRef.current?.setVideoLiveMask(null);
             if (fastActive) {
               // Drops an IS-Net job in flight: its older frame must not replace this one.
               maskRevision++;
-              const job = logMaskJob({ reason: 'hizli', startAt, mediaTime: d.mediaTime, doneAt: fast.doneAt,
+              const job = fast.job ?? logMaskJob({ reason: 'hizli', startAt, mediaTime: d.mediaTime, doneAt: fast.doneAt,
                 appliedAt: null, coverage, separation: null, dropped: false });
               videoMask = { data: m.data, captured: m.data, width: m.width, height: m.height, mediaTime: d.mediaTime,
                 colorFrame: fast.frame, job, fast: true };
@@ -1264,7 +1310,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
             duraklatildi: video.paused, hazirMaskeVar: !!pausedPreparedMask(d.mediaTime),
             ayirmaAcik: segmentRef.current, gecenMs: performance.now() - lastMaskAttempt,
             izKayip: maskLost, sonIsMs: lastJobMs });
-          if (istek && !fastActive) captureMask(istek);
+          if (istek && !fastActive && !isNetWaits()) captureMask(istek);
           else if (videoMask) videoStats.maskGate.interval++;
           // Let the Worker align the new model anchor before replacing a masked flow frame.
           const awaitingMask = segmentRef.current && lastDepth?.flowMask && !d.flowMask
@@ -1331,6 +1377,8 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
             if (reason !== 'loop' && !cutTooSoon) {
               maskRevision++;
               videoMask = null;
+              fastEpoch++;
+              engineRef.current?.setVideoLiveMask(null);
               maskLost = false;
               maskUnavailable = false;
               maskErrors = 0;
@@ -1342,17 +1390,32 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
           onStaleDrop: () => { staleDrops++; },
           // The Worker segments the depth frame's colour frame while the GPU runs the depth model on it
           // (docs/benchmarks/video-fast-mask.md). A replaced frame resolves null.
-          onColorFrame: fastModel ? (frame) => {
+          onColorFrame: fastModel ? (frame, mediaTime) => {
             const worker = fastWorker;
             if (!worker || segmentKapaliRef.current) return;
             const startAt = performance.now();
+            const epoch = fastEpoch;
+            fastSentFrame = frame;
             worker.segment(frame).then((mask) => {
-              if (!iptal && mask && fastWorker === worker) fastReady = { frame, startAt, doneAt: performance.now(), mask };
+              if (iptal || !mask || fastWorker !== worker) return;
+              const doneAt = performance.now();
+              let foreground = 0;
+              for (const value of mask.data) if (value >= 0.5) foreground++;
+              const coverage = foreground / mask.data.length;
+              const job = hizliMaskeKullan(coverage, fastActive)
+                ? logMaskJob({ reason: 'hizli', startAt, mediaTime, doneAt, appliedAt: null, coverage, separation: segmentRef.current, dropped: false })
+                : null;
+              fastReady = { frame, startAt, doneAt, mask, coverage, job };
+              // In use already: the shader takes it now, the sampling window and z wait for the depth frame.
+              if (job && fastActive && segmentRef.current && epoch === fastEpoch && engineRef.current?.setVideoLiveMask(mask)) {
+                job.appliedAt = performance.now();
+              }
             }, (err) => { if (!iptal && fastWorker === worker) stopFastMask(err); });
           } : undefined,
           onError: (err, ardisik) =>
             say(`canlı derinlik hatası (${ardisik}/3): ${err instanceof Error ? err.message : String(err)}`),
           onVazgec: () => {
+            releaseIsNet();
             setLiveStats(previous => ({ ...previous, path: 'fallback' }));
             say('canlı derinlik: ardışık 3 hata; parlaklık vekiline dönüldü');
             engineRef.current?.clearVideoFrameColor();
@@ -1363,6 +1426,8 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
       );
       liveDepthStopRef.current = () => {
         iptal = true;
+        clearTimeout(budgetTimer);
+        budgetStop.abort();
         stopDriver();
       };
     });
