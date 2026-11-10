@@ -51,6 +51,8 @@ export interface PointCloudMaterialUniforms {
   uLiveMaskOn: { value: number };
   /** Renderer pixel ratio / startup ratio (Engine). Keeps photo sprites steady under adaptive DPR. */
   uDprScale: { value: number };
+  /** Content-adaptive photo energy; video and depth ramps retain unit energy. */
+  uPhotoEnergy: { value: number };
   /** 0..1 — aUv hash tohumuyla boyut saçılması; 0 = hepsi eşit boyutta */
   uSizeJitter: { value: number };
   /**
@@ -145,6 +147,21 @@ export type PointCloudMaterial = THREE.ShaderMaterial & {
 
 /** Position grid the photo brightness/bloom profile (modKalite.ts) was calibrated on. */
 const PHOTO_TUNED_GRID = 384;
+
+/** Cap the bright photo tail before additive overlap compresses its tonal detail. */
+export function computePhotoEnergy(
+  grid: number, dprScale: number, bufferHeight: number,
+  projectionY: number, aspect: number, linearP95: number,
+): number {
+  if (![grid, dprScale, bufferHeight, projectionY, aspect, linearP95]
+    .every((value) => Number.isFinite(value) && value > 0) || linearP95 < 1 / 255) return 1;
+  // Default sprite: diameter 6, jitter 0.3, integrated soft-disc alpha 0.575.
+  const discEnergy = Math.PI / 16 * 6 ** 2 * (1 + 0.3 ** 2 / 3) * 0.575;
+  const focalPx = 0.5 * projectionY * bufferHeight;
+  const overlap = discEnergy * (PHOTO_TUNED_GRID / grid) ** 2
+    * (grid * dprScale / focalPx) ** 2 / aspect;
+  return Math.min(1, 1 / (overlap * linearP95));
+}
 
 const VERTEX = /* glsl */ `
   uniform sampler2D uPositions;
@@ -278,6 +295,7 @@ const FRAGMENT = /* glsl */ `
   uniform float uHasImage;
   uniform float uObjectSeparation;
   uniform float uVideoFootprint;
+  uniform float uPhotoEnergy;
   uniform float uUseTextureColor;
   uniform float uSoftness;
   uniform float uBrightness;
@@ -328,6 +346,7 @@ const FRAGMENT = /* glsl */ `
     // 512x512 grid must deposit the same energy per pixel or the whole subject
     // saturates and bloom floods the frame. Video keeps the reference sprite.
     alpha *= mix(PHOTO_GRID_ENERGY, 1.0, step(0.5, uVideoFootprint));
+    alpha *= mix(uPhotoEnergy, 1.0, step(0.5, uVideoFootprint));
 
     // Renk (Tur 12 — şikayet 3): uUseTextureColor AÇIK ve doku varsa parçacık
     // kendi pikselinin RGB'sini alır (fotoğraf grid'i ya da canlı video);
@@ -399,6 +418,7 @@ export function createPointCloudMaterial(): PointCloudMaterial {
     uLiveMaskOn: { value: 0 },
     // 1 outside Engine (embed, tests): the startup size, unchanged.
     uDprScale: { value: 1 },
+    uPhotoEnergy: { value: 1 },
     uSizeJitter: { value: 0.3 },
     // 0 = kapalı: mevcut görünüm ve kayıtlı preset'ler aynen korunur.
     uExtrusionDepth: { value: 0 },

@@ -18,6 +18,7 @@ import {
   POSITION_TEXTURE_SIZE,
 } from './buffers';
 import { createPointsCloud } from './points';
+import { computePhotoEnergy } from '../shaders/pointCloudMaterial';
 import { tapEkle } from './export.ts';
 import { createVideoOcclusionMaterial, videoOcclusionMode, VIDEO_OCCLUSION_DEFAULTS, type VideoOcclusionMode, type VideoOcclusionTuning } from './videoOcclusion.ts';
 import { SplatObject, fillGaussiansFromPointCloud, uploadGaussianData } from './splats';
@@ -121,6 +122,8 @@ export class Engine {
   private photoCapture: { projection: ReturnType<typeof createMetricPhotoProjection>; geometry: MetricPhotoGeometry } | null = null;
   private photoWidth = 0;
   private photoHeight = 0;
+  private photoLinearP95 = 0;
+  private photoGridAspect = 1;
   private photoBackdrop: THREE.Mesh | null = null;
   private photoBackdropTexture: THREE.CanvasTexture | null = null;
   private photoBackdropCanvas: HTMLCanvasElement | null = null;
@@ -1062,6 +1065,12 @@ setPointsMaterial(material: THREE.Material) {
     if (u['uDprScale']) {
       u['uDprScale'].value = this.currentDpr / this.initialDpr;
     }
+    if (u['uPhotoEnergy']) {
+      u['uPhotoEnergy'].value = this.mediaType === 'upload' && !this.videoTexture && this.photoData && this.useTextureColor
+        ? computePhotoEnergy(POSITION_TEXTURE_SIZE, this.currentDpr / this.initialDpr,
+          this.viewportPx?.y ?? 0, this.camera.projectionMatrix?.elements[5] ?? 0,
+          this.photoGridAspect, this.photoLinearP95) : 1;
+    }
 
   }
 
@@ -1250,6 +1259,8 @@ setPointsMaterial(material: THREE.Material) {
     this.photoData = null;
     this.photoWidth = 0;
     this.photoHeight = 0;
+    this.photoLinearP95 = 0;
+    this.photoGridAspect = 1;
     if (this.photoBackdrop) {
       this.scene.remove(this.photoBackdrop);
       this.photoBackdrop.geometry.dispose();
@@ -2120,6 +2131,8 @@ if (this.photoData) {
         crop.depthHeight,
         { foregroundMask: crop.mask, foregroundColorMask: crop.colorMask },
       );
+      this.measurePhotoEnergy(crop.depthWidth / crop.depthHeight);
+      if (this.renderModes) this.pushSharedUniformsAll();
       // GÜN B ('solid' modu, fotoğraf-only): depth değiştiğinde kabuk mesh'i
       // yeniden kur — aynı siluet + remap + z formülleri (parçacık yüzeyi
       // hizası). Video/kamera yolu setPhoto çağırmaz → bu blok yalnızca
@@ -2248,6 +2261,7 @@ depth,
         { foregroundMask: this.lastFgMask ?? undefined,
           foregroundColorMask: this.objectSeparation && this.lastFgMask ? this.lastColorMask ?? undefined : undefined },
       );
+      this.measurePhotoEnergy(this.currentDepthTexture.image.width / this.currentDepthTexture.image.height);
       this.updatePhotoBackdrop(
         depth,
         this.currentDepthTexture.image.width,
@@ -2260,6 +2274,31 @@ depth,
     this.pushSharedUniformsAll();
     // Splat köprüsü: renk grid'i (gSplatC kaynağı) az önce doldu.
     this.refreshGaussians();
+  }
+
+  /** Read the actual sampled foreground once, never on the render/video loop. */
+  private measurePhotoEnergy(aspect: number) {
+    const colors = this.imageColorTexture!.image.data as Uint8Array;
+    const positions = this.homeTexture.image.data as Float32Array;
+    const foreground = new Uint32Array(256);
+    const all = new Uint32Array(256);
+    let count = 0;
+    for (let i = 0; i < colors.length; i += 4) {
+      const bin = Math.max(colors[i], colors[i + 1], colors[i + 2]);
+      all[bin]++;
+      if (positions[i + 3] >= 0.5) {
+        foreground[bin]++;
+        count++;
+      }
+    }
+    const histogram = count >= 64 ? foreground : all;
+    const target = Math.ceil(0.95 * (count >= 64 ? count : colors.length / 4));
+    let cumulative = 0;
+    let bin = 0;
+    while (bin < 255 && cumulative + histogram[bin] < target) cumulative += histogram[bin++];
+    const srgb = bin / 255;
+    this.photoLinearP95 = srgb <= 0.04045 ? srgb / 12.92 : ((srgb + 0.055) / 1.055) ** 2.4;
+    this.photoGridAspect = aspect;
   }
 
   /** Keep an inpainted, silhouette-only image behind the photo point cloud. */
