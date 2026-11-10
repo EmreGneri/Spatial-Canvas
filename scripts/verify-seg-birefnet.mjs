@@ -1,3 +1,5 @@
+import { installPhotoModelFixtures } from './photo-model-test-fixtures.mjs';
+installPhotoModelFixtures();
 /**
  * TARAYICI BiRefNet (WebGPU) — fotoğraf yolu sözleşmesi.
  *

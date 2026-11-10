@@ -7,7 +7,7 @@ import { currentPhotoMeasurement, type PhotoMeasurement } from '../photoMeasurem
 import * as ort from 'onnxruntime-web/webgpu';
 import { ilerlemeliGetir } from '../../indirmeIlerleme.ts';
 import { localInference, localModelAvailable } from '../sidecarClient.ts';
-import { loadDavidMaskBytes } from './davidMaskAsset.ts';
+import { loadDavidMaskBytes, DAVID_MASK_INTEGRITY } from './davidMaskAsset.ts';
 
 /**
  * depth.ts yardımcıları ÇAĞIRANDAN gelir, burada `import` edilmez: depth.ts → (dinamik) bu
@@ -75,7 +75,7 @@ let maskeOturumuKuruluyor = false;
 export interface DavidMaskPrefetchLease { released?: boolean; release?: () => void }
 const prefetchLeases = new Set<DavidMaskPrefetchLease>();
 function maskeBaytlariniGetir(getir?: typeof fetch) {
-  const al = (url: string, ad: string) => ilerlemeliGetir(url, ad, getir);
+  const al = (url: string, ad: string) => ilerlemeliGetir(url, ad, getir, undefined, FP32_MASKE ? undefined : DAVID_MASK_INTEGRITY);
   if (maskeBaytlari) return maskeBaytlari;
   const pending = (FP32_MASKE ? al(KOK + DAVID_DOSYALARI.maske, 'DAViD maske') : loadDavidMaskBytes(al))
     .catch((err) => { if (maskeBaytlari === pending) maskeBaytlari = null; throw err; });

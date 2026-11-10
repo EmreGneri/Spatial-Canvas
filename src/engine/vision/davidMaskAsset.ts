@@ -3,10 +3,11 @@ import { ilerlemeliGetir, readModelCacheResponse } from '../../indirmeIlerleme.t
 
 export const DAVID_MASK_PATH = `/models/${asset.dest}`;
 export const DAVID_MASK_REMOTE = `https://huggingface.co/${asset.repo}/resolve/${asset.rev}/${asset.file}`;
+export const DAVID_MASK_INTEGRITY = { size: asset.size, sha256: asset.sha256 };
 
 /** Same pinned weights, served by the deployment CDN with HTTP compression. */
 export async function loadDavidMaskBytes(
-  get: (url: string, label: string) => Promise<ArrayBuffer> = ilerlemeliGetir,
+  get: (url: string, label: string) => Promise<ArrayBuffer> = (url, label) => ilerlemeliGetir(url, label, undefined, undefined, DAVID_MASK_INTEGRITY),
   origin = typeof location === 'undefined' ? 'http://localhost' : location.origin ?? `https://${location.hostname}`,
 ): Promise<ArrayBuffer> {
   try {

@@ -2,6 +2,8 @@
 //   node scripts/verify-david-prefetch.mjs
 import { execFileSync } from 'node:child_process';
 import assert from 'node:assert/strict';
+    import { installPhotoModelFixtures } from './photo-model-test-fixtures.mjs';
+    installPhotoModelFixtures();
 import { readFile } from 'node:fs/promises';
 import { stripTypeScriptTypes } from 'node:module';
 
@@ -9,6 +11,8 @@ import { stripTypeScriptTypes } from 'node:module';
 const kos = (ad, kod, hostname = 'example.com') => {
   try { execFileSync(process.execPath, ['--input-type=module', '-e', `
     import assert from 'node:assert/strict';
+    import { installPhotoModelFixtures } from './scripts/photo-model-test-fixtures.mjs';
+    installPhotoModelFixtures();
     globalThis.location = { hostname: ${JSON.stringify(hostname)}, origin: 'https://' + ${JSON.stringify(hostname)}, search: '' };
     console.warn = () => {};
     const ort = await import('onnxruntime-web/webgpu');

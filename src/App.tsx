@@ -5,6 +5,7 @@ import { yuzRolyefHaritasi, type YuzRolyefi } from './engine/reconstruction/yuzR
 import { photoPerspectiveEnabled, type PhotoCameraInput } from './engine/reconstruction/photoPerspective';
 import { readExifFocal } from './vendor/splat.js/io/exif.js';
 import { estimateDepth, depthDevice, FOTO_KALITE, loadDepthModel, luminanceHeightMap, resetLuminanceState } from './depth';
+import { waitForPhotoPresentation } from './engine/photoPresentation';
 import { segmentForeground, preloadPhotoMaskBytes } from './engine/reconstruction/segmentation';
 import { resampleBilinear } from './engine/reconstruction/silhouette';
 import { captureLiveMask, estimateMaskShift, shiftLiveMask } from './engine/vision/liveMask';
@@ -626,7 +627,6 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
         photoGpuBudget = true;
         engineRef.current!.setSuspended(true);
       }
-      if (progressive) void preloadPhotoMaskBytes().catch(() => {});
       async function prepareMask() {
         if (!isCurrent()) throw new Error('Photo source changed');
         if (analitikDerinlik) {
@@ -718,9 +718,11 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
                 }, 1000);
                 measurementMeta.previewReadyMs = measurement ? performance.now() - measurement.startedAt : undefined;
                 setPhotoPreview(true);
+                // Keep depth downloads ahead of mask weights; retain byte-only overlap with final refinement.
+                void preloadPhotoMaskBytes().catch(() => {});
                 say('Önizleme hazır · maske ve kalite iyileştiriliyor…');
                 // Let the renderer present the coarse scene before expensive mask setup.
-                await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+                await waitForPhotoPresentation();
                 if (!isCurrent()) throw new Error('Photo source changed');
               },
             } : {}),

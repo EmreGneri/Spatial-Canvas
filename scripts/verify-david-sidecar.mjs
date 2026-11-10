@@ -1,6 +1,8 @@
 // DAViD ön plan maskesi: yardımcı (sidecar) yolu, tarayıcı açık isteği ve varsayılan politika (sahte HTTP; GPU yok).
 //   node scripts/verify-david-sidecar.mjs
 import assert from 'node:assert/strict';
+    import { installPhotoModelFixtures } from './photo-model-test-fixtures.mjs';
+    installPhotoModelFixtures();
 import { execFileSync } from 'node:child_process';
 
 const { beklenenSekil } = await import('../src/engine/sidecarClient.ts');
@@ -26,6 +28,8 @@ assert.deepEqual([...davidMaskeKesisimi(Float32Array.of(1, 1, 0.6, 0), Float32Ar
 // Yardımcı yolu ayrı süreçte: sidecarClient modül düzeyinde location'a göre kurulur.
 const kos = (kod, search = '', hostname = 'localhost') => execFileSync(process.execPath, ['--input-type=module', '-e', `
   import assert from 'node:assert/strict';
+    import { installPhotoModelFixtures } from './scripts/photo-model-test-fixtures.mjs';
+    installPhotoModelFixtures();
   globalThis.location = { hostname: ${JSON.stringify(hostname)}, search: ${JSON.stringify(search)} };
   console.warn = () => {};
   const S = 512, n = S * S, istekler = [];

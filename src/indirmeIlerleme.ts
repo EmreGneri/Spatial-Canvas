@@ -114,6 +114,7 @@ export function indirmeSifirla(): void {
  * dosyayı önce buradan geçirip sonra ona vermek, tek ilerleme yolu.
  */
 export const MODEL_ONBELLEGI = 'spatial-canvas-modeller-v1';
+const COMPLETE_MODEL_CACHE_FORMAT = 'complete-200-v2';
 
 /**
  * Gelen her parçayla yenilenen hareketsizlik sınırı: bağlantı açılıp veri akışı durursa (`fetch` ya da
@@ -139,119 +140,119 @@ export async function readModelCacheResponse(url: string, limitMs = INDIRME_HARE
   } catch { return undefined; }
 }
 
+export interface ModelIntegrity { size: number; sha256: string }
+
 export async function ilerlemeliGetir(
   url: string,
   ad: string,
   getir: typeof fetch = fetch,
   hareketsizlikMs: number = INDIRME_HAREKETSIZLIK_MS,
+  integrity?: ModelIntegrity,
 ): Promise<ArrayBuffer> {
-  // Hareketsizlik bekçisi: her ilerlemede yenilenir; dolunca fetch/gövde okuması iptal edilir.
-  const kontrol = new AbortController();
-  let zamanlayici: ReturnType<typeof setTimeout> | undefined;
-  const hata = () => new Error(`${ad}: indirme ${Math.round(hareketsizlikMs / 1000)} sn boyunca ilerlemedi (bağlantı durmuş olabilir)`);
-  const kur = () => {
-    clearTimeout(zamanlayici);
-    zamanlayici = setTimeout(() => kontrol.abort(hata()), hareketsizlikMs);
+  const control = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const reset = () => {
+    clearTimeout(timer);
+    timer = setTimeout(() => control.abort(new Error(`${ad}: indirme ilerlemedi; check the connection and retry`)), hareketsizlikMs);
   };
-  const iptalSozu = new Promise<never>((_, reddet) => {
-    kontrol.signal.addEventListener('abort', () => reddet(kontrol.signal.reason), { once: true });
-  });
-  iptalSozu.catch(() => {}); // iptal edilmezse yutulan red uyarısı çıkmasın
-  const al = (adres: string, init?: RequestInit) => Promise.race([getir(adres, { ...init, signal: kontrol.signal }), iptalSozu]);
-  // Oturumu await öncesinde yakala: geç biten eski kaynak yeni rapora yazılmasın.
-  const trace = currentPhotoMeasurement();
-  const startedAt = trace ? performance.now() : 0;
-  const record = (source: 'cache-storage' | 'fetch', bodyBytes: number, status: 'ok' | 'failed') => {
+  const aborted = new Promise<never>((_, reject) => control.signal.addEventListener('abort', () => reject(control.signal.reason), { once: true }));
+  aborted.catch(() => {});
+  const fetchResponse = (init?: RequestInit) => Promise.race([getir(url, { ...init, signal: control.signal }), aborted]);
+  const trace = currentPhotoMeasurement(), startedAt = trace ? performance.now() : 0;
+  const record = (source: 'cache-storage' | 'fetch', bodyBytes: number, status: 'ok' | 'failed') =>
     trace?.recordDownload({ url, label: ad, source, bodyBytes, startedAt, endedAt: performance.now(), status });
+  // An HTTPS scheme alone is not a revision. Immutable reuse needs both a pinned URL and trusted bytes.
+  const immutable = !!integrity && /\/(?:resolve|models\/microsoft-david)\/[a-f0-9]{40}\//i.test(url);
+  const cacheable = typeof caches !== 'undefined' && (/^https:\/\//.test(url) || /^\/[^/]/.test(url)
+    || /^http:\/\/(?:localhost|127\.0\.0\.1)(?::\d+)?\//.test(url));
+  const removeCached = async () => {
+    if (!cacheable) return;
+    try { await storageDeadline(caches.open(MODEL_ONBELLEGI).then(c => c.delete(url)), Math.min(hareketsizlikMs, 1500)); } catch {}
   };
-  // Sabit revizyonlu uzak modeller (Hugging Face) Cache Storage'da tutulur: ikinci ziyarette
-  // yeniden inmez. HTTP önbelleği yüzlerce MB'lık dosyaları güvenilir tutmuyor. Önbellek yoksa
-  // (gizli pencere, kota, eski tarayıcı) sessizce normal indirmeye düşülür.
-  const onbellekli = /^https:\/\//.test(url) && typeof caches !== 'undefined';
-  if (onbellekli) {
-    try {
-      const kayit = await readModelCacheResponse(url, hareketsizlikMs);
-      if (kayit) {
-        try {
-          const buffer = await storageDeadline(kayit.arrayBuffer(), hareketsizlikMs);
-          record('cache-storage', buffer.byteLength, 'ok');
-          return buffer;
-        } catch { record('cache-storage', 0, 'failed'); }
-      }
-    } catch { /* önbellek erişilemez: indirmeye devam */ }
+  const digest = async (buffer: ArrayBuffer, source: string) => {
+    const work = async () => Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', buffer)), b => b.toString(16).padStart(2, '0')).join('');
+    return trace ? trace.measure(`download.integrity.${source}`, work) : work();
+  };
+  const readCached = async (response: Response) => {
+    // Old writers hashed partial 206 bodies too; only a trusted manifest can validate those entries.
+    if (!integrity && response.headers?.get('x-model-cache-format') !== COMPLETE_MODEL_CACHE_FORMAT)
+      throw new Error('Cached model completeness is unknown; download the complete model once');
+    const buffer = await storageDeadline(response.arrayBuffer(), hareketsizlikMs);
+    const size = integrity?.size ?? Number(response.headers?.get('x-model-byte-length') ?? 0);
+    const hash = integrity?.sha256 ?? response.headers?.get('x-model-sha256');
+    // An ETag/304 cannot certify local bytes; legacy entries must be downloaded once to gain integrity metadata.
+    if (!Number.isSafeInteger(size) || size <= 0 || !hash || !/^[a-f0-9]{64}$/.test(hash))
+      throw new Error('Cached model has no integrity metadata');
+    if (size !== buffer.byteLength) throw new Error('Cached model byte length mismatch');
+    if (await storageDeadline(digest(buffer, 'cache'), hareketsizlikMs) !== hash) throw new Error('Cached model checksum mismatch');
+    return buffer;
+  };
+  let stored = cacheable ? await readModelCacheResponse(url, Math.min(hareketsizlikMs, 1500)) : undefined;
+  if (immutable && stored) {
+    try { const buffer = await readCached(stored); record('cache-storage', buffer.byteLength, 'ok'); return buffer; }
+    catch { record('cache-storage', 0, 'failed'); await removeCached(); stored = undefined; }
   }
-  // Same-origin model files (`/models/...`) have no version in the URL and are too large for
-  // Chrome's HTTP cache: measured on the hosted site, a second fetch in the same profile moved
-  // the full 88 MB mask model again. They are kept in Cache Storage too, revalidated by ETag
-  // (one conditional request; 304 -> stored bytes). No ETag -> not stored, so never stale.
-  const yerelOnbellekli = /^\/[^/]/.test(url) && typeof caches !== 'undefined';
-  let saklanan: Response | undefined;
-  if (yerelOnbellekli) {
-    saklanan = await readModelCacheResponse(url, hareketsizlikMs);
-  }
-  const saklananEtag = saklanan?.headers.get('etag') ?? null;
-  let inen = 0;
+  const etag = stored?.headers?.get('etag');
+  let received = 0;
   try {
-    kur();
-    let yanit = await al(url, saklananEtag ? { headers: { 'If-None-Match': saklananEtag }, cache: 'no-store' } : undefined);
-    if (yanit.status === 304 && saklanan) {
-      clearTimeout(zamanlayici);
-      try {
-        const buffer = await storageDeadline(saklanan.arrayBuffer(), hareketsizlikMs);
-        record('cache-storage', buffer.byteLength, 'ok');
-        return buffer;
-      } catch { kur(); yanit = await al(url); }
-    }
-    if (!yanit.ok) throw new Error(`${ad}: ${yanit.status} ${yanit.statusText}`);
-    const uzunluk = Number(yanit.headers.get('content-length') ?? 0);
-    // Gövde akıtılamıyorsa (eski tarayıcı, önbellekten dönen yanıt) ilerleme
-    // yok ama indirme ÇALIŞMALI: sessizce tam okumaya düşülür.
-    if (!yanit.body) {
-      const buffer = await Promise.race([yanit.arrayBuffer(), iptalSozu]);
-      record('fetch', buffer.byteLength, 'ok');
-      return buffer;
-    }
-
-    const okuyucu = yanit.body.getReader();
-    const parcalar: Uint8Array[] = [];
-    try {
-      for (;;) {
-        const { done, value } = await Promise.race([okuyucu.read(), iptalSozu]);
-        if (done) break;
-        if (!value) continue;
-        kur();
-        parcalar.push(value);
-        inen += value.byteLength;
-        indirmeBildir(url, { ad, inen, toplam: uzunluk > 0 ? uzunluk : undefined });
+    reset();
+    let response = await fetchResponse(etag ? { headers: { 'If-None-Match': etag }, cache: 'no-store' } : undefined);
+    if (response.status === 304 && stored) {
+      clearTimeout(timer);
+      try { const buffer = await readCached(stored); record('cache-storage', buffer.byteLength, 'ok'); return buffer; }
+      catch {
+        record('cache-storage', 0, 'failed'); await removeCached(); reset();
+        response = await fetchResponse({ cache: 'no-store' });
       }
-    } catch (error) {
-      try { void Promise.resolve(okuyucu.cancel?.()).catch(() => {}); } catch { /* akış zaten kapalı */ } // iptalde gövde akışı da bırakılır
-      throw error;
-    } finally {
-      indirmeBitti(url);
     }
-
-    const hepsi = new Uint8Array(inen);
-    let konum = 0;
-    for (const p of parcalar) {
-      hepsi.set(p, konum);
-      konum += p.byteLength;
+    // No Range request is sent: a partial representation cannot establish complete-model integrity.
+    if (response.status === 206) {
+      try { void response.body?.cancel().catch(() => {}); } catch {}
+      throw new Error(`${ad}: Partial model response (206); reload and retry the complete download`);
     }
-    parcalar.length = 0; // parça referansları bırakılır: tepe bellek `hepsi` + (varsa) önbellek kopyası
-    // Önbellek yazısı çıkarım kritik yolunda BEKLENMEZ: `new Response(bayt)` baytları senkron kopyalar, yani
-    // aşağıdaki Response'lar burada oluşturulur ve dönen `hepsi.buffer` serbestçe kullanılabilir. Yazma hatası
-    // (kota dolu vb.) yalıtılır: model yine kullanılır, yalnız bir sonraki ziyarette yeniden iner.
-    const etag = yerelOnbellekli ? yanit.headers.get('etag') : null;
-    const yazilacak = onbellekli ? new Response(hepsi) : etag ? new Response(hepsi, { headers: { etag } }) : null;
-    if (yazilacak) {
-      void caches.open(MODEL_ONBELLEGI).then((c) => c.put(url, yazilacak)).catch(() => { /* kota dolu: sorun değil */ });
+    if (!response.ok) throw new Error(`${ad}: ${response.status} ${response.statusText}`);
+    const length = Number(response.headers.get('content-length') ?? 0);
+    let buffer: ArrayBuffer;
+    if (!response.body) {
+      buffer = await Promise.race([response.arrayBuffer(), aborted]); received = buffer.byteLength;
+    } else {
+      const reader = response.body.getReader(), chunks: Uint8Array[] = [];
+      try {
+        for (;;) {
+          const { done, value } = await Promise.race([reader.read(), aborted]);
+          if (done) break;
+          if (!value) continue;
+          reset(); chunks.push(value); received += value.byteLength;
+          indirmeBildir(url, { ad, inen: received, toplam: length > 0 ? length : undefined });
+        }
+      } catch (error) {
+        try { void Promise.resolve(reader.cancel?.()).catch(() => {}); } catch {}
+        throw error;
+      } finally { indirmeBitti(url); }
+      const bytes = new Uint8Array(received); let offset = 0;
+      for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+      chunks.length = 0; buffer = bytes.buffer;
     }
-    record('fetch', inen, 'ok');
-    return hepsi.buffer;
-  } catch (error) {
-    record('fetch', inen, 'failed');
-    throw error;
-  } finally {
-    clearTimeout(zamanlayici);
-  }
+    // Content-Length describes compressed bytes when Content-Encoding is present; compare only identity bodies.
+    const encoding = response.headers.get('content-encoding');
+    if (length > 0 && (!encoding || encoding === 'identity') && length !== received)
+      throw new Error(`${ad}: Incomplete model byte length; reload and retry`);
+    if (integrity && received !== integrity.size) throw new Error(`${ad}: Model byte length mismatch; check deployed assets`);
+    const responseEtag = response.headers.get('etag');
+    const persist = response.status === 200 && cacheable && (immutable || !!responseEtag);
+    const hash = integrity || persist ? await Promise.race([digest(buffer, 'fetch'), aborted]) : null;
+    if (integrity && hash !== integrity.sha256) throw new Error(`${ad}: Model checksum mismatch; check deployed assets`);
+    if (persist && hash) {
+      const headers: Record<string, string> = {
+        'x-model-byte-length': String(received), 'x-model-sha256': hash,
+        'x-model-cache-format': COMPLETE_MODEL_CACHE_FORMAT,
+      };
+      if (responseEtag) headers.etag = responseEtag;
+      // Response copies the bytes synchronously; cache writes never hold up GPU setup or inference.
+      const cached = new Response(buffer, { headers });
+      void Promise.resolve().then(() => caches.open(MODEL_ONBELLEGI)).then(c => c.put(url, cached)).catch(() => {});
+    }
+    record('fetch', received, 'ok'); return buffer;
+  } catch (error) { record('fetch', received, 'failed'); throw error; }
+  finally { clearTimeout(timer); indirmeBitti(url); }
 }

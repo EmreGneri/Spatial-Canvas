@@ -5,6 +5,7 @@ import { loadEnv } from 'vite';
 const { join } = path;
 const MODEL_REPOS = JSON.parse(readFileSync(new URL('./model-assets.json', import.meta.url), 'utf8'));
 const DAVID_MASK_INT8 = JSON.parse(readFileSync(new URL('../src/engine/vision/david-mask-asset.json', import.meta.url), 'utf8'));
+const BIREFNET_ASSET = JSON.parse(readFileSync(new URL('../src/engine/reconstruction/birefnet-asset.json', import.meta.url), 'utf8'));
 export const MANAGED_ASSET_DIRS = ['models', 'ort', 'mediapipe-wasm'];
 
 /** Use Vite's dotenv precedence and shell overrides for the download entry point too. */
@@ -50,12 +51,7 @@ export function assetManifest(env = process.env) {
   // hali. Revizyon SABİT (main değil): graf yeniden yüklenirse boyut kontrolü
   // yakalar. LİSANS: MIT (model kartı; ayrı LICENSE dosyası yok). DIS5K eğitim
   // verisi uyarısı THIRD_PARTY_NOTICES'te. sha256 4059896039dfccb0…cf5f4.
-  const BIREFNET = {
-    repo: 'jiabins0303/birefnet-lite-1024-webgpu',
-    rev: '1ad01cef0f4101a285c5a3e0bd7f15597d93403f',
-    file: 'onnx/model_fp16.onnx',
-    size: 114834127,
-  };
+  const BIREFNET = { ...BIREFNET_ASSET };
   BIREFNET.dest = join(modelRoot, BIREFNET.repo, BIREFNET.file);
 
   // Deney varsayılan kapalı (?derinlik=moge açar): temiz Vercel build'i modeli yalnız VITE_MOGE2_PHOTO=1 ile indirir.

@@ -53,6 +53,7 @@ import { currentPhotoMeasurement, type PhotoMeasurement } from '../photoMeasurem
 // doğrudur ve webgpu yoktur.
 import * as ort from 'onnxruntime-web/webgpu';
 import { ilerlemeliGetir } from '../../indirmeIlerleme.ts';
+import birefnetAsset from './birefnet-asset.json' with { type: 'json' };
 import { dilateAndFeatherMask, keepMainComponents, resampleBilinear } from './silhouette.ts';
 import { localInference, localInferenceAvailable } from '../sidecarClient.ts';
 import { gpuSirasinaGir, onceRetry } from '../../depth.ts';
@@ -88,7 +89,7 @@ const NORM_STD = 256;
  * Kapatmak için false: fotoğraf yolu eskisi gibi yardımcı → IS-Net olur.
  */
 export const TARAYICI_BIREFNET = true;
-const BIREFNET_PATH = '/models/jiabins0303/birefnet-lite-1024-webgpu/onnx/model_fp16.onnx';
+const BIREFNET_PATH = `/models/${birefnetAsset.repo}/${birefnetAsset.file}`;
 /** Bu oranlar dışında maske "model pes etti" sayılır (ui/maskeKarari.ts üst ucu ile aynı). */
 const BIREFNET_MIN_ORAN = 0.001;
 const BIREFNET_MAX_ORAN = 0.92;
@@ -143,7 +144,7 @@ let yukleBirefnet: (() => Promise<ort.InferenceSession>) | null = null;
 let birefnetKapali = false;
 let birefnetDownload: Promise<ArrayBuffer> | null = null;
 function downloadBirefnet() {
-  return birefnetDownload ??= ilerlemeliGetir(BIREFNET_PATH, 'BiRefNet nesne ayırma modeli')
+  return birefnetDownload ??= ilerlemeliGetir(BIREFNET_PATH, 'BiRefNet nesne ayırma modeli', undefined, undefined, birefnetAsset)
     .catch(error => { birefnetDownload = null; throw error; });
 }
 

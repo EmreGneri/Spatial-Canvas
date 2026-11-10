@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 // İndirme ilerlemesi (saf): satır biçimi, baskın dosya seçimi, akıtarak
 // getirme ve Content-Length olmayan yol.
 //   node scripts/verify-indirme-ilerleme.mjs
@@ -162,7 +163,7 @@ function sahteYanit(bayt, { uzunlukVer = true, parca = 4 } = {}) {
   globalThis.caches = { open: async () => ({ match: async () => ({ arrayBuffer: async () => { reads++; return new Uint8Array([4, 5]).buffer; } }) }) };
   try {
     const trace = beginPhotoMeasurement({ generation: 4, width: 8, height: 8 }, true);
-    const buffer = await ilerlemeliGetir('https://models.invalid/pinned.onnx', 'cached', async () => { fetches++; throw Error('must not fetch'); });
+    const buffer = await ilerlemeliGetir('https://models.invalid/resolve/1111111111111111111111111111111111111111/pinned.onnx', 'cached', async () => { fetches++; throw Error('must not fetch'); }, undefined, {size:2,sha256:createHash('sha256').update(Uint8Array.of(4,5)).digest('hex')});
     const report = trace.finish('ready');
     assert.deepEqual([...new Uint8Array(buffer)], [4, 5]);
     assert.equal(reads, 1);
@@ -197,14 +198,28 @@ function sahteYanit(bayt, { uzunlukVer = true, parca = 4 } = {}) {
 // Same-origin model (`/models/...`): stored with its ETag, revalidated with one conditional request.
 {
   const previous = globalThis.caches, store = new Map();
-  globalThis.caches = { open: async () => ({ match: async (u) => store.get(u)?.clone(), put: async (u, r) => { store.set(u, r); } }) };
+  const writeWaiters = new Map();
+  const waitForWrite = (url) => new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`Cache write did not finish: ${url}`)), 1000);
+    writeWaiters.set(url, () => { clearTimeout(timer); resolve(); });
+  });
+  globalThis.caches = { open: async () => ({ match: async (u) => store.get(u)?.clone(), put: async (u, r) => {
+    // Force a later turn so the test covers a download returning before optional storage finishes.
+    await new Promise(resolve => setImmediate(resolve));
+    store.set(u, r);
+    writeWaiters.get(u)?.();
+    writeWaiters.delete(u);
+  } }) };
   const yanit = (bayt, etag) => { const y = sahteYanit(bayt); y.headers = { get: (k) => k === 'content-length' ? String(bayt) : k === 'etag' ? etag : null }; return y; };
   try {
     const istekler = [];
     const sunucu = (bayt, etag) => async (u, init) => { istekler.push(init?.headers?.['If-None-Match'] ?? null);
       return init?.headers?.['If-None-Match'] === etag ? { ok: false, status: 304, statusText: 'Not Modified' } : yanit(bayt, etag); };
+    const firstWrite = waitForWrite('/models/x.onnx');
     const ilk = await ilerlemeliGetir('/models/x.onnx', 'x', sunucu(8, '"v1"'));
     assert.equal(ilk.byteLength, 8);
+    assert.equal(store.has('/models/x.onnx'), false, 'download must return before the delayed cache write');
+    await firstWrite;
     assert.equal(store.get('/models/x.onnx').headers.get('etag'), '"v1"', 'stored with its ETag');
     const trace = beginPhotoMeasurement({ generation: 8, width: 8, height: 8 }, true);
     const ikinci = await ilerlemeliGetir('/models/x.onnx', 'x', sunucu(8, '"v1"'));
@@ -212,9 +227,10 @@ function sahteYanit(bayt, { uzunlukVer = true, parca = 4 } = {}) {
     assert.deepEqual([...new Uint8Array(ikinci)], [...new Uint8Array(ilk)], '304 -> the stored bytes');
     assert.equal(trace.finish('ready').downloads[0].source, 'cache-storage');
     // New deployment (new ETag): downloaded again and the stored copy replaced, never a stale model.
+    const replacementWrite = waitForWrite('/models/x.onnx');
     const yeni = await ilerlemeliGetir('/models/x.onnx', 'x', sunucu(12, '"v2"'));
     assert.equal(yeni.byteLength, 12);
-    await new Promise((r) => setTimeout(r, 0)); // the cache write is no longer awaited by the download
+    await replacementWrite;
     assert.equal(store.get('/models/x.onnx').headers.get('etag'), '"v2"');
     // No ETag: not stored (cannot be revalidated).
     await ilerlemeliGetir('/models/y.onnx', 'y', async () => sahteYanit(4));
@@ -266,7 +282,7 @@ function sahteYanit(bayt, { uzunlukVer = true, parca = 4 } = {}) {
     // https model: yazı 150 ms sürse de indirme hemen döner; Response baytları senkron kopyaladığı için dönen tampon güvenli.
     globalThis.caches = yavasOnbellek(150);
     const t0 = performance.now();
-    const buf = await ilerlemeliGetir('https://example.test/model.onnx', 'model', async () => sahteYanit(24));
+    const buf = await ilerlemeliGetir('https://example.test/model.onnx', 'model', async () => { const r=sahteYanit(24); const get=r.headers.get; r.headers.get=k=>k==='etag'?'v1':get(k); return r; });
     assert.ok(performance.now() - t0 < 100, 'cache.put çıkarımı beklememeli');
     assert.equal(buf.byteLength, 24);
     new Uint8Array(buf).fill(0); // çağıran tamponu kullanabilir/değiştirebilir; önbellek kopyası etkilenmez
@@ -274,7 +290,7 @@ function sahteYanit(bayt, { uzunlukVer = true, parca = 4 } = {}) {
     assert.deepEqual(log, ['put:https://example.test/model.onnx'], 'yazı arka planda tamamlanmalı');
     // Kota hatası: yalıtılır (indirme başarılı, işlenmemiş red yok).
     globalThis.caches = yavasOnbellek(10, true);
-    const buf2 = await ilerlemeliGetir('https://example.test/b.onnx', 'model', async () => sahteYanit(8));
+    const buf2 = await ilerlemeliGetir('https://example.test/b.onnx', 'model', async () => { const r=sahteYanit(8); const get=r.headers.get; r.headers.get=k=>k==='etag'?'v1':get(k); return r; });
     assert.equal(buf2.byteLength, 8);
     await new Promise((r) => setTimeout(r, 40));
   } finally { if (previous === undefined) delete globalThis.caches; else globalThis.caches = previous; }
@@ -291,7 +307,7 @@ function sahteYanit(bayt, { uzunlukVer = true, parca = 4 } = {}) {
     ]) {
       globalThis.caches = cache;
       const result = await Promise.race([
-        ilerlemeliGetir('https://models.invalid/storage-hang.onnx', label, async () => sahteYanit(4), 20),
+        ilerlemeliGetir('https://models.invalid/resolve/1111111111111111111111111111111111111111/storage-hang.onnx', label, async () => sahteYanit(4), 20, {size:4,sha256:createHash('sha256').update(Uint8Array.of(0,1,2,3)).digest('hex')}),
         new Promise(resolve => setTimeout(() => resolve('storage watchdog'), 300)),
       ]);
       assert.equal(result.byteLength, 4, `${label}: optional cache must fall back to network`);

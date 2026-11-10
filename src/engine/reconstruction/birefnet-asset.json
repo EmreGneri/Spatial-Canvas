@@ -1,0 +1,7 @@
+{
+  "repo": "jiabins0303/birefnet-lite-1024-webgpu",
+  "rev": "1ad01cef0f4101a285c5a3e0bd7f15597d93403f",
+  "file": "onnx/model_fp16.onnx",
+  "size": 114834127,
+  "sha256": "4059896039dfccb0f15b9080ff06d11d90e499449bb045e797055eb8901cf5f4"
+}

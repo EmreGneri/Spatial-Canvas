@@ -10,7 +10,7 @@ Canlı video modeli ısıtması artık yalnız kamera/video kaynağı olduğunda
 
 Varsayılan fotoğraf yolu, sahne modelinin ilk çıkarımını maskelerden önce gösterir. Aynı çıkarım sonucu nihai kalite hattında yeniden kullanılır; BiRefNet, DAViD, parça/özne/baş ayrıntıları ve yüz rölyefi daha sonra tamamlanır. Önizleme sırasında arayüz bunu belirtir ve dışa aktarma düğmeleri nihai sonuç hazır olana kadar kapalıdır. Deneysel MoGe ve perspektif kalibrasyonu mevcut sırayı korur. Karşılaştırma için `?onizleme=0` eski sırayı kullanır.
 
-BiRefNet'in gerekli dosyası fotoğraf yüklenirken derinlik dosyasıyla paralel indirilir. Paylaşılan tek indirme sonucu oturum kurulurken tüketilir; GPU kurulumu ve çıkarımı önizleme sonrasında aynı sırayı kullanır. Böylece önizleme için nihai kaliteye giden indirmeler gereksiz yere art arda bekletilmez. Yardımcı çalışıyorsa, WebGPU yoksa veya BiRefNet zaten hazırsa bu indirme başlatılmaz.
+BiRefNet'in gerekli dosyası ilk derinlik önizlemesinden sonra indirilir; derinlik modelinin ilk indirmesiyle bant genişliğini paylaşmaz. Paylaşılan tek indirme sonucu oturum kurulurken tüketilir; GPU kurulumu ve çıkarımı aynı sırayı kullanır. Yardımcı çalışıyorsa, WebGPU yoksa veya BiRefNet zaten hazırsa bu indirme başlatılmaz. Arka plandaki sekmede önizleme için kare bekleyişi nihai işlemi sonsuza kadar durdurmaz.
 
 Fotoğrafın kalite hesabı sırasında tam hızlı sahne animasyonu GPU'ya iş göndermeyi bırakır; önizleme saniyede bir yeniden çizilir. Tamamlanma, hata ve kaynak değişiminde normal çizim geri açılır. Nihai çıktı veya bitmiş sahnenin animasyon hızı değiştirilmez.
 
@@ -94,6 +94,12 @@ Resource Timing kaydı, başlangıcı fotoğrafın `[startedAt, endedAt]` pencer
 Bu ölçüm kapsanan fonksiyonun duvar saati süresidir. PNG `toBlob` çevresiyse blob üretimini; WebM kayıt fonksiyonunun çevresiyse gerçek zamanlı kayıt, kare bekleme ve tamamlama işlemlerini birlikte kapsar. WebM duvar süresini **salt codec/encoding maliyeti** olarak yorumlamayın. `lastPhotoId` son başarılı hazırlıktır; dışa aktarılan medyanın kimliğiyle kesin eşleştiği iddiası değildir.
 
 ## Doğrulama
+
+### Cache migration and release validation
+
+Unversioned model URLs still revalidate with ETag. Entries without trusted model size/SHA-256 must also identify the complete-200 cache format; older self-consistent partial-response entries are evicted and downloaded once. Trusted BiRefNet/DAViD manifest hashes can validate existing entries without clearing the model cache. New HTTP 206 responses never persist. A repaired entry is reused after the next 304 instead of downloading again.
+
+`node scripts/verify-photo-delivery-cache.mjs` reproduces the old four-byte/eight-byte migration against real localhost HTTP, checks the repair and following visit, and preserves trusted pinned entries. Typecheck, related photo tests, the production build and Chrome smoke passed locally. The full verification suite already ran once during the audit and is not repeated for this release. The earlier timing matrix predates the final cache repairs; current production timing and Vercel first/returning visits remain to be measured. Raw audit outputs stay local and are not required to build the site.
 
 ```powershell
 node scripts/verify-photo-measurement.mjs
