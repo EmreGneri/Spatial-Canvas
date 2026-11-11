@@ -87,7 +87,7 @@ assert.match(app, /\{!sunum && engine && \(\s*\n\s*<div[^\n]*\n\s*<div[^\n]*\n\s
 assert.match(app, /\{!sunum && \(\s*\n\s*<pre style/, 'ham log şeridi sunumda mount ediliyor');
 
 // DURUM OKUMALARI ("nesne ayırma: kapalı" vb.) gizlenmeli.
-assert.match(app, /\{!sunum && \(\s*\n\s*<>[\s\S]{0,400}nesne ayırma:/,
+assert.match(app, /\{!sunum && \(\s*<div[^\n]*scene-vision-controls[^\n]*\n[\s\S]{0,1000}tracker:/,
   'tanı toggle grubu sunumda mount ediliyor');
 
 // DEMO SENARYOSUNUN GEREKTİRDİKLERİ KALMALI — fazla kesmek de hata.
@@ -170,7 +170,7 @@ assert.match(app, /useState\(\(\) => sunumAcikMi\(window\.location\.search\)\)/,
   'sunum modu render başına yeniden okunuyor');
 
 // Efekt rafı sunumda KAPALI başlamalı (açık kart 9 kaydırıcı + 2 renk gösteriyor).
-assert.match(app, /baslangicKapali=\{sunum\}/, 'efekt rafı sunumda kapalı başlamıyor');
+assert.match(app, /baslangicKapali=\{sunum(?:\s*\|\|\s*tamEkran)?\}/, 'efekt rafı sunumda kapalı başlamıyor');
 const cp = readFileSync(new URL('../src/ui/ControlPanel.tsx', import.meta.url), 'utf8');
 assert.match(cp, /baslangicKapali \? null : 'render'/, 'ControlPanel kapalı başlangıcı uygulamıyor');
 

@@ -1,40 +1,40 @@
 import { useState, type CSSProperties } from 'react';
-import type { RenderState, RenderTargets } from '../shaders/renderPreset';
+import type { RenderTargets } from '../shaders/renderPreset';
 import { PresetSection } from './PresetSection';
-import { bosluk, cam, MONO, renk, SANS, yaricap, yazi } from './tema';
+import { bosluk, cam, dugme, renk, SANS, yaricap, yazi } from './tema';
 
-/**
- * KÜTÜPHANE PANELİ — üç sütunlu düzenin ORTA sütunu.
- *
- * NEDEN AYRI PANEL: preset'ler efekt rafının 07. kartının içinde duruyordu;
- * kapak görmek için önce kartı açmak gerekiyordu ve kapaklar 140 px'lik bir
- * sütuna sıkışıyordu. Referans düzende kütüphane KENDİ sütunu — göz sahneden
- * kütüphaneye, oradan efekt rafına akıyor.
- *
- * Arama alanı burada: 26 preset'te isimle aramak, ızgarada gözle taramaktan
- * hızlı.
- */
 export function KutuphanePaneli({
   targets,
   onApplied,
   sahne,
+  desktop,
+  activePreset,
+  onBeforeApply,
+  onUndo,
 }: {
   targets: RenderTargets;
   onApplied: () => void;
+  desktop: boolean;
+  activePreset: string | null;
+  onBeforeApply: (name: string) => void;
+  onUndo: () => void;
   sahne?: {
     canvas: HTMLCanvasElement;
     renderFrame: () => void;
-    serialize: () => RenderState;
-    setMode?: (m: RenderState['mode']) => void;
+    captureRestore: () => () => void;
   };
 }) {
   const [arama, setArama] = useState('');
+  const [previewing, setPreviewing] = useState(false);
 
   return (
-    <section style={panel}>
+    <section aria-label="Presetler" style={desktop ? { ...panel, position: 'relative', top: 0, maxHeight: '100%', boxSizing: 'border-box' } : panel}>
       <header style={baslik}>
-        <span>kütüphane</span>
-        <span style={{ fontFamily: MONO, fontSize: yazi.kucuk, color: renk.metinSilik }}>preset</span>
+        <span>Presetler</span>
+        <button type="button" style={dugme(false)} disabled={!activePreset || previewing}
+          onClick={onUndo} title="Presetleri denemeden önceki görünüme dön">
+          Geri al
+        </button>
       </header>
 
       <input
@@ -46,7 +46,8 @@ export function KutuphanePaneli({
       />
 
       <div style={{ overflowY: 'auto', display: 'grid', gap: bosluk.s, alignContent: 'start' }}>
-        <PresetSection targets={targets} onApplied={onApplied} sahne={sahne} filtre={arama} />
+        <PresetSection targets={targets} onApplied={onApplied} sahne={sahne} filtre={arama}
+          activePreset={activePreset} onBeforeApply={onBeforeApply} onPreviewing={setPreviewing} />
       </div>
     </section>
   );

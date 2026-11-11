@@ -136,7 +136,8 @@ assert.match(nokta, /alpha \*= mix\(PHOTO_GRID_ENERGY, 1\.0, step\(0\.5, uVideoF
 // ── KABLO: App çıkarken YAZAR, girerken OKUR (sıra önemli) ─────────────────
 const app = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
 const govde = app.slice(app.indexOf('function changeMode('), app.indexOf('changeModeRef.current = changeMode'));
-const yazIdx = govde.indexOf('modHafizaYaz(mode)');
+assert.match(govde, /const current = engine\.renderMode/);
+const yazIdx = govde.indexOf('modHafizaYaz(current)');
 const uygulaIdx = govde.indexOf('modKaliteUygula(next)');
 assert.ok(yazIdx > 0, 'moddan çıkarken hafızaya yazılmıyor — kullanıcının ayarı kaybolur');
 assert.ok(uygulaIdx > yazIdx, 'profil, eski modun değerleri kaydedilmeden uygulanıyor');

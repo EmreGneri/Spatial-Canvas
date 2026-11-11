@@ -53,6 +53,8 @@ export interface AsciiMaterialUniforms {
    * `setCharSet()` ikisini birlikte günceller.
    */
   uCharSet: { value: number };
+  /** First nonblank atlas cell for the full-photo depth ramp. */
+  uFirstVisibleGlyph: { value: number };
   /** 8..40 — karakterler okunabilir kalsın diye noktalardan büyük */
   uPointSize: { value: number };
   /** 0..1 — aUv hash tohumuyla boyut saçılması; 0 = hepsi eşit boyutta */
@@ -222,6 +224,7 @@ const VERTEX = /* glsl */ `
 const FRAGMENT = /* glsl */ `
   uniform sampler2D uAtlas;
   uniform float uCharSet;
+  uniform float uFirstVisibleGlyph;
   uniform vec3 uColor;
   uniform vec3 uBgColor;
   uniform float uBgOpacity;
@@ -257,6 +260,10 @@ const FRAGMENT = /* glsl */ `
     float d = clamp(vDepth + uDepthBias, 0.0, 1.0);
     float mixed = mix(d * uCharSet, vSeed * uCharSet, uCharRandom);
     float index = clamp(floor(mixed), 0.0, uCharSet - 1.0);
+    // A blank glyph must not erase distant surfaces in a full photo.
+    if (uHasImage > 0.5 && uVideoFootprint < 0.5 && uObjectSeparation < 0.5) {
+      index = max(index, uFirstVisibleGlyph);
+    }
 
     // gl_PointCoord'u atlasın o hücresine haritala. Dikey ters çevrilir:
     // gl_PointCoord.y aşağı doğru artar, CanvasTexture ise flipY = true ile
@@ -301,13 +308,15 @@ const FRAGMENT = /* glsl */ `
 
 export function createAsciiMaterial(): AsciiMaterial {
   // `let`: setCharSet atlası takas eder, dispose kancası güncelini bırakmalı.
-  let atlas = createAtlasTexture(toChars(CHAR_SETS[0].chars));
+  const defaultChars = toChars(CHAR_SETS[0].chars);
+  let atlas = createAtlasTexture(defaultChars);
 
   // Her material kendi uniform objesini alır; iki instance state paylaşmaz.
   const uniforms: AsciiMaterialUniforms = {
     uPositions: { value: null },
     uAtlas: { value: atlas },
-    uCharSet: { value: toChars(CHAR_SETS[0].chars).length },
+    uCharSet: { value: defaultChars.length },
+    uFirstVisibleGlyph: { value: Math.max(0, defaultChars.findIndex((char) => char.trim() !== '')) },
     uPointSize: { value: 16 },
     uSizeJitter: { value: 0 },
     // 1 outside Engine: the startup size, unchanged.
@@ -359,6 +368,7 @@ export function createAsciiMaterial(): AsciiMaterial {
     atlas = next;
     uniforms.uAtlas.value = next;
     uniforms.uCharSet.value = list.length;
+    uniforms.uFirstVisibleGlyph.value = Math.max(0, list.findIndex((char) => char.trim() !== ''));
     ascii.charSet = chars;
   };
 

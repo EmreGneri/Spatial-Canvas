@@ -81,7 +81,7 @@ function assertBust(xyz, label) {
   assertBust(tex.image.data, 'buffers default');
 }
 
-// [2] Real app path: Engine.setDepth for a photo (no video texture). The
+// [2] Real app path: Engine.setDepth with object separation off. The
 // photo's red channel encodes its own source column, so each particle's
 // color says which pixel it was painted from; that must be the pixel under
 // the particle's world x (positions and colors on the same remap).
@@ -110,23 +110,18 @@ function assertBust(xyz, label) {
   engine.setDepth(depth, W, H, mask, W, H);
 
   const pos = engine.homeTexture.image.data;
-  const { spanX, zx } = assertBust(pos, 'Engine photo setDepth');
+  assert.ok(engine.foregroundMask, 'the mask is retained for re-enabling separation');
   const col = engine.imageColorTexture.image.data;
   const halfW = W / H;
-  let fg = 0;
   let drift = 0;
   for (let k = 0; k < pos.length / 4; k++) {
-    if (pos[k * 4 + 3] < 1) continue;
-    fg++;
+    assert.equal(pos[k * 4 + 3], 1, 'the full photo has no mask-based dimming');
     const uFromPos = (pos[k * 4] / halfW + 1) / 2;
     const uFromColor = col[k * 4] / 255;
     // 1 source px + 8-bit quantization is the honest tolerance.
     if (Math.abs(uFromPos - uFromColor) > 1 / W + 1 / 255) drift++;
   }
-  assert.ok(fg > 1000, `photo subject has particles (${fg})`);
-  assert.equal(drift, 0, `photo colors sit on their own particles (${drift}/${fg} drifted)`);
-  console.log(`  Engine photo path: width ${spanX.toFixed(3)} vs silhouette ${trueX.toFixed(3)}, ` +
-    `z/x ${zx.toFixed(3)}, color drift ${drift}/${fg}`);
+  assert.equal(drift, 0, 'full-photo colors align with their particles');
 }
 
-console.log('OK · photo geometry (bust width = silhouette, not flat; Engine photo positions + colors share one remap)');
+console.log('OK · photo geometry (isolated bust proportions and full-frame opacity and color alignment)');

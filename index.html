@@ -118,6 +118,103 @@
       button:hover:not(:disabled) { border-color: rgba(255, 255, 255, 0.20); }
       button:active:not(:disabled) { transform: translateY(1px); }
       button:disabled { opacity: 0.4; cursor: not-allowed; }
+      .scene-hud-heading {
+        background: transparent !important;
+        border-color: transparent !important;
+        box-shadow: none !important;
+        backdrop-filter: none !important;
+      }
+      .scene-hud-heading > :first-child {
+        letter-spacing: 0.12em !important;
+      }
+      .scene-hud :is(button, select, label:has(> input.gizli-dosya)),
+      .scene-hud-settings > summary,
+      .scene-hud-advanced:not([open]) {
+        background: transparent !important;
+        border-color: transparent !important;
+      }
+      .scene-hud :is(button, label:has(> input.gizli-dosya)):hover:not(:disabled),
+      .scene-hud-settings > summary:hover,
+      .scene-hud-advanced:not([open]):hover {
+        background: #1c1a18 !important;
+      }
+      .scene-hud button[aria-pressed='true'] {
+        color: #f0ece6 !important;
+        border-bottom-color: #d9873f !important;
+      }
+      .scene-hud-settings {
+        max-width: 100%;
+        color: #a9a39a;
+        font-size: 11px;
+      }
+      .scene-vision-controls {
+        position: absolute;
+        top: 8px;
+        right: 8px;
+        justify-content: flex-end;
+      }
+      .scene-hud-settings[open] {
+        flex-basis: 100%;
+        width: fit-content;
+      }
+      .scene-hud-settings > summary {
+        box-sizing: border-box;
+        width: fit-content;
+        min-height: 24px;
+        padding: 4px 6px;
+        cursor: pointer;
+      }
+      .scene-footer {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        align-items: end;
+      }
+      .scene-footer-controls,
+      .scene-footer-tools {
+        pointer-events: auto;
+      }
+      .scene-footer-tools {
+        position: relative;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .scene-footer-tools > details {
+        padding: 0 !important;
+        background: transparent !important;
+        border: 0 !important;
+      }
+      .scene-footer-tools > details > summary {
+        box-sizing: border-box;
+        min-height: 24px;
+        padding: 4px 8px;
+        cursor: pointer;
+        color: #d4cec6;
+        font-size: 12px;
+        white-space: nowrap;
+      }
+      .scene-footer-tools > details[open] > summary {
+        color: #f5d8b4 !important;
+      }
+      .scene-footer-tools > details > div {
+        position: absolute;
+        z-index: 2;
+        right: 0;
+        bottom: calc(100% + 8px);
+        width: max-content;
+        max-width: min(800px, calc(100vw - 16px));
+        max-height: 55vh;
+        overflow: auto;
+        box-sizing: border-box;
+        padding: 12px;
+        border: 1px solid rgba(255, 255, 255, 0.13);
+        border-radius: 10px;
+        background: #141311;
+      }
+      .scene-footer-progress {
+        grid-column: 1 / -1;
+        pointer-events: auto;
+      }
       :focus-visible { outline: 2px solid #d9873f; outline-offset: 2px; }
       /* Dosya seçiciler: input görsel olarak gizli ama KLAVYEYLE ODAKLANABİLİR (display:none Tab'dan çıkarırdı);
          odak halkası etiketin üstünde görünür, Enter/Space seçiciyi açar. */

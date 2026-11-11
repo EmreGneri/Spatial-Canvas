@@ -143,6 +143,10 @@ assert.match(bilesen, /aria-label=/, 'grafikte aria-label yok');
 
 // Grafik transport şeridinin ALTINDA, şeridin İÇİNDE değil.
 const serit = readFileSync(new URL('../src/ui/TransportSerit.tsx', import.meta.url), 'utf8');
-assert.match(serit, /altSatir && <div style=\{\{ flexBasis: '100%'/, 'alt satır tam genişlikte değil');
+assert.match(serit, /altSatir && <div className=\{desktop \? 'scene-footer-progress' : undefined\} style=\{\{ flexBasis: '100%'/,
+  'alt satır dar düzende tam genişlikte değil');
+const styles = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+assert.match(styles, /\.scene-footer-progress\s*\{[^}]*grid-column:\s*1 \/ -1/,
+  'alt satır masaüstünde iki köşeyi kapsamıyor');
 
 console.log('verify-egitim-ilerleme: OK · seyreltme, bütçe eksenli kadraj, eğim, kablo denetimi');

@@ -1002,7 +1002,7 @@ export function photoContourEdgePixels(depth: Float32Array, w: number, h: number
   return out;
 }
 
-function sampleBilinear(
+export function sampleBilinear(
   map: Float32Array,
   w: number,
   h: number,

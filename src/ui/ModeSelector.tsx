@@ -2,34 +2,8 @@ import { useState } from 'react';
 import type { CSSProperties } from 'react';
 import { dugme as temaDugme, renk } from './tema';
 import type { Engine } from '../engine';
-import type { PointCloudMaterial } from '../shaders/pointCloudMaterial';
-import type { AsciiMaterial } from '../shaders/asciiMaterial';
-import type { NeonWireMaterial } from '../shaders/neonWireMaterial';
-import type { SolidMaterial } from '../shaders/solidMaterial';
-import type * as THREE from 'three';
-
-/**
- * Render modu seçici. Sahiplik: Zeynep.
- *
- * Material'lar App'te bir kez üretilir (useMemo) ve burada yalnızca takas
- * edilir — her tıkta yeniden yaratılmaz. Takas tek yoldan yapılır:
- * `engine.setPointsMaterial()`. Doğrudan `engine.points.material`'a yazmak
- * çalışmaz; Engine `uPositions`'ı kendi tuttuğu referansa yazdığı için yeni
- * material konum alamaz (ARCHITECTURE.md · Point Cloud Sözleşmesi).
- */
 
 export type RenderMode = 'points' | 'ascii' | 'neon' | 'solid' | 'splat' | 'crystal';
-
-export interface RenderModeMaterials {
-  points: PointCloudMaterial;
-  ascii: AsciiMaterial;
-  neon: NeonWireMaterial;
-  solid: SolidMaterial;
-  /** 5. mod (Gün D): instanced Gauss splat — kendi çizim nesnesi vardır. */
-  splat: THREE.ShaderMaterial;
-  /** 6. mod (Gün 2): kristal/cam — solid ile aynı kabuk mesh'ini kullanır. */
-  crystal: THREE.ShaderMaterial;
-}
 
 const MODES: { id: RenderMode; label: string }[] = [
   { id: 'points', label: 'Point Cloud' },
@@ -63,14 +37,12 @@ function buttonStyle(active: boolean): CSSProperties {
 
 export function ModeSelector({
   engine,
-  materials,
   mode,
   onChange,
   onReset,
   sunum = false,
 }: {
   engine: Engine;
-  materials: RenderModeMaterials;
   mode: RenderMode;
   onChange: (mode: RenderMode) => void;
   /** Sıfırlama sonrası kabuk (App) log/gösterge tazelemek isterse. */
@@ -82,14 +54,6 @@ export function ModeSelector({
    */
   sunum?: boolean;
 }) {
-  function select(next: RenderMode) {
-    // Aynı moda tekrar tıklamak boşuna takas: Engine giden material'ı dispose
-    // ettiği için, aktif material'ı dispose edip yerine kendisini koyardı.
-    if (next === mode) return;
-    engine.setPointsMaterial(materials[next]);
-    onChange(next);
-  }
-
   return (
     <div style={rowStyle}>
 
@@ -99,7 +63,7 @@ export function ModeSelector({
           type="button"
           aria-pressed={mode === id}
           style={buttonStyle(mode === id)}
-          onClick={() => select(id)}
+          onClick={() => onChange(id)}
         >
           {label}
         </button>

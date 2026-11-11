@@ -1,6 +1,6 @@
 import { cropChannels, type CropRect } from './crop.ts';
 import { buildSilhouette } from './silhouette.ts';
-import { BACKDROP_OPACITY } from './sampler.ts';
+import { BACKDROP_OPACITY, sampleBilinear } from './sampler.ts';
 import type { ShellMeshData } from './mesh.ts';
 import { YARICAP_BUYUME_MAKS } from '../splatGeometri.ts';
 import { yuzRolyefiUygula, type YuzRolyefi } from './yuzRolyef.ts';
@@ -79,11 +79,30 @@ export interface MetricPhotoProjection {
   project(u: number, v: number, output: Float32Array, offset: number): void;
 }
 
+/** Sample the photographed surface without the isolated subject's backing or opacity. */
+export function createFullPhotoProjection(
+  depth: Float32Array, width: number, height: number, worldHeight: number, depthRange: number,
+): MetricPhotoProjection {
+  const worldWidth = worldHeight * width / height;
+  return {
+    center: [0, 0, 0],
+    scale: 1,
+    project(u, v, output, offset) {
+      const d = sampleBilinear(depth, width, height, u * width - .5, v * height - .5);
+      output[offset] = (u - .5) * worldWidth;
+      output[offset + 1] = (.5 - v) * worldHeight;
+      output[offset + 2] = Math.max(-1, Math.min(1, (d - .5) * depthRange));
+      output[offset + 3] = 1;
+    },
+  };
+}
+
 /** One similarity transform preserves focal length and relative metric depth. */
 export function createMetricPhotoProjection(
   g: MetricPhotoGeometry,
   displayDepth: Float32Array,
   mask?: Float32Array,
+  fullScene = false,
 ): MetricPhotoProjection {
   const { width: w, height: h, depth, intrinsics: k, validMask } = g;
   if (w < 1 || h < 1 || depth.length !== w * h || validMask.length !== depth.length || displayDepth.length !== depth.length
@@ -91,7 +110,7 @@ export function createMetricPhotoProjection(
     || k[3] !== 0 || k[6] !== 0 || k[7] !== 0 || k[8] !== 1) {
     throw new RangeError('Invalid calibrated photo dimensions or normalized camera intrinsics');
   }
-  const alpha = buildSilhouette(displayDepth, w, h, mask ?? null).alpha;
+  const alpha = fullScene ? null : buildSilhouette(displayDepth, w, h, mask ?? null).alpha;
   const olcumlu = (i: number) => validMask[i] !== 0 && Number.isFinite(depth[i]) && depth[i] > 0;
   // DERİNLİK KENARI (MoGe'nin kendi `depth_edge` ayıklaması): 3×3 komşulukta en uzak/en yakın
   // oranı 1+KENAR_RTOL'u aşan piksel, iki yüzey arasında enterpole edilmiş "uçan" piksel
@@ -122,7 +141,7 @@ export function createMetricPhotoProjection(
   // Mask-edge pixels can carry background depth (metres behind the subject); a Tukey
   // far fence on foreground Z keeps them from shrinking the subject (seen on DAVIS frames).
   const fg: number[] = [];
-  for (let i = 0; i < w * h; i++) if (valid(i) && alpha[i] >= .5) fg.push(depth[i]);
+  for (let i = 0; i < w * h; i++) if (valid(i) && alpha && alpha[i] >= .5) fg.push(depth[i]);
   fg.sort((a, b) => a - b);
   const q1 = fg[Math.floor((fg.length - 1) * .25)] ?? 0, q3 = fg[Math.ceil((fg.length - 1) * .75)] ?? 0;
   const zLo = q1 - 3 * (q3 - q1), zHi = q3 + 3 * (q3 - q1);
@@ -130,7 +149,7 @@ export function createMetricPhotoProjection(
   for (let pass = 0; pass < 2 && !count; pass++) {
     for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
       const i = y * w + x;
-      if (!valid(i) || (pass === 0 && (alpha[i] < .5 || depth[i] < zLo || depth[i] > zHi))) continue;
+      if (!valid(i) || (alpha && pass === 0 && (alpha[i] < .5 || depth[i] < zLo || depth[i] > zHi))) continue;
       const p = point((x + .5) / w, (y + .5) / h, depth[i]);
       for (let a = 0; a < 3; a++) { lo[a] = Math.min(lo[a], p[a]); hi[a] = Math.max(hi[a], p[a]); }
       count++;
@@ -157,21 +176,21 @@ export function createMetricPhotoProjection(
         // Never interpolate across an unknown or non-positive metric sample.
         if (!valid(i)) return;
         z += depth[i] * weight;
-        a += alpha[i] * weight;
+        a += (alpha?.[i] ?? 1) * weight;
       }
       // Border texels repeat their measured ray as well as their Z; extending
       // only the ray would bend a tilted plane at the image boundary.
       const p = point((x + .5) / w, (y + .5) / h, z);
       // Arka plan: öznenin arkasındaki mesafe `pay`a yumuşakça tavanlanır (ışın boyunca).
       const geri = zFg - p[2];
-      if (a < .5 && geri > 0 && p[2] < 0) {
+      if (alpha && a < .5 && geri > 0 && p[2] < 0) {
         const hedef = zFg - pay * (1 - Math.exp(-geri / pay));
         const k = hedef / p[2];
         for (let axis = 0; axis < 3; axis++) p[axis] *= k;
       }
       for (let axis = 0; axis < 3; axis++) output[offset + axis] = (p[axis] - center[axis]) * scale;
       if (!output.subarray(offset, offset + 3).every(Number.isFinite)) { output.fill(0, offset, offset + 4); return; }
-      output[offset + 3] = a >= .5 ? 1 : BACKDROP_OPACITY;
+      output[offset + 3] = !alpha || a >= .5 ? 1 : BACKDROP_OPACITY;
     },
   };
 }

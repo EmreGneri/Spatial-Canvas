@@ -37,7 +37,7 @@ import { liveGeometryAgeMs } from './ui/liveVideoStats';
 import { KutuphanePaneli } from './ui/KutuphanePaneli';
 import { kaynakBelirle } from './ui/presetOnizleme';
 import { soganAcilisGerekliMi, sunumAcikMi } from './ui/sunumModu';
-import { serializeRenderState } from './shaders/renderPreset';
+import { applyRenderState, serializeRenderState } from './shaders/renderPreset';
 import { AYIRMA_KAPATMA_ORANI, HIZLI_MASKE_BUTCE_MS, hizliMaskeKullan, isNetErtelensinMi, maskeKarari, maskeKarariniVer, maskeTekParcaOrani, videoAyirmaDurumu, videoMaskeIstegi } from './ui/maskeKarari';
 import { classifyCategory, type CategoryInput } from './ui/category';
 import { useDarEkran } from './ui/useDarEkran';
@@ -170,7 +170,21 @@ const calismaNokta: CSSProperties = {
   animation: 'sc-nabiz 1s ease-in-out infinite',
 };
 
-function calismaAlani(dar: boolean, sunum: boolean): CSSProperties {
+function calismaAlani(dar: boolean, sunum: boolean, tamEkran: boolean): CSSProperties {
+  // The side panels and footer share the viewport without shrinking the canvas.
+  if (tamEkran) {
+    return {
+      display: 'grid',
+      gridTemplateColumns: '280px minmax(0, 1fr) 264px',
+      gridTemplateRows: 'minmax(0, 1fr) auto',
+      alignItems: 'stretch',
+      gap: 12,
+      width: '100%',
+      minWidth: 0,
+      minHeight: 0,
+      flex: '1 1 0',
+    };
+  }
   /**
    * SUNUMDA İKİ SÜTUN. Normalde kütüphane ve efektler ayrı sütunlar; efekt
    * rafı sunumda kapalı başladığı için 6 satırdan sonra sütunun altı boş
@@ -191,7 +205,9 @@ function calismaAlani(dar: boolean, sunum: boolean): CSSProperties {
   };
 }
 
-function ustSerit(dar: boolean): CSSProperties {
+const desktopControlsWidth = 'min(800px, 100%)';
+
+function ustSerit(dar: boolean, tamEkran: boolean): CSSProperties {
   return {
     display: 'flex',
     alignItems: 'center',
@@ -202,6 +218,7 @@ function ustSerit(dar: boolean): CSSProperties {
     boxSizing: 'border-box',
     padding: dar ? '8px 8px' : '8px 16px',
     ...cam({ blur: 24, radius: yaricap.panel }),
+    ...(tamEkran ? { alignSelf: 'flex-start', pointerEvents: 'auto', padding: '0 6px', width: 'fit-content' } : null),
   };
 }
 
@@ -265,6 +282,14 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
   const [engine, setEngine] = useState<Engine | null>(null);
   /** Z3 — mobil düzen: sabit sağ panel akışa girer, sahne kadraja sığar. */
   const dar = useDarEkran();
+  /** Geniş ekranda sahne pencerenin tamamını kaplar, paneller üstte durur.
+   *  Dar ekranda eski düzen (kutu + altında paneller) aynen kalır. */
+  const tamEkran = !dar;
+  /** Kütüphane kapalı başlar, üst satırdaki düğmeyle açılır (tuval ana odak). */
+  const [libraryVisibility, setLibraryVisibility] = useState<boolean | null>(null);
+  const [activeLibraryPreset, setActiveLibraryPreset] = useState<string | null>(null);
+  const restoreLibraryAppearance = useRef<(() => void) | null>(null);
+  const [efektAcik, setEfektAcik] = useState(false);
   const [mode, setMode] = useState<RenderMode>('points');
   // Render modu material'ları BİR KEZ üretilir; mod değişiminde yalnızca takas
   // edilir. Atlas rasterleştirmesi (ASCII) her tıkta tekrarlanmasın.
@@ -333,6 +358,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
    * ve hiçbir effect'e bağımlılık eklemez.
    */
   const [sunum] = useState(() => sunumAcikMi(window.location.search));
+  const kutuphaneAcik = libraryVisibility ?? (tamEkran && !sunum);
   /** Soğuk açılış yalnız BİR KEZ tetiklenir. */
   const soganTetiklendi = useRef(false);
   // CapturePanel (hızlı 3B harita) kendi Depth Anything çıkarımını koşar —
@@ -458,7 +484,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
 
   /** Preset kütüphanesinin okuyup yazdığı hedefler — panelle aynı sözleşme. */
   const panelHedefleri = () => ({
-    mode,
+    get mode() { return engineRef.current!.renderMode as RenderMode; },
     points: materials.points,
     ascii: materials.ascii,
     neon: materials.neon,
@@ -1589,7 +1615,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
     engineRef.current!.setObjectSeparation(next);
     preparedVideoStopRef.current?.refresh();
     if (next) preparedMaskRequestRef.current?.();
-    say(`nesne ayırma: ${next ? 'AÇIK (arka plan parçacıkları atılır, sadece büst)' : 'kapalı (tüm sahne, arka plan karartılır)'}`);
+    say(`nesne ayırma: ${next ? 'AÇIK' : 'kapalı (tüm sahne)'}`);
     if (!next) return;
     // Video: request a mask now instead of waiting for a new depth frame,
     // which never comes while paused. A stale callback ignores the call.
@@ -1623,6 +1649,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
       if (d.subjectMask) engineRef.current!.setDepth(d.data, d.width, d.height, d.subjectMask, d.width, d.height,
         undefined, undefined, seg.confidence && resampleBilinear(seg.confidence, seg.width, seg.height, d.width, d.height));
       else engineRef.current!.setDepth(d.data, d.width, d.height, seg.mask, seg.width, seg.height, undefined, undefined, seg.confidence);
+      engineRef.current!.yenidenTohumla();
       if (maskOverlayOnRef.current) drawMaskOverlay();
       maskLoadedRef.current = true;
     } catch (err) {
@@ -1906,9 +1933,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
     return out;
   }
 
-  function modHafizaYaz(m: RenderMode) {
-    const engine = engineRef.current;
-    if (!engine) return;
+  function readModeQuality(engine: Engine) {
     const hedef = kaliteHedefleri(engine);
     const kayit = {} as Record<KaliteGrubu, Record<string, number>>;
     for (const g of KALITE_GRUPLARI) {
@@ -1918,6 +1943,13 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
         if (d.kind !== 'color' && typeof u?.value === 'number') kayit[g][d.key] = u.value;
       }
     }
+    return kayit;
+  }
+
+  function modHafizaYaz(m: RenderMode) {
+    const engine = engineRef.current;
+    if (!engine) return;
+    const kayit = readModeQuality(engine);
     if (videoLookRef.current) videoModHafizaRef.current[m] = kayit;
     else modHafizaRef.current[m] = kayit;
   }
@@ -1959,24 +1991,19 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sunum, engine, videoDosya, cameraOn, egitimDosya]);
 
-  /**
-   * Mod değiştirmenin GÜNCEL referansı. `changeMode` her render'da yeniden
-   * oluşur ve içindeki `mode` o render'ın değeridir; uzun süren bir iş
-   * (preset kapağı üretimi) sırasında yakalanan kopya bayatlar ve
-   * `next === mode` kontrolü yanlışlıkla erken döner. Ref hep sonuncuyu
-   * gösterir.
-   */
+  // Long-running controls call the latest mode handler through this ref.
   const changeModeRef = useRef<(m: RenderMode) => void>(() => {});
 
   function changeMode(next: RenderMode) {
     const engine = engineRef.current;
     if (!engine) return;
-    if (next === mode) return;
+    const current = engine.renderMode as RenderMode;
+    if (next === current) return;
     // MOD BAŞINA POST-FX (shaders/modKalite.ts). Çıkarken o modun o anki
     // değerleri hafızaya alınır, girerken hafıza varsa O uygulanır — yani
     // kullanıcının bir modda yaptığı ayar, başka modu gezip dönünce yerinde
     // durur. Sıra önemli: önce YAZ, sonra OKU.
-    modHafizaYaz(mode);
+    modHafizaYaz(current);
     engine.setPointsMaterial(materials[next]);
     engine.selectRenderMode(next);
     modKaliteUygula(next);
@@ -2035,27 +2062,54 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
     }
   }
 
-  /**
-   * SAĞ PANELLER değişkende tutulur: normal düzende ayrı birer ızgara
-   * sütunu, sunumda tek sütunda üst üste — iki yerleşim de aynı
-   * elemanları kullanır, prop listesi iki kez yazılmaz.
-   */
+  function captureLibraryAppearance() {
+    const engine = engineRef.current!;
+    const appearance = serializeRenderState(panelHedefleri());
+    const quality = readModeQuality(engine);
+    const photoMemory = { ...modHafizaRef.current };
+    const videoMemory = { ...videoModHafizaRef.current };
+    return () => {
+      applyRenderState(panelHedefleri(), appearance);
+      const groups = kaliteHedefleri(engine);
+      for (const group of KALITE_GRUPLARI) {
+        applyParams(groups[group].defs, groups[group].uniforms, quality[group]);
+      }
+      modHafizaRef.current = { ...photoMemory };
+      videoModHafizaRef.current = { ...videoMemory };
+      refreshPanel();
+    };
+  }
+
   const kutuphanePaneli = engine && (
+    <div style={{ display: kutuphaneAcik ? 'contents' : 'none' }}>
     <KutuphanePaneli
       targets={panelHedefleri()}
+      desktop={tamEkran}
       onApplied={refreshPanel}
+      activePreset={activeLibraryPreset}
+      onBeforeApply={(name) => {
+        if (restoreLibraryAppearance.current) restoreLibraryAppearance.current();
+        else restoreLibraryAppearance.current = captureLibraryAppearance();
+        setActiveLibraryPreset(name);
+      }}
+      onUndo={() => {
+        restoreLibraryAppearance.current?.();
+        restoreLibraryAppearance.current = null;
+        setActiveLibraryPreset(null);
+      }}
       sahne={{
         canvas: engine.renderer.domElement,
         renderFrame: () => engine.renderFrame(),
-        serialize: () => serializeRenderState(panelHedefleri()),
-        setMode: (m) => changeModeRef.current(m),
+        captureRestore: captureLibraryAppearance,
       }}
     />
+    </div>
   );
   const efektPaneli = engine && (
+    <div style={{ display: efektAcik ? 'contents' : 'none' }}>
     <ControlPanel
       engine={engine}
-      baslangicKapali={sunum}
+      baslangicKapali={sunum || tamEkran}
       setModeGuncel={(m) => changeModeRef.current(m)}
       grain={engine.grainUniforms}
       feedback={engine.feedbackUniforms}
@@ -2072,7 +2126,48 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
       mode={mode}
       syncKey={panelTick}
     />
+    </div>
   );
+
+  const advancedTools = !sunum && engine && (
+        <details name={tamEkran ? 'desktop-scene-tools' : undefined} className={tamEkran ? 'scene-hud-advanced' : undefined} style={{ ...yuzey(1), padding: tamEkran ? '4px 8px' : bosluk.m, maxWidth: tamEkran ? desktopControlsWidth : 'min(960px, 100%)', boxSizing: 'border-box', width: tamEkran ? 'fit-content' : '100%', ...(tamEkran ? { alignSelf: 'flex-start', pointerEvents: 'auto' } as const : null) }}>
+          <summary style={{ cursor: 'pointer', color: renk.metinSolgun, fontFamily: MONO, fontSize: 12 }}>
+            ileri araçlar
+          </summary>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginTop: 12 }}>
+      {!sunum && engine && <NodeGraphEditor engine={engine} graphTick={graphTick} onRenderModeChange={changeMode} onParamsApplied={refreshPanel} />}
+      {/* GÜN 6-7 (render şeridi): capture akışı + metrik paneli. İkisi de
+          kendi durumunu tutar; Engine'e yalnızca imzalı API'den yazarlar
+          (setGaussians / setPoseTrack / setSelectedKeyframe). */}
+      {!sunum && engine && (
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'flex-start' }}>
+          <div style={{ minWidth: 260, flex: '1 1 260px' }}>
+            <CapturePanel
+              engine={engine}
+              setMode={changeMode}
+              onLog={say}
+              disabled={!!egitimDosya}
+              onRunningChange={setCaptureRunning}
+            />
+          </div>
+          <div style={{ minWidth: 260, flex: '1 1 260px' }}>
+            <MetricsPanel />
+          </div>
+        </div>
+      )}
+      {!sunum && engine && <PresetControls engine={engine} say={say} onGraphChanged={() => { setGraphTick((t) => t + 1); refreshPanel(); }} />}
+      {!sunum && engine && <ForceControls engine={engine} />}
+      {!sunum && (
+        <pre style={{
+          margin: 0, color: renk.metinSolgun, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere',
+          maxWidth: 'min(960px, 100%)', boxSizing: 'border-box', width: '100%',
+          fontFamily: MONO, fontSize: 11, lineHeight: 1.6, maxHeight: 180, overflowY: 'auto',
+          ...yuzey(1), padding: bosluk.m,
+        }}>{log.join('\n')}</pre>
+      )}
+          </div>
+        </details>
+      );
 
   return (
     <div
@@ -2103,6 +2198,14 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
         // TEK EKSEN: siyahtan koyu maviye. Mor gradyan kalktı (istenen palet
         // siyah/gri/koyu mavi; ayrıca o gradyan "yapay arayüz" imzasıydı).
         background: `linear-gradient(180deg, #0d1018 0%, ${renk.zemin} 420px)`,
+        // Tam ekran: kök pencereyi kaplar, kaydırma yok. Sahne arkada
+        // (z-index -1), düzen tek sütun akışı kalır ama boş alanlar
+        // pointer-events: none — sahne sürüklemesi panellerin arasından geçer.
+        ...(tamEkran ? {
+          position: 'fixed', inset: 0, overflow: 'hidden', padding: 8, gap: 4,
+          display: 'flex', flexDirection: 'column', minHeight: 0,
+          background: '#000', pointerEvents: 'none',
+        } as const : null),
       }}
     >
       {/* `font` kısayolu + `fontSize` birlikte kullanılınca React her
@@ -2110,8 +2213,8 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
       {/* ÜST ŞERİT — referans arayüzdeki durum barı: kimlik + sürüm solda,
           canlı durum (mod · kaynak · fps) sağda. Sürüm `package.json`'dan
           gelir (elle güncellenmez). */}
-      <header style={{ ...ustSerit(dar) }}>
-        <span style={{ fontSize: 15, fontWeight: 600, letterSpacing: 0.2 }}>spatial-canvas</span>
+      <header className={tamEkran ? 'scene-hud-heading' : undefined} style={ustSerit(dar, tamEkran)}>
+        <span style={{ fontSize: tamEkran ? 13 : 15, fontWeight: 600, letterSpacing: 0.2 }}>spatial-canvas</span>
         <span style={{ fontFamily: MONO, fontSize: 10, color: renk.metinSilik, padding: '4px 8px', borderRadius: 6, background: 'rgba(255,255,255,0.06)' }}>
           v{__APP_VERSION__}
         </span>
@@ -2130,9 +2233,9 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
 
       {/* Z2 — sessiz bozulma yerine sebep: WebGPU/canlı derinlik/tespit
           kapalıysa üstte tek şerit. Her şey çalışıyorsa hiç çizilmez. */}
-      <YetenekUyarisi say={say} />
+      <div style={{ display: 'contents', pointerEvents: 'auto' }}><YetenekUyarisi say={say} /></div>
 
-      <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+      <div className={tamEkran && !sunum ? 'scene-hud' : undefined} style={{ display: 'flex', gap: tamEkran ? 4 : 8, alignItems: 'center', flexWrap: 'wrap', ...(tamEkran ? { alignSelf: 'flex-start', maxWidth: desktopControlsWidth, pointerEvents: 'auto' } as const : null) }}>
         {/* KAYNAK */}
         <button
           style={toolButton}
@@ -2216,6 +2319,23 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
         >
           3D eğit
         </button>}
+        <button
+          style={toggleButton(kutuphaneAcik, '#357')}
+          aria-pressed={kutuphaneAcik}
+          onClick={() => setLibraryVisibility(!kutuphaneAcik)}
+        >
+          presetler
+        </button>
+        <button
+          style={toggleButton(efektAcik, '#357')}
+          aria-pressed={efektAcik}
+          onClick={() => setEfektAcik((v) => !v)}
+        >
+          efektler
+        </button>
+        {tamEkran && <span style={{ color: renk.metinSilik, fontSize: yazi.kucuk }}>
+          sürükle-bırak · tıkla-döndür · hover = kuvvet
+        </span>}
         {playbackVideo && <LiveVideoControls video={playbackVideo} stats={liveStats} onError={say} />}
         {!!videoDosya && videoPreparationAsk && <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
           <span>uzun video ({(videoPreparationAsk.video.duration / 60).toFixed(1)} dk): derinlik arka planda hazırlansın mı? tahmini ~{Math.ceil(videoPreparationAsk.estimate / 60)} dk</span>
@@ -2244,6 +2364,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
           <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 12 }}>
             kenar temizliği
             <input type="range" min={0} max={4} step={1} value={videoEdgeCleanup}
+              style={tamEkran ? { width: 76 } : undefined}
               aria-label="Video kenar temizliği"
               onChange={(event) => {
                 const strength = Number(event.target.value);
@@ -2257,25 +2378,30 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
             model {liveRates.model.toFixed(1)} Hz · akış {liveRates.flow.toFixed(1)} Hz
           </span>
         </>}
-        {/* DURUM OKUMALARI — "nesne ayırma: kapalı" bir FİİL değil, bir
-            geliştirici göstergesi. Sunumda mount edilmez. */}
         {!sunum && (
-          <>
-            {import.meta.env.DEV && <a href="/bench/points.html" target="_blank" rel="noreferrer"
-              style={{ color: renk.metin, fontSize: 12 }}>nokta sayısı ölçümü</a>}
-            <button style={toggleButton(segment, '#2a3')} disabled={busy} onClick={toggleSegment}>
+          <div className={tamEkran ? 'scene-vision-controls' : undefined} style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+            <button style={toggleButton(segment, '#2a3')} aria-pressed={segment} disabled={busy} onClick={toggleSegment}>
               nesne ayırma: {segment ? 'AÇIK' : 'kapalı'}
-            </button>
-            <button style={toggleButton(showMask, '#a53')} disabled={busy} onClick={toggleMaskOverlay}>
-              maskeyi göster: {showMask ? 'AÇIK' : 'kapalı'}
             </button>
             <button
               style={toggleButton(trackerOn, '#357')}
+              aria-pressed={trackerOn}
               disabled={busy}
               onClick={() => setTrackerOn((on) => !on)}
               title="izleme HUD'u: hedef kutuları motor görüntüsünün üstüne çizilir"
             >
               tracker: {trackerOn ? 'AÇIK' : 'kapalı'}
+            </button>
+          </div>
+        )}
+        {!sunum && (
+          <details open={dar} className={tamEkran ? 'scene-hud-settings' : undefined} style={dar ? { display: 'contents' } : undefined}>
+            <summary hidden={dar}>sahne ayarları</summary>
+            <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 6 }}>
+            {import.meta.env.DEV && <a href="/bench/points.html" target="_blank" rel="noreferrer"
+              style={{ color: renk.metin, fontSize: 12 }}>nokta sayısı ölçümü</a>}
+            <button style={toggleButton(showMask, '#a53')} aria-pressed={showMask} disabled={busy} onClick={toggleMaskOverlay}>
+              maskeyi göster: {showMask ? 'AÇIK' : 'kapalı'}
             </button>
             <label style={{ display: 'flex', gap: 4, alignItems: 'center', color: '#889', fontSize: 12, cursor: 'pointer' }}>
               <input
@@ -2295,25 +2421,31 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
                 onChange={(e) => setVideoProcessingSetting(e.target.checked)} />
               arka planda video işleme
             </label>
-            <span style={toolDivider} />
-          </>
+            </div>
+          </details>
         )}
-        {/* ÇIKTI + DURUM */}
         </div>
 
       {/* İpucu şeridi: eskiden butonların ARASINDAydı ve dar pencerede
           kırpılıyordu — kendi satırına alındı. */}
-      <span style={{ color: renk.metinSilik, fontSize: yazi.kucuk, marginTop: -4 }}>
+      {!tamEkran && <span style={{ color: renk.metinSilik, fontSize: yazi.kucuk, marginTop: -4 }}>
         sürükle-bırak · tıkla-döndür · hover = kuvvet
-      </span>
+      </span>}
 
       {/* ÇALIŞMA ALANI — üç sütun: canvas · kütüphane (ince) · efektler.
           Göz soldan sağa akar: ne çizildiği → neyle çizileceği → nasıl
           ayarlandığı. Alt bölüm (graf/capture/metrik/log) bu grid'in DIŞINDA,
           eskisi gibi tam genişlikte akar. */}
-      <div style={calismaAlani(dar, sunum)}>
-      {/* SOL SÜTUN: canvas ve onun kumandası (transport) birlikte. */}
-      <div style={{ display: 'grid', gap: dar ? 10 : 12, minWidth: 0 }}>
+      <div style={calismaAlani(dar, sunum, tamEkran)}>
+      {tamEkran && engine && (
+        <div style={{ gridColumn: 1, gridRow: 1, minHeight: 0, minWidth: 0, pointerEvents: kutuphaneAcik ? 'auto' : 'none' }}>
+          {kutuphanePaneli}
+        </div>
+      )}
+      {/* SOL SÜTUN: canvas ve onun kumandası (transport) birlikte.
+          Tam ekranda sahne bu sütundan çıkar (absolute, kök pencereye göre);
+          sütunda yalnız transport kalır ve alta oturur. */}
+      <div style={{ display: 'grid', gap: dar ? 10 : 12, minWidth: 0, ...(tamEkran ? { display: 'contents' } : null) }}>
       <div
         ref={containerRef}
         onDragOver={(e) => e.preventDefault()}
@@ -2354,6 +2486,13 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
           // Dokunmatikte sahneyi sürüklerken sayfa kaymasın (OrbitControls
           // kendi jestini alır).
           touchAction: 'none',
+          // Tam ekran: sahne kök pencereyi doldurur, panellerin ARKASINDA.
+          // Engine.resize bu konteynerin ölçüsünü okur (ResizeObserver).
+          ...(tamEkran ? {
+            position: 'absolute', inset: 0, zIndex: -1, width: '100%', height: '100%',
+            aspectRatio: 'auto', maxHeight: 'none', borderRadius: 0, boxShadow: 'none',
+            pointerEvents: 'auto',
+          } as const : null),
         }}
       >
         {/* Tracker HUD — maske overlay'iyle AYNI desen: motor canvas'ının
@@ -2429,20 +2568,23 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
       </div>
       {/* TRANSPORT — sahne durumu · mod · çıktı tek şeritte (bkz. TransportSerit). */}
       {engine && (
+        <div className={tamEkran ? 'scene-hud' : undefined} style={{ ...(tamEkran ? { gridColumn: '1 / -1', gridRow: 2, minWidth: 0 } : { display: 'contents' }), pointerEvents: tamEkran ? 'none' : 'auto' }}>
         <TransportSerit
           engine={engine}
+          maxWidth={tamEkran ? desktopControlsWidth : undefined}
           fps={fps}
           mod={mode}
           modlar={
             <ModeSelector
               engine={engine}
-              materials={materials}
               mode={mode}
               sunum={sunum}
               onChange={changeMode}
               onReset={() => { say('sıfırlandı: efektler, look ve kamera başlangıç değerlerinde (görsel korundu)'); refreshPanel(); }}
             />
           }
+          desktop={tamEkran}
+          advancedTools={tamEkran ? advancedTools : undefined}
           ciktiKatlanir={sunum}
           cikti={
             <>
@@ -2473,15 +2615,32 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
             ? <EgitimGrafik seri={egitimSeri} hedefIter={egitimHedef} bitti={egitimBitti} />
             : undefined}
         />
+        </div>
       )}
       </div>
 
-      {/* SAĞ PANELLER — düzene göre iki sütun ya da tek.
-          Kütüphane eskiden efekt rafının 07. kartının içindeydi: kapak
-          görmek için önce kartı açmak gerekiyordu. Sunumda ikisi tek
-          sütunda üst üste (calismaAlani); efekt rafı ÜSTTE, çünkü kapalı
-          başlıyor ve kısa — kaydırmalı kütüphane altındaki yeri doldurur. */}
-      {engine && (sunum ? (
+      {/* The desktop effect editor stays opposite the preset library. */}
+      {engine && (tamEkran ? (
+        // Tam ekran: tek sağ sütun, içeriği kadar uzar, ekrana sığmazsa kendi
+        // içinde kayar; boş yeri sahne sürüklemesine bırakır (alignSelf start).
+        <div
+          style={{
+            display: 'grid',
+            gridTemplateRows: 'auto auto',
+            gridColumn: 3,
+            gridRow: 1,
+            alignContent: 'start',
+            alignSelf: 'start',
+            gap: 12,
+            minWidth: 0,
+            maxHeight: '100%',
+            overflowY: 'auto',
+            pointerEvents: 'auto',
+          }}
+        >
+          {efektPaneli}
+        </div>
+      ) : sunum ? (
         <div
           style={{
             display: 'grid',
@@ -2510,45 +2669,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
           eval raporu, preset yönetimi, kuvvet kolları, ham log. Sunum
           modunda MOUNT EDİLMEZ (ui/sunumModu.ts · SUNUM_DISI); mount
           edilmediği için kurulum maliyeti de oluşmaz. */}
-      {!sunum && engine && (
-        <details style={{ ...yuzey(1), padding: bosluk.m, maxWidth: 'min(960px, 100%)', boxSizing: 'border-box', width: '100%' }}>
-          <summary style={{ cursor: 'pointer', color: renk.metinSolgun, fontFamily: MONO, fontSize: 12 }}>
-            ileri araçlar · düğüm grafiği, ayrı video haritası, değerlendirme raporu, preset yönetimi, kuvvetler, log
-          </summary>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginTop: 12 }}>
-      {!sunum && engine && <NodeGraphEditor engine={engine} graphTick={graphTick} onRenderModeChange={changeMode} onParamsApplied={refreshPanel} />}
-      {/* GÜN 6-7 (render şeridi): capture akışı + metrik paneli. İkisi de
-          kendi durumunu tutar; Engine'e yalnızca imzalı API'den yazarlar
-          (setGaussians / setPoseTrack / setSelectedKeyframe). */}
-      {!sunum && engine && (
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'flex-start' }}>
-          <div style={{ minWidth: 260, flex: '1 1 260px' }}>
-            <CapturePanel
-              engine={engine}
-              setMode={changeMode}
-              onLog={say}
-              disabled={!!egitimDosya}
-              onRunningChange={setCaptureRunning}
-            />
-          </div>
-          <div style={{ minWidth: 260, flex: '1 1 260px' }}>
-            <MetricsPanel />
-          </div>
-        </div>
-      )}
-      {!sunum && engine && <PresetControls engine={engine} say={say} onGraphChanged={() => { setGraphTick((t) => t + 1); refreshPanel(); }} />}
-      {!sunum && engine && <ForceControls engine={engine} />}
-      {!sunum && (
-        <pre style={{
-          margin: 0, color: renk.metinSolgun, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere',
-          maxWidth: 'min(960px, 100%)', boxSizing: 'border-box', width: '100%',
-          fontFamily: MONO, fontSize: 11, lineHeight: 1.6, maxHeight: 180, overflowY: 'auto',
-          ...yuzey(1), padding: bosluk.m,
-        }}>{log.join('\n')}</pre>
-      )}
-          </div>
-        </details>
-      )}
+      {!tamEkran && advancedTools}
     </div>
   );
 }

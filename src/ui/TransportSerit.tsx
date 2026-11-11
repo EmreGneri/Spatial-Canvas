@@ -1,5 +1,5 @@
 import { useState, type CSSProperties, type ReactNode } from 'react';
-import { bosluk, dugme, led, MONO, renk, SANS, yaricap, yazi } from './tema';
+import { bosluk, dugme, led, MONO, renk, SANS, yazi } from './tema';
 
 /**
  * TRANSPORT ŞERİDİ — sahnenin altındaki tek kumanda çubuğu.
@@ -18,15 +18,19 @@ import { bosluk, dugme, led, MONO, renk, SANS, yaricap, yazi } from './tema';
  */
 export function TransportSerit({
   engine,
+  maxWidth,
   fps,
   mod,
   modlar,
   cikti,
   ciktiKatlanir = false,
+  desktop = false,
+  advancedTools,
   araclar,
   altSatir,
 }: {
   engine: { setSuspended: (s: boolean) => void } | null;
+  maxWidth?: CSSProperties['maxWidth'];
   fps: number;
   /** Aktif render modunun adı — sol blokta durum olarak da görünür. */
   mod: string;
@@ -43,6 +47,8 @@ export function TransportSerit({
    * sayı 8'den 1'e iner, eylem bir tık uzakta kalır.
    */
   ciktiKatlanir?: boolean;
+  desktop?: boolean;
+  advancedTools?: ReactNode;
   /** Sol bloğa eklenen sahne araçları (splat temizleme düğmesi gibi). */
   araclar?: ReactNode;
   /**
@@ -63,7 +69,8 @@ export function TransportSerit({
   }
 
   return (
-    <div style={serit}>
+    <div className={desktop ? 'scene-footer' : undefined} style={desktop ? { fontFamily: SANS, gap: bosluk.s } : serit}>
+      <div className={desktop ? 'scene-footer-controls' : undefined} style={desktop ? { ...serit, maxWidth, gap: bosluk.xs } : { display: 'contents' }}>
       <div style={blok}>
         <button
           type="button"
@@ -92,8 +99,17 @@ export function TransportSerit({
           `1 1 auto` ile blok kendi içeriğinden dar olmaz; sığmazsa şeridin
           kendi `flexWrap`'i devreye girer ve blok BÜTÜN olarak alt satıra iner. */}
       <div style={{ ...blok, flex: '1 1 auto' }}>{modlar}</div>
+      </div>
 
-      {ciktiKatlanir && !ciktiAcik ? (
+      {desktop ? (
+        <div className="scene-footer-tools">
+          <details name="desktop-scene-tools" className="scene-hud-export">
+            <summary>çıktı</summary>
+            <div style={blok}>{cikti}</div>
+          </details>
+          {advancedTools}
+        </div>
+      ) : ciktiKatlanir && !ciktiAcik ? (
         <div style={blok}>
           <button
             type="button"
@@ -109,7 +125,7 @@ export function TransportSerit({
         <div style={blok}>{cikti}</div>
       )}
 
-      {altSatir && <div style={{ flexBasis: '100%', minWidth: 0 }}>{altSatir}</div>}
+      {altSatir && <div className={desktop ? 'scene-footer-progress' : undefined} style={{ flexBasis: '100%', minWidth: 0 }}>{altSatir}</div>}
     </div>
   );
 }
@@ -122,19 +138,12 @@ const serit: CSSProperties = {
   flexWrap: 'wrap',
   alignItems: 'center',
   gap: bosluk.m,
-  width: '100%',
+  // Kutu yok (üstteki kaynak satırı gibi): düğmeler doğrudan sahnenin üstünde
+  // durur. İçeriği kadar geniş — boş kalan şerit sahne sürüklemesini kesmesin.
+  width: 'fit-content',
+  maxWidth: '100%',
   boxSizing: 'border-box',
-  padding: bosluk.s,
   fontFamily: SANS,
-  // Şerit sahnenin üstünden geçerken okunur kalsın diye tek cam yüzey.
-  background: 'rgba(18,21,28,0.86)',
-  backdropFilter: 'blur(20px)',
-  WebkitBackdropFilter: 'blur(20px)',
-  borderWidth: 1,
-  borderStyle: 'solid',
-  borderColor: renk.kenar,
-  borderRadius: yaricap.panel,
-  boxShadow: '0 12px 32px rgba(0,0,0,0.45)',
 };
 
 const blok: CSSProperties = {

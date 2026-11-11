@@ -326,6 +326,14 @@ export function applyRenderState(
     );
   }
 
+  // Mode changes can apply a quality profile. Write the preset after that profile.
+  if (state.mode && state.mode !== targets.mode) {
+    if (!['points', 'ascii', 'neon', 'solid', 'splat', 'crystal'].includes(state.mode)) {
+      warnings.push(`bilinmeyen mod '${state.mode}' — yok sayıldı`);
+    } else if (targets.setMode) targets.setMode(state.mode);
+    else warnings.push(`mod '${state.mode}' uygulanamadı — setMode bağlanmamış`);
+  }
+
   const num = (value: unknown, uniform: { value: number }) => {
     if (typeof value === 'number' && Number.isFinite(value)) uniform.value = value;
   };
@@ -465,14 +473,6 @@ export function applyRenderState(
     num(state.grain.uVignette, g.uVignette);
     num(state.grain.uContrast, g.uContrast);
     num(state.grain.uSaturation, g.uSaturation);
-  }
-
-  // Mod en son: material takası Engine'den geçer, uniform yazımından bağımsız.
-  if (state.mode && state.mode !== targets.mode) {
-    if (!['points', 'ascii', 'neon', 'solid', 'splat', 'crystal'].includes(state.mode)) {
-      warnings.push(`bilinmeyen mod '${state.mode}' — yok sayıldı`);
-    } else if (targets.setMode) targets.setMode(state.mode);
-    else warnings.push(`mod '${state.mode}' uygulanamadı — setMode bağlanmamış`);
   }
 
   return { warnings };

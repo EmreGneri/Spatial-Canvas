@@ -8,7 +8,7 @@ registerHooks({ resolve(specifier, context, nextResolve) {
   return nextResolve(specifier, context);
 } });
 assert.ok(existsSync(new URL('../src/engine/reconstruction/metricPhotoGeometry.ts', import.meta.url)), 'calibrated photo geometry implementation exists');
-const { cropMetricPhotoGeometry, createMetricPhotoProjection, sampleMetricPhotoPositions, buildMetricPhotoShell, updateMetricPhotoSplatGeometry } = await import('../src/engine/reconstruction/metricPhotoGeometry.ts');
+const { cropMetricPhotoGeometry, createFullPhotoProjection, createMetricPhotoProjection, sampleMetricPhotoPositions, buildMetricPhotoShell, updateMetricPhotoSplatGeometry } = await import('../src/engine/reconstruction/metricPhotoGeometry.ts');
 const { createHomeTexture, createImageColorTexture, fillPositionsFromDepth } = await import('../src/engine/buffers.ts');
 const near = (a,b,e=2e-6) => assert.ok(Math.abs(a-b)<e, `${a} ≈ ${b}`);
 const W=32,H=32, display=new Float32Array(W*H).fill(.8), mask=new Float32Array(W*H).fill(1);
@@ -17,6 +17,19 @@ const plane=fixture(), p=createMetricPhotoProjection(plane,display,mask);
 const at=(q,u,v)=>{const out=new Float32Array(4);q.project(u,v,out,0);return out;};
 const a=at(p,.25,.25), b=at(p,.75,.75);
 near(a[0],-16/31);near(a[1],16/31);near(a[2],0);near(b[0],16/31);assert.equal(a[3],1);
+
+// Turning separation off must not leave a depth step or dim band on a flat photo.
+const subject = Float32Array.from(mask, (_, i) => Number(i % W >= W / 2));
+const isolated = createMetricPhotoProjection(plane, display, subject);
+assert.ok(at(isolated, .25, .5)[3] < .5);
+const fullFrame = createMetricPhotoProjection(plane, display, subject, true);
+for (const projection of [fullFrame, createFullPhotoProjection(display, W, H, 2, 2)]) {
+  const outside = at(projection, .25, .5);
+  const inside = at(projection, .75, .5);
+  assert.equal(outside[3], 1);
+  assert.equal(inside[3], 1);
+  near(outside[2], inside[2]);
+}
 // A tilted plane's equation survives unprojection and global similarity.
 const slant=fixture((u)=>2/(1-.4*(u-.5)));
 const q=createMetricPhotoProjection(slant,display,mask);

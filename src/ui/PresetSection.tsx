@@ -84,18 +84,22 @@ export function PresetSection({
   onApplied,
   sahne,
   filtre = '',
+  activePreset,
+  onBeforeApply,
+  onPreviewing,
 }: {
   targets: RenderTargets;
   onApplied: () => void;
   /** Kütüphane panelindeki arama kutusu — isimle süzer. */
   filtre?: string;
+  activePreset: string | null;
+  onBeforeApply: (name: string) => void;
+  onPreviewing: (previewing: boolean) => void;
   /** Kapak üretmek için sahne. Verilmezse kütüphane yalnız yer tutucu gösterir. */
   sahne?: {
     canvas: HTMLCanvasElement;
     renderFrame: () => void;
-    serialize: () => RenderState;
-    /** Mod değiştirmenin GÜNCEL referansı — `targets.setMode` bayatlıyor. */
-    setMode?: (m: RenderState['mode']) => void;
+    captureRestore: () => () => void;
   };
 }) {
   const [userPresets, setUserPresets] = useState<StoredPreset[]>(loadUserPresets);
@@ -121,20 +125,14 @@ export function PresetSection({
    */
   const eksikKapak = tumPresetler.reduce((n, p) => (kapaklar[p.name] ? n : n + 1), 0);
 
-  /**
-   * Preset uygulanınca kapağı da tazelenir: bir sonraki karede sahne yeni
-   * hâlini çizmiş olur (uniform'lar senkron yazılıyor ama GPU karesi bir
-   * sonraki rAF'ta oluşuyor).
-   */
   function apply(state: RenderState, name: string) {
+    onBeforeApply(name);
     const { warnings } = applyRenderState(targets, state);
     onApplied();
     setNote(warnings.length ? `${name}: ${warnings[0]}` : `${name} yüklendi`);
     if (sahne) {
-      window.setTimeout(() => {
-        const url = kapakUret(sahne.canvas, sahne.renderFrame);
-        if (url) setKapaklar(kapakYaz(name, url));
-      }, 90);
+      const url = kapakUret(sahne.canvas, sahne.renderFrame);
+      if (url) setKapaklar(kapakYaz(name, url));
     }
   }
 
@@ -144,7 +142,8 @@ export function PresetSection({
    */
   async function hepsiniUret() {
     if (!sahne || uretiliyor) return;
-    const oncesi = sahne.serialize();
+    const restore = sahne.captureRestore();
+    onPreviewing(true);
     try {
       for (const { name, state } of tumPresetler) {
         setUretiliyor(name);
@@ -155,15 +154,8 @@ export function PresetSection({
       }
       setNote(`${tumPresetler.length} önizleme üretildi`);
     } finally {
-      applyRenderState(targets, oncesi);
-      // MOD KOŞULSUZ geri alınır. `applyRenderState` modu yalnız
-      // `state.mode !== targets.mode` iken uygular; `targets` bu döngü
-      // boyunca BAYAT (React yeniden render etmediği için `targets.mode`
-      // hâlâ başlangıç modu). Geri yüklemede koşul bu yüzden atlanıyordu ve
-      // sahne son preset'in modunda kalıyordu — ölçüldü: başlangıç 'points',
-      // üretim sonrası motor 'neon'.
-      (sahne.setMode ?? targets.setMode)?.(oncesi.mode);
-      onApplied();
+      restore();
+      onPreviewing(false);
       setUretiliyor(null);
     }
   }
@@ -225,18 +217,21 @@ export function PresetSection({
               : '⟳ kapakları tazele'}
         </button>
       )}
-      {/* İnce sütunda tek kolon: 228 px'de iki kapak yan yana sıkışıyordu. */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: bosluk.s }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: bosluk.s }}>
         {gorunenler.map(({ name, state, hazir }) => {
           const kapak = kapaklar[name];
           return (
             <div key={name} style={{ position: 'relative' }}>
               <button
                 type="button"
+                aria-label={name}
+                aria-pressed={activePreset === name}
+                disabled={uretiliyor !== null}
                 onClick={() => apply(state, name)}
                 title={hazir ? `hazır preset: ${name}` : `kendi preset'in: ${name}`}
                 style={{
                   ...yuzey(2, yaricap.kart),
+                  borderColor: activePreset === name ? renk.vurgu : renk.kenar,
                   padding: 0,
                   width: '100%',
                   overflow: 'hidden',

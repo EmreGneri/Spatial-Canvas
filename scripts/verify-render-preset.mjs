@@ -166,4 +166,20 @@ group++;
   console.log(`[${group}] preset girdi koruması (ışık yönü, mod, NaN) ✓`);
 }
 
-console.log('verify-render-preset: 6 grup, 0 hata');
+group++;
+{
+  const targets = makeTargets();
+  const state = serializeRenderState(targets);
+  state.mode = 'ascii';
+  state.grain.uContrast = 1.2;
+  targets.setMode = (mode) => {
+    targets.mode = mode;
+    targets.grain.uContrast.value = 1;
+  };
+  applyRenderState(targets, state);
+  assert.equal(targets.mode, 'ascii');
+  assert.equal(targets.grain.uContrast.value, 1.2);
+  console.log(`[${group}] preset, mod profilinden sonra uygulanıyor ✓`);
+}
+
+console.log('verify-render-preset: 7 grup, 0 hata');

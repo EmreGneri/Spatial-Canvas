@@ -58,7 +58,7 @@ import { activeNodes, createDefaultGraph, topologicalOrder, validateGraph, type 
 import { buildSilhouette, resampleBilinear } from './reconstruction/silhouette.ts';
 import { buildShellMesh, type ShellMeshData } from './reconstruction/mesh.ts';
 import { applySeparationCrop, computeMaskCropRect, cropChannels, kabukMaskesi } from './reconstruction/crop.ts';
-import { buildMetricPhotoShell, createMetricPhotoProjection, cropMetricPhotoGeometry, metrikYuzRolyefi, updateMetricPhotoSplatGeometry, type MetricPhotoGeometry } from './reconstruction/metricPhotoGeometry.ts';
+import { buildMetricPhotoShell, createFullPhotoProjection, createMetricPhotoProjection, cropMetricPhotoGeometry, metrikYuzRolyefi, updateMetricPhotoSplatGeometry, type MetricPhotoGeometry } from './reconstruction/metricPhotoGeometry.ts';
 import { photoReferenceCamera } from './reconstruction/photoPerspective.ts';
 import { subjectZSpan } from './reconstruction/sampler.ts';
 import { yuzRolyefiUygula, type YuzRolyefi } from './reconstruction/yuzRolyef.ts';
@@ -1094,6 +1094,7 @@ setPointsMaterial(material: THREE.Material) {
 
   /** Nesne ayÄ±rma (Tur 12 â€” ÅŸikayet 4): shader'lara canlÄ± iÅŸlenir. */
   setObjectSeparation(on: boolean) {
+    const changed = this.objectSeparation !== on;
     this.objectSeparation = on;
     if (!on) this.setVideoLiveMask(null);
     this.pushSharedUniformsAll();
@@ -1118,6 +1119,8 @@ setPointsMaterial(material: THREE.Material) {
         undefined,
         this.lastColorMask ?? undefined,
       );
+      // The simulation preserves the old opacity channel when only its home changes.
+      if (changed) this.yenidenTohumla();
     }
   }
 
@@ -2042,12 +2045,13 @@ if (entry && entry.material !== this.pointsMaterial) {
     // aşağıdaki not), yalnızca hangi piksel bölgesini örnekledikleri
     // küçülür. Video/kamerada uygulanmaz (pahalı bileşen analizini 10
     // fps'te tekrarlamamak için) — yalnızca fotoğraf, `!this.videoTexture`.
+    const fullPhotoScene = !this.videoTexture && !!this.photoData && !this.objectSeparation;
     const crop = applySeparationCrop(
       {
         depth: data,
         depthWidth: width,
         depthHeight: height,
-        mask,
+        mask: fullPhotoScene ? undefined : mask,
         colorMask: this.objectSeparation ? colorMask : undefined,
         rgb: this.photoData ?? undefined,
         rgbWidth: this.photoData ? this.photoWidth : undefined,
@@ -2062,7 +2066,7 @@ if (entry && entry.material !== this.pointsMaterial) {
     const metricCropRect = metric && (crop.depthWidth !== width || crop.depthHeight !== height) && mask
       ? computeMaskCropRect(mask, width, height) : null;
     const metricProjection = metric && metric.width === width && metric.height === height
-      ? createMetricPhotoProjection(metricCropRect ? cropMetricPhotoGeometry(metric, metricCropRect) : metric, crop.depth, crop.mask)
+      ? createMetricPhotoProjection(metricCropRect ? cropMetricPhotoGeometry(metric, metricCropRect) : metric, crop.depth, crop.mask, fullPhotoScene)
       : null;
     this.configurePhotoCamera(metricProjection && metric?.captureCamera && !this.videoTexture
       ? { projection: metricProjection, geometry: metricCropRect ? cropMetricPhotoGeometry(metric, metricCropRect) : metric } : null);
@@ -2097,12 +2101,15 @@ if (entry && entry.material !== this.pointsMaterial) {
       this.neonCropDensity = cropDensity;
       if (this.renderModes) this.pushSharedUniformsAll();
     }
+    const photoProjection = metricProjection ?? (fullPhotoScene
+      ? createFullPhotoProjection(crop.depth, crop.depthWidth, crop.depthHeight, POINTS_WORLD_HEIGHT, POINTS_DEPTH_RANGE)
+      : null);
     fillPositionsFromDepth(this.homeTexture, crop.depth, crop.depthWidth, crop.depthHeight, {
       layers: this.layers ?? undefined,
       layerGap: this.layerGap,
-      metricProjection,
+      metricProjection: photoProjection,
       foregroundMask: crop.mask,
-      blend: metricProjection || this.videoTexture ? 1 : this.dynamicHome ? 0.8 : 1,
+      blend: photoProjection || this.videoTexture ? 1 : this.dynamicHome ? 0.8 : 1,
       // No importance remap for photos either: it bends only the sampling
       // coordinate while world xy stays on the grid, which magnified the
       // subject in x/y but not z (flat, wide bust). Photo color fills and
@@ -2139,13 +2146,13 @@ if (this.photoData) {
       // fotoğrafta çalışır, video yolunda mesh güncellenmez (ucuz kalır).
       // Aynı kırpma (crop) burada da uygulanır — mesh, parçacık bulutuyla
       // aynı bbox'ı görmezse 'solid' modunda yüzey hizası kayar.
-      const shellData = metricProjection ? buildMetricPhotoShell(metricProjection) : buildShellMesh(crop.depth, crop.depthWidth, crop.depthHeight, {
+      const shellData = photoProjection ? buildMetricPhotoShell(photoProjection) : buildShellMesh(crop.depth, crop.depthWidth, crop.depthHeight, {
           // Ayırma KAPALIYKEN kabuk maskeyle kesilmez ("tüm sahne"); toggle setDepth'i yeniden çağırır.
           foregroundMask: kabukMaskesi(crop.mask, this.objectSeparation),
           layers: this.layers ?? undefined,
           layerGap: this.layerGap,
         });
-      if (metricProjection && shellData && this.layers && this.layerGap) {
+      if (photoProjection && shellData && this.layers && this.layerGap) {
         applyShellLayerGap(shellData.positions, shellData.uvs, this.layers, this.layerGap);
         shellData.indices = layerShellIndices(shellData.indices, shellData.uvs, this.layers);
       }
@@ -2258,7 +2265,7 @@ if (this.photoData) {
 depth,
         this.currentDepthTexture.image.width,
         this.currentDepthTexture.image.height,
-        { foregroundMask: this.lastFgMask ?? undefined,
+        { foregroundMask: this.objectSeparation ? this.lastFgMask ?? undefined : undefined,
           foregroundColorMask: this.objectSeparation && this.lastFgMask ? this.lastColorMask ?? undefined : undefined },
       );
       this.measurePhotoEnergy(this.currentDepthTexture.image.width / this.currentDepthTexture.image.height);

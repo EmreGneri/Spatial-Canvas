@@ -120,7 +120,8 @@ export const yazi = {
 export function cam(opts: { blur?: number; radius?: number } = {}): CSSProperties {
   const { blur = 24, radius = yaricap.panel } = opts;
   return {
-    background: 'rgba(20,19,17,0.74)',
+    // 0.74'ten indi: tam ekran düzende sahne panellerin arkasından görünsün.
+    background: 'rgba(20,19,17,0.42)',
     backdropFilter: `blur(${blur}px)`,
     WebkitBackdropFilter: `blur(${blur}px)`,
     borderWidth: 1,
@@ -151,11 +152,12 @@ export function yuzey(kademe: 1 | 2 | 3 = 1, radius: number = yaricap.kart): CSS
 export function dugme(etkin = false): CSSProperties {
   return {
     fontFamily: SANS,
-    fontSize: yazi.govde,
+    // Küçültüldü (32 px / 12 px yazı idi): tuval ana odak, kontroller az yer kaplasın.
+    fontSize: yazi.kucuk,
     fontWeight: 500,
     lineHeight: 1,
-    minHeight: 32,
-    padding: '8px 12px',
+    minHeight: 24,
+    padding: '4px 8px',
     borderRadius: yaricap.kontrol,
     borderWidth: 1,
     borderStyle: 'solid',

@@ -177,6 +177,7 @@ export function ExportBar({ engine, say, preparing = false }: { engine: Engine |
           <button
             key={s}
             type="button"
+            aria-pressed={s === sure}
             disabled={mesgul}
             onClick={() => setSure(s)}
             style={sureDugmesi(s === sure)}
@@ -260,8 +261,8 @@ function sureDugmesi(secili: boolean): CSSProperties {
   return {
     fontFamily: SANS,
     fontSize: yazi.kucuk,
-    minHeight: 32,
-    padding: '8px 8px',
+    minHeight: 24,
+    padding: '4px 6px',
     background: secili ? renk.vurguSakin : 'transparent',
     color: secili ? '#f5d8b4' : renk.metinSilik,
     borderWidth: 0,

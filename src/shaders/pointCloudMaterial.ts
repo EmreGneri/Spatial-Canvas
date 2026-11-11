@@ -167,6 +167,8 @@ const VERTEX = /* glsl */ `
   uniform sampler2D uPositions;
   uniform float uPointSize;
   uniform float uVideoFootprint;
+  uniform float uHasImage;
+  uniform float uObjectSeparation;
   uniform float uViewportHeightPx;
   uniform float uVideoWorldStep;
   uniform sampler2D uLiveMask;
@@ -233,6 +235,7 @@ const VERTEX = /* glsl */ `
     // aralığında 0..1'e çekilir; uExtrusionDepth arka kütle kalınlığını ayarlar.
     float t = clamp((seed - 0.7) / 0.3, 0.0, 1.0);
     float extrude = t * uExtrusionDepth * step(0.5, vOpacity);
+    if (uHasImage > 0.5 && uVideoFootprint < 0.5 && uObjectSeparation < 0.5) extrude = 0.0;
 
     // Hedef ASLA parçacığın önüne düşmez: zaten arka düzlemden geride olan bir
     // parçacık (siluet kenarındaki döküm) öne çekilmesin diye min() ile kırpılır.
@@ -318,6 +321,8 @@ const FRAGMENT = /* glsl */ `
   const float EXTRUSION_SHADE = 0.5;
   /** Grid size the photo look was tuned at (see ENERGY note in main()). */
   const float PHOTO_GRID_ENERGY = ${((PHOTO_TUNED_GRID / POSITION_TEXTURE_SIZE) ** 2).toFixed(4)};
+  /** Photo plate edge fade, as a fraction of the frame on each side. */
+  const float PHOTO_EDGE_FADE = 0.12;
   void main() {
     // Tur 12 (şikayet 4): nesne ayırma AÇIK iken arka plan parçacıkları
     // (w = BACKDROP_OPACITY < 0.5) tamamen atılır — ekranda beyaz kağıt/
@@ -347,6 +352,12 @@ const FRAGMENT = /* glsl */ `
     // saturates and bloom floods the frame. Video keeps the reference sprite.
     alpha *= mix(PHOTO_GRID_ENERGY, 1.0, step(0.5, uVideoFootprint));
     alpha *= mix(uPhotoEnergy, 1.0, step(0.5, uVideoFootprint));
+
+    // PLATE EDGE (photo only): the outer band of the grid melts into the black
+    // canvas, so a photo without a separated subject does not read as a hard
+    // rectangle. Product of the two axes rounds the corners. Video is untouched.
+    vec2 edge = smoothstep(0.0, PHOTO_EDGE_FADE, min(vUv, 1.0 - vUv));
+    alpha *= mix(edge.x * edge.y, 1.0, step(0.5, uVideoFootprint));
 
     // Renk (Tur 12 — şikayet 3): uUseTextureColor AÇIK ve doku varsa parçacık
     // kendi pikselinin RGB'sini alır (fotoğraf grid'i ya da canlı video);
@@ -390,7 +401,10 @@ const FRAGMENT = /* glsl */ `
       float nv = clamp(abs(dot(n, v)), 0.0, 1.0);
       float fres = pow(1.0 - nv, 1.0 + uFresnelStrength * 5.0);
       if (vOpacity < 0.5) fres *= 0.35; // duvar kenar parlaması sönük
-      col += vec3(fres * uFresnelStrength * 2.0); // kenar aydınlanır
+      // Preserve the photograph's colour at grazing angles in the full scene.
+      bool fullPhoto = uHasImage > 0.5 && uVideoFootprint < 0.5 && uObjectSeparation < 0.5
+        && uUseTextureColor > 0.5;
+      col += (fullPhoto ? col : vec3(1.0)) * (fres * uFresnelStrength * 2.0);
     }
 
     col *= uBrightness;
