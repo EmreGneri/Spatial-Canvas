@@ -831,3 +831,37 @@ console.log('OK · önem remap (Gün B: mask-aware, CDF monotonluğu, yoğunluk 
   assert.throws(() => sampleVolumePositions(rimDepth, W, H, { edgeFillGuard: new Float32Array(3) }), RangeError);
 }
 console.log('OK · kenar dökümü koruması (edgeFillGuard)');
+
+// --- yerel kenar dökümü: ince parça (kol) gövde ölçüsüyle geri itilmez ---
+{
+  const { buildSilhouette, localThickness } = await import('../src/engine/reconstruction/silhouette.ts');
+  const { LOCAL_FILL_ROLL, THIN_SHELL_Z, zSpanFromBody, computeBodyGeometry } = await import('../src/engine/reconstruction/sampler.ts');
+
+  // Kalın gövde (x 8..71) + omuz köprüsü + ince kol (x 90..99, 10 px), hepsi aynı derinlikte.
+  const w = 128, h = 128;
+  const m = new Float32Array(w * h), d = new Float32Array(w * h).fill(0.02);
+  const boya = (x0, x1, y0, y1) => { for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) { m[y * w + x] = 1; d[y * w + x] = 0.6; } };
+  boya(8, 71, 16, 111); boya(72, 99, 16, 25); boya(90, 99, 26, 111);
+
+  const sil = buildSilhouette(d, w, h, m);
+  const T = localThickness(sil.dist, w, h);
+  assert.ok(Math.abs(T[64 * w + 94] - 5) <= 1.5, `kol yarı genişliği ~5 px (${T[64 * w + 94].toFixed(1)})`);
+  assert.ok(Math.abs(T[64 * w + 40] - 32) <= 3, `gövde yarı genişliği ~32 px (${T[64 * w + 40].toFixed(1)})`);
+  assert.ok(T[64 * w + 9] >= 28, `gövde kenarı da gövdenin kalınlığını taşır (${T[64 * w + 9].toFixed(1)})`);
+  assert.ok(localThickness(new Float32Array(16).fill(1e9), 4, 4).every((v) => v >= 1e8), 'kadrajı dolduran özne sınırsız kalır');
+
+  const g = 128, o = { gridSize: g, curvature: 0, importanceSampling: false, foregroundMask: m };
+  const eski = sampleVolumePositions(d, w, h, o);
+  const yeni = sampleVolumePositions(d, w, h, { ...o, localEdgeFill: true });
+  assert.deepEqual(sampleVolumePositions(d, w, h, { ...o, localEdgeFill: false }), eski, 'kapalı → eski davranış birebir');
+  const z = (a, x, y) => a[(y * g + x) * 4 + 2];
+  const z0 = z(eski, 40, 64); // gövde ortası: döküm bandının dışı
+  assert.ok(z(eski, 94, 64) < z0 - 0.01, `eski: kol ortası gövde bandıyla geri itilir (${(z(eski, 94, 64) - z0).toFixed(4)})`);
+  assert.ok(Math.abs(z(yeni, 94, 64) - z0) < 1e-6, `yeni: kol ortası yerinde (${(z(yeni, 94, 64) - z0).toFixed(6)})`);
+  const zUnit = zSpanFromBody(computeBodyGeometry(sil.alpha, w, h, 1), w, h, 1, 2) / 2;
+  const tavan = LOCAL_FILL_ROLL * (5.5 / w) * 2 + THIN_SHELL_Z * zUnit + 1e-4;
+  for (let x = 90; x <= 99; x++) assert.ok(z0 - z(yeni, x, 64) <= tavan, `kol kenarı en çok kendi kalınlığı kadar döner (x=${x}: ${(z0 - z(yeni, x, 64)).toFixed(4)} ≤ ${tavan.toFixed(4)})`);
+  for (let i = 2; i < yeni.length; i += 4) assert.ok(yeni[i] >= eski[i] - 1e-6, 'yerel döküm hiçbir noktayı eskisinden geriye itmez');
+  assert.ok(z(yeni, 12, 64) < z0 - 0.005, `gövde kenarı hâlâ yuvarlanır (${(z(yeni, 12, 64) - z0).toFixed(4)})`);
+}
+console.log('OK · yerel kenar dökümü (localEdgeFill)');

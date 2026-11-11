@@ -41,12 +41,13 @@ import { computeReferenceVideoBody, pencereyeTasi, type OrneklemePenceresi } fro
  * (Engine BufferGeometry'ye taşır, normalleri computeVertexNormals üretir).
  */
 
-import { buildSilhouette } from './silhouette.ts';
+import { buildSilhouette, localThickness } from './silhouette.ts';
 import {
   ANATOMIC_DEPTH_RATIO,
   buildImportanceRemap,
   computeBodyGeometry,
   EDGE_WALL_Z,
+  LOCAL_FILL_ROLL,
   THIN_SHELL_Z,
 } from './sampler.ts';
 
@@ -107,6 +108,8 @@ export interface ShellMeshOptions {
   foregroundMask?: Float32Array | null;
   /** Kenar dökümü koruması — sampleVolumePositions ile BİREBİR aynı girdi (yüzey hizası). */
   edgeFillGuard?: Float32Array | null;
+  /** Yerel kenar dökümü — sampleVolumePositions ile BİREBİR aynı ayar (yüzey hizası). */
+  localEdgeFill?: boolean;
 }
 
 export interface ShellMeshData {
@@ -176,6 +179,7 @@ export function buildShellMesh(
     ? computeReferenceVideoBody(sil.alpha, width, height, halfH, opts.referenceVideo.aspect)
     : computeBodyGeometry(sil.alpha, width, height, halfH);
   const d1 = body ? MESH_BACK_FILL * Math.min(body.rx, body.ry) : 0;
+  const thick = opts.localEdgeFill && body && d1 > 0 ? localThickness(sil.dist, width, height) : null;
   // Silüet-oranlı z uzamı (sampler.ts ile BİREBİR aynı kural): derinlik uzamı
   // bulut yüksekliğine değil öznenin kendi genişliğine oranlıdır. `depthScale`
   // (0.7) buna DOKUNMAZ — zSpan `range`in YERİNE geçer, onun ÜSTÜNE gelmez;
@@ -245,8 +249,10 @@ export function buildShellMesh(
       // kısım/kadrajı dolduran ön plan) doğal olarak dökülmez.
       if (body && d1 > 0) {
         const dW = (dPx / width) * 2 * halfW;
-        const fill = (1 - Math.min(1, dW / d1))
-          * (opts.edgeFillGuard ? 1 - Math.min(1, Math.max(0, bilinear(opts.edgeFillGuard, width, height, xv, yv))) : 1);
+        const tW = thick ? (bilinear(thick, width, height, xv, yv) / width) * 2 * halfW : Infinity;
+        const band = Math.min(d1, MESH_BACK_FILL * tW);
+        const fill = band > 0 ? (1 - Math.min(1, dW / band))
+          * (opts.edgeFillGuard ? 1 - Math.min(1, Math.max(0, bilinear(opts.edgeFillGuard, width, height, xv, yv))) : 1) : 0;
         if (fill > 0) {
           const dxE = (wx[c] - body.cx) / body.rx;
           const dyE = (wy[c] - body.cy) / body.ry;
@@ -258,7 +264,8 @@ export function buildShellMesh(
           const edgeFade = Math.min(u, Math.min(1 - u, Math.min(v, 1 - v))) * 4.0;
           const edgeFactor = Math.min(1.0, edgeFade);
           const fillSmooth = smoothstep(0, 1, fill) * 0.35 * edgeFactor;
-          z += (wallZ - z) * fillSmooth * round;
+          const push = (wallZ - z) * fillSmooth * round;
+          z += thick ? Math.max(push, -LOCAL_FILL_ROLL * tW * smoothstep(0, 1, fill)) : push;
         }
       }
       // İnce kabuk (Tur 10 karşılığı): en dış siluet köşeleri ön yüzlerinin

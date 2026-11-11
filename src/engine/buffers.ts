@@ -123,6 +123,8 @@ export interface PositionFillOptions {
   photoEdgeCull?: boolean;
   /** Face relief weight: no edge fill where the face shape is already physical (sampler.ts). */
   edgeFillGuard?: Float32Array;
+  /** Photo only: edge fill sized from each part's own half-width (sampler.ts). */
+  localEdgeFill?: boolean;
   /** Override the default point cloud height for video frame fitting. */
   worldHeight?: number;
   /**
@@ -173,6 +175,7 @@ export function fillPositionsFromDepth(
     videoGuideMask: opts.videoGuideMask,
     photoEdgeCull: opts.photoEdgeCull,
     edgeFillGuard: opts.edgeFillGuard,
+    localEdgeFill: opts.localEdgeFill,
     layers: opts.layers,
     layerGap: opts.layerGap,
   });

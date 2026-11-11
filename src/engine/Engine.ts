@@ -2128,6 +2128,7 @@ if (entry && entry.material !== this.pointsMaterial) {
       worldHeight: videoWorldHeight,
       photoEdgeCull: !this.videoTexture,
       edgeFillGuard: yuzKorumasi,
+      localEdgeFill: !this.videoTexture,
     });
     // TUR 11: fotoÄŸraf yÃ¼klÃ¼yse parÃ§acÄ±k renklerini de aynÄ± grid/remap ile
     // doldur (setPhoto'dan Ã¶nce setDepth gelirse texture boÅŸ kalÄ±r â€” renkler
@@ -2155,6 +2156,7 @@ if (this.photoData) {
           // Ayırma KAPALIYKEN kabuk maskeyle kesilmez ("tüm sahne"); toggle setDepth'i yeniden çağırır.
           foregroundMask: kabukMaskesi(crop.mask, this.objectSeparation),
           edgeFillGuard: yuzKorumasi,
+          localEdgeFill: true,
           layers: this.layers ?? undefined,
           layerGap: this.layerGap,
         });

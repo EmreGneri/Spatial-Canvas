@@ -65,7 +65,7 @@ import { MASK_DILATE_RADIUS } from './silhouette.ts';
  * z ∈ [-1, +1].
  */
 
-import { buildSilhouette } from './silhouette.ts';
+import { buildSilhouette, localThickness } from './silhouette.ts';
 import { resampleVideoDepthEdges, type VideoGuideMask } from './videoDepthEdges.ts';
 
 export const VOLUME_GRID_SIZE = 384;
@@ -132,6 +132,14 @@ const BACKDROP_Z_PIN = 0.15;
  * arkaya dökülür; sınırın ötesinde kalan gövde içi (yüz, alın) dokunulmaz.
  */
 const BACK_FILL_DEPTH = 0.35;
+/**
+ * Local edge fill (photo): the fill may push a part back by at most this share of the part's own
+ * half-width. Without it the band and the push are sized from the whole body, so an arm, a neck
+ * or a shoulder sits entirely inside the band and is shoved toward the back wall (measured
+ * against MoGe-2 on 5 photos: the edge band ended 13-35 px behind the reference).
+ * ponytail: one ratio for limbs (round, ~1) and torso (~0.6); split if a part reads too flat.
+ */
+export const LOCAL_FILL_ROLL = 0.5;
 
 const DEFAULT_WORLD_HEIGHT = 2;
 const DEFAULT_DEPTH_RANGE = 2;
@@ -222,6 +230,8 @@ export interface VolumeSampleOptions {
    * depth 1.8x the face mesh). The face relief weight is passed here.
    */
   edgeFillGuard?: Float32Array;
+  /** Photo only: size the edge fill from each part's own half-width (see LOCAL_FILL_ROLL). */
+  localEdgeFill?: boolean;
 }
 
 /**
@@ -379,6 +389,7 @@ export function sampleVolumePositions(
   if (fillGuard && fillGuard.length !== depth.length) {
     throw new RangeError(`edgeFillGuard boyutu (${fillGuard.length}) depth ile aynı olmalı (${depth.length})`);
   }
+  const thick = opts.localEdgeFill && body && d1 > 0 ? localThickness(dist, depthWidth, depthHeight) : null;
   const pen = opts.samplingWindow;
   // u, x and the bilinear taps depend only on the column (and v, y on the row): computed once,
   // with the same arithmetic as sampleBilinear, so every sample is bit-identical.
@@ -465,7 +476,9 @@ export function sampleVolumePositions(
       // (α = 0) dokunulmaz.
       if (body && d1 > 0 && a > 0.001) {
         const dW = (dPx / depthWidth) * 2 * halfW;
-        const fill = (1 - Math.min(1, dW / d1)) * (fillGuard ? 1 - Math.min(1, Math.max(0, bil(fillGuard, i))) : 1);
+        const tW = thick ? (bil(thick, i) / depthWidth) * 2 * halfW : Infinity;
+        const band = Math.min(d1, BACK_FILL_DEPTH * tW);
+        const fill = band > 0 ? (1 - Math.min(1, dW / band)) * (fillGuard ? 1 - Math.min(1, Math.max(0, bil(fillGuard, i))) : 1) : 0;
         if (fill > 0) {
           const dxE = (wx - body.cx) / body.rx;
           const dyE = (wy - body.cy) / body.ry;
@@ -487,7 +500,8 @@ export function sampleVolumePositions(
           // Döküm hedefi de z uzamıyla ölçeklenir (EDGE_WALL_Z · zUnit):
           // sabit −0.8 ince bir büstte yüzeyin kat kat arkasına düşer, kabuk
           // yine kutuya döner.
-          z += (EDGE_WALL_Z * zUnit - z) * fillSmooth * round;
+          const push = (EDGE_WALL_Z * zUnit - z) * fillSmooth * round;
+          z += thick ? Math.max(push, -LOCAL_FILL_ROLL * tW * smoothstep(0, 1, fill)) : push;
         }
       }
       // THIN SHELL (Tur 10): en dış siluet pikselleri (dist ≤ THIN_SHELL_PX)

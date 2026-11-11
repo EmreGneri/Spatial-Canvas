@@ -280,6 +280,43 @@ export interface SilhouetteResult {
   dist: Float32Array;
 }
 
+/**
+ * Local half-width (px): for every pixel, the radius of the largest inscribed disc that contains
+ * it. An arm reads about its own radius, the torso about half its width. `dist` is the contour
+ * distance from buildSilhouette; a subject that fills the frame (dist = INF) stays INF. Discs reach
+ * 1.5 px past the contour so a bilinear tap on the edge does not blend with zero.
+ * ponytail: disc painting from ridge pixels, O(ridge x r^2); fine for one photo, not per video frame.
+ */
+export function localThickness(dist: Float32Array, w: number, h: number): Float32Array {
+  const out = Float32Array.from(dist);
+  const cap = Math.max(w, h);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const p = y * w + x;
+      const r = dist[p];
+      if (!(r > 0) || r >= cap) continue;
+      // Ridge of the distance map: no 8-neighbour lies farther from the contour.
+      let ridge = true;
+      for (let dy = -1; dy <= 1 && ridge; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          const xx = x + dx, yy = y + dy;
+          if (xx >= 0 && yy >= 0 && xx < w && yy < h && dist[yy * w + xx] > r) { ridge = false; break; }
+        }
+      }
+      if (!ridge) continue;
+      const reach = r + 1.5;
+      for (let yy = Math.max(0, Math.ceil(y - reach)); yy <= Math.min(h - 1, Math.floor(y + reach)); yy++) {
+        const span = Math.floor(Math.sqrt(reach * reach - (yy - y) * (yy - y)));
+        const row = yy * w;
+        for (let xx = Math.max(0, x - span); xx <= Math.min(w - 1, x + span); xx++) {
+          if (out[row + xx] < r) out[row + xx] = r;
+        }
+      }
+    }
+  }
+  return out;
+}
+
 export function buildSilhouette(
   depth: Float32Array,
   w: number,

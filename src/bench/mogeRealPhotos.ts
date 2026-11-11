@@ -86,7 +86,7 @@ export async function runMogeRealPhotos(urls: string[], progress: (m: string) =>
       const home = createHomeTexture();
       const projection = d.metricGeometry ? createMetricPhotoProjection(d.metricGeometry, d.data, mask) : null;
       if (!projection) {
-        // Default path mirrors App/Engine: triangle-raster face relief x1 + edge-fill guard (crop omitted).
+        // Default path mirrors App/Engine: triangle-raster face relief x1 + edge-fill guard, local edge fill (crop omitted).
         const yuz = await yuzNoktalari(img);
         const rol = yuz ? yuzRolyefHaritasi(yuz.noktalar, d.width, d.height, 1, true, yuz.ucgenler) : null;
         if (rol) {
@@ -97,7 +97,7 @@ export async function runMogeRealPhotos(urls: string[], progress: (m: string) =>
           faceRelief = true;
         }
       }
-      fillPositionsFromDepth(home, depth, d.width, d.height, { metricProjection: projection, foregroundMask: mask, blend: 1, importanceSampling: false, edgeFillGuard: yuzKorumasi });
+      fillPositionsFromDepth(home, depth, d.width, d.height, { metricProjection: projection, foregroundMask: mask, blend: 1, importanceSampling: false, edgeFillGuard: yuzKorumasi, localEdgeFill: true });
       const rgb = pixels(img, d.width, d.height);
       const y0 = 24 + r * PANEL;
       drawDepth(ctx, d.data, d.width, d.height, 0, y0);

@@ -347,3 +347,32 @@ console.log('OK · kapalı kabuk mesh (köşe ızgarası + front/back + duvar ş
   assert.ok(Math.abs(zAt(korumali, bant) - zAt(korumali, ic)) < 1e-6, `korunan bant dökülmez (${zAt(korumali, bant).toFixed(4)})`);
 }
 console.log('OK · mesh kenar dökümü koruması');
+
+// --- yerel kenar dökümü (sampler ile aynı sözleşme): kol gövde ölçüsüyle geri itilmez ---
+{
+
+  // Kalın gövde (x 8..71) + omuz köprüsü + ince kol (x 90..99, 10 px), hepsi aynı derinlikte.
+  const w = 128, h = 128;
+  const m = new Float32Array(w * h), d = new Float32Array(w * h).fill(0.02);
+  const boya = (x0, x1, y0, y1) => { for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) { m[y * w + x] = 1; d[y * w + x] = 0.6; } };
+  boya(8, 71, 16, 111); boya(72, 99, 16, 25); boya(90, 99, 26, 111);
+
+  const o = { curvature: 0, importanceSampling: false, foregroundMask: m };
+  const eski = buildShellMesh(d, w, h, o), yeni = buildShellMesh(d, w, h, { ...o, localEdgeFill: true });
+  assert.deepEqual(buildShellMesh(d, w, h, { ...o, localEdgeFill: false }).positions, eski.positions, 'kapalı → birebir');
+  const zAt = (mesh, px) => {
+    const x = ((px + 0.5) / w - 0.5) * 2;
+    let best = -1, e = Infinity;
+    for (let k = 0; k < mesh.shell.length; k++) {
+      if (mesh.shell[k] !== 1) continue;
+      const err = Math.abs(mesh.positions[k * 3] - x) + Math.abs(mesh.positions[k * 3 + 1]);
+      if (err < e) { e = err; best = k; }
+    }
+    return mesh.positions[best * 3 + 2];
+  };
+  const z0 = zAt(eski, 40);
+  assert.ok(zAt(eski, 94.5) < z0 - 0.01, `eski: kol ortası geri itilir (${(zAt(eski, 94.5) - z0).toFixed(4)})`);
+  assert.ok(Math.abs(zAt(yeni, 94.5) - z0) < 1e-4, `yeni: kol ortası yerinde (${(zAt(yeni, 94.5) - z0).toFixed(6)})`);
+  assert.ok(zAt(yeni, 12) < z0 - 0.003, `gövde kenarı hâlâ yuvarlanır (${(zAt(yeni, 12) - z0).toFixed(4)})`);
+}
+console.log('OK · mesh yerel kenar dökümü');
