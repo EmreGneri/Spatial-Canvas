@@ -21,7 +21,7 @@ assert.deepEqual(davidPlani('otomatik', true, true), { tarayici: false });
 assert.deepEqual(davidPlani('otomatik', true, false), { tarayici: true }, 'yardımcı yok (Vercel): tarayıcıda HF int8 maskesi');
 assert.equal(davidPlani('david', false, true), null, 'özne maskesi yok: DAViD maskesi tek başına sızıyor');
 assert.equal(davidPlani(undefined, true, true), null);
-assert.deepEqual(FOTO_KALITE, { tileDetay: true, kenarHizalama: 0.5, model: 'da3-mono', insanMaskesi: 'otomatik' });
+assert.deepEqual(FOTO_KALITE, { tileDetay: true, kenarHizalama: 0.5, detailStrength: 0, model: 'da3-mono', insanMaskesi: 'otomatik' });
 // Kesişim: DAViD ∩ özne (min) — sandalye/duvar (özne dışı) ve DAViD'in dışladığı yer düşer, kenar yumuşak kalır.
 assert.deepEqual([...davidMaskeKesisimi(Float32Array.of(1, 1, 0.6, 0), Float32Array.of(1, 0.2, 0.9, 1))].map(v => +v.toFixed(3)), [1, 0.2, 0.6, 0]);
 

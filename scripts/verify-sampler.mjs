@@ -817,3 +817,17 @@ console.log('OK · volume sampler (1:1 grid, siluet: delik/gradyan/duvar/uzuv/bo
 }
 
 console.log('OK · önem remap (Gün B: mask-aware, CDF monotonluğu, yoğunluk clamp, RangeError, uçtan uca renk hizası) + Gün C bakılı oklüzyon');
+
+// --- kenar dökümü koruması: yüz rölyefi bölgesi (fiziksel şekil) ikinci kez geriye bükülmez ---
+{
+  const guard = new Float32Array(W * H).fill(1);
+  const acik = sampleVolumePositions(rimDepth, W, H, { curvature: 0, importanceSampling: false, edgeFillGuard: guard });
+  const sifir = sampleVolumePositions(rimDepth, W, H, { curvature: 0, importanceSampling: false, edgeFillGuard: new Float32Array(W * H) });
+  assert.deepEqual(sifir, rim, 'koruma 0 → eski davranış birebir');
+  // Sınır bandı ama ince kabuğun (3 px) içi: döküm yok → iç bölgeyle aynı z.
+  const korunan = at(acik, 168, N >> 1), dokulen = at(rim, 168, N >> 1);
+  assert.ok(dokulen.z < interior.z - 0.01, `korumasız bant dökülür (${dokulen.z.toFixed(4)})`);
+  assert.ok(Math.abs(korunan.z - interior.z) < 1e-6, `korunan bant dökülmez (${korunan.z.toFixed(4)})`);
+  assert.throws(() => sampleVolumePositions(rimDepth, W, H, { edgeFillGuard: new Float32Array(3) }), RangeError);
+}
+console.log('OK · kenar dökümü koruması (edgeFillGuard)');

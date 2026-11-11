@@ -70,9 +70,11 @@ assert.ok(outOnde[sacPx] < 0.8, `öne fırlamış saç geri itildi (${outOnde[sa
 const arkada = Float32Array.from(depth); arkada[sacPx] = 0.05;
 assert.equal(yuzRolyefiUygula(arkada, w, h, r, birim)[sacPx], arkada[sacPx], 'arkadaki saç aynen');
 
-// Güç çarpanı: ×2'de rölyef iki kat (ağ ve elipsoid birlikte ölçeklenir).
+// Güç çarpanı: ×2'de rölyef iki kat (ağ ve elipsoid birlikte ölçeklenir). Güç, oturtulan yüz
+// düzlemine göre kabartmaya uygulanır; rastgele örneklenmiş kubbenin düzlemi tam yatay
+// olmadığı için eşitlik %1 payla aranır (ölçülen sapma %0,36).
 const r2 = yuzRolyefHaritasi(noktalar, w, h, 2);
-assert.ok(Math.abs(at(r2.rel, 50, 50) - 2 * at(r.rel, 50, 50)) < 1e-3, 'güç rölyefi ölçekler');
+assert.ok(Math.abs(at(r2.rel, 50, 50) - 2 * at(r.rel, 50, 50)) < 0.01 * 2 * at(r.rel, 50, 50), 'güç rölyefi ölçekler');
 const scalp = yuzRolyefHaritasi(noktalar, w, h, 1.5);
 const baseZ = noktalar.slice(0, 468).map(p => p.z).sort((a, b) => a - b)[234];
 const foreheadIds = [10, 109, 67, 338, 297, 151, 108, 337];
@@ -128,3 +130,50 @@ assert.deepEqual(yuzRolyefiUygula(weak,w,h,sparse,birim),weak,'yetersiz destek d
 const flatRelief = {...amplified,rel:new Float32Array(w*h)};
 assert.ok(yuzRolyefiUygula(weak,w,h,flatRelief,birim).every(Number.isFinite),'sıfır ağ yayılımı sonlu kalır');
 console.log('adaptive face relief: extra amplification limited; physical detail and explicit override retained');
+
+// BAŞ EĞİMİ güçle büyümez (HUUpP_VbYAAz2nU.jpg: öne eğik başta ×1.5 eğimi de çarpıp yüzü öne
+// uzatıyordu). Güç yalnız yüz düzlemine göre kabartmaya uygulanır; düzlem ağın ×1 eğiminde kalır.
+{
+  const egikYuz = noktalar.map(p => ({ ...p, z: p.z + 0.5 * (p.y - 0.5) })); // çene uzak, alın yakın
+  const e1 = yuzRolyefHaritasi(egikYuz, w, h, 1, false), e15 = yuzRolyefHaritasi(egikYuz, w, h, 1.5, false);
+  assert.ok(e15.duzlem, 'yüz düzlemi haritada taşınır');
+  // Merkeze göre simetrik iki satır: kubbe katkısı sadeleşir, fark = eğim.
+  const egim = (r) => at(r.rel, 50, 38) - at(r.rel, 50, 62);
+  assert.ok(egim(e1) > 5, `ağın eğimi rölyefte (${egim(e1).toFixed(2)} px)`);
+  assert.ok(Math.abs(egim(e15) - egim(e1)) < 0.05 * egim(e1), `güç eğimi büyütmez (${egim(e15).toFixed(2)} ≈ ${egim(e1).toFixed(2)})`);
+  const kabartma = (r) => at(r.rel, 50, 50) - (at(r.rel, 50, 38) + at(r.rel, 50, 62)) / 2;
+  assert.ok(Math.abs(kabartma(e15) - 1.5 * kabartma(e1)) < 0.05 * kabartma(e1), 'güç kabartmayı ölçekler');
+  // Otomatik sınır pozu rölyef sanmaz: model yalnız eğimi biliyorsa (kabartması yok) ek güç verilmez.
+  const oto = yuzRolyefHaritasi(egikYuz, w, h, 1.5);
+  const yalnizEgim = Float32Array.from(oto.duzlem, (v) => 0.5 + v / birim);
+  const a = yuzRolyefiUygula(yalnizEgim, w, h, oto, birim), b = yuzRolyefiUygula(yalnizEgim, w, h, e1, birim);
+  let fark = 0;
+  for (let i = 0; i < w * h; i++) fark = Math.max(fark, Math.abs(a[i] - b[i]));
+  assert.ok(fark < 1e-4, `eğik ama kabartmasız modelde fiziksel ×1 korunur (${fark.toExponential(2)})`);
+}
+console.log('face relief: head pose is not amplified by strength');
+
+// ÜÇGEN YÜZEYİ: ağın üçgenleri verilirse oval içi z-tamponlu çizimden gelir. Çekirdek ortalaması
+// sivri yapıyı (burun ucu) ezer; üçgen yüzeyi köşede ağın kendi değerini verir ve hiçbir köşenin
+// arkasına düşmez (en yakın yüzey).
+{
+  const { mozaiktenUcgenler } = await import('../src/engine/vision/yuzTespit.ts');
+  const { FaceLandmarker } = await import('@mediapipe/tasks-vision');
+  const ucgenler = mozaiktenUcgenler(FaceLandmarker.FACE_LANDMARKS_TESSELATION);
+  assert.equal(ucgenler.length, 852 * 3, 'MediaPipe mozaiği 852 kapalı üçgen');
+  assert.deepEqual([...mozaiktenUcgenler([{ start: 1, end: 2 }, { start: 2, end: 3 }, { start: 3, end: 1 },
+    { start: 4, end: 5 }, { start: 5, end: 6 }, { start: 9, end: 4 }])], [1, 2, 3], 'kapanmayan üçlü atlanır');
+  // Piksel merkezine oturan sivri köşe (oval kenarından uzak): 0,05 = 5 px öne.
+  const sivri = noktalar.map(p => ({ ...p }));
+  const v = [...Array(468).keys()].find(i => !ovalSet.has(i) && Math.hypot(noktalar[i].x - 0.5, noktalar[i].y - 0.5) < 0.05);
+  sivri[v] = { x: 0.505, y: 0.505, z: -0.2 };
+  const zMedS = sivri.slice(0, 468).map(p => p.z).sort((a, b) => a - b)[234];
+  const koseRel = -(sivri[v].z - zMedS) * w;
+  const cekirdek = yuzRolyefHaritasi(sivri, w, h, 1, false), ucgenli = yuzRolyefHaritasi(sivri, w, h, 1, false, ucgenler);
+  assert.ok(at(cekirdek.rel, 50, 50) < 0.8 * koseRel, `çekirdek sivri köşeyi ezer (${at(cekirdek.rel, 50, 50).toFixed(2)} < ${koseRel.toFixed(2)})`);
+  assert.ok(at(ucgenli.rel, 50, 50) >= koseRel - 1e-3, `üçgen yüzeyi köşenin arkasına düşmez (${at(ucgenli.rel, 50, 50).toFixed(2)} ≥ ${koseRel.toFixed(2)})`);
+  // Oval dışı geçiş ve ağırlıklar aynı; kenarda basamak yok (kenar bandı çekirdeğe döner).
+  assert.deepEqual(ucgenli.agirlik, cekirdek.agirlik, 'ağırlıklar değişmez');
+  assert.equal(at(ucgenli.rel, 50, 28), at(cekirdek.rel, 50, 28), 'oval dışı geçiş çekirdekten');
+}
+console.log('face relief: triangle surface keeps sharp structure');

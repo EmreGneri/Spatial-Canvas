@@ -324,3 +324,26 @@ assert.equal(JSON.stringify(again.indices), JSON.stringify(masked.indices), 'det
 }
 
 console.log('OK · kapalı kabuk mesh (köşe ızgarası + front/back + duvar şeridi, su geçirmezlik, DIŞA yönlü sarım, dikey hiza, köşe normalleri + shell, z/uv sözleşmesi, maske + remap hizası, determinizm)');
+
+// --- kenar dökümü koruması (sampler ile aynı sözleşme) ---
+{
+  const d = new Float32Array(W * H).fill(0.02);
+  for (let y = 0; y < H; y++) for (let x = 0; x < W / 2; x++) d[y * W + x] = 0.4;
+  const o = { curvature: 0, importanceSampling: false };
+  const ham = buildShellMesh(d, W, H, o), korumali = buildShellMesh(d, W, H, { ...o, edgeFillGuard: new Float32Array(W * H).fill(1) });
+  assert.deepEqual(buildShellMesh(d, W, H, { ...o, edgeFillGuard: new Float32Array(W * H) }).positions, ham.positions, 'koruma 0 → birebir');
+  // Ön yüz köşesi (shell = 1), y ≈ 0 satırında verilen dünya x'ine en yakın olan.
+  const zAt = (m, x) => {
+    let best = -1, e = Infinity;
+    for (let k = 0; k < m.shell.length; k++) {
+      if (m.shell[k] !== 1) continue;
+      const err = Math.abs(m.positions[k * 3] - x) + Math.abs(m.positions[k * 3 + 1]);
+      if (err < e) { e = err; best = k; }
+    }
+    return m.positions[best * 3 + 2];
+  };
+  const bant = -0.14, ic = -0.6; // x ≈ 27.5 px: döküm bandı içi, ince kabuk dışı; x ≈ 12.8 px: iç
+  assert.ok(zAt(ham, bant) < zAt(ham, ic) - 0.005, `korumasız bant dökülür (${zAt(ham, bant).toFixed(4)} < ${zAt(ham, ic).toFixed(4)})`);
+  assert.ok(Math.abs(zAt(korumali, bant) - zAt(korumali, ic)) < 1e-6, `korunan bant dökülmez (${zAt(korumali, bant).toFixed(4)})`);
+}
+console.log('OK · mesh kenar dökümü koruması');

@@ -35,6 +35,14 @@ export interface YuzRolyefi {
   ust?: Float32Array;
   /** 0..1 üst sınır ağırlığı (oval dışı, elipsoid içi, kenarda sönümlü). */
   ustAgirlik?: Float32Array;
+  /**
+   * YÜZ DÜZLEMİ (baş eğimi), rel ile aynı birim; sıfırı alın noktalarında. Güç ve otomatik
+   * kazanç yalnız `rel − duzlem` kabartmasına uygulanır, eğim ağın ×1 değerinde kalır:
+   * tümü çarpılınca dönük/eğik başta poz da büyüyüp yüzü öne uzatıyordu (HUUpP_VbYAAz2nU.jpg,
+   * ölçüldü 2026-11-11: yüz derinliği ağın 1,27 katı; ×1'de 0,97). Sıfırın alında olması
+   * `ust`un `(ust − pay)·ölçek + pay` ölçeklemesini aynen geçerli tutar.
+   */
+  duzlem?: Float32Array;
 }
 
 /** MediaPipe FACE_LANDMARKS_FACE_OVAL uçları (yuzReferansi.ts ile aynı liste). */
@@ -47,6 +55,8 @@ export const YUZ_OVAL: readonly number[] = [
 export const KENAR_SONUM_ORANI = 0.2;
 /** Gauss çekirdeği σ, yüz genişliğinin oranı. */
 export const CEKIRDEK_ORANI = 0.04;
+/** Üçgen yüzeyinden çekirdek değerine dönüş bandı (oval kenarından içeri), yüz genişliğinin oranı. */
+export const UCGEN_KENAR_ORANI = 0.1;
 
 // Kafa elipsoidi (anatomik ortalama oranlar; yüz noktalarından ölçeklenir):
 /** Kafa yarı genişliği / yanaklar arası yarı genişlik. */
@@ -59,6 +69,51 @@ export const KAFA_DERINLIK_ORANI = 1.25;
 export const SAC_KALINLIK_ORANI = 0.06;
 /** Ağın alına oturan noktaları: elipsoidin ön yüzü bunlara hizalanır. */
 const ALIN_NOKTALARI = [10, 109, 67, 338, 297, 151, 108, 337];
+
+/** En küçük kareler düzlemi z ≈ a·x + b·y + c; dejenere dağılımda sabit (ortalama). */
+function duzlemOturt(xs: ArrayLike<number>, ys: ArrayLike<number>, zs: ArrayLike<number>): [number, number, number] {
+  const n = zs.length;
+  let mx = 0, my = 0, mz = 0;
+  for (let i = 0; i < n; i++) { mx += xs[i]; my += ys[i]; mz += zs[i]; }
+  if (!n) return [0, 0, 0];
+  mx /= n; my /= n; mz /= n;
+  let sxx = 0, sxy = 0, syy = 0, sxz = 0, syz = 0;
+  for (let i = 0; i < n; i++) {
+    const dx = xs[i] - mx, dy = ys[i] - my, dz = zs[i] - mz;
+    sxx += dx * dx; sxy += dx * dy; syy += dy * dy; sxz += dx * dz; syz += dy * dz;
+  }
+  const det = sxx * syy - sxy * sxy;
+  if (!(det > 1e-9 * sxx * syy) || !Number.isFinite(det)) return [0, 0, mz];
+  const a = (sxz * syy - syz * sxy) / det, b = (syz * sxx - sxz * sxy) / det;
+  return [a, b, mz - a * mx - b * my];
+}
+
+/**
+ * Ağın kameraya EN YAKIN yüzeyi (z-tamponlu üçgen çizimi; z küçük = yakın). Kapsanmayan piksel
+ * Infinity. Dönük başta burnun arkada kalan yüzü ile uzak yanak, burun sırtıyla aynı piksellere
+ * düşer; nokta ortalaması bunları karıştırıp sırtı geri çekiyordu.
+ */
+function onYuzey(pts: readonly YuzNoktasi[], ucgenler: ArrayLike<number>, w: number, h: number): Float32Array {
+  const z = new Float32Array(w * h).fill(Infinity);
+  for (let t = 0; t + 2 < ucgenler.length; t += 3) {
+    const A = pts[ucgenler[t]], B = pts[ucgenler[t + 1]], C = pts[ucgenler[t + 2]];
+    if (!A || !B || !C) continue;
+    const alan = (B.x - A.x) * (C.y - A.y) - (B.y - A.y) * (C.x - A.x);
+    if (!(Math.abs(alan) > 1e-9)) continue;
+    const x0 = Math.max(0, Math.floor(Math.min(A.x, B.x, C.x))), x1 = Math.min(w - 1, Math.ceil(Math.max(A.x, B.x, C.x)));
+    const y0 = Math.max(0, Math.floor(Math.min(A.y, B.y, C.y))), y1 = Math.min(h - 1, Math.ceil(Math.max(A.y, B.y, C.y)));
+    for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+      const px = x + 0.5, py = y + 0.5;
+      const a = ((B.x - px) * (C.y - py) - (B.y - py) * (C.x - px)) / alan;
+      const b = ((C.x - px) * (A.y - py) - (C.y - py) * (A.x - px)) / alan;
+      const c = 1 - a - b;
+      if (a < -1e-6 || b < -1e-6 || c < -1e-6) continue;
+      const v = a * A.z + b * B.z + c * C.z;
+      if (v < z[y * w + x]) z[y * w + x] = v;
+    }
+  }
+  return z;
+}
 
 function icindeMi(px: number, py: number, poly: readonly [number, number][]): boolean {
   let ic = false;
@@ -92,10 +147,18 @@ function kenaraUzaklik(px: number, py: number, poly: readonly [number, number][]
  */
 export function yuzRolyefHaritasi(
   noktalar: readonly YuzNoktasi[], w: number, h: number, guc = 1, otomatik = true,
+  ucgenler?: ArrayLike<number> | null,
 ): YuzRolyefi | null {
   if (noktalar.length < 468) return null;
-  // `guc`: rölyef çarpanı (1 = ağın fiziksel oranı); z'ye uygulanır ki ağ ve elipsoid tutarlı kalsın.
-  const pts = noktalar.slice(0, 468).map((n) => ({ x: n.x * w, y: n.y * h, z: n.z * guc }));
+  // `guc`: rölyef çarpanı (1 = ağın fiziksel oranı). Yalnız yüz düzlemine göre KABARTMAYA
+  // uygulanır; düzlem (baş eğimi) ×1 kalır — bkz. YuzRolyefi.duzlem.
+  const ham = noktalar.slice(0, 468);
+  const [da, db, dc] = duzlemOturt(ham.map((n) => n.x * w), ham.map((n) => n.y * h), ham.map((n) => n.z));
+  const duz = (x: number, y: number) => da * x + db * y + dc;
+  const pts = ham.map((n) => {
+    const x = n.x * w, y = n.y * h, d = duz(x, y);
+    return { x, y, z: d + (n.z - d) * guc };
+  });
   const oval = YUZ_OVAL.map((i) => [pts[i].x, pts[i].y] as [number, number]);
   let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
   for (const [x, y] of oval) {
@@ -124,10 +187,18 @@ export function yuzRolyefHaritasi(
 
   const rel = new Float32Array(w * h);
   const agirlik = new Float32Array(w * h);
+  // Düzlem de rel ile AYNI çekirdekten geçer (çekirdek doğrusal alanı birebir üretmez);
+  // ayrı hesaplanırsa `rel − duzlem` kabartmasına eğim sızar.
+  const duzlem = new Float32Array(w * h);
   const ux0 = Math.max(0, Math.floor(x0 - gecis)), ux1 = Math.min(w - 1, Math.ceil(x1 + gecis));
   const uy0 = Math.max(0, Math.floor(y0 - gecis)), uy1 = Math.min(h - 1, Math.ceil(y1 + gecis));
   // Gauss çekirdekli Nadaraya–Watson: en yakın-k ağırlıklandırması gözde/alında Voronoi
   // lekeleri bırakıyordu (ölçüldü, 2026-10-11). σ ağ aralığı mertebesinde (~%4 yüz genişliği).
+  // Üçgenler verilirse oval içi ağın GÖRÜNÜR yüzeyinden gelir (bkz. onYuzey); çekirdek yalnız
+  // oval dışındaki geçişi ve kenar bandını besler. Çekirdek tek başına burnu eziyordu
+  // (ölçüldü 2026-11-11, burun ucu − kanat: ağda 0,20 yüz genişliği, haritada 0,08).
+  const zOn = ucgenler ? onYuzey(pts, ucgenler, w, h) : null;
+  const yumusak = Math.max(1, UCGEN_KENAR_ORANI * genislik);
   const sigma = Math.max(1, CEKIRDEK_ORANI * genislik);
   const r2max = (3 * sigma) ** 2;
   const inv2s2 = 1 / (2 * sigma * sigma);
@@ -140,17 +211,25 @@ export function yuzRolyefHaritasi(
       // Oval dışında en yakın noktalar 3σ'dan uzak olabilir: çekirdek kesmesi genişletilir
       // (normalize ağırlık yine en yakın bölgenin değerini verir → ağın doğal devamı).
       const kesme = ic ? r2max : (Math.sqrt(r2max) + uzak) ** 2;
-      let sw = 0, sz = 0;
+      let sw = 0, sz = 0, sd = 0;
       for (const p of pts) {
         const d2 = (p.x - px) ** 2 + (p.y - py) ** 2;
         if (d2 > kesme) continue;
         const wk = Math.exp(-d2 * inv2s2);
-        sw += wk; sz += wk * p.z;
+        sw += wk; sz += wk * p.z; sd += wk * duz(p.x, p.y);
       }
       if (sw <= 0) continue;
       const i = y * w + x;
+      let z = sz / sw, d = sd / sw;
+      if (zOn && ic && zOn[i] < Infinity) {
+        // Sınıra yakın iç bantta çekirdek değerine yumuşak dönüş: oval kenarında basamak olmaz.
+        const s = Math.min(1, kenaraUzaklik(px, py, oval) / yumusak);
+        const k = s * s * (3 - 2 * s);
+        z += k * (zOn[i] - z); d += k * (duz(px, py) - d);
+      }
+      duzlem[i] = d;
       // z: küçük = yakın → rölyef + kameraya doğru, piksel cinsinden (z, x ile aynı ölçekte).
-      rel[i] = -(sz / sw - zMed) * w;
+      rel[i] = -(z - zMed) * w;
       const t = 1 - uzak / gecis;
       agirlik[i] = t * t * (3 - 2 * t) * jawWeight(px, py);
     }
@@ -165,15 +244,18 @@ export function yuzRolyefHaritasi(
   const cx = (sol.x + sag.x) / 2, cy = (tepe + cene.y) / 2, by = (cene.y - tepe) / 2;
   const cz = KAFA_DERINLIK_ORANI * ax * guc;
   const q = (x: number, y: number) => 1 - ((x - cx) / ax) ** 2 - ((y - cy) / by) ** 2;
-  let off = 0, alinRel = 0, n = 0;
+  let off = 0, alinRel = 0, alinDuz = 0, n = 0;
   for (const k of ALIN_NOKTALARI) {
     const p = pts[k], qq = q(p.x, p.y);
     if (qq <= 0) continue;
     off += -(p.z - zMed) * w - cz * Math.sqrt(qq);
     alinRel += -(p.z - zMed) * w;
+    alinDuz += duz(p.x, p.y);
     n++;
   }
-  if (!(ax > 2) || !(by > 2) || !(yuzY > 2) || n === 0) return { rel, agirlik, otomatikGuc: otomatik ? guc : undefined };
+  const duz0 = n ? alinDuz / n : zMed;
+  for (let i = 0; i < duzlem.length; i++) duzlem[i] = agirlik[i] > 0 ? -(duzlem[i] - duz0) * w : 0;
+  if (!(ax > 2) || !(by > 2) || !(yuzY > 2) || n === 0) return { rel, agirlik, duzlem, otomatikGuc: otomatik ? guc : undefined };
   off /= n;
   alinRel /= n;
   // Saç payı fiziksel kalır; yüz gücü 1.5 olunca kafatası sınırı gevşemez.
@@ -190,7 +272,7 @@ export function yuzRolyefHaritasi(
       ustAgirlik[i] = t * t * (3 - 2 * t) * (1 - agirlik[i]) * jawWeight(x + 0.5, y + 0.5);
     }
   }
-  return { rel, agirlik, ust, ustAgirlik, otomatikGuc: otomatik ? guc : undefined, sacPayi: pad };
+  return { rel, agirlik, ust, ustAgirlik, duzlem, otomatikGuc: otomatik ? guc : undefined, sacPayi: pad };
 }
 
 /**
@@ -216,10 +298,20 @@ export function yuzRolyefiUygula(
   // eziyordu (alın burnun önüne geçti, ölçüldü 2026-10-12).
   const fark: number[] = [];
   let olcek = 1;
+  const D = rolyef.duzlem;
   if ((rolyef.otomatikGuc ?? 1) > 1) {
-    const model: number[] = [], ag: number[] = [];
+    const model: number[] = [], ag: number[] = [], xs: number[] = [], ys: number[] = [];
     for (let i=0;i<depth.length;i++) if (rolyef.agirlik[i]>=0.999) {
       model.push(depth[i]); ag.push(rolyef.rel[i]/derinlikBirimiPiksel);
+      xs.push(i%w); ys.push(Math.floor(i/w));
+    }
+    if (D && model.length>=16) {
+      // Poz kabartma değildir: iki yayılım da kendi yüz düzlemi çıkarılarak ölçülür, yoksa
+      // eğik baş "güçlü rölyef" sayılıp ek kazancın tamamını alıyordu.
+      for (const v of [model, ag]) {
+        const [a,b,c] = duzlemOturt(xs,ys,v);
+        for (let k=0;k<v.length;k++) v[k] -= a*xs[k]+b*ys[k]+c;
+      }
     }
     if (model.length>=16) {
       model.sort((a,b)=>a-b); ag.sort((a,b)=>a-b);
@@ -230,8 +322,10 @@ export function yuzRolyefiUygula(
       if (agYay>0) olcek=Math.min(1,Math.max(1/rolyef.otomatikGuc!,modelYay/agYay));
     }
   }
+  // Etkin rölyef: düzlem ×1, kabartma × ölçek (düzlem yoksa eski davranış: tümü × ölçek).
+  const relAt = (i: number) => (D ? D[i] + (rolyef.rel[i] - D[i]) * olcek : rolyef.rel[i] * olcek);
   for (let i = 0; i < depth.length; i++) {
-    if (rolyef.agirlik[i] >= 0.999) fark.push(depth[i] - rolyef.rel[i] * olcek / derinlikBirimiPiksel);
+    if (rolyef.agirlik[i] >= 0.999) fark.push(depth[i] - relAt(i) / derinlikBirimiPiksel);
   }
   if (fark.length < 16) return out;
   fark.sort((a, b) => a - b);
@@ -241,7 +335,7 @@ export function yuzRolyefiUygula(
   for (let i = 0; i < depth.length; i++) {
     const a = rolyef.agirlik[i];
     if (!(a > 0)) continue;
-    const hedef = capa((i % w) / w, Math.floor(i / w) / h) + rolyef.rel[i] * olcek / derinlikBirimiPiksel + (depth[i] - bulanik[i]);
+    const hedef = capa((i % w) / w, Math.floor(i / w) / h) + relAt(i) / derinlikBirimiPiksel + (depth[i] - bulanik[i]);
     if (!Number.isFinite(hedef)) continue;
     out[i] = Math.min(1, Math.max(0, depth[i] + a * (hedef - depth[i])));
   }

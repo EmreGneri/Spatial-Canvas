@@ -2076,6 +2076,8 @@ if (entry && entry.material !== this.pointsMaterial) {
     const rolyefler = [this.yuzRolyefi].filter(
       (r): r is YuzRolyefi => !!r && r.rel.length === width * height,
     );
+    // Yüz rölyefi fiziksel şekli verir; kenar dökümü orada ikinci kez geriye bükmesin (sampler.ts).
+    let yuzKorumasi: Float32Array | undefined;
     if (rolyefler.length && !this.videoTexture && !metricProjection) {
       const rect = crop.depthWidth !== width || crop.depthHeight !== height
         ? (mask ? computeMaskCropRect(mask, width, height) : null) : null;
@@ -2086,8 +2088,10 @@ if (entry && entry.material !== this.pointsMaterial) {
           otomatikGuc: r0.otomatikGuc, sacPayi: r0.sacPayi,
           rel: kes(r0.rel), agirlik: kes(r0.agirlik),
           ...(r0.ust && r0.ustAgirlik ? { ust: kes(r0.ust), ustAgirlik: kes(r0.ustAgirlik) } : {}),
+          ...(r0.duzlem ? { duzlem: kes(r0.duzlem) } : {}),
         };
         if (rol.rel.length !== crop.depthWidth * crop.depthHeight) continue;
+        yuzKorumasi = rol.agirlik;
         const zSpan = subjectZSpan(crop.depth, crop.depthWidth, crop.depthHeight, crop.mask ?? null, halfH, POINTS_DEPTH_RANGE);
         crop.depth = yuzRolyefiUygula(crop.depth, crop.depthWidth, crop.depthHeight, rol, (zSpan * crop.depthHeight) / (2 * halfH));
       }
@@ -2123,6 +2127,7 @@ if (entry && entry.material !== this.pointsMaterial) {
         ? { data: foregroundMask, width: maskWidth, height: maskHeight } : undefined,
       worldHeight: videoWorldHeight,
       photoEdgeCull: !this.videoTexture,
+      edgeFillGuard: yuzKorumasi,
     });
     // TUR 11: fotoÄŸraf yÃ¼klÃ¼yse parÃ§acÄ±k renklerini de aynÄ± grid/remap ile
     // doldur (setPhoto'dan Ã¶nce setDepth gelirse texture boÅŸ kalÄ±r â€” renkler
@@ -2149,6 +2154,7 @@ if (this.photoData) {
       const shellData = photoProjection ? buildMetricPhotoShell(photoProjection) : buildShellMesh(crop.depth, crop.depthWidth, crop.depthHeight, {
           // Ayırma KAPALIYKEN kabuk maskeyle kesilmez ("tüm sahne"); toggle setDepth'i yeniden çağırır.
           foregroundMask: kabukMaskesi(crop.mask, this.objectSeparation),
+          edgeFillGuard: yuzKorumasi,
           layers: this.layers ?? undefined,
           layerGap: this.layerGap,
         });

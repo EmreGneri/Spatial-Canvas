@@ -121,6 +121,8 @@ export interface PositionFillOptions {
   videoGuideMask?: VideoGuideMask;
   /** Photo only: hide contour pixels on the far side of a depth edge (sampler.ts). */
   photoEdgeCull?: boolean;
+  /** Face relief weight: no edge fill where the face shape is already physical (sampler.ts). */
+  edgeFillGuard?: Float32Array;
   /** Override the default point cloud height for video frame fitting. */
   worldHeight?: number;
   /**
@@ -170,6 +172,7 @@ export function fillPositionsFromDepth(
     videoFlowConfidence: opts.videoFlowConfidence,
     videoGuideMask: opts.videoGuideMask,
     photoEdgeCull: opts.photoEdgeCull,
+    edgeFillGuard: opts.edgeFillGuard,
     layers: opts.layers,
     layerGap: opts.layerGap,
   });

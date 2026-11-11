@@ -259,9 +259,13 @@ export function davidMaskeKesisimi(ozne: Float32Array, david: Float32Array): Flo
 
 /** Fotoğraf yolu için önerilen kalite seçenekleri (App/embed). */
 const insanSecimi = insanMaskesiSecimi(typeof location !== 'undefined' ? location.search : '');
-export const FOTO_KALITE: Pick<DepthEstimateOptions, 'tileDetay' | 'kenarHizalama' | 'model' | 'insanDerinligi' | 'insanMaskesi'> = {
+export const FOTO_KALITE: Pick<DepthEstimateOptions, 'tileDetay' | 'kenarHizalama' | 'detailStrength' | 'model' | 'insanDerinligi' | 'insanMaskesi'> = {
   tileDetay: true,
   kenarHizalama: 0.5,
+  // Parlaklık yüksek frekansı geometri değildir (saç teli, makyaj, parlama): derinliğe eklenince
+  // yüz yüzeyi dağılıyor, ham model çıktısı (önizleme) daha temiz görünüyordu. Ölçüldü
+  // 2026-11-11, AESPA-KARINA-5: yüz pürüzü 36,2 → 6,7 (önizleme 4,4). Canlı/video yolu aynen.
+  detailStrength: 0,
   // DA3 yardımcı ya da VITE_DA3_MONO_URL varsa devreye girer; yoksa/başarısızsa V2-small.
   model: typeof location !== 'undefined' && mogeIstendi(location.search) ? 'moge-2' : 'da3-mono',
   ...(insanSecimi ? { insanMaskesi: insanSecimi } : {}),
@@ -753,7 +757,9 @@ export async function estimateDepth(
   // Luminance, modelin gördüğü aynı kare uzayında hesaplanır — detay
   // haritası depth ile birebir hizalı olsun diye (letterbox: kare canvas).
   let lum: Float32Array | null = null;
-  if (detailStrength > 0) lum = luminanceOf(lumCanvas!);
+  // Luminance has three independent consumers; gating it on detail alone silently
+  // switched edge alignment and Sobel relief off whenever detail was disabled.
+  if (detailStrength > 0 || sobelRelief > 0 || (opts.kenarHizalama ?? 0) > 0) lum = luminanceOf(lumCanvas!);
   if (rect) {
     // The pipeline interpolates the output back to the input (square) size;
     // crop the letterbox frame so padded areas never enter the depth map.

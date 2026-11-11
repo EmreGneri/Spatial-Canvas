@@ -105,6 +105,8 @@ export interface ShellMeshOptions {
   importanceSampling?: boolean;
   /** Ön plan maskeesi (segmentation çıktısı) — siluete AND edilir. Opsiyonel. */
   foregroundMask?: Float32Array | null;
+  /** Kenar dökümü koruması — sampleVolumePositions ile BİREBİR aynı girdi (yüzey hizası). */
+  edgeFillGuard?: Float32Array | null;
 }
 
 export interface ShellMeshData {
@@ -149,6 +151,9 @@ export function buildShellMesh(
     throw new RangeError(
       `buildShellMesh: fgMask boyutu (${opts.foregroundMask.length}) depth ile aynı olmalı (${depth.length})`,
     );
+  }
+  if (opts.edgeFillGuard && opts.edgeFillGuard.length !== depth.length) {
+    throw new RangeError(`buildShellMesh: edgeFillGuard boyutu (${opts.edgeFillGuard.length}) depth ile aynı olmalı (${depth.length})`);
   }
   const N = opts.gridSize ?? MESH_GRID_SIZE;
   const S = N + 1;
@@ -240,7 +245,8 @@ export function buildShellMesh(
       // kısım/kadrajı dolduran ön plan) doğal olarak dökülmez.
       if (body && d1 > 0) {
         const dW = (dPx / width) * 2 * halfW;
-        const fill = 1 - Math.min(1, dW / d1);
+        const fill = (1 - Math.min(1, dW / d1))
+          * (opts.edgeFillGuard ? 1 - Math.min(1, Math.max(0, bilinear(opts.edgeFillGuard, width, height, xv, yv))) : 1);
         if (fill > 0) {
           const dxE = (wx[c] - body.cx) / body.rx;
           const dyE = (wy[c] - body.cy) / body.ry;

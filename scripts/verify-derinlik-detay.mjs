@@ -90,3 +90,17 @@ const { tileGrid, boxBlur, fitAffine, mergeTileDetail, kenarHizala } =
 }
 
 console.log('verify-derinlik-detay OK');
+
+// Fotoğrafta parlaklık yüksek frekansı derinliğe EKLENMEZ (saç teli, makyaj, parlama geometri
+// değildir; AESPA-KARINA-5'te yüz yüzeyi pürüzünü 6,7'den 36'ya çıkarıyordu). Kenar hizalama
+// ise parlaklığı kullanmaya devam eder: parlaklık hesabı detay gücüne bağlı kalamaz.
+{
+  const { FOTO_KALITE } = await import('../src/depth.ts');
+  const { readFileSync } = await import('node:fs');
+  assert.equal(FOTO_KALITE.detailStrength, 0, 'fotoğraf yolunda parlaklık detayı kapalı');
+  assert.ok(FOTO_KALITE.kenarHizalama > 0, 'kenar hizalama açık kalır');
+  const src = readFileSync(new URL('../src/depth.ts', import.meta.url), 'utf8');
+  assert.match(src, /if \(detailStrength > 0 \|\| sobelRelief > 0 \|\| \(opts\.kenarHizalama \?\? 0\) > 0\) lum = luminanceOf/, 'parlaklık üç tüketiciden herhangi biri için hesaplanır');
+  assert.ok(!src.includes('  if (detailStrength > 0) lum = luminanceOf'), 'parlaklık yalnız detaya bağlı değil');
+}
+console.log('photo luminance detail off; edge alignment keeps its luminance');

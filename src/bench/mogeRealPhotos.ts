@@ -82,20 +82,22 @@ export async function runMogeRealPhotos(urls: string[], progress: (m: string) =>
       const mask = d.subjectMask ?? resampleBilinear(seg.mask, seg.width, seg.height, d.width, d.height);
       let depth = d.data;
       let faceRelief = false;
+      let yuzKorumasi: Float32Array | undefined;
       const home = createHomeTexture();
       const projection = d.metricGeometry ? createMetricPhotoProjection(d.metricGeometry, d.data, mask) : null;
       if (!projection) {
-        // Default path mirrors App/Engine: face relief x1.5 before sampling (crop omitted).
+        // Default path mirrors App/Engine: triangle-raster face relief x1 + edge-fill guard (crop omitted).
         const yuz = await yuzNoktalari(img);
-        const rol = yuz ? yuzRolyefHaritasi(yuz.noktalar, d.width, d.height, 1.5) : null;
+        const rol = yuz ? yuzRolyefHaritasi(yuz.noktalar, d.width, d.height, 1, true, yuz.ucgenler) : null;
         if (rol) {
           const halfH = POINTS_WORLD_HEIGHT / 2;
           const zSpan = subjectZSpan(depth, d.width, d.height, mask, halfH, POINTS_DEPTH_RANGE);
           depth = yuzRolyefiUygula(depth, d.width, d.height, rol, zSpan * d.height / (2 * halfH));
+          yuzKorumasi = rol.agirlik;
           faceRelief = true;
         }
       }
-      fillPositionsFromDepth(home, depth, d.width, d.height, { metricProjection: projection, foregroundMask: mask, blend: 1, importanceSampling: false });
+      fillPositionsFromDepth(home, depth, d.width, d.height, { metricProjection: projection, foregroundMask: mask, blend: 1, importanceSampling: false, edgeFillGuard: yuzKorumasi });
       const rgb = pixels(img, d.width, d.height);
       const y0 = 24 + r * PANEL;
       drawDepth(ctx, d.data, d.width, d.height, 0, y0);

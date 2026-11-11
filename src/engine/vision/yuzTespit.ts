@@ -3,7 +3,22 @@ import { onceRetry } from '../../depth.ts';
 
 // MediaPipe normalize: x,y 0..1 (y aşağı), z x ile aynı ölçek, küçük = kameraya yakın.
 export interface YuzNoktasi { x: number; y: number; z: number }
-export interface YuzSonucu { noktalar: YuzNoktasi[]; genislik: number; yukseklik: number; sureMs: number }
+export interface YuzSonucu {
+  noktalar: YuzNoktasi[]; genislik: number; yukseklik: number; sureMs: number;
+  /** Ağın üçgenleri (köşe indisleri, 3'lü); rölyef haritası görünür yüzeyi bununla çizer. */
+  ucgenler?: Uint16Array;
+}
+
+/** MediaPipe mozaik listesi kenar üçlüleridir (a→b, b→c, c→a); kapanmayan üçlü atlanır. */
+export function mozaiktenUcgenler(kenarlar: readonly { start: number; end: number }[]): Uint16Array {
+  const out: number[] = [];
+  for (let i = 0; i + 2 < kenarlar.length; i += 3) {
+    const a = kenarlar[i], b = kenarlar[i + 1], c = kenarlar[i + 2];
+    if (a.end === b.start && b.end === c.start && c.end === a.start) out.push(a.start, b.start, c.start);
+  }
+  return Uint16Array.from(out);
+}
+let ucgenler: Uint16Array | undefined;
 
 type Tespitci = import('@mediapipe/tasks-vision').FaceLandmarker;
 
@@ -17,6 +32,7 @@ const WASM_TABANI = VITE_DEV ? '/node_modules/@mediapipe/tasks-vision/wasm' : '/
 const tespitciYukle = onceRetry<Tespitci>(async () => {
   const trace = currentPhotoMeasurement();
   const { FilesetResolver, FaceLandmarker } = await import('@mediapipe/tasks-vision');
+  ucgenler = mozaiktenUcgenler(FaceLandmarker.FACE_LANDMARKS_TESSELATION);
   const wasm = await FilesetResolver.forVisionTasks(WASM_TABANI);
   const olustur = (delegate: 'GPU' | 'CPU') => {
     const run = () => FaceLandmarker.createFromOptions(wasm, {
@@ -52,6 +68,7 @@ export async function yuzNoktalari(kaynak: HTMLCanvasElement | HTMLImageElement)
     const yukseklik = kaynak instanceof HTMLImageElement ? kaynak.naturalHeight : kaynak.height;
     return {
       noktalar: yuz.map(({ x, y, z }) => ({ x, y, z })),
+      ucgenler,
       genislik, yukseklik,
       sureMs: performance.now() - t0,
     };

@@ -215,6 +215,13 @@ export interface VolumeSampleOptions {
   videoGuideMask?: VideoGuideMask;
   /** Photo only: hide contour pixels that sit on the far side of a depth edge. */
   photoEdgeCull?: boolean;
+  /**
+   * 0..1 at the input depth resolution: 1 switches the edge fill off. The fill band is sized
+   * from the whole body (BACK_FILL_DEPTH), so on a bust it reaches across the face and bends
+   * the cheeks back a second time on top of the face relief's physical shape (sana.jpg: face
+   * depth 1.8x the face mesh). The face relief weight is passed here.
+   */
+  edgeFillGuard?: Float32Array;
 }
 
 /**
@@ -368,6 +375,10 @@ export function sampleVolumePositions(
   const referenceEdges = opts.referenceVideo && (opts.videoEdgeCleanup ?? 0) > 0
     ? resampleVideoDepthEdges(depth, depthWidth, depthHeight, grid,
       opts.videoEdgeCleanup!, opts.foregroundMask, opts.videoGuideMask) : null;
+  const fillGuard = opts.edgeFillGuard;
+  if (fillGuard && fillGuard.length !== depth.length) {
+    throw new RangeError(`edgeFillGuard boyutu (${fillGuard.length}) depth ile aynı olmalı (${depth.length})`);
+  }
   const pen = opts.samplingWindow;
   // u, x and the bilinear taps depend only on the column (and v, y on the row): computed once,
   // with the same arithmetic as sampleBilinear, so every sample is bit-identical.
@@ -454,7 +465,7 @@ export function sampleVolumePositions(
       // (α = 0) dokunulmaz.
       if (body && d1 > 0 && a > 0.001) {
         const dW = (dPx / depthWidth) * 2 * halfW;
-        const fill = 1 - Math.min(1, dW / d1);
+        const fill = (1 - Math.min(1, dW / d1)) * (fillGuard ? 1 - Math.min(1, Math.max(0, bil(fillGuard, i))) : 1);
         if (fill > 0) {
           const dxE = (wx - body.cx) / body.rx;
           const dyE = (wy - body.cy) / body.ry;

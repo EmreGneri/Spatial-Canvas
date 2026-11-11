@@ -232,11 +232,13 @@ const toolDivider: CSSProperties = {
 
 
 /**
- * Yüz rölyefi güç tavanı (MediaPipe yüz ağı, yuzRolyef.ts). Varsayılan 1.5;
- * otomatik yolda zayıf yüz derinliği ek güçle sivrilmesin diye kazanç sınırlanır.
+ * Yüz rölyefi gücü (MediaPipe yüz ağı, yuzRolyef.ts). Varsayılan 1 = ağın fiziksel oranı.
+ * Eski 1.5, çekirdek ortalamasının burnu ezmesini telafi ediyordu; harita artık ağın üçgen
+ * yüzeyinden geldiği için ×1.5 burnu gerçekten 1.5 kat büyütüyor (ölçüldü 2026-11-11,
+ * HUUpP_VbYAAz2nU.jpg: burun ucu − kanat 0,25 yüz genişliği; ağ 0,14, önizleme 0,14).
  * `?yuz=<güç>` ezer, `?yuz=0` kapatır.
  */
-const VARSAYILAN_YUZ_GUCU = 1.5;
+const VARSAYILAN_YUZ_GUCU = 1;
 const YUZ_GUCU = (() => {
   if (typeof location === 'undefined') return VARSAYILAN_YUZ_GUCU;
   const ham = new URLSearchParams(location.search).get('yuz');
@@ -782,7 +784,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
         if (!isCurrent()) return;
         photoFace = yuz;
         rolyef = yuz ? olcSync('geometry.face-relief-map', () => yuzRolyefHaritasi(yuz.noktalar, depth.width, depth.height, YUZ_GUCU,
-          new URLSearchParams(location.search).get('yuz') === null)) : null;
+          new URLSearchParams(location.search).get('yuz') === null, yuz.ucgenler)) : null;
         say(rolyef
           ? `yüz rölyefi              ${Math.round(performance.now() - t3)} ms  (${yuz!.noktalar.length} nokta, güç tavanı ×${YUZ_GUCU})`
           : 'yüz rölyefi: yüz bulunamadı, uygulanmadı');
