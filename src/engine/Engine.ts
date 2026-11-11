@@ -2128,7 +2128,7 @@ if (entry && entry.material !== this.pointsMaterial) {
       worldHeight: videoWorldHeight,
       photoEdgeCull: !this.videoTexture,
       edgeFillGuard: yuzKorumasi,
-      localEdgeFill: !this.videoTexture,
+      localEdgeFill: true,
     });
     // TUR 11: fotoÄŸraf yÃ¼klÃ¼yse parÃ§acÄ±k renklerini de aynÄ± grid/remap ile
     // doldur (setPhoto'dan Ã¶nce setDepth gelirse texture boÅŸ kalÄ±r â€” renkler
@@ -2195,7 +2195,7 @@ if (this.photoData) {
       this.setShellGeometry(buildShellMesh(data, width, height, {
         gridSize: 96, depthScale: 1, importanceSampling: false,
         foregroundMask: kabukMaskesi(mask, this.objectSeparation), referenceVideo: { aspect: sourceAspect },
-        samplingWindow: this.videoSamplingWindow,
+        samplingWindow: this.videoSamplingWindow, localEdgeFill: true,
         layers: this.layers ?? undefined, layerGap: this.layerGap,
       }));
     }

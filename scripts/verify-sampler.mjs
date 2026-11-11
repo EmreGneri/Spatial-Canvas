@@ -863,5 +863,10 @@ console.log('OK · kenar dökümü koruması (edgeFillGuard)');
   for (let x = 90; x <= 99; x++) assert.ok(z0 - z(yeni, x, 64) <= tavan, `kol kenarı en çok kendi kalınlığı kadar döner (x=${x}: ${(z0 - z(yeni, x, 64)).toFixed(4)} ≤ ${tavan.toFixed(4)})`);
   for (let i = 2; i < yeni.length; i += 4) assert.ok(yeni[i] >= eski[i] - 1e-6, 'yerel döküm hiçbir noktayı eskisinden geriye itmez');
   assert.ok(z(yeni, 12, 64) < z0 - 0.005, `gövde kenarı hâlâ yuvarlanır (${(z(yeni, 12, 64) - z0).toFixed(4)})`);
+  // Video (referans yol) aynı kuralı kullanır: kol ortası yerinde, eski yolda geri itilir.
+  const vo = { ...o, referenceVideo: { aspect: 1 } };
+  const vEski = sampleVolumePositions(d, w, h, vo), vYeni = sampleVolumePositions(d, w, h, { ...vo, localEdgeFill: true });
+  assert.ok(z(vEski, 94, 64) < z(vEski, 40, 64) - 0.01, 'video eski: kol geri itilir');
+  assert.ok(Math.abs(z(vYeni, 94, 64) - z(vYeni, 40, 64)) < 1e-6, 'video yeni: kol yerinde');
 }
 console.log('OK · yerel kenar dökümü (localEdgeFill)');

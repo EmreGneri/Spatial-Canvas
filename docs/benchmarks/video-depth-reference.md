@@ -17,6 +17,7 @@ Its only flaw is flicker. Reference: `C:\Users\Emre\Desktop\reference build`
 | edge cleanup | 2 | 0 (slider keeps 1–4) |
 | offline preparation | on | off (setting, or `?videoHazirla=1`) |
 | frame stabilizer | — | on (`?titremeFiltresi=0` = raw reference pipeline) |
+| luminance detail (`applyDetail`) | on | **off** (2026-11-11, user decision): not geometry; face roughness 5-17x on person frames (V2 252, 5 photos), body fit vs MoGe-2 also better without it. Only deliberate departure from the reference chain. |
 
 Kept v2-only: GPU grab canvas (see match below), `fillSoftMaskInterior` (p99 diff 0.0025 → 0.0052
 on a real IS-Net mask, relief +1.4%; prevents the soft-mask face inversion), scene-cut/gap reset

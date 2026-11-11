@@ -1,10 +1,8 @@
 import {
-  applyDetail,
   applyForegroundStretch,
   fillSoftMaskInterior,
   yeniStretchAraligi,
   applySobelRelief,
-  DETAIL_STRENGTH_DEFAULT,
   gpuSirasinaGir,
   limitDepthSlope,
   loadTransformers,
@@ -777,14 +775,11 @@ export function postProcessLiveDepth(
   lum: Float32Array | null = null,
 ): Float32Array {
   smoothDepthSteps(depth, width, height);
-  // RGB GÜDÜMLÜ MİKRO RÖLYEF (λ) — model yüz detayını (göz çukuru, burun, dudak
-  // çizgisi) yumuşatır; kaynağın luminance yüksek frekansı onu geri getirir.
-  // Fotoğraf yolundaki `applyDetail` ile AYNI fonksiyon; canlı yolda ilk
-  // sürümde atlanmıştı çünkü derinlikle hizalı luminance yoktu. Artık kare
-  // RGB'si zaten renk grid'i için çıkarılıyor, luminance ondan türetilip
-  // derinlik ızgarasına örnekleniyor (bkz. estimateDepthLive).
+  // Luminance yüksek frekansı (applyDetail) BİLEREK yok (kullanıcı kararı 2026-11-11; referans
+  // hattan tek bilinçli sapma): saç teli, makyaj, parlama, kumaş deseni geometri değil. Kişi
+  // karelerinde yüz yüzeyini 5-17 kat pürüzlendiriyordu (V2 252 girdi, 5 foto: HQ3 58 → 3,
+  // özüm 128 → 7.5); gövde şekli de MoGe-2'ye daha az uyuyordu. Fotoğrafta da kapalı. Sobel kalır.
   const detayVar = lum !== null && lum.length === depth.length;
-  if (detayVar) applyDetail(depth, lum!, width, height, DETAIL_STRENGTH_DEFAULT);
   if (!mask || mask.length !== depth.length) {
     return limitDepthSlope(depth, width, height, null);
   }

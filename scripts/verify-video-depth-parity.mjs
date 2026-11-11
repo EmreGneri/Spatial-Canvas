@@ -4,6 +4,9 @@
 // offline/VDA/flow/edge paths out of the default look.
 // Golden values were produced by the reference pipeline's own liveDepth.ts on the same
 // synthetic input (`node scripts/verify-video-depth-parity.mjs --golden <ref repo>`).
+// ONE deliberate departure (user decision 2026-11-11): no luminance detail (applyDetail) in the
+// live chain. It is not geometry and roughened faces 5-17x on person frames (liveDepth.ts note).
+// GOLDEN is therefore the reference pipeline minus that stage; everything else is unchanged.
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -41,8 +44,10 @@ if (goldenArg > 0) {
   process.exit(0);
 }
 
-// reference pipeline liveDepth.ts output (C:\Users\Emre\Desktop\reference build, 2026-10-25).
-const GOLDEN = [[171.9318, 0.18017, 0.02922, 0.1271], [172.6827, 0.23518, 0.02889, 0.14995], [170.3104, 0.16437, 0.02955, 0.11537], [171.1988, 0.22872, 0.02973, 0.15532]];
+// Reference pipeline output WITH detail (2026-10-25), kept for the record:
+// [[171.9318, 0.18017, 0.02922, 0.1271], [172.6827, 0.23518, 0.02889, 0.14995], [170.3104, 0.16437, 0.02955, 0.11537], [171.1988, 0.22872, 0.02973, 0.15532]]
+// Same chain without applyDetail (2026-11-11); the background sample (index 2) is unchanged.
+const GOLDEN = [[182.4536, 0.17961, 0.02922, 0.11905], [182.1797, 0.18003, 0.02889, 0.16291], [184.5949, 0.17609, 0.02955, 0.12058], [177.2217, 0.1671, 0.02973, 0.19791]];
 
 const live = await import('../src/engine/vision/liveDepth.ts');
 const ours = run(live);
@@ -60,7 +65,7 @@ assert.equal(live.LIVE_DETAILED_INPUT, 378);
 const q = live.createLiveQualityState();
 assert.deepEqual([live.liveQualityInputSize(q, false), live.liveQualityInputSize(q, true)], [252, 378]);
 
-// Chain order (reference pipeline): normalize -> temporal -> smooth -> detail -> stretch -> sobel -> limiter x2.
+// Chain order (reference pipeline minus detail): normalize -> temporal -> smooth -> stretch -> sobel -> limiter x2.
 const src = readFileSync(new URL('../src/engine/vision/liveDepth.ts', import.meta.url), 'utf8');
 const body = (name) => src.slice(src.indexOf(`export function ${name}(`), src.indexOf('\n}\n', src.indexOf(`export function ${name}(`)));
 const inOrder = (text, steps, what) => {
@@ -71,7 +76,8 @@ const inOrder = (text, steps, what) => {
     at = next;
   }
 };
-inOrder(body('postProcessLiveDepth'), ['smoothDepthSteps(', 'applyDetail(', 'applyForegroundStretch(', 'applySobelRelief(', 'limitDepthSlope(depth, width, height, mask)', 'limitDepthSlope(icerisi'], 'post-process');
+assert.ok(!body('postProcessLiveDepth').includes('applyDetail('), 'luminance detail is not geometry: off in the live chain');
+inOrder(body('postProcessLiveDepth'), ['smoothDepthSteps(', 'applyForegroundStretch(', 'applySobelRelief(', 'limitDepthSlope(depth, width, height, mask)', 'limitDepthSlope(icerisi'], 'post-process');
 inOrder(body('depthResultFromTensor'), ['kararliNormalize(data)', 'zamansalYumusat(', 'postProcessLiveDepth('], 'tensor chain');
 assert.match(src, /const kutu = sm \? canliKirpmaKutusu\(sm\.data, sm\.width, sm\.height, sonKirpmaKutusu\) : null;/, 'subject crop applies to video too');
 assert.doesNotMatch(src, /timedRangeAlpha/, 'range EMA is per frame, as in reference pipeline');

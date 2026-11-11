@@ -43,8 +43,9 @@ assert.ok(estimatePreparationSeconds(300) >= 300, 'estimate is never faster than
   const spread = (a, sel = () => true) => { let lo = 1, hi = 0; a.forEach((v, i) => { if (sel(i)) { lo = Math.min(lo, v / 65535); hi = Math.max(hi, v / 65535); } }); return hi - lo; };
   const plain = detailPreparedDepth(flatDepth, rgba(() => 128), w, h);
   assert.ok(spread(plain) < 1e-3, 'uniform RGB adds no relief to flat depth');
+  // Luminance high frequency is not geometry: a checkerboard texture must not emboss flat depth.
   const textured = detailPreparedDepth(flatDepth, rgba((x, y) => ((x >> 1) + (y >> 1)) % 2 ? 230 : 30), w, h);
-  assert.ok(spread(textured) > 0.02, `RGB detail adds relief: ${spread(textured)}`);
+  assert.ok(spread(textured) < 1e-3, `RGB texture adds no relief: ${spread(textured)}`);
   // A subject squeezed into a narrow band is stretched open when the mask track exists.
   const subject = (i) => (i % w) >= 10 && (i % w) < 30 && Math.floor(i / w) >= 5 && Math.floor(i / w) < 25;
   const squeezed = Uint16Array.from({ length: n }, (_, i) => Math.round((subject(i) ? 0.70 + 0.04 * ((i % w) - 10) / 20 : 0.2) * 65535));

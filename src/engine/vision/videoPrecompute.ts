@@ -5,7 +5,7 @@ import { maskKeyFrames, propagateMaskInterval } from './videoMaskTrack.ts';
 import type { LiveDepthFrame } from './liveDepthFlow.ts';
 import { LIVE_STRETCH_HALF_LIFE_MS } from './liveDepth.ts';
 import {
-  applyDetail, applyForegroundStretch, applySobelRelief, DETAIL_STRENGTH_DEFAULT, fillSoftMaskInterior,
+  applyForegroundStretch, applySobelRelief, fillSoftMaskInterior,
   limitDepthSlope, smoothDepthSteps, SOBEL_RELIEF_DEFAULT, yeniStretchAraligi, type StretchAraligi,
 } from '../../depth.ts';
 
@@ -87,11 +87,9 @@ export function videoDepthRange(samples: ArrayLike<number>): [number, number] {
  * aşamalarının hiçbiri yoktu ("video hâlâ detaysız" şikayeti). Hazırlıkta bir kez
  * çalışır, oynatmada maliyet yok (266x154'te ~11 ms/kare, maskeli ~15 ms; Node).
  *
- * SIRA: yumuşat → [maske: stretch] → eğim sınırı → RGB detay (λ) → [maske: sobel].
- * Canlı yol sınırlayıcıyı detaydan SONRA koşuyor; VDA'nın keskin ince gövdelerinde
- * bu sıra detay dokusunu çoğunluk kuralına takıp gövdeyi tarak gibi arka plana
- * çekiyordu (pixabay-forest 2.5 sn, ölçüldü). Sınırlayıcının işi büyük sıçramalar;
- * detay ±λ·HF küçük, sonradan eklenince kendisi sıçrama üretmiyor.
+ * SIRA: yumuşat → [maske: stretch] → eğim sınırı → [maske: sobel].
+ * Luminance yüksek frekansı (applyDetail) canlı yoldaki gibi BİLEREK yok: geometri
+ * değil, kişi yüzünü pürüzlendiriyordu (postProcessLiveDepth notu).
  * `packed`: sahne aralığıyla nicelenmiş ham VDA; `rgba`: aynı karenin saklı RGB'si.
  */
 export function detailPreparedDepth(packed: Uint16Array, rgba: Uint8ClampedArray, width: number, height: number,
@@ -107,7 +105,6 @@ export function detailPreparedDepth(packed: Uint16Array, rgba: Uint8ClampedArray
   smoothDepthSteps(depth, width, height);
   if (!mask || mask.length !== n) {
     depth = limitDepthSlope(depth, width, height, null);
-    applyDetail(depth, lum, width, height, DETAIL_STRENGTH_DEFAULT);
     return quantizeVideoDepth(depth, 0, 1);
   }
   // Maskeli: canlı/fotoğraf yoluyla aynı yumuşak iç dolgu, taşınan stretch aralığı ve
@@ -116,7 +113,6 @@ export function detailPreparedDepth(packed: Uint16Array, rgba: Uint8ClampedArray
   applyForegroundStretch(depth, weight, width, height, undefined, stretch ?? yeniStretchAraligi());
   const outside = Float32Array.from(mask, v => v >= 0.5 ? 0 : 1);
   depth = limitDepthSlope(limitDepthSlope(depth, width, height, mask), width, height, outside);
-  applyDetail(depth, lum, width, height, DETAIL_STRENGTH_DEFAULT);
   applySobelRelief(depth, lum, weight, width, height, SOBEL_RELIEF_DEFAULT);
   return quantizeVideoDepth(depth, 0, 1);
 }
