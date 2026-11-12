@@ -14,6 +14,13 @@ assert.match(material.vertexShader, /float legacySize = uPointSize \* jitter \* 
 assert.match(material.vertexShader, /mix\(legacySize, videoSize, step\(0\.5, uVideoFootprint\)\)/);
 assert.doesNotMatch(material.fragmentShader, /VIDEO_ALPHA_CUTOFF|alpha = 1\.0;/);
 assert.match(material.fragmentShader, /alpha \*= vOpacity;/);
+// Photo side view: foreshortening energy and photo-coloured rim; video branch keeps factor 1 and white rim.
+// Divide out the off-axis cosine: the bare per-point ray factor darkens the edges of a zoomed front view.
+assert.match(material.fragmentShader, /float plateFacing = abs\(viewRay\.z\) \/ max\(dot\(vec3\(viewMatrix\[0\]\[2\], viewMatrix\[1\]\[2\], viewMatrix\[2\]\[2\]\), viewRay\), 1e-3\);/);
+assert.match(material.fragmentShader, /alpha \*= mix\(clamp\(plateFacing, 0\.2, 1\.0\), 1\.0, step\(0\.5, uVideoFootprint\)\);/);
+assert.doesNotMatch(material.fragmentShader, /alpha \*=[^;]*vViewDir/);
+assert.match(material.fragmentShader, /bool photoTint = uHasImage > 0\.5 && uVideoFootprint < 0\.5 && uUseTextureColor > 0\.5;/);
+assert.match(material.fragmentShader, /col \+= \(photoTint \? col : vec3\(1\.0\)\) \* \(fres \* uFresnelStrength \* 2\.0\);/);
 const size = (height, distance) => 6 * (2 / 384) * Math.sqrt(3) * 0.5 * height / Math.max(distance, 0.1);
 assert.ok(size(720, 3.5) > 5 && size(720, 3.5) < 6);
 assert.equal(size(1440, 3.5), 2 * size(720, 3.5));

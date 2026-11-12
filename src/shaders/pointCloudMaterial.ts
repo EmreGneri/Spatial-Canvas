@@ -352,6 +352,11 @@ const FRAGMENT = /* glsl */ `
     // saturates and bloom floods the frame. Video keeps the reference sprite.
     alpha *= mix(PHOTO_GRID_ENERGY, 1.0, step(0.5, uVideoFootprint));
     alpha *= mix(uPhotoEnergy, 1.0, step(0.5, uVideoFootprint));
+    // Photo seen from the side: more points land on one pixel. The plate's per-pixel foreshortening is
+    // |n.ray| / cos(off-axis angle); the bare ray term would also darken a zoomed front view's edges.
+    vec3 viewRay = normalize(vViewDir);
+    float plateFacing = abs(viewRay.z) / max(dot(vec3(viewMatrix[0][2], viewMatrix[1][2], viewMatrix[2][2]), viewRay), 1e-3);
+    alpha *= mix(clamp(plateFacing, 0.2, 1.0), 1.0, step(0.5, uVideoFootprint));
 
     // PLATE EDGE (photo only): the outer band of the grid melts into the black
     // canvas, so a photo without a separated subject does not read as a hard
@@ -401,10 +406,9 @@ const FRAGMENT = /* glsl */ `
       float nv = clamp(abs(dot(n, v)), 0.0, 1.0);
       float fres = pow(1.0 - nv, 1.0 + uFresnelStrength * 5.0);
       if (vOpacity < 0.5) fres *= 0.35; // duvar kenar parlaması sönük
-      // Preserve the photograph's colour at grazing angles in the full scene.
-      bool fullPhoto = uHasImage > 0.5 && uVideoFootprint < 0.5 && uObjectSeparation < 0.5
-        && uUseTextureColor > 0.5;
-      col += (fullPhoto ? col : vec3(1.0)) * (fres * uFresnelStrength * 2.0);
+      // Preserve the photograph's colour at grazing angles (separation on or off).
+      bool photoTint = uHasImage > 0.5 && uVideoFootprint < 0.5 && uUseTextureColor > 0.5;
+      col += (photoTint ? col : vec3(1.0)) * (fres * uFresnelStrength * 2.0);
     }
 
     col *= uBrightness;
