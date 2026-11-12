@@ -1,6 +1,12 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 const app = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
+// Face landmarks start after the mask bytes (never for a stale source) and the final step awaits that same promise.
+assert.match(app, /photoFacePending = preloadPhotoMaskBytes\(\)\.catch\(\(\) => \{\}\)\s*\.then\(\(\) => \(isCurrent\(\) \? yuzNoktalari\(source\) : null\)\);/);
+assert.match(app, /olc\('face\.pipeline', \(\) => photoFacePending \?\? yuzNoktalari\(source\)\)/);
+// Synchronous detect must not run before the preview frame is presented (warm mask bytes resolve at once).
+assert.ok(app.indexOf('photoFacePending = preloadPhotoMaskBytes') > app.indexOf('await waitForPhotoPresentation();'),
+  'face landmarks start only after the preview presentation wait');
 const original = app.match(/await (new Promise<void>\(resolve => requestAnimationFrame\(\(\) => requestAnimationFrame\(\(\) => resolve\(\)\)\)\))/);
 if (original) {
   // Exercise the actual original expression with a background-tab scheduler that never fires.

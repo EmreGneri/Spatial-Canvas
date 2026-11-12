@@ -709,6 +709,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
       // Depth ARTIK maskeyi görüyor (GÜN E, bulgu 1).
       let depth: Partial<Awaited<ReturnType<typeof estimateDepth>>> & { data: Float32Array; width: number; height: number };
       let photoFace: Awaited<ReturnType<typeof yuzNoktalari>> | undefined;
+      let photoFacePending: Promise<Awaited<ReturnType<typeof yuzNoktalari>>> | undefined;
       if (analitikDerinlik) {
         depth = { data: analitikDerinlik, width: source.width, height: source.height };
         say(ACILIS_NOTU);
@@ -752,6 +753,10 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
                 // Let the renderer present the coarse scene before expensive mask setup.
                 await waitForPhotoPresentation();
                 if (!isCurrent()) throw new Error('Photo source changed');
+                // Face landmarks need only the source: start after the preview is shown and the mask bytes are in,
+                // overlapping BiRefNet setup (detect is synchronous, so warm bytes must not hold the preview frame).
+                if (YUZ_GUCU > 0) photoFacePending = preloadPhotoMaskBytes().catch(() => {})
+                  .then(() => (isCurrent() ? yuzNoktalari(source) : null));
               },
             } : {}),
             ...(photoCamera ? { photoCamera } : {}),
@@ -780,7 +785,7 @@ export default function App() {  const containerRef = useRef<HTMLDivElement>(nul
       let rolyef: YuzRolyefi | null = null;
       if (YUZ_GUCU > 0 && !analitikDerinlik) {
         const t3 = performance.now();
-        const yuz = photoFace === undefined ? await olc('face.pipeline', () => yuzNoktalari(source)) : photoFace;
+        const yuz = photoFace === undefined ? await olc('face.pipeline', () => photoFacePending ?? yuzNoktalari(source)) : photoFace;
         if (!isCurrent()) return;
         photoFace = yuz;
         rolyef = yuz ? olcSync('geometry.face-relief-map', () => yuzRolyefHaritasi(yuz.noktalar, depth.width, depth.height, YUZ_GUCU,
