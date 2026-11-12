@@ -61,7 +61,7 @@ export const UCGEN_KENAR_ORANI = 0.1;
 // Kafa elipsoidi (anatomik ortalama oranlar; yüz noktalarından ölçeklenir):
 /** Kafa yarı genişliği / yanaklar arası yarı genişlik. */
 export const KAFA_GENISLIK_ORANI = 1.1;
-/** Saç tepesi: alın noktasının (10) yüz yüksekliğinin bu oranı kadar üstü (headDetail ile aynı pay). */
+/** Saç tepesi: alın noktasının (10) yüz yüksekliğinin bu oranı kadar üstü. */
 export const SAC_PAYI = 0.35;
 /** Kafa yarı derinliği / yarı genişlik (baş boyu ~19 cm, eni ~15 cm → ~1.25). */
 export const KAFA_DERINLIK_ORANI = 1.25;

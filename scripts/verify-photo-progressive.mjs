@@ -25,7 +25,6 @@ const bindings = {
   normalizeDepth: data => Float32Array.from(data),
   mergeSubjectDetail: async data => { events.push('subject'); data[0] += .01; },
   limitDepthSlope: data => Float32Array.from(data), MAX_SLOPE_PER_PX: .1,
-  mergeHeadDetail: async () => { events.push('head'); },
   davidMaskesiniOnceIndir: async () => { events.push('david-bytes'); },
   applyDavidMask: async () => { events.push('david'); return { maske: mask.data, tani: { arkaUc: 'webgpu', sureMs: 1 } }; },
 };
@@ -40,7 +39,7 @@ const result = await estimate({}, { ...options,
   prepareSubjectMask: async () => { events.push('mask'); return mask; },
 });
 // DAViD bytes start right after the preview, overlapping the GPU-bound mask and detail work.
-assert.deepEqual(events, ['infer', 'preview', 'david-bytes', 'mask', 'subject', 'head', 'david']);
+assert.deepEqual(events, ['infer', 'preview', 'david-bytes', 'mask', 'subject', 'david']);
 assert.equal(calls, 1, 'preview must reuse the final pipeline inference');
 assert.deepEqual(result, baseline, 'final quality must match the existing pipeline');
 assert.notEqual(preview.data, raw, 'preview must not alias model or final buffers');

@@ -4,21 +4,9 @@ import type { DavidMaskPrefetchLease } from './engine/vision/davidDepth.ts';
 // Saf CPU yeniden örnekleme (silhouette.ts hiçbir şey import etmez — model
 // yığınına bağımlılık YOK, eval harness bağımsızlığı korunur).
 import { resampleBilinear } from './engine/reconstruction/silhouette.ts';
-import {
-  blendHeadDetail,
-  headRoiSec,
-  measureLimiterImpact,
-  measureMaskedDepthRange,
-  measureTwoPixelSlope,
-  shouldKeepHeadDetail,
-  type GridRect,
-  type HeadRoiKaynagi,
-} from './engine/reconstruction/headDetail.ts';
-import type { YuzReferansi } from './engine/vision/yuzReferansi.ts';
 import { delikleriDoldur, type DelikOlcum } from './engine/reconstruction/maskeDelik.ts';
 import { da3Plausible, da3Preprocess, da3ToDisparity, da3DisparityShift, SHIFT_K } from './engine/vision/da3Mono.ts';
 import { kenarHizala, mergeTileDetail, tileGrid, type TileResult } from './engine/reconstruction/derinlikDetay.ts';
-import { POINTS_DEPTH_RANGE } from './engine/buffers.ts';
 import { localInference, localInferenceAvailable, localModelAvailable, type RawTensor } from './engine/sidecarClient.ts';
 import type { MetricPhotoGeometry } from './engine/reconstruction/metricPhotoGeometry.ts';
 import { relativePhotoGeometry, type PhotoCameraInput } from './engine/reconstruction/photoPerspective.ts';
@@ -273,23 +261,6 @@ export const FOTO_KALITE: Pick<DepthEstimateOptions, 'tileDetay' | 'kenarHizalam
   ...(typeof location !== 'undefined' && davidIstendi(location.search) ? { insanDerinligi: 'david' as const } : {}),
 };
 
-export type HeadDetailDiagnostics = {
-  elapsedMs: number;
-  roi: GridRect;
-  /** ROI nereden: 'yuz' (MediaPipe ovali) | 'maske' (üst-çeyrek bandı — eski yol). */
-  roiKaynagi: HeadRoiKaynagi;
-  applied: boolean;
-  faceWorldRangeBefore: number;
-  faceWorldRangeAfter: number;
-  nonHeadWorldRangeBefore: number;
-  nonHeadWorldRangeAfter: number;
-  maxSeamJump: number;
-  maxTwoPixelSlope: number;
-  maxSlopeAllowed: number;
-  limiterChangedPixels: number;
-  limiterMaxChange: number;
-};
-
 export type DepthResult = {
   /** İstenen değil, gerçekten çıktı üreten fotoğraf modeli. */
   sourceModel?: 'da3-mono' | 'v2-small' | 'moge-2';
@@ -301,7 +272,6 @@ export type DepthResult = {
   width: number;
   height: number;
   /** Present only when a refined foreground mask enabled the head detail pass. */
-  headDetail?: HeadDetailDiagnostics;
   /** Yalnız DAViD füzyonu GERÇEKTEN uygulandıysa (tanı/ölçüm). */
   david?: { olcek: number; kayma: number; korelasyon: number; cekirdekOrani: number; yuklemeMs: number; cikarimMs: number };
   /** Yalnız DAViD maskesi GERÇEKTEN uygulandıysa (subjectMask = DAViD ∩ özne). */
@@ -421,13 +391,6 @@ export type DepthEstimateOptions = {
    * eğim sınırlayıcı): kamera/video yolu ve mevcut testler etkilenmez.
    */
   subjectMask?: { data: Float32Array; width: number; height: number };
-  /**
-   * Yüz referansı (MediaPipe, App'te tespit edilir). Verilirse kafa kırpma
-   * ROI'si yüz ovalinden türer (`headRoiSec`); kaldırılmış kol ROI'ye giremez.
-   * Verilmezse/null ise ROI eski maske bandından — çıktı bit-aynı.
-   * Yalnız `subjectMask` ile birlikte anlamlıdır (head-detail o zaman koşar).
-   */
-  yuz?: YuzReferansi | null;
 };
 
 let estimator: Awaited<ReturnType<typeof pipeline<'depth-estimation'>>> | null = null;
@@ -872,9 +835,6 @@ export async function estimateDepth(
   } else {
     limited = limitDepthSlope(normalized, outWidth, outHeight, null);
   }
-  const headDetail = subject
-    ? await mergeHeadDetail(limited, subject, outWidth, outHeight, source, model, RawImageCtor, opts.yuz ?? null, trace)
-    : undefined;
   let cikti = limited, david: DepthResult['david'];
   if (opts.insanDerinligi === 'david') {
     const f = await davidUygula(limited, outWidth, outHeight, source, subject, trace);
@@ -883,7 +843,7 @@ export async function estimateDepth(
   // subject, delikDoldur'da zaten deliği kapatılmış maske (doldurulmusMaske).
   const dm = await applyDavidMask(opts.insanMaskesi, source, subject, outWidth, outHeight, trace);
   return {
-    data: cikti, width: outWidth, height: outHeight, sourceModel: photoModel, headDetail, subjectMask: dm?.maske ?? doldurulmusMaske, delikTani,
+    data: cikti, width: outWidth, height: outHeight, sourceModel: photoModel, subjectMask: dm?.maske ?? doldurulmusMaske, delikTani,
     ...(photoDisparity ? { metricGeometry: relativePhotoGeometry(photoDisparity, outWidth, outHeight, opts.photoCamera!, { shift: photoShift, mask: subject ?? undefined }) } : {}),
     ...(david ? { david } : {}), ...(dm ? { davidMaske: dm.tani } : {}),
   };
@@ -1137,76 +1097,6 @@ async function mergeSubjectDetail(
       depth[gi] = Math.min(1, Math.max(0, depth[gi] + (v - depth[gi]) * m));
     }
   }
-}
-
-/**
- * Adds the second pyramid level only after the global limiter has finished.
- * A fresh limiter probe decides whether the local relief is a stable surface
- * or an isolated spike; rejected output is restored bit-for-bit.
- */
-async function mergeHeadDetail(
-  depth: Float32Array,
-  mask: Float32Array,
-  w: number,
-  h: number,
-  source: HTMLCanvasElement | HTMLImageElement,
-  model: Awaited<ReturnType<typeof loadDepthModel>>,
-  RawImageCtor: typeof RawImage,
-  yuz: YuzReferansi | null,
-  trace: PhotoMeasurement | null = null,
-): Promise<HeadDetailDiagnostics | undefined> {
-  const { roi, kaynak } = headRoiSec(mask, w, h, yuz);
-  if (!roi || roi.width < 8 || roi.height < 8) return undefined;
-
-  const before = Float32Array.from(depth);
-  const faceBefore = measureMaskedDepthRange(before, mask, w, h, roi, true);
-  const nonHeadBefore = measureMaskedDepthRange(before, mask, w, h, roi, false);
-
-  const src = toCanvas(source);
-  const sx = src.width / w;
-  const sy = src.height / h;
-  const cx = Math.max(0, Math.round(roi.x * sx));
-  const cy = Math.max(0, Math.round(roi.y * sy));
-  const cw = Math.min(src.width - cx, Math.max(1, Math.round(roi.width * sx)));
-  const ch = Math.min(src.height - cy, Math.max(1, Math.round(roi.height * sy)));
-  const cut = document.createElement('canvas');
-  cut.width = cw;
-  cut.height = ch;
-  cut.getContext('2d', { willReadFrequently: true })!.drawImage(src, cx, cy, cw, ch, 0, 0, cw, ch);
-
-  const letterboxed = letterboxCanvas(cut, MODEL_INPUT_SIZE);
-  const input = await RawImageCtor.fromCanvas(letterboxed.canvas);
-  const startedAt = performance.now();
-  const out = await runPhotoModel(model, input, trace, 'depth.head');
-  const elapsedMs = performance.now() - startedAt;
-  const outputWidth = (out.predicted_depth.dims.slice(-1) as [number])[0];
-  const cropDepth = normalizeDepth(
-    cropDepth2(out.predicted_depth.data as Float32Array, outputWidth, letterboxed),
-    1,
-  );
-  const resampledCrop = resampleBilinear(cropDepth, letterboxed.w, letterboxed.h, roi.width, roi.height);
-  const merge = blendHeadDetail(depth, resampledCrop, mask, w, h, roi);
-  const maxTwoPixelSlope = measureTwoPixelSlope(depth, mask, w, h, roi);
-  const limiterProbe = limitDepthSlope(depth, w, h, mask);
-  const limiterImpact = measureLimiterImpact(depth, limiterProbe, mask, w, h, roi);
-  const applied = shouldKeepHeadDetail(merge, limiterImpact);
-  if (!applied) depth.set(before);
-
-  return {
-    elapsedMs,
-    roi,
-    roiKaynagi: kaynak,
-    applied,
-    faceWorldRangeBefore: faceBefore * POINTS_DEPTH_RANGE,
-    faceWorldRangeAfter: measureMaskedDepthRange(depth, mask, w, h, roi, true) * POINTS_DEPTH_RANGE,
-    nonHeadWorldRangeBefore: nonHeadBefore * POINTS_DEPTH_RANGE,
-    nonHeadWorldRangeAfter: measureMaskedDepthRange(depth, mask, w, h, roi, false) * POINTS_DEPTH_RANGE,
-    maxSeamJump: merge.maxSeamJump,
-    maxTwoPixelSlope,
-    maxSlopeAllowed: MAX_SLOPE_PER_PX,
-    limiterChangedPixels: limiterImpact.changed,
-    limiterMaxChange: limiterImpact.maxChange,
-  };
 }
 
 /** Letterbox karesinden iç dikdörtgeni kopyalar (cropDepth ile aynı iş, ayrı
